@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package panel
+        run: |
+          mkdir -p dist
+          tar czf dist/veil.tar.gz panel.py index.html
+          sha256sum dist/veil.tar.gz | awk '{print $1}' > dist/veil.tar.gz.sha256
+          cat dist/veil.tar.gz.sha256
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/veil.tar.gz
+            dist/veil.tar.gz.sha256
+          generate_release_notes: true
