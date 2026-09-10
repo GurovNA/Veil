@@ -9,7 +9,7 @@ HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 REPO = "GurovNA/Veil"
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 SESSIONS = {}
 
 def _load(p, d=None):
@@ -143,7 +143,7 @@ def _install_update():
         for fn in ("panel.py", "index.html"):
             if not os.path.exists(os.path.join(exdir, fn)):
                 raise RuntimeError("в архиве нет " + fn)
-        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
         bdir = f"{BASE}/backup-v{VERSION}-{ts}"
         os.makedirs(bdir, exist_ok=True)
         for fn in ("panel.py", "index.html"):
