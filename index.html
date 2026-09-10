@@ -3,10 +3,10 @@
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Veil</title>
 <style>
-:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d}
+:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;justify-content:center;padding:24px}
-.wrap{width:100%;max-width:520px}
+.wrap{width:100%;max-width:560px}
 .card{background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;margin-bottom:16px}
 h1{font-size:20px;margin:0 0 4px}
 h2{font-size:16px;margin:0 0 12px}
@@ -16,21 +16,30 @@ input{background:#0d1117;color:var(--fg);border:1px solid var(--br)}
 button{background:var(--acc);color:#fff;border:0;cursor:pointer;font-weight:600}
 button.sec{background:#21262d;color:var(--fg);border:1px solid var(--br)}
 button.danger{background:#8b1a1a;color:#fff;border:0}
+button.tiny{width:auto;padding:6px 10px;margin:0;font-size:13px;font-weight:500}
 button:disabled{opacity:.5;cursor:not-allowed}
-.link{display:flex;gap:8px;align-items:flex-start;margin-top:12px}
-.link code{flex:1;background:#0d1117;border:1px solid var(--br);border-radius:8px;padding:10px;font-size:12px;word-break:break-all}
-.link button{width:auto;padding:10px 14px;margin:0}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
 .on{background:var(--ok)}.off{background:var(--err)}
 .msg{margin-top:10px;font-size:13px}
 .err{color:var(--err)}.ok{color:var(--ok)}
 .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-a{color:var(--acc)}
+.clients{display:flex;flex-direction:column;gap:8px}
+.client{background:#0d1117;border:1px solid var(--br);border-radius:10px;padding:12px}
+.client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.client .name{font-weight:600;font-size:14px;word-break:break-word}
+.client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px}
+.client .actions{display:flex;gap:6px;flex-shrink:0}
+.client .link-row{margin-top:8px}
+.client code{display:block;background:#010409;border:1px solid var(--br);border-radius:6px;padding:8px;font-size:11px;word-break:break-all;color:var(--fg);max-height:60px;overflow:auto}
 .tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border:1px solid var(--br);border-radius:10px;padding:4px}
 .tabs button{background:transparent;color:var(--mut);border:0;padding:10px;margin:0;font-weight:600;border-radius:6px;width:auto;flex:1}
 .tabs button.active{background:var(--acc);color:#fff}
 .tab-pane{display:none}.tab-pane.active{display:block}
 .hidden{display:none}
+hr{border:0;border-top:1px solid var(--br);margin:14px 0}
+.dialog{background:#0d1117;border:1px solid var(--acc);border-radius:8px;padding:12px;margin:8px 0}
+.dialog input{margin:6px 0}
+.dialog .row{margin-bottom:6px}
 </style></head><body><div class=wrap>
 
 <div class=card id=loginCard>
@@ -52,14 +61,24 @@ a{color:var(--acc)}
   <div id=tab-vpn class="tab-pane active"><div class=card>
     <div class=row><h1>Veil</h1><span class=mut id=ver></span></div>
     <p class=mut><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
-    <button id=vpnBtn onclick=doVPN()>Хочу VPN</button>
-    <div id=linkBox class=hidden>
-      <div class=link>
-        <code id=linkVal></code>
-        <button class=sec onclick=copyLink()>Копировать</button>
-      </div>
-      <p class=mut>Импортируй в Happ, Shadowrocket, Incy, v2rayNG, Hiddify, Streisand</p>
+
+    <div id=emptyState>
+      <p class=mut>VPN ещё не настроен. Нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первый клиент.</p>
+      <button id=vpnBtn onclick=doVPN()>Хочу VPN</button>
     </div>
+
+    <div id=clientsBlock class=hidden>
+      <div class=row><h2 style="margin:0">Клиенты</h2><span class=mut id=cntClients></span></div>
+      <div class=clients id=clientsList></div>
+      <button class=sec style="margin-top:12px" onclick=showAdd()>+ Добавить клиента</button>
+      <div id=addBox class="dialog hidden">
+        <div class=row><b>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
+        <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
+        <button onclick=doAdd()>Создать</button>
+        <div class=msg id=addMsg></div>
+      </div>
+    </div>
+
     <div class=msg id=vpnMsg></div>
   </div></div>
 
@@ -70,15 +89,15 @@ a{color:var(--acc)}
     <button class=sec id=checkBtn onclick=checkUpdate()>Проверить обновления</button>
     <button id=installBtn class="hidden" onclick=installUpdate() style="margin-top:6px">Установить</button>
     <div class=msg id=setMsg></div>
-    <hr style="border:0;border-top:1px solid var(--br);margin:14px 0">
+    <hr>
     <button class="danger" onclick=doLogout()>Выйти из панели</button>
   </div></div>
 
   <div id=tab-security class="tab-pane"><div class=card>
     <h2>Безопасность</h2>
-    <p class=mut>Смена логина и пароля от панели. После сохранения потребуется войти заново.</p>
+    <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
     <input id=curPass type=password placeholder="текущий пароль (обязательно)" autocomplete=current-password>
-    <hr style="border:0;border-top:1px solid var(--br);margin:14px 0">
+    <hr>
     <input id=nLogin placeholder="новый логин (пусто — не менять)" autocomplete=off>
     <input id=nPass type=password placeholder="новый пароль (пусто — не менять)" autocomplete=new-password>
     <input id=nPass2 type=password placeholder="повтори новый пароль" autocomplete=new-password>
@@ -89,7 +108,7 @@ a{color:var(--acc)}
 
 </div><script>
 const $=id=>document.getElementById(id);
-let curLink='', latestVer='';
+let clients=[];
 
 async function api(p,o){
   const r=await fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},o||{}));
@@ -105,11 +124,7 @@ async function doLogin(){
     await refresh();
   }catch(e){$('loginMsg').textContent=e.message;}
 }
-
-async function doLogout(){
-  try{await api('/api/logout',{method:'POST'});}catch(e){}
-  location.reload();
-}
+async function doLogout(){ try{await api('/api/logout',{method:'POST'});}catch(e){} location.reload(); }
 
 function applyState(s){
   $('ver').textContent='v'+s.version;
@@ -117,11 +132,51 @@ function applyState(s){
   $('stTxt').textContent=s.running?'Xray работает':'Xray остановлен';
   if(s.login)$('curLogin').textContent=s.login;
   $('curVer').textContent='v'+s.version;
-  if(s.configured && s.link){
-    curLink=s.link;
-    $('linkBox').classList.remove('hidden');
-    $('linkVal').textContent=s.link;
-    $('vpnBtn').textContent='Перезапустить VPN';
+}
+
+function renderClients(){
+  const box=$('clientsList');
+  box.innerHTML='';
+  $('cntClients').textContent=clients.length+' шт.';
+  clients.forEach(c=>{
+    const div=document.createElement('div');div.className='client';
+    div.innerHTML=`
+      <div class=top>
+        <div style="flex:1;min-width:0">
+          <div class=name></div>
+          <div class=uuid></div>
+        </div>
+        <div class=actions>
+          <button class="tiny sec" data-act=copy>Копировать</button>
+          <button class="tiny danger" data-act=del>Удалить</button>
+        </div>
+      </div>
+      <div class="link-row">
+        <code></code>
+      </div>`;
+    div.querySelector('.name').textContent=c.name;
+    div.querySelector('.uuid').textContent=c.uuid;
+    div.querySelector('code').textContent=c.link;
+    div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
+    div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
+    box.appendChild(div);
+  });
+}
+
+async function loadClients(){
+  try{
+    const d=await api('/api/clients');
+    clients=d.clients||[];
+    if(clients.length){
+      $('emptyState').classList.add('hidden');
+      $('clientsBlock').classList.remove('hidden');
+      renderClients();
+    }else{
+      $('emptyState').classList.remove('hidden');
+      $('clientsBlock').classList.add('hidden');
+    }
+  }catch(e){
+    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
   }
 }
 
@@ -131,6 +186,7 @@ async function refresh(){
     $('loginCard').classList.add('hidden');
     $('panel').style.display='';
     applyState(s);
+    await loadClients();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -143,25 +199,49 @@ async function doVPN(){
   const b=$('vpnBtn');b.disabled=true;
   $('vpnMsg').textContent='Настраиваю...';$('vpnMsg').className='msg';
   try{
-    const r=await api('/api/vpn',{method:'POST'});
-    curLink=r.link;
-    $('linkVal').textContent=r.link;
-    $('linkBox').classList.remove('hidden');
-    $('vpnMsg').textContent='Готово, порт '+r.port;$('vpnMsg').className='msg ok';
-    $('vpnBtn').textContent='Перезапустить VPN';
+    await api('/api/vpn',{method:'POST'});
+    $('vpnMsg').textContent='Готово';$('vpnMsg').className='msg ok';
     await refresh();
   }catch(e){
     $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
   }finally{b.disabled=false;}
 }
 
-function copyLink(){
-  const done=()=>{$('vpnMsg').textContent='Скопировано';$('vpnMsg').className='msg ok';};
-  const fail=()=>{$('vpnMsg').textContent='Выдели текст вручную и скопируй';$('vpnMsg').className='msg err';};
+function showAdd(){ $('addBox').classList.remove('hidden'); $('newName').focus(); }
+function hideAdd(){ $('addBox').classList.add('hidden'); $('newName').value=''; $('addMsg').textContent=''; }
+
+async function doAdd(){
+  const name=$('newName').value.trim();
+  if(!name){$('addMsg').textContent='Введи имя';$('addMsg').className='msg err';return;}
+  $('addMsg').textContent='Создаю...';$('addMsg').className='msg';
+  try{
+    await api('/api/clients/add',{method:'POST',body:JSON.stringify({name})});
+    hideAdd();
+    await loadClients();
+    $('vpnMsg').textContent='Клиент «'+name+'» создан';$('vpnMsg').className='msg ok';
+  }catch(e){
+    $('addMsg').textContent=e.message;$('addMsg').className='msg err';
+  }
+}
+
+async function doDelete(c){
+  if(!confirm('Удалить клиента «'+c.name+'»?\nЕго ссылка перестанет работать.')) return;
+  try{
+    await api('/api/clients/delete',{method:'POST',body:JSON.stringify({uuid:c.uuid})});
+    await loadClients();
+    $('vpnMsg').textContent='Клиент «'+c.name+'» удалён';$('vpnMsg').className='msg';
+  }catch(e){
+    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
+  }
+}
+
+function copyText(text,okMsg){
+  const done=()=>{$('vpnMsg').textContent=okMsg;$('vpnMsg').className='msg ok';};
+  const fail=()=>{$('vpnMsg').textContent='Не скопировалось — выдели вручную';$('vpnMsg').className='msg err';};
   if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(curLink).then(done).catch(fail);
+    navigator.clipboard.writeText(text).then(done).catch(fail);
   }else{
-    const t=document.createElement('textarea');t.value=curLink;document.body.appendChild(t);
+    const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);
     t.select();try{document.execCommand('copy');done();}catch(e){fail();}
     document.body.removeChild(t);
   }
@@ -174,7 +254,6 @@ async function checkUpdate(){
   try{
     const u=await api('/api/update');
     if(u.update_available){
-      latestVer=u.latest;
       $('setMsg').innerHTML='Доступна <b>v'+u.latest+'</b> (у тебя v'+u.current+')';
       $('setMsg').className='msg';
       $('installBtn').textContent='Установить v'+u.latest;
@@ -209,7 +288,7 @@ async function doSaveSecurity(){
   const np=$('nPass').value;
   const np2=$('nPass2').value;
   if(!cur){$('secMsg').textContent='Введи текущий пароль';$('secMsg').className='msg err';return;}
-  if(!nl && !np){$('secMsg').textContent='Нечего менять — заполни логин или новый пароль';$('secMsg').className='msg err';return;}
+  if(!nl && !np){$('secMsg').textContent='Нечего менять';$('secMsg').className='msg err';return;}
   if(np && np!==np2){$('secMsg').textContent='Новые пароли не совпадают';$('secMsg').className='msg err';return;}
   $('secMsg').textContent='Сохраняю...';
   try{

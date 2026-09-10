@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-import json, os, subprocess, secrets, hashlib, uuid, re, time, socketserver, http.server
-import urllib.parse, urllib.request, urllib.error, shutil, tarfile, tempfile, datetime
+import json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, time
+import socketserver, http.server
+import urllib.parse, urllib.request, urllib.error
+import shutil, tarfile, tempfile, datetime
 
 BASE = "/opt/vpnpanel"
 CFG = f"{BASE}/config.json"
@@ -9,8 +11,10 @@ HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 REPO = "GurovNA/Veil"
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 SESSIONS = {}
+
+# ---------- helpers ----------
 
 def _load(p, d=None):
     try:
@@ -47,15 +51,32 @@ def _gen_keys():
     if priv and pub: return priv, pub
     raise RuntimeError("не разобрал xray x25519: " + out)
 
+def _ver_tuple(v):
+    try: return tuple(int(x) for x in str(v).split("."))
+    except Exception: return (0,)
+
+# ---------- state / xray ----------
+
+def _migrate_state(st):
+    if st is None: return False
+    if "clients" in st: return False
+    old = st.pop("uuid", None)
+    st["clients"] = []
+    if old:
+        st["clients"].append({"uuid": old, "name": "Основной", "created": 0})
+    return True
+
 def _write_xray(st):
+    clients = [{"id": c["uuid"], "flow": "xtls-rprx-vision"} for c in st.get("clients", [])]
     cfg = {
         "log": {"loglevel": "warning"},
         "inbounds": [{
             "listen": "0.0.0.0", "port": st["port"], "protocol": "vless",
-            "settings": {"clients": [{"id": st["uuid"], "flow": "xtls-rprx-vision"}], "decryption": "none"},
+            "settings": {"clients": clients, "decryption": "none"},
             "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
                 "show": False, "dest": st["dest"], "xver": 0,
-                "serverNames": [st["sni"]], "privateKey": st["private_key"], "shortIds": [st["sid"]]}},
+                "serverNames": [st["sni"]], "privateKey": st["private_key"],
+                "shortIds": [st["sid"]]}},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
         }],
         "outbounds": [{"protocol": "freedom"}]
@@ -63,33 +84,54 @@ def _write_xray(st):
     _save(XRAY, cfg, 0o644)
 
 def _restart_xray():
-    t = subprocess.run(["xray", "run", "-test", "-config", XRAY], capture_output=True, text=True)
+    t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
+                       capture_output=True, text=True)
     if t.returncode:
         raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
 
-def _link(st, host):
+def _link(st, host, client):
     q = urllib.parse.urlencode({
         "type": "tcp", "security": "reality", "pbk": st["public_key"],
         "fp": "firefox", "sni": st["sni"], "sid": st["sid"],
         "spx": "/", "flow": "xtls-rprx-vision"})
-    return f"vless://{st['uuid']}@{host}:{st['port']}?{q}#Veil"
+    name = urllib.parse.quote(client.get("name") or "Veil")
+    return f"vless://{client['uuid']}@{host}:{st['port']}?{q}#{name}"
+
+def _new_client(name):
+    return {"uuid": str(uuidlib.uuid4()),
+            "name": (name or "").strip() or "Клиент",
+            "created": int(time.time())}
+
+# ---------- github / update ----------
 
 def _gh_headers():
     h = {"Accept": "application/vnd.github+json", "User-Agent": "veil-panel"}
     try:
-        with open(TOKEN_FILE) as f:
-            tok = f.read().strip()
+        with open(TOKEN_FILE) as f: tok = f.read().strip()
         if tok: h["Authorization"] = "Bearer " + tok
     except Exception: pass
     return h
 
 def _gh_latest():
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{REPO}/releases/latest",
-        headers=_gh_headers())
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
+    url = f"https://api.github.com/repos/{REPO}/releases?per_page=1"
+    print("[update] GET " + url, flush=True)
+    req = urllib.request.Request(url, headers=_gh_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+        print("[update] OK type=" + type(data).__name__, flush=True)
+        if isinstance(data, list):
+            if not data: raise RuntimeError("нет релизов")
+            print("[update] tags=" + str([x.get("tag_name") for x in data]), flush=True)
+            return data[0]
+        return data
+    except urllib.error.HTTPError as e:
+        body = ""
+        try: body = e.read().decode(errors="replace")[:500]
+        except Exception: pass
+        print("[update] HTTP " + str(e.code) + " " + body, flush=True)
+        raise
 
 def _dl(url, dest):
     h = _gh_headers()
@@ -110,29 +152,25 @@ def _sha256_file(p):
 def _check_update():
     rel = _gh_latest()
     tag = rel.get("tag_name", "").lstrip("v")
-    return {
-        "current": VERSION,
-        "latest": tag,
-        "url": rel.get("html_url", ""),
-        "update_available": bool(tag) and tag != VERSION,
-    }
+    newer = False
+    if tag and tag != VERSION:
+        newer = _ver_tuple(tag) > _ver_tuple(VERSION)
+    return {"current": VERSION, "latest": tag,
+            "url": rel.get("html_url", ""),
+            "update_available": newer}
 
 def _install_update():
     rel = _gh_latest()
     tag = rel.get("tag_name", "").lstrip("v")
-    if not tag:
-        raise RuntimeError("в релизе нет tag_name")
-    if tag == VERSION:
-        raise RuntimeError("уже последняя версия " + VERSION)
+    if not tag: raise RuntimeError("в релизе нет tag_name")
+    if not (_ver_tuple(tag) > _ver_tuple(VERSION)):
+        raise RuntimeError("нет обновлений (текущая " + VERSION + ")")
     assets = {a["name"]: a["url"] for a in rel.get("assets", [])}
     for need in ("veil.tar.gz", "veil.tar.gz.sha256"):
-        if need not in assets:
-            raise RuntimeError("в релизе нет " + need)
+        if need not in assets: raise RuntimeError("в релизе нет " + need)
     with tempfile.TemporaryDirectory(prefix="veil-up-") as tmp:
-        arch = os.path.join(tmp, "veil.tar.gz")
-        shaf = os.path.join(tmp, "sha256")
-        _dl(assets["veil.tar.gz"], arch)
-        _dl(assets["veil.tar.gz.sha256"], shaf)
+        arch = os.path.join(tmp, "veil.tar.gz"); shaf = os.path.join(tmp, "sha256")
+        _dl(assets["veil.tar.gz"], arch); _dl(assets["veil.tar.gz.sha256"], shaf)
         with open(shaf) as f: expected = f.read().strip().split()[0]
         actual = _sha256_file(arch)
         if actual.lower() != expected.lower():
@@ -140,9 +178,9 @@ def _install_update():
         exdir = os.path.join(tmp, "x"); os.makedirs(exdir, exist_ok=True)
         with tarfile.open(arch, "r:gz") as tar:
             for m in tar.getmembers():
-                name = os.path.basename(m.name)
-                if name not in ("panel.py", "index.html"): continue
-                m.name = name
+                base = os.path.basename(m.name)
+                if base not in ("panel.py", "index.html"): continue
+                m.name = base
                 tar.extract(m, exdir)
         for fn in ("panel.py", "index.html"):
             if not os.path.exists(os.path.join(exdir, fn)):
@@ -160,6 +198,8 @@ def _install_update():
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     return {"ok": True, "from": VERSION, "to": tag, "restarting": True}
+
+# ---------- HTTP ----------
 
 CFG_CACHE = _load(CFG, {}) or {}
 
@@ -189,24 +229,33 @@ class H(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
 
-    def _is_current_password(self, cur):
+    def _is_cur_pw(self, cur):
         return _hash(CFG_CACHE.get("salt", ""), cur) == CFG_CACHE.get("pass_hash")
 
+    # ---- GET ----
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
         if p in ("/", "/index.html"):
-            with open(HTML, "rb") as f: html = f.read()
-            return self._send(200, html, "text/html; charset=utf-8")
+            with open(HTML, "rb") as f: return self._send(200, f.read(), "text/html; charset=utf-8")
         if p == "/api/state":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
-            out = {"version": VERSION, "running": running, "configured": bool(st),
-                   "login": CFG_CACHE.get("login", "")}
-            if st:
-                host = self.headers.get("Host", "").split(":")[0]
-                out["port"] = st["port"]; out["link"] = _link(st, host)
+            out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
+                   "configured": bool(st and st.get("clients"))}
+            if st: out["port"] = st["port"]
             return self._send(200, out)
+        if p == "/api/clients":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            st = _load(STATE)
+            if not st: return self._send(200, {"clients": [], "configured": False})
+            if _migrate_state(st): _save(STATE, st)
+            host = self.headers.get("Host", "").split(":")[0]
+            out = [{"uuid": c["uuid"], "name": c["name"],
+                    "link": _link(st, host, c),
+                    "created": c.get("created", 0)} for c in st.get("clients", [])]
+            return self._send(200, {"clients": out, "port": st["port"],
+                                    "configured": bool(out)})
         if p == "/api/update":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -217,39 +266,96 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": str(e)})
         return self._send(404, {"error": "not found"})
 
+    # ---- POST ----
     def do_POST(self):
         try:
             p = urllib.parse.urlparse(self.path).path
             if p == "/api/login":
                 b = self._body()
                 if not (b.get("login") == CFG_CACHE.get("login") and
-                        self._is_current_password(b.get("password", ""))):
+                        self._is_cur_pw(b.get("password", ""))):
                     return self._send(401, {"error": "неверный логин или пароль"})
                 t = secrets.token_hex(32); SESSIONS[t] = time.time() + 72 * 3600
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=259200; SameSite=Lax"]
                 return self._send(200, {"ok": True})
-            if not _authed(self):
-                return self._send(401, {"error": "unauthorized"})
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
             if p == "/api/logout":
                 t = _cookie(self)
                 if t: SESSIONS.pop(t, None)
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
+
+            # ---- vpn init ----
             if p == "/api/vpn":
                 st = _load(STATE)
                 if st is None:
                     port = _free_port(443); priv, pub = _gen_keys()
-                    st = {"port": port, "uuid": str(uuid.uuid4()),
-                          "private_key": priv, "public_key": pub,
+                    st = {"port": port, "private_key": priv, "public_key": pub,
                           "sid": secrets.token_hex(4),
-                          "sni": "www.samsung.com", "dest": "www.samsung.com:443"}
-                    _write_xray(st); _save(STATE, st)
+                          "sni": "www.samsung.com", "dest": "www.samsung.com:443",
+                          "clients": []}
+                _migrate_state(st)
+                if not st["clients"]:
+                    st["clients"].append(_new_client("Основной"))
+                _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 host = self.headers.get("Host", "").split(":")[0]
-                return self._send(200, {"ok": True, "link": _link(st, host), "port": st["port"]})
+                first = st["clients"][0]
+                return self._send(200, {"ok": True, "link": _link(st, host, first),
+                                        "port": st["port"]})
+
+            # ---- clients ----
+            if p == "/api/clients/add":
+                b = self._body()
+                name = (b.get("name") or "").strip() or "Клиент"
+                st = _load(STATE)
+                if st is None:
+                    port = _free_port(443); priv, pub = _gen_keys()
+                    st = {"port": port, "private_key": priv, "public_key": pub,
+                          "sid": secrets.token_hex(4),
+                          "sni": "www.samsung.com", "dest": "www.samsung.com:443",
+                          "clients": []}
+                _migrate_state(st)
+                c = _new_client(name)
+                st["clients"].append(c)
+                _write_xray(st); _save(STATE, st)
+                _restart_xray()
+                host = self.headers.get("Host", "").split(":")[0]
+                return self._send(200, {"ok": True, "client": {
+                    "uuid": c["uuid"], "name": c["name"], "link": _link(st, host, c)}})
+
+            if p == "/api/clients/delete":
+                b = self._body()
+                u = b.get("uuid")
+                st = _load(STATE)
+                if not st or not st.get("clients"):
+                    return self._send(400, {"error": "нет клиентов"})
+                nlist = [c for c in st["clients"] if c["uuid"] != u]
+                if len(nlist) == len(st["clients"]):
+                    return self._send(404, {"error": "клиент не найден"})
+                if not nlist:
+                    return self._send(400, {"error": "нельзя удалить последнего клиента"})
+                st["clients"] = nlist
+                _write_xray(st); _save(STATE, st)
+                _restart_xray()
+                return self._send(200, {"ok": True})
+
+            if p == "/api/clients/rename":
+                b = self._body()
+                u = b.get("uuid"); name = (b.get("name") or "").strip()
+                if not name: return self._send(400, {"error": "имя пустое"})
+                st = _load(STATE)
+                found = False
+                for c in st.get("clients", []):
+                    if c["uuid"] == u: c["name"] = name; found = True
+                if not found: return self._send(404, {"error": "клиент не найден"})
+                _save(STATE, st)
+                return self._send(200, {"ok": True})
+
+            # ---- security ----
             if p == "/api/security":
                 b = self._body()
-                if not self._is_current_password(b.get("current_password", "")):
+                if not self._is_cur_pw(b.get("current_password", "")):
                     return self._send(401, {"error": "неверный текущий пароль"})
                 changed = False
                 nl = (b.get("login") or "").strip()
@@ -262,12 +368,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     CFG_CACHE["salt"] = secrets.token_hex(16)
                     CFG_CACHE["pass_hash"] = _hash(CFG_CACHE["salt"], np_)
                     changed = True
-                if not changed:
-                    return self._send(400, {"error": "нечего менять"})
+                if not changed: return self._send(400, {"error": "нечего менять"})
                 _save(CFG, CFG_CACHE)
                 SESSIONS.clear()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True, "relogin": True})
+
+            # ---- update ----
             if p == "/api/update/install":
                 try:
                     return self._send(200, _install_update())
@@ -275,6 +382,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
+
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
