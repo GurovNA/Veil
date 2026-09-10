@@ -2,6 +2,7 @@
 <html lang=ru><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Veil</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922}
 *{box-sizing:border-box}
@@ -79,6 +80,21 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
       </div>
     </div>
 
+    <div id=tgBlock class=hidden style="margin-top:20px;border-top:1px solid var(--br);padding-top:16px">
+      <div class=row><h2 style="margin:0">Telegram прокси</h2><span class=mut id=tgStatus></span></div>
+      <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+      <div class=clients id=tgList></div>
+      <button class=sec style="margin-top:12px" onclick=showTgAdd()>+ Добавить пользователя Tg</button>
+      <div id=tgAddBox class="dialog hidden">
+        <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
+        <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
+        <button onclick=doTgAdd()>Создать</button>
+        <div class=msg id=tgAddMsg></div>
+      </div>
+      <div class=msg id=tgMsg></div>
+    </div>
+
+
     <div class=msg id=vpnMsg></div>
   </div></div>
 
@@ -147,6 +163,7 @@ function renderClients(){
           <div class=uuid></div>
         </div>
         <div class=actions>
+          <button class="tiny sec" data-act=qr>QR</button>
           <button class="tiny sec" data-act=copy>Копировать</button>
           <button class="tiny danger" data-act=del>Удалить</button>
         </div>
@@ -157,6 +174,8 @@ function renderClients(){
     div.querySelector('.name').textContent=c.name;
     div.querySelector('.uuid').textContent=c.uuid;
     div.querySelector('code').textContent=c.link;
+    const _qrBtn = div.querySelector('[data-act=qr]');
+    if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
     div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
     div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
     box.appendChild(div);
@@ -187,6 +206,7 @@ async function refresh(){
     $('panel').style.display='';
     applyState(s);
     await loadClients();
+    await loadTg();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -300,6 +320,92 @@ async function doSaveSecurity(){
   }
 }
 
+// ----- Telegram proxy (telemt) -----
+let tgUsers = [];
+
+async function loadTg(){
+  try{
+    const d = await api('/api/tg/status');
+    if (!d.installed){
+      document.getElementById('tgBlock').classList.add('hidden');
+      return;
+    }
+    document.getElementById('tgBlock').classList.remove('hidden');
+    tgUsers = d.users || [];
+    document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
+    renderTg();
+  }catch(e){
+    document.getElementById('tgBlock').classList.add('hidden');
+  }
+}
+
+function renderTg(){
+  const box = document.getElementById('tgList');
+  box.innerHTML = '';
+  tgUsers.forEach(function(u){
+    const div = document.createElement('div');
+    div.className = 'client';
+    div.innerHTML = '<div class=top>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class=name></div>' +
+        '<div class=uuid></div>' +
+      '</div>' +
+      '<div class=actions>' +
+        '<button class="tiny sec" data-act=qr>QR</button>' +
+        '<button class="tiny sec" data-act=copy>Копировать</button>' +
+        '<button class="tiny danger" data-act=del>Удалить</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="link-row"><code></code></div>';
+    div.querySelector('.name').textContent = u.username;
+    div.querySelector('.uuid').textContent = 'соединений: ' + (u.connections || 0);
+    div.querySelector('code').textContent = u.link;
+    div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'Tg: ' + u.username); };
+    div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка Tg скопирована'); };
+    div.querySelector('[data-act=del]').onclick = function(){ doTgDelete(u); };
+    box.appendChild(div);
+  });
+}
+
+function showTgAdd(){
+  document.getElementById('tgAddBox').classList.remove('hidden');
+  document.getElementById('tgNewName').focus();
+}
+function hideTgAdd(){
+  document.getElementById('tgAddBox').classList.add('hidden');
+  document.getElementById('tgNewName').value = '';
+  document.getElementById('tgAddMsg').textContent = '';
+}
+
+async function doTgAdd(){
+  const name = document.getElementById('tgNewName').value.trim();
+  if (!name){ document.getElementById('tgAddMsg').textContent = 'Введи имя'; return; }
+  document.getElementById('tgAddMsg').textContent = 'Создаю...';
+  try{
+    await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name})});
+    hideTgAdd();
+    await loadTg();
+    document.getElementById('tgMsg').textContent = 'Пользователь «' + name + '» создан';
+    document.getElementById('tgMsg').className = 'msg ok';
+  }catch(e){
+    document.getElementById('tgAddMsg').textContent = e.message;
+    document.getElementById('tgAddMsg').className = 'msg err';
+  }
+}
+
+async function doTgDelete(u){
+  if (!confirm('Удалить пользователя «' + u.username + '»? Его ссылка перестанет работать.')) return;
+  try{
+    await api('/api/tg/user/remove', {method:'POST', body: JSON.stringify({username: u.username})});
+    await loadTg();
+    document.getElementById('tgMsg').textContent = 'Пользователь «' + u.username + '» удалён';
+    document.getElementById('tgMsg').className = 'msg';
+  }catch(e){
+    document.getElementById('tgMsg').textContent = e.message;
+    document.getElementById('tgMsg').className = 'msg err';
+  }
+}
+
 document.querySelectorAll('.tabs button').forEach(b=>{
   b.addEventListener('click',()=>{
     document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
@@ -309,5 +415,40 @@ document.querySelectorAll('.tabs button').forEach(b=>{
   });
 });
 
+function showQR(text, title){
+  document.getElementById('qrTitle').textContent = title || 'QR-код';
+  document.getElementById('qrErr').textContent = '';
+  const box = document.getElementById('qrBox');
+  box.innerHTML = '';
+  document.getElementById('qrModal').style.display = 'flex';
+  if (typeof QRCode === 'undefined'){
+    document.getElementById('qrErr').textContent = 'QR-библиотека не загрузилась. Проверь интернет или скопируй ссылку.';
+    return;
+  }
+  try{
+    new QRCode(box, {text: text, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M});
+  }catch(e){
+    document.getElementById('qrErr').textContent = 'Ошибка QR: ' + e.message;
+  }
+}
+function hideQR(){
+  document.getElementById('qrModal').style.display = 'none';
+}
+document.getElementById('qrModal').addEventListener('click', function(e){
+  if (e.target.id === 'qrModal') hideQR();
+});
+
 refresh();
-</script></body></html>
+</script>
+<div id=qrModal style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);align-items:center;justify-content:center;padding:20px;z-index:9999">
+  <div style="background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b id=qrTitle style="font-size:16px"></b>
+      <button class=tiny onclick=hideQR()>Закрыть</button>
+    </div>
+    <div id=qrBox style="background:#fff;padding:16px;border-radius:8px;display:inline-block;min-width:240px;min-height:240px"></div>
+    <p class=mut style="margin-top:12px">Отсканируй камерой или в Telegram</p>
+    <div id=qrErr class="msg err"></div>
+  </div>
+</div>
+</body></html>

@@ -10,8 +10,9 @@ STATE = f"{BASE}/state.json"
 HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
+TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "0.4.0"
+VERSION = "0.6.0"
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -212,6 +213,86 @@ def _authed(self):
     e = SESSIONS.get(t) if t else None
     return bool(e and e > time.time())
 
+
+# ---------- telemt / telegram proxy ----------
+
+def _tg_api(method, path, body=None):
+    import urllib.request, urllib.error
+    url = TELEMT_API + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else {}
+
+def _tg_available():
+    try:
+        _tg_api("GET", "/v1/users")
+        return True
+    except Exception:
+        return False
+
+def _tg_status():
+    try:
+        d = _tg_api("GET", "/v1/users")
+    except Exception:
+        return {"installed": False, "users": []}
+    users = []
+    for u in d.get("data", []):
+        links = (u.get("links") or {}).get("tls") or []
+        # Первая ссылка обычно IPv4 — предпочтём её
+        link = ""
+        for l in links:
+            if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
+                link = l; break
+        if not link and links:
+            link = links[0]
+        users.append({
+            "username": u.get("username", ""),
+            "enabled": bool(u.get("enabled")),
+            "link": link,
+            "connections": u.get("current_connections", 0),
+            "total_octets": u.get("total_octets", 0),
+        })
+    return {"installed": True, "users": users}
+
+def _tg_add(username):
+    name = (username or "").strip().replace(" ", "_")
+    if not name:
+        raise RuntimeError("имя пустое")
+    if not re.match(r"^[a-zA-Z0-9_.-]{1,32}$", name):
+        raise RuntimeError("только латиница, цифры, _ . - (до 32 символов)")
+    d = _tg_api("POST", "/v1/users", {"username": name})
+    secret = d.get("secret", "")
+    links = ((d.get("data") or {}).get("user") or {}).get("links", {})
+    tls = links.get("tls") or []
+    link = ""
+    for l in tls:
+        if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
+            link = l; break
+    if not link and tls:
+        link = tls[0]
+    return {"username": name, "secret": secret, "link": link}
+
+def _tg_remove(username):
+    if not username:
+        raise RuntimeError("имя пустое")
+    _tg_api("DELETE", "/v1/users/" + urllib.parse.quote(username))
+    return {"ok": True}
+
+def _find_free_port(candidates=(7443, 2443, 8843, 6443, 9443)):
+    import socket
+    for port in candidates:
+        s = socket.socket()
+        try:
+            s.bind(("", port)); s.close(); return port
+        except OSError:
+            s.close()
+    s = socket.socket(); s.bind(("", 0)); port = s.getsockname()[1]; s.close()
+    return port
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -264,6 +345,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
+        if p == "/api/tg/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _tg_status())
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
@@ -382,6 +466,22 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
+            # ---- telegram proxy ----
+            if p == "/api/tg/user/add":
+                b = self._body()
+                try:
+                    res = _tg_add(b.get("name", ""))
+                    return self._send(200, {"ok": True, "user": res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/user/remove":
+                b = self._body()
+                try:
+                    _tg_remove(b.get("username", ""))
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+
 
             return self._send(404, {"error": "not found"})
         except Exception as e:
