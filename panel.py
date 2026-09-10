@@ -9,7 +9,7 @@ HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 REPO = "GurovNA/Veil"
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 SESSIONS = {}
 
 def _load(p, d=None):
@@ -92,9 +92,13 @@ def _gh_latest():
         return json.load(r)
 
 def _dl(url, dest):
-    req = urllib.request.Request(url, headers=_gh_headers())
+    h = _gh_headers()
+    h["Accept"] = "application/octet-stream"
+    print("[update] download " + url, flush=True)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=90) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
+    print("[update] downloaded " + str(os.path.getsize(dest)) + " bytes", flush=True)
 
 def _sha256_file(p):
     h = hashlib.sha256()
@@ -120,7 +124,7 @@ def _install_update():
         raise RuntimeError("в релизе нет tag_name")
     if tag == VERSION:
         raise RuntimeError("уже последняя версия " + VERSION)
-    assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+    assets = {a["name"]: a["url"] for a in rel.get("assets", [])}
     for need in ("veil.tar.gz", "veil.tar.gz.sha256"):
         if need not in assets:
             raise RuntimeError("в релизе нет " + need)
