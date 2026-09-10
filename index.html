@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang=ru><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>VPN Panel</title>
+<style>
+:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;justify-content:center;padding:24px}
+.wrap{width:100%;max-width:520px}
+.card{background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;margin-bottom:16px}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:16px;margin:0 0 12px}
+.mut{color:var(--mut);font-size:13px}
+input,button{width:100%;padding:10px;margin:6px 0;border-radius:8px;font-size:15px;box-sizing:border-box}
+input{background:#0d1117;color:var(--fg);border:1px solid var(--br)}
+button{background:var(--acc);color:#fff;border:0;cursor:pointer;font-weight:600}
+button.sec{background:#21262d;color:var(--fg);border:1px solid var(--br)}
+button.danger{background:#8b1a1a;color:#fff;border:0}
+button:disabled{opacity:.5;cursor:not-allowed}
+.link{display:flex;gap:8px;align-items:flex-start;margin-top:12px}
+.link code{flex:1;background:#0d1117;border:1px solid var(--br);border-radius:8px;padding:10px;font-size:12px;word-break:break-all}
+.link button{width:auto;padding:10px 14px;margin:0}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.on{background:var(--ok)}.off{background:var(--err)}
+.msg{margin-top:10px;font-size:13px}
+.err{color:var(--err)}.ok{color:var(--ok)}
+.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+a{color:var(--acc)}
+.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border:1px solid var(--br);border-radius:10px;padding:4px}
+.tabs button{background:transparent;color:var(--mut);border:0;padding:10px;margin:0;font-weight:600;border-radius:6px;width:auto;flex:1}
+.tabs button.active{background:var(--acc);color:#fff}
+.tab-pane{display:none}.tab-pane.active{display:block}
+</style></head><body><div class=wrap>
+
+<div class=card id=loginCard>
+  <h1>Вход в панель</h1>
+  <p class=mut>Логин и пароль выданы при установке</p>
+  <input id=l placeholder=логин autocomplete=username>
+  <input id=p type=password placeholder=пароль autocomplete=current-password>
+  <button onclick=doLogin()>Войти</button>
+  <div class="msg err" id=loginMsg></div>
+</div>
+
+<div id=panel style=display:none>
+  <nav class=tabs>
+    <button data-tab=vpn class=active>VPN</button>
+    <button data-tab=settings>Настройки</button>
+    <button data-tab=security>Безопасность</button>
+  </nav>
+
+  <div id=tab-vpn class="tab-pane active"><div class=card>
+    <div class=row>
+      <h1>VPN Panel</h1>
+      <span class=mut id=ver></span>
+    </div>
+    <p class=mut><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
+    <button id=vpnBtn onclick=doVPN()>Хочу VPN</button>
+    <div id=linkBox style=display:none>
+      <div class=link>
+        <code id=linkVal></code>
+        <button class=sec onclick=copyLink()>Копировать</button>
+      </div>
+      <p class=mut>Импортируй в Happ, Shadowrocket, v2rayNG, Hiddify, Streisand</p>
+    </div>
+    <div class=msg id=vpnMsg></div>
+  </div></div>
+
+  <div id=tab-settings class="tab-pane"><div class=card>
+    <h2>Настройки</h2>
+    <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
+    <button class=sec onclick=checkUpdate()>Проверить обновления</button>
+    <button class="sec danger" style="background:#8b1a1a;color:#fff;border:0" onclick=doLogout()>Выйти из панели</button>
+    <div class=msg id=setMsg></div>
+  </div></div>
+
+  <div id=tab-security class="tab-pane"><div class=card>
+    <h2>Безопасность</h2>
+    <p class=mut>Смена логина и пароля от панели. После сохранения потребуется войти заново.</p>
+    <input id=curPass type=password placeholder="текущий пароль (обязательно)" autocomplete=current-password>
+    <hr style="border:0;border-top:1px solid var(--br);margin:14px 0">
+    <input id=nLogin placeholder="новый логин (пусто — не менять)" autocomplete=off>
+    <input id=nPass type=password placeholder="новый пароль (пусто — не менять)" autocomplete=new-password>
+    <input id=nPass2 type=password placeholder="повтори новый пароль" autocomplete=new-password>
+    <button onclick=doSaveSecurity()>Сохранить</button>
+    <div class=msg id=secMsg></div>
+  </div></div>
+</div>
+
+</div><script>
+const $=id=>document.getElementById(id);
+let curLink='';
+
+async function api(p,o){
+  const r=await fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},o||{}));
+  const d=await r.json().catch(()=>({}));
+  if(r.ok===false) throw new Error(d.error||('HTTP '+r.status));
+  return d;
+}
+
+async function doLogin(){
+  $('loginMsg').textContent='';
+  try{
+    await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value})});
+    await refresh();
+  }catch(e){$('loginMsg').textContent=e.message;}
+}
+
+async function doLogout(){
+  try{await api('/api/logout',{method:'POST'});}catch(e){}
+  location.reload();
+}
+
+function applyState(s){
+  $('ver').textContent='v'+s.version;
+  $('stDot').className='dot '+(s.running?'on':'off');
+  $('stTxt').textContent=s.running?'Xray работает':'Xray остановлен';
+  if(s.login)$('curLogin').textContent=s.login;
+  if(s.configured && s.link){
+    curLink=s.link;
+    $('linkBox').style.display='';
+    $('linkVal').textContent=s.link;
+    $('vpnBtn').textContent='Перезапустить VPN';
+  }
+}
+
+async function refresh(){
+  try{
+    const s=await api('/api/state');
+    $('loginCard').style.display='none';
+    $('panel').style.display='';
+    applyState(s);
+  }catch(e){
+    if(/unauthorized/i.test(e.message)){
+      $('loginCard').style.display='';
+      $('panel').style.display='none';
+    }
+  }
+}
+
+async function doVPN(){
+  const b=$('vpnBtn');b.disabled=true;
+  $('vpnMsg').textContent='Настраиваю...';$('vpnMsg').className='msg';
+  try{
+    const r=await api('/api/vpn',{method:'POST'});
+    curLink=r.link;
+    $('linkVal').textContent=r.link;
+    $('linkBox').style.display='';
+    $('vpnMsg').textContent='Готово, порт '+r.port;$('vpnMsg').className='msg ok';
+    $('vpnBtn').textContent='Перезапустить VPN';
+    await refresh();
+  }catch(e){
+    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
+  }finally{b.disabled=false;}
+}
+
+function copyLink(){
+  const done=()=>{$('vpnMsg').textContent='Скопировано';$('vpnMsg').className='msg ok';};
+  const fail=()=>{$('vpnMsg').textContent='Не удалось — выдели текст вручную';$('vpnMsg').className='msg err';};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(curLink).then(done).catch(fail);
+  }else{
+    const t=document.createElement('textarea');t.value=curLink;document.body.appendChild(t);
+    t.select();try{document.execCommand('copy');done();}catch(e){fail();}
+    document.body.removeChild(t);
+  }
+}
+
+async function checkUpdate(){
+  $('setMsg').textContent='Проверяю...';$('setMsg').className='msg';
+  try{
+    const u=await api('/api/update');
+    if(u.update_available){
+      $('setMsg').innerHTML='Доступна '+u.latest+' — <a href="'+u.url+'" target=_blank>скачать</a>';
+      $('setMsg').className='msg';
+    }else{
+      $('setMsg').textContent='Последняя версия ('+u.current+')';$('setMsg').className='msg ok';
+    }
+  }catch(e){
+    $('setMsg').textContent=e.message;$('setMsg').className='msg err';
+  }
+}
+
+async function doSaveSecurity(){
+  $('secMsg').textContent='';$('secMsg').className='msg';
+  const cur=$('curPass').value;
+  const nl=$('nLogin').value.trim();
+  const np=$('nPass').value;
+  const np2=$('nPass2').value;
+  if(!cur){$('secMsg').textContent='Введи текущий пароль';$('secMsg').className='msg err';return;}
+  if(!nl && !np){$('secMsg').textContent='Нечего менять — заполни логин или пароль';$('secMsg').className='msg err';return;}
+  if(np && np!==np2){$('secMsg').textContent='Новые пароли не совпадают';$('secMsg').className='msg err';return;}
+  $('secMsg').textContent='Сохраняю...';
+  try{
+    await api('/api/security',{method:'POST',body:JSON.stringify({
+      current_password:cur,login:nl,password:np})});
+    $('secMsg').textContent='Сохранено. Перезагрузка...';$('secMsg').className='msg ok';
+    setTimeout(()=>location.reload(),1200);
+  }catch(e){
+    $('secMsg').textContent=e.message;$('secMsg').className='msg err';
+  }
+}
+
+document.querySelectorAll('.tabs button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    $('tab-'+b.dataset.tab).classList.add('active');
+  });
+});
+
+refresh();
+</script></body></html>

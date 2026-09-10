@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.bak
+bak/
+config.json
+state.json
+*.tar.gz
+.DS_Store
+.idea/
+.vscode/
