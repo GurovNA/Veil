@@ -4,7 +4,7 @@ import urllib.parse, urllib.request
 
 BASE="/opt/vpnpanel"; CFG=f"{BASE}/config.json"; STATE=f"{BASE}/state.json"
 HTML=f"{BASE}/index.html"; XRAY="/usr/local/etc/xray/config.json"
-VERSION="0.2.0"; SESSIONS={}
+VERSION="0.3.0"; SESSIONS={}
 
 def _load(p, d=None):
     try:
@@ -193,6 +193,6 @@ class S(socketserver.ThreadingTCPServer):
 
 if __name__ == "__main__":
     port = CFG_CACHE.get("panel_port", 8443)
-    print("VPN Panel "+VERSION+" слушает :"+str(port), flush=True)
+    print("Veil "+VERSION+" слушает :"+str(port), flush=True)
     with S(("0.0.0.0", port), H) as srv:
         srv.serve_forever()
