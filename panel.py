@@ -12,7 +12,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -293,6 +293,35 @@ def _find_free_port(candidates=(7443, 2443, 8843, 6443, 9443)):
     s = socket.socket(); s.bind(("", 0)); port = s.getsockname()[1]; s.close()
     return port
 
+
+# ---------- veil-zapret2 fix ----------
+
+import subprocess as _sp
+
+def _fix_status():
+    try:
+        r = _sp.run(["systemctl", "is-active", "veil-zapret2"],
+                    capture_output=True, text=True, timeout=5)
+        active = r.stdout.strip() == "active"
+    except Exception:
+        active = False
+    installed = __import__("os").path.exists("/opt/veil-zapret2/bin/nfqws2")
+    return {"installed": installed, "active": active}
+
+def _fix_enable():
+    # Если не установлен — отдаём ошибку с подсказкой
+    import os
+    if not os.path.exists("/usr/local/sbin/veil-zapret2-start.sh"):
+        raise RuntimeError("veil-zapret2 не установлен на этом сервере")
+    _sp.run(["systemctl", "enable", "--now", "veil-zapret2"],
+            capture_output=True, text=True, timeout=15, check=True)
+    return _fix_status()
+
+def _fix_disable():
+    _sp.run(["systemctl", "disable", "--now", "veil-zapret2"],
+            capture_output=True, text=True, timeout=15)
+    return _fix_status()
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -345,6 +374,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
+        if p == "/api/fix/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _fix_status())
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
@@ -466,6 +498,20 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
+            # ---- veil-zapret2 fix ----
+            if p == "/api/fix/enable":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                try:
+                    return self._send(200, _fix_enable())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/fix/disable":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                try:
+                    return self._send(200, _fix_disable())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+
             # ---- telegram proxy ----
             if p == "/api/tg/user/add":
                 b = self._body()

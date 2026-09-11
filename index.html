@@ -83,6 +83,10 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
     <div id=tgBlock class=hidden style="margin-top:20px;border-top:1px solid var(--br);padding-top:16px">
       <div class=row><h2 style="margin:0">Telegram прокси</h2><span class=mut id=tgStatus></span></div>
       <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+      <div class="row" style="margin:10px 0;gap:8px">
+        <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
+        <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
+      </div>
       <div class=clients id=tgList></div>
       <button class=sec style="margin-top:12px" onclick=showTgAdd()>+ Добавить пользователя Tg</button>
       <div id=tgAddBox class="dialog hidden">
@@ -207,6 +211,7 @@ async function refresh(){
     applyState(s);
     await loadClients();
     await loadTg();
+    await loadFix();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -403,6 +408,47 @@ async function doTgDelete(u){
   }catch(e){
     document.getElementById('tgMsg').textContent = e.message;
     document.getElementById('tgMsg').className = 'msg err';
+  }
+}
+
+let fixActive = false;
+
+async function loadFix(){
+  try{
+    const d = await api('/api/fix/status');
+    fixActive = !!d.active;
+    const el = document.getElementById('fixStatus');
+    const btn = document.getElementById('fixBtn');
+    if (!d.installed){
+      el.textContent = 'не установлен';
+      el.style.color = 'var(--mut)';
+      btn.textContent = 'Fix не собран';
+      btn.disabled = true;
+      return;
+    }
+    el.textContent = d.active ? 'активен' : 'не активен';
+    el.style.color = d.active ? 'var(--ok)' : 'var(--err)';
+    btn.textContent = d.active ? 'Отключить fix' : 'Включить fix';
+    btn.disabled = false;
+  }catch(e){ /* ignore */ }
+}
+
+async function toggleFix(){
+  const btn = document.getElementById('fixBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = fixActive ? 'Отключаю...' : 'Включаю...';
+  try{
+    const url = fixActive ? '/api/fix/disable' : '/api/fix/enable';
+    await api(url, {method:'POST'});
+    await loadFix();
+    document.getElementById('tgMsg').textContent = fixActive ? 'Fix включён' : 'Fix отключён';
+    document.getElementById('tgMsg').className = 'msg ok';
+  }catch(e){
+    document.getElementById('tgMsg').textContent = e.message;
+    document.getElementById('tgMsg').className = 'msg err';
+    btn.textContent = old;
+    btn.disabled = false;
   }
 }
 
