@@ -14,7 +14,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.2.0"
+VERSION = "1.2.2"
 SESSIONS = {}
 
 # ---------- helpers ----------
