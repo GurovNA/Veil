@@ -14,30 +14,40 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.4.1"
+VERSION = "1.5.0"
+_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
+_GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
+                 "trojan": "Trojan", "ss": "Shadowsocks"}
 PROTOCOLS = [
-    {"id": "reality",        "label": "VLESS + Reality",                        "net": "tcp",  "tls": False},
-    {"id": "vmess-ws",       "label": "VMess + WebSocket",                      "net": "ws",   "tls": False},
-    {"id": "vless-ws",       "label": "VLESS + WebSocket",                      "net": "ws",   "tls": False},
-    {"id": "trojan-ws",      "label": "Trojan + WebSocket",                     "net": "ws",   "tls": False},
-    {"id": "vless-ws-tls",   "label": "VLESS + WebSocket + TLS (self-signed)",  "net": "ws",   "tls": True},
-    {"id": "vmess-ws-tls",   "label": "VMess + WebSocket + TLS (self-signed)",  "net": "ws",   "tls": True},
-    {"id": "trojan-ws-tls",  "label": "Trojan + WebSocket + TLS (self-signed)", "net": "ws",   "tls": True},
-    {"id": "vless-tcp-tls",  "label": "VLESS + TCP + TLS (self-signed)",        "net": "tcp",  "tls": True},
-    {"id": "vmess-tcp-tls",  "label": "VMess + TCP + TLS (self-signed)",        "net": "tcp",  "tls": True},
-    {"id": "trojan-tcp-tls", "label": "Trojan + TCP + TLS (self-signed)",       "net": "tcp",  "tls": True},
-    {"id": "vless-grpc-tls", "label": "VLESS + gRPC + TLS (self-signed)",       "net": "grpc", "tls": True},
-    {"id": "vmess-grpc-tls", "label": "VMess + gRPC + TLS (self-signed)",       "net": "grpc", "tls": True},
-    {"id": "trojan-grpc-tls", "label": "Trojan + gRPC + TLS (self-signed)",     "net": "grpc", "tls": True},
-    {"id": "shadowsocks",    "label": "Shadowsocks AEAD (aes-256-gcm)",         "net": "tcp",  "tls": False},
+    {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "net": "tcp",       "tls": False},
+    {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "net": "xhttp",     "tls": False},
+    {"id": "vless-ws",            "label": "VLESS + WebSocket",                       "group": "vless",   "net": "ws",       "tls": False},
+    {"id": "vless-ws-tls",        "label": "VLESS + WebSocket + TLS (self-signed)",   "group": "vless",   "net": "ws",       "tls": True},
+    {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS (self-signed)",         "group": "vless",   "net": "tcp",      "tls": True},
+    {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS (self-signed)",        "group": "vless",   "net": "grpc",     "tls": True},
+    {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS (self-signed)",       "group": "vless",   "net": "xhttp",    "tls": True},
+    {"id": "vless-splithttp-tls", "label": "VLESS + SplitHTTP + TLS (self-signed)",   "group": "vless",   "net": "splithttp", "tls": True},
+    {"id": "vmess-ws",            "label": "VMess + WebSocket",                       "group": "vmess",   "net": "ws",       "tls": False},
+    {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS (self-signed)",   "group": "vmess",   "net": "ws",       "tls": True},
+    {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS (self-signed)",         "group": "vmess",   "net": "tcp",      "tls": True},
+    {"id": "vmess-grpc-tls",      "label": "VMess + gRPC + TLS (self-signed)",        "group": "vmess",   "net": "grpc",     "tls": True},
+    {"id": "trojan-ws",           "label": "Trojan + WebSocket",                      "group": "trojan",  "net": "ws",       "tls": False},
+    {"id": "trojan-ws-tls",       "label": "Trojan + WebSocket + TLS (self-signed)",  "group": "trojan",  "net": "ws",       "tls": True},
+    {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS (self-signed)",        "group": "trojan",  "net": "tcp",      "tls": True},
+    {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS (self-signed)",       "group": "trojan",  "net": "grpc",     "tls": True},
+    {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
 ]
+for _p in PROTOCOLS:
+    _p["group_label"] = _GROUP_LABELS.get(_p["group"], _p["group"])
 _VALID_PROTOCOLS = tuple(p["id"] for p in PROTOCOLS)
 _PROTO_MAP = {p["id"]: p for p in PROTOCOLS}
 _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
-          "trojan-grpc-tls": 21443, "shadowsocks": 22443}
+          "trojan-grpc-tls": 21443, "shadowsocks": 22443,
+          "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
+          "vless-splithttp-tls": 25443}
 CERT_DIR = f"{BASE}/certs"
 
 def _proto_meta(proto):
@@ -156,7 +166,7 @@ def _gen_selfsigned(proto):
 def _new_inbound(proto):
     if proto not in _VALID_PROTOCOLS: proto = "reality"
     inb = {"port": _find_free_port(_PORTS.get(proto)), "clients": []}
-    if proto == "reality":
+    if proto in ("reality", "vless-xhttp-reality"):
         priv, pub = _gen_keys()
         inb.update({"private_key": priv, "public_key": pub,
                     "sid": secrets.token_hex(4), "sni": "www.samsung.com",
@@ -178,20 +188,28 @@ def _alloc_inbound(st, proto):
 
 def _stream_settings(proto, inb):
     meta = _proto_meta(proto)
+    def _reality():
+        return {"show": False, "dest": inb["dest"], "xver": 0,
+                "serverNames": [inb["sni"]], "privateKey": inb["private_key"],
+                "shortIds": [inb["sid"]]}
     if proto == "reality":
-        return {"network": "tcp", "security": "reality", "realitySettings": {
-            "show": False, "dest": inb["dest"], "xver": 0,
-            "serverNames": [inb["sni"]], "privateKey": inb["private_key"],
-            "shortIds": [inb["sid"]]}}
+        return {"network": "tcp", "security": "reality", "realitySettings": _reality()}
     ss = {"network": meta["net"],
           "security": "tls" if meta["tls"] else "none"}
+    if proto == "vless-xhttp-reality":
+        ss["security"] = "reality"
+        ss["realitySettings"] = _reality()
     if meta["net"] == "ws":
         ss["wsSettings"] = {"path": "/veil", "headers": {}}
     elif meta["net"] == "grpc":
         ss["grpcSettings"] = {"serviceName": "veil"}
+    elif meta["net"] == "xhttp":
+        ss["xhttpSettings"] = {"path": "/veil", "mode": "auto"}
+    elif meta["net"] == "splithttp":
+        ss["splithttpSettings"] = {"path": "/veil", "mode": "auto"}
     if meta["tls"]:
         ss["tlsSettings"] = {
-            "alpn": ["h2", "http/1.1"] if meta["net"] == "grpc" else ["http/1.1"],
+            "alpn": ["h2", "http/1.1"] if meta["net"] in ("grpc", "xhttp", "splithttp") else ["http/1.1"],
             "certificates": [{"certificateFile": inb.get("cert"), "keyFile": inb.get("key")}]}
     return ss
 
@@ -266,13 +284,21 @@ def _link(inb, host, client, proto):
         qparts["path"] = "/veil"
     elif meta["net"] == "grpc":
         qparts["serviceName"] = "veil"; qparts["mode"] = "gun"
-    if proto == "reality":
+    elif meta["net"] in ("xhttp", "splithttp"):
+        qparts["path"] = "/veil"
+    if proto in ("reality", "vless-xhttp-reality"):
         qparts.update({"security": "reality", "pbk": inb["public_key"],
                        "fp": "chrome", "sni": inb["sni"], "sid": inb["sid"],
-                       "spx": "/", "flow": "xtls-rprx-vision"})
+                       "spx": "/"})
+        if proto == "reality":
+            qparts["flow"] = "xtls-rprx-vision"
+        else:
+            qparts["host"] = inb["sni"]
     elif meta["tls"]:
         qparts.update({"security": "tls", "sni": host, "fp": "chrome",
                        "allowInsecure": "1"})
+        if meta["net"] in ("xhttp", "splithttp"):
+            qparts["alpn"] = "h2,http/1.1"
     else:
         qparts["security"] = "none"
     q = urllib.parse.urlencode(qparts)
@@ -609,7 +635,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE) or {}
             return self._send(200, {"current": _proto_of(st),
-                                    "configured": bool(st and st.get("clients")),
+                                    "configured": _client_count(st) > 0,
                                     "protocols": PROTOCOLS})
         if p == "/api/clients":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})

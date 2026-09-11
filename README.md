@@ -3,7 +3,7 @@
 VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 Установка одной строкой на Ubuntu 22.04 / 24.04 / 26.04.
 
-Актуальная версия: **v1.4.1**
+Актуальная версия: **v1.5.0**
 
 ## Установка
 
@@ -24,7 +24,8 @@ VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 ## Что умеет панель
 
 - VPN: включить/выключить Xray, ссылка и QR для v2rayNG, Streisand, Hiddify
-- 14 протоколов: VLESS + Reality, VMess/VLESS/Trojan × WebSocket, и 9 вариантов с автоматическим самоподписным TLS (TCP / WS / gRPC) + Shadowsocks AEAD — домен не нужен
+- 17 протоколов по группам (Reality / VLESS / VMess / Trojan / Shadowsocks): VLESS + Reality и XHTTP + Reality, VLESS на WS/TCP/gRPC/XHTTP/SplitHTTP (с TLS), VMess и Trojan на WS/TCP/gRPC (с TLS), Shadowsocks AEAD
+- TLS-протоколы получают автоматический самоподписной сертификат, XHTTP поддерживает HTTP/2 / HTTP/3 streaming — домен не нужен
 - Протоколы не конфликтуют: каждый живёт на своём порту, старые ссылки не ломаются; новая ссылка всегда добавляется отдельным клиентом
 - Telegram: MTProto-ссылка и QR, кнопка Отключить fix (zapret2)
 - Несколько клиентов: добавлять, переименовывать, удалять
