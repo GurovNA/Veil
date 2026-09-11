@@ -24,6 +24,10 @@ h2{font-size:16px;margin:0 0 12px;font-weight:650;letter-spacing:.2px}
 input,button{width:100%;padding:11px 14px;margin:7px 0;border-radius:12px;font-size:15px;box-sizing:border-box;font-family:inherit}
 input{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);transition:border-color .18s,box-shadow .18s}
 input:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+select{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);border-radius:12px;padding:9px 12px;font-size:14px;font-family:inherit;max-width:100%;cursor:pointer;transition:border-color .18s,box-shadow .18s}
+select:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+.proto-row{padding:10px 12px;border:1px solid color-mix(in srgb,var(--br) 85%,transparent);border-radius:14px;background:color-mix(in srgb,var(--bg) 45%,transparent);margin-bottom:8px;flex-wrap:wrap;gap:8px}
+.proto-ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 button{background:var(--grad);color:#fff;border:0;cursor:pointer;font-weight:600;letter-spacing:.2px;transition:transform .12s,box-shadow .2s,filter .2s,background .2s}
 button:hover{transform:translateY(-1px);box-shadow:0 8px 22px color-mix(in srgb,var(--acc) 38%,transparent)}
 button:active{transform:translateY(0)}
@@ -66,7 +70,20 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 .dialog .row{margin-bottom:6px}
 #qrModal{background:rgba(0,0,0,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease}
 #qrBox{overflow:hidden;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-@media(max-width:520px){body{padding:20px 12px 48px}.card{padding:18px}}
+@media(max-width:640px){
+  body{padding:16px 12px 48px}
+  h1{font-size:20px}
+  .card{padding:18px;border-radius:16px}
+  .tabs{overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tabs button{flex:0 0 auto;font-size:12.5px;padding:9px 12px;white-space:nowrap}
+  .proto-row{flex-direction:column;align-items:stretch}
+  .proto-ctl{flex-wrap:wrap;width:100%}
+  .proto-ctl select{flex:1 1 auto}
+  .client .top{flex-wrap:wrap}
+  .client .actions{width:100%;justify-content:flex-end}
+  .status-line{flex-wrap:wrap}
+}
 @supports (color: color-mix(in srgb, red, transparent)){h1.brand{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}}
 @supports not (color: color-mix(in srgb, red, transparent)){body{background:var(--bg)}.card,.tabs,.dialog{background:var(--card)}button{background:var(--acc)}button.danger{background:#dc3545;}button:hover{box-shadow:none}}
 </style></head><body><div class=wrap>
@@ -92,8 +109,17 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <p class="subtitle">VPN · Telegram · анти-DPI</p>
     <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
 
+    <div class="row proto-row">
+      <span class=mut>Протокол</span>
+      <span class=proto-ctl>
+        <select id=protoSel aria-label=Протокол onchange=setupProtoBtn()><option>…</option></select>
+        <button class="tiny sec hidden" id=protoApply onclick=doVPN()>Переоформить</button>
+      </span>
+    </div>
+    <p class=mut style="margin:0 0 10px;font-size:12px">Домен не нужен: Reality маскируется под сайт, WS-протоколы работают по IP.</p>
+
     <div id=emptyState>
-      <p class=mut>VPN ещё не настроен. Нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первый клиент.</p>
+      <p class=mut>VPN ещё не настроен. Выбери протокол и нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первого клиента.</p>
       <button id=vpnBtn onclick=doVPN()>Хочу VPN</button>
     </div>
 
@@ -272,12 +298,37 @@ async function loadClients(){
   }
 }
 
+let protoCur=null;
+
+async function loadProtocols(){
+  try{
+    const d=await api('/api/vpn/protocols');
+    protoCur=d.current||'reality';
+    const sel=$('protoSel');
+    if(sel.options[0].value==='…'){
+      sel.innerHTML='';
+      (d.protocols||[]).forEach(p=>{
+        const o=document.createElement('option');o.value=p.id;o.textContent=p.label;sel.appendChild(o);
+      });
+    }
+    sel.value=protoCur;
+    setupProtoBtn();
+  }catch(e){}
+}
+
+function setupProtoBtn(){
+  const sel=$('protoSel');const btn=$('protoApply');
+  if(!sel||!btn) return;
+  btn.classList.toggle('hidden',!(clients.length&&sel.value!==protoCur));
+}
+
 async function refresh(){
   try{
     const s=await api('/api/state');
     $('loginCard').classList.add('hidden');
     $('panel').style.display='';
     applyState(s);
+    await loadProtocols();
     await loadClients();
     await loadTg();
     await loadFix();
@@ -291,15 +342,16 @@ async function refresh(){
 }
 
 async function doVPN(){
-  const b=$('vpnBtn');b.disabled=true;
+  const btns=[$('vpnBtn'),$('protoApply')];
+  btns.forEach(x=>{if(x&&!x.disabled)x.disabled=true;});
   $('vpnMsg').textContent='Настраиваю...';$('vpnMsg').className='msg';
   try{
-    await api('/api/vpn',{method:'POST'});
+    await api('/api/vpn',{method:'POST',body:JSON.stringify({proto:$('protoSel').value})});
     $('vpnMsg').textContent='Готово';$('vpnMsg').className='msg ok';
     await refresh();
   }catch(e){
     $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
-  }finally{b.disabled=false;}
+  }finally{btns.forEach(x=>{if(x)x.disabled=false;});}
 }
 
 function showAdd(){ $('addBox').classList.remove('hidden'); $('newName').focus(); }

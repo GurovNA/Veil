@@ -14,7 +14,12 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.2.2"
+VERSION = "1.3.0"
+PROTOCOLS = [
+    {"id": "reality", "label": "VLESS + Reality"},
+    {"id": "vmess-ws", "label": "VMess + WebSocket"},
+    {"id": "vless-ws", "label": "VLESS + WebSocket"},
+]
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -69,17 +74,57 @@ def _migrate_state(st):
         st["clients"].append({"uuid": old, "name": "Основной", "created": 0})
     return True
 
+def _proto_of(st):
+    p = (st or {}).get("proto", "reality")
+    return p if p in ("reality", "vmess-ws", "vless-ws") else "reality"
+
+def _new_state(proto="reality"):
+    st = {"proto": proto, "clients": []}
+    if proto == "reality":
+        priv, pub = _gen_keys()
+        st.update({"port": _free_port(443), "private_key": priv, "public_key": pub,
+                   "sid": secrets.token_hex(4), "sni": "www.samsung.com",
+                   "dest": "www.samsung.com:443"})
+    else:
+        st["port"] = _find_free_port((10443, 11443, 12443, 24443, 8443))
+    return st
+
+def _ensure_reality(st):
+    if st.get("proto") != "reality":
+        return
+    if not st.get("private_key"):
+        priv, pub = _gen_keys()
+        st["private_key"] = priv; st["public_key"] = pub
+    st.setdefault("sid", secrets.token_hex(4))
+    st.setdefault("sni", "www.samsung.com")
+    st.setdefault("dest", "www.samsung.com:443")
+    st.setdefault("port", _free_port(443))
+
 def _write_xray(st):
-    clients = [{"id": c["uuid"], "flow": "xtls-rprx-vision"} for c in st.get("clients", [])]
+    proto = _proto_of(st)
+    clients = st.get("clients", [])
+    if proto == "reality":
+        in_clients = [{"id": c["uuid"], "flow": "xtls-rprx-vision"} for c in clients]
+        stream = {"network": "tcp", "security": "reality", "realitySettings": {
+            "show": False, "dest": st["dest"], "xver": 0,
+            "serverNames": [st["sni"]], "privateKey": st["private_key"],
+            "shortIds": [st["sid"]]}}
+        protocol = "vless"
+        settings = {"clients": in_clients, "decryption": "none"}
+    else:
+        stream = {"network": "ws", "security": "none",
+                  "wsSettings": {"path": "/veil", "headers": {}}}
+        if proto == "vmess-ws":
+            protocol = "vmess"
+            settings = {"clients": [{"id": c["uuid"], "alterId": 0} for c in clients]}
+        else:
+            protocol = "vless"
+            settings = {"clients": [{"id": c["uuid"]} for c in clients], "decryption": "none"}
     cfg = {
         "log": {"loglevel": "warning"},
         "inbounds": [{
-            "listen": "0.0.0.0", "port": st["port"], "protocol": "vless",
-            "settings": {"clients": clients, "decryption": "none"},
-            "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
-                "show": False, "dest": st["dest"], "xver": 0,
-                "serverNames": [st["sni"]], "privateKey": st["private_key"],
-                "shortIds": [st["sid"]]}},
+            "listen": "0.0.0.0", "port": st["port"], "protocol": protocol,
+            "settings": settings, "streamSettings": stream,
             "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
         }],
         "outbounds": [{"protocol": "freedom"}]
@@ -94,12 +139,22 @@ def _restart_xray():
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
 
 def _link(st, host, client):
+    proto = _proto_of(st)
+    name = client.get("name") or "Veil"
+    if proto == "vmess-ws":
+        import base64
+        p = {"v": "2", "ps": name, "add": host, "port": st["port"],
+             "id": client["uuid"], "aid": "0", "scy": "auto", "net": "ws",
+             "type": "none", "host": "", "path": "/veil", "tls": ""}
+        return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
+    if proto == "vless-ws":
+        q = urllib.parse.urlencode({"type": "ws", "path": "/veil", "encryption": "none"})
+        return "vless://{}@{}:{}?{}#{}".format(client["uuid"], host, st["port"], q, urllib.parse.quote(name))
     q = urllib.parse.urlencode({
         "type": "tcp", "security": "reality", "pbk": st["public_key"],
         "fp": "firefox", "sni": st["sni"], "sid": st["sid"],
         "spx": "/", "flow": "xtls-rprx-vision"})
-    name = urllib.parse.quote(client.get("name") or "Veil")
-    return f"vless://{client['uuid']}@{host}:{st['port']}?{q}#{name}"
+    return f"vless://{client['uuid']}@{host}:{st['port']}?{q}#{urllib.parse.quote(name)}"
 
 def _new_client(name):
     return {"uuid": str(uuidlib.uuid4()),
@@ -406,9 +461,16 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
-                   "configured": bool(st and st.get("clients"))}
+                   "configured": bool(st and st.get("clients")),
+                   "proto": _proto_of(st)}
             if st: out["port"] = st["port"]
             return self._send(200, out)
+        if p == "/api/vpn/protocols":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            st = _load(STATE) or {}
+            return self._send(200, {"current": _proto_of(st),
+                                    "configured": bool(st and st.get("clients")),
+                                    "protocols": PROTOCOLS})
         if p == "/api/clients":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
@@ -479,16 +541,19 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
 
-            # ---- vpn init ----
+            # ---- vpn init / protocol switch ----
             if p == "/api/vpn":
+                b = self._body()
+                want = b.get("proto")
+                if want and want not in ("reality", "vmess-ws", "vless-ws"):
+                    return self._send(400, {"error": "неизвестный протокол"})
                 st = _load(STATE)
                 if st is None:
-                    port = _free_port(443); priv, pub = _gen_keys()
-                    st = {"port": port, "private_key": priv, "public_key": pub,
-                          "sid": secrets.token_hex(4),
-                          "sni": "www.samsung.com", "dest": "www.samsung.com:443",
-                          "clients": []}
-                _migrate_state(st)
+                    st = _new_state(want or "reality")
+                else:
+                    _migrate_state(st)
+                    st["proto"] = want if want else st.get("proto", "reality")
+                _ensure_reality(st)
                 if not st["clients"]:
                     st["clients"].append(_new_client("Основной"))
                 _write_xray(st); _save(STATE, st)
@@ -496,7 +561,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = self.headers.get("Host", "").split(":")[0]
                 first = st["clients"][0]
                 return self._send(200, {"ok": True, "link": _link(st, host, first),
-                                        "port": st["port"]})
+                                        "port": st["port"], "proto": st["proto"]})
 
             # ---- clients ----
             if p == "/api/clients/add":
@@ -504,12 +569,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 name = (b.get("name") or "").strip() or "Клиент"
                 st = _load(STATE)
                 if st is None:
-                    port = _free_port(443); priv, pub = _gen_keys()
-                    st = {"port": port, "private_key": priv, "public_key": pub,
-                          "sid": secrets.token_hex(4),
-                          "sni": "www.samsung.com", "dest": "www.samsung.com:443",
-                          "clients": []}
+                    st = _new_state("reality")
                 _migrate_state(st)
+                _ensure_reality(st)
                 c = _new_client(name)
                 st["clients"].append(c)
                 _write_xray(st); _save(STATE, st)
