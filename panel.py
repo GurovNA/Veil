@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, time
+import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, time
 import socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime
@@ -14,12 +14,35 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 PROTOCOLS = [
-    {"id": "reality", "label": "VLESS + Reality"},
-    {"id": "vmess-ws", "label": "VMess + WebSocket"},
-    {"id": "vless-ws", "label": "VLESS + WebSocket"},
+    {"id": "reality",        "label": "VLESS + Reality",                        "net": "tcp",  "tls": False},
+    {"id": "vmess-ws",       "label": "VMess + WebSocket",                      "net": "ws",   "tls": False},
+    {"id": "vless-ws",       "label": "VLESS + WebSocket",                      "net": "ws",   "tls": False},
+    {"id": "trojan-ws",      "label": "Trojan + WebSocket",                     "net": "ws",   "tls": False},
+    {"id": "vless-ws-tls",   "label": "VLESS + WebSocket + TLS (self-signed)",  "net": "ws",   "tls": True},
+    {"id": "vmess-ws-tls",   "label": "VMess + WebSocket + TLS (self-signed)",  "net": "ws",   "tls": True},
+    {"id": "trojan-ws-tls",  "label": "Trojan + WebSocket + TLS (self-signed)", "net": "ws",   "tls": True},
+    {"id": "vless-tcp-tls",  "label": "VLESS + TCP + TLS (self-signed)",        "net": "tcp",  "tls": True},
+    {"id": "vmess-tcp-tls",  "label": "VMess + TCP + TLS (self-signed)",        "net": "tcp",  "tls": True},
+    {"id": "trojan-tcp-tls", "label": "Trojan + TCP + TLS (self-signed)",       "net": "tcp",  "tls": True},
+    {"id": "vless-grpc-tls", "label": "VLESS + gRPC + TLS (self-signed)",       "net": "grpc", "tls": True},
+    {"id": "vmess-grpc-tls", "label": "VMess + gRPC + TLS (self-signed)",       "net": "grpc", "tls": True},
+    {"id": "trojan-grpc-tls", "label": "Trojan + gRPC + TLS (self-signed)",     "net": "grpc", "tls": True},
+    {"id": "shadowsocks",    "label": "Shadowsocks AEAD (aes-256-gcm)",         "net": "tcp",  "tls": False},
 ]
+_VALID_PROTOCOLS = tuple(p["id"] for p in PROTOCOLS)
+_PROTO_MAP = {p["id"]: p for p in PROTOCOLS}
+_PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
+          "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
+          "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
+          "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
+          "trojan-grpc-tls": 21443, "shadowsocks": 22443}
+CERT_DIR = f"{BASE}/certs"
+
+def _proto_meta(proto):
+    return _PROTO_MAP.get(proto, _PROTO_MAP["reality"])
+
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -65,68 +88,147 @@ def _ver_tuple(v):
 
 # ---------- state / xray ----------
 
+def _client_count(st):
+    if not st: return 0
+    return sum(len(inb.get("clients", [])) for inb in (st.get("inbounds") or {}).values())
+
+def _find_client(st, uuid_):
+    if not st: return None, None, None
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c["uuid"] == uuid_:
+                return proto, inb, c
+    return None, None, None
+
 def _migrate_state(st):
     if st is None: return False
-    if "clients" in st: return False
+    if isinstance(st.get("inbounds"), dict):
+        for k in ("clients", "uuid", "proto", "port", "private_key",
+                  "public_key", "sid", "sni", "dest", "password"):
+            st.pop(k, None)
+        return False
+    clients = st.pop("clients", None) or []
     old = st.pop("uuid", None)
-    st["clients"] = []
-    if old:
-        st["clients"].append({"uuid": old, "name": "Основной", "created": 0})
+    if old and not any(c.get("uuid") == old for c in clients):
+        clients.insert(0, {"uuid": old, "name": "Основной", "created": 0})
+    proto = st.pop("proto", None) or "reality"
+    if proto not in _VALID_PROTOCOLS: proto = "reality"
+    inb = {"port": _find_free_port(_PORTS.get(proto)), "clients": list(clients)}
+    for k in ("port", "private_key", "public_key", "sid", "sni", "dest", "password"):
+        v = st.pop(k, None)
+        if v is None: continue
+        if k == "port": inb["port"] = v
+        else: inb[k] = v
+    st["inbounds"] = {proto: inb}
     return True
 
 def _proto_of(st):
-    p = (st or {}).get("proto", "reality")
-    return p if p in ("reality", "vmess-ws", "vless-ws") else "reality"
+    if not st: return "reality"
+    a = st.get("active")
+    if a in _VALID_PROTOCOLS: return a
+    inbs = st.get("inbounds") or {}
+    for p in _PORTS:
+        if p in inbs: return p
+    for p in inbs:
+        return p
+    return "reality"
 
 def _new_state(proto="reality"):
-    st = {"proto": proto, "clients": []}
+    if proto not in _VALID_PROTOCOLS: proto = "reality"
+    return {"active": proto, "inbounds": {}}
+
+def _gen_selfsigned(proto):
+    os.makedirs(CERT_DIR, exist_ok=True)
+    crt = f"{CERT_DIR}/{proto}.crt"
+    key = f"{CERT_DIR}/{proto}.key"
+    if os.path.exists(crt) and os.path.exists(key):
+        return crt, key
+    r = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", key, "-out", crt, "-days", "3650",
+         "-subj", "/CN=Veil", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("openssl: " + (r.stderr or r.stdout))
+    return crt, key
+
+def _new_inbound(proto):
+    if proto not in _VALID_PROTOCOLS: proto = "reality"
+    inb = {"port": _find_free_port(_PORTS.get(proto)), "clients": []}
     if proto == "reality":
         priv, pub = _gen_keys()
-        st.update({"port": _free_port(443), "private_key": priv, "public_key": pub,
-                   "sid": secrets.token_hex(4), "sni": "www.samsung.com",
-                   "dest": "www.samsung.com:443"})
-    else:
-        st["port"] = _find_free_port((10443, 11443, 12443, 24443, 8443))
-    return st
+        inb.update({"private_key": priv, "public_key": pub,
+                    "sid": secrets.token_hex(4), "sni": "www.samsung.com",
+                    "dest": "www.samsung.com:443"})
+    if proto == "shadowsocks":
+        inb["password"] = secrets.token_urlsafe(12)
+    if _proto_meta(proto)["tls"]:
+        inb["cert"], inb["key"] = _gen_selfsigned(proto)
+    return inb
 
-def _ensure_reality(st):
-    if st.get("proto") != "reality":
-        return
-    if not st.get("private_key"):
-        priv, pub = _gen_keys()
-        st["private_key"] = priv; st["public_key"] = pub
-    st.setdefault("sid", secrets.token_hex(4))
-    st.setdefault("sni", "www.samsung.com")
-    st.setdefault("dest", "www.samsung.com:443")
-    st.setdefault("port", _free_port(443))
+def _alloc_inbound(st, proto):
+    inb = _new_inbound(proto)
+    used = set()
+    for ib in (st.get("inbounds") or {}).values():
+        if ib.get("port"): used.add(ib["port"])
+    if inb["port"] in used:
+        inb["port"] = _find_free_port(_PORTS.get(proto), used)
+    return inb
+
+def _stream_settings(proto, inb):
+    meta = _proto_meta(proto)
+    if proto == "reality":
+        return {"network": "tcp", "security": "reality", "realitySettings": {
+            "show": False, "dest": inb["dest"], "xver": 0,
+            "serverNames": [inb["sni"]], "privateKey": inb["private_key"],
+            "shortIds": [inb["sid"]]}}
+    ss = {"network": meta["net"],
+          "security": "tls" if meta["tls"] else "none"}
+    if meta["net"] == "ws":
+        ss["wsSettings"] = {"path": "/veil", "headers": {}}
+    elif meta["net"] == "grpc":
+        ss["grpcSettings"] = {"serviceName": "veil"}
+    if meta["tls"]:
+        ss["tlsSettings"] = {
+            "alpn": ["h2", "http/1.1"] if meta["net"] == "grpc" else ["http/1.1"],
+            "certificates": [{"certificateFile": inb.get("cert"), "keyFile": inb.get("key")}]}
+    return ss
+
+def _inbound(proto, inb):
+    meta = _proto_meta(proto)
+    ib = {"listen": "0.0.0.0", "port": inb["port"],
+          "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}}
+    if proto == "shadowsocks":
+        ib["protocol"] = "shadowsocks"
+        ib["settings"] = {"method": "aes-256-gcm",
+                          "password": inb.get("password") or "", "network": "tcp,udp"}
+        return ib
+    if proto.startswith("trojan"):
+        ib["protocol"] = "trojan"
+        ib["settings"] = {"clients": [
+            {"password": c.get("password") or inb.get("password"), "flow": ""}
+            for c in inb["clients"]], "decryption": "none"}
+    elif proto.startswith("vmess"):
+        ib["protocol"] = "vmess"
+        ib["settings"] = {"clients": [
+            {"id": c["uuid"], "alterId": 0} for c in inb["clients"]]}
+    else:
+        ib["protocol"] = "vless"
+        flow = "xtls-rprx-vision" if proto == "reality" else ""
+        ib["settings"] = {"clients": [
+            {"id": c["uuid"], "flow": flow} for c in inb["clients"]],
+            "decryption": "none"}
+    ib["streamSettings"] = _stream_settings(proto, inb)
+    return ib
 
 def _write_xray(st):
-    proto = _proto_of(st)
-    clients = st.get("clients", [])
-    if proto == "reality":
-        in_clients = [{"id": c["uuid"], "flow": "xtls-rprx-vision"} for c in clients]
-        stream = {"network": "tcp", "security": "reality", "realitySettings": {
-            "show": False, "dest": st["dest"], "xver": 0,
-            "serverNames": [st["sni"]], "privateKey": st["private_key"],
-            "shortIds": [st["sid"]]}}
-        protocol = "vless"
-        settings = {"clients": in_clients, "decryption": "none"}
-    else:
-        stream = {"network": "ws", "security": "none",
-                  "wsSettings": {"path": "/veil", "headers": {}}}
-        if proto == "vmess-ws":
-            protocol = "vmess"
-            settings = {"clients": [{"id": c["uuid"], "alterId": 0} for c in clients]}
-        else:
-            protocol = "vless"
-            settings = {"clients": [{"id": c["uuid"]} for c in clients], "decryption": "none"}
+    inbounds = []
+    for proto, inb in (st.get("inbounds") or {}).items():
+        if inb.get("clients"):
+            inbounds.append(_inbound(proto, inb))
     cfg = {
         "log": {"loglevel": "warning"},
-        "inbounds": [{
-            "listen": "0.0.0.0", "port": st["port"], "protocol": protocol,
-            "settings": settings, "streamSettings": stream,
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}
-        }],
+        "inbounds": inbounds,
         "outbounds": [{"protocol": "freedom"}]
     }
     _save(XRAY, cfg, 0o644)
@@ -138,28 +240,50 @@ def _restart_xray():
         raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
 
-def _link(st, host, client):
-    proto = _proto_of(st)
+def _link(inb, host, client, proto):
+    meta = _proto_meta(proto)
     name = client.get("name") or "Veil"
-    if proto == "vmess-ws":
-        import base64
-        p = {"v": "2", "ps": name, "add": host, "port": st["port"],
-             "id": client["uuid"], "aid": "0", "scy": "auto", "net": "ws",
-             "type": "none", "host": "", "path": "/veil", "tls": ""}
+    if proto == "shadowsocks":
+        cred = "aes-256-gcm:" + (inb.get("password") or "")
+        raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
+        return f"ss://{raw}@{host}:{inb['port']}#{urllib.parse.quote(name)}"
+    if proto.startswith("vmess"):
+        p = {"v": "2", "ps": name, "add": host, "port": inb["port"],
+             "id": client["uuid"], "aid": "0", "scy": "auto",
+             "net": meta["net"], "type": "none", "host": "",
+             "path": "/veil" if meta["net"] == "ws" else "veil",
+             "tls": "tls" if meta["tls"] else ""}
+        if meta["tls"]:
+            p["sni"] = host; p["allowInsecure"] = True; p["fp"] = "chrome"
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
-    if proto == "vless-ws":
-        q = urllib.parse.urlencode({"type": "ws", "path": "/veil", "encryption": "none"})
-        return "vless://{}@{}:{}?{}#{}".format(client["uuid"], host, st["port"], q, urllib.parse.quote(name))
-    q = urllib.parse.urlencode({
-        "type": "tcp", "security": "reality", "pbk": st["public_key"],
-        "fp": "firefox", "sni": st["sni"], "sid": st["sid"],
-        "spx": "/", "flow": "xtls-rprx-vision"})
-    return f"vless://{client['uuid']}@{host}:{st['port']}?{q}#{urllib.parse.quote(name)}"
+    if proto.startswith("trojan"):
+        scheme = "trojan://" + urllib.parse.quote(client.get("password") or inb.get("password") or "") + "@"
+    else:
+        scheme = f"vless://{client['uuid']}@"
+    qparts = {"type": meta["net"]}
+    if meta["net"] == "ws":
+        qparts["path"] = "/veil"
+    elif meta["net"] == "grpc":
+        qparts["serviceName"] = "veil"; qparts["mode"] = "gun"
+    if proto == "reality":
+        qparts.update({"security": "reality", "pbk": inb["public_key"],
+                       "fp": "chrome", "sni": inb["sni"], "sid": inb["sid"],
+                       "spx": "/", "flow": "xtls-rprx-vision"})
+    elif meta["tls"]:
+        qparts.update({"security": "tls", "sni": host, "fp": "chrome",
+                       "allowInsecure": "1"})
+    else:
+        qparts["security"] = "none"
+    q = urllib.parse.urlencode(qparts)
+    return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
 
-def _new_client(name):
-    return {"uuid": str(uuidlib.uuid4()),
-            "name": (name or "").strip() or "Клиент",
-            "created": int(time.time())}
+def _new_client(name, proto=None):
+    c = {"uuid": str(uuidlib.uuid4()),
+         "name": (name or "").strip() or "Клиент",
+         "created": int(time.time())}
+    if proto and proto.startswith("trojan"):
+        c["password"] = secrets.token_urlsafe(12)
+    return c
 
 # ---------- github / update ----------
 
@@ -339,16 +463,31 @@ def _tg_remove(username):
     _tg_api("DELETE", "/v1/users/" + urllib.parse.quote(username))
     return {"ok": True}
 
-def _find_free_port(candidates=(7443, 2443, 8843, 6443, 9443)):
+def _find_free_port(pref=None, avoid=()):
     import socket
-    for port in candidates:
+    avoid = set(avoid or ())
+    if pref is None:
+        prefs = (7443, 2443, 8843, 6443, 9443)
+    elif isinstance(pref, int):
+        prefs = (pref,)
+    else:
+        prefs = tuple(pref) or (7443, 2443, 8843, 6443, 9443)
+    for port in prefs:
+        if port in avoid: continue
         s = socket.socket()
         try:
             s.bind(("", port)); s.close(); return port
         except OSError:
             s.close()
-    s = socket.socket(); s.bind(("", 0)); port = s.getsockname()[1]; s.close()
-    return port
+    for _ in range(200):
+        s = socket.socket()
+        try:
+            s.bind(("", 0)); port = s.getsockname()[1]; s.close()
+        except OSError:
+            s.close(); continue
+        if port not in avoid:
+            return port
+    raise RuntimeError("нет свободного порта")
 
 
 # ---------- veil-zapret2 fix ----------
@@ -395,8 +534,9 @@ def _service_active_since(unit):
 
 def _stats():
     xc = _load(XRAY) or {}
-    ib = (xc.get("inbounds") or [{}])[0]
-    clients_count = len((ib.get("settings") or {}).get("clients") or [])
+    clients_count = 0
+    for ib in (xc.get("inbounds") or []):
+        clients_count += len((ib.get("settings") or {}).get("clients") or [])
 
     disk_usage = None
     try:
@@ -461,9 +601,8 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
-                   "configured": bool(st and st.get("clients")),
+                   "configured": _client_count(st) > 0,
                    "proto": _proto_of(st)}
-            if st: out["port"] = st["port"]
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -477,11 +616,17 @@ class H(http.server.BaseHTTPRequestHandler):
             if not st: return self._send(200, {"clients": [], "configured": False})
             if _migrate_state(st): _save(STATE, st)
             host = self.headers.get("Host", "").split(":")[0]
-            out = [{"uuid": c["uuid"], "name": c["name"],
-                    "link": _link(st, host, c),
-                    "created": c.get("created", 0)} for c in st.get("clients", [])]
-            return self._send(200, {"clients": out, "port": st["port"],
-                                    "configured": bool(out)})
+            out = []
+            for proto, inb in (st.get("inbounds") or {}).items():
+                for c in inb.get("clients", []):
+                    out.append({"uuid": c["uuid"], "name": c["name"],
+                                "link": _link(inb, host, c, proto),
+                                "proto": proto, "port": inb["port"],
+                                "proto_label": _proto_meta(proto)["label"],
+                                "created": c.get("created", 0)})
+            return self._send(200, {"clients": out,
+                                    "configured": bool(out),
+                                    "active": _proto_of(st)})
         if p == "/api/update":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -541,27 +686,29 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
 
-            # ---- vpn init / protocol switch ----
+            # ---- vpn setup / новый клиент (старые ссылки никогда не трогаются) ----
             if p == "/api/vpn":
                 b = self._body()
-                want = b.get("proto")
-                if want and want not in ("reality", "vmess-ws", "vless-ws"):
+                want = b.get("proto") or None
+                if want and want not in _VALID_PROTOCOLS:
                     return self._send(400, {"error": "неизвестный протокол"})
                 st = _load(STATE)
                 if st is None:
                     st = _new_state(want or "reality")
-                else:
-                    _migrate_state(st)
-                    st["proto"] = want if want else st.get("proto", "reality")
-                _ensure_reality(st)
-                if not st["clients"]:
-                    st["clients"].append(_new_client("Основной"))
+                _migrate_state(st)
+                proto = want or _proto_of(st)
+                inb = _alloc_inbound(st, proto)
+                st["inbounds"][proto] = inb
+                name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
+                c = _new_client(name, proto)
+                inb["clients"].append(c)
+                st["active"] = proto
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 host = self.headers.get("Host", "").split(":")[0]
-                first = st["clients"][0]
-                return self._send(200, {"ok": True, "link": _link(st, host, first),
-                                        "port": st["port"], "proto": st["proto"]})
+                return self._send(200, {"ok": True, "link": _link(inb, host, c, proto),
+                                        "port": inb["port"], "proto": proto,
+                                        "name": c["name"], "uuid": c["uuid"]})
 
             # ---- clients ----
             if p == "/api/clients/add":
@@ -571,27 +718,34 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st is None:
                     st = _new_state("reality")
                 _migrate_state(st)
-                _ensure_reality(st)
-                c = _new_client(name)
-                st["clients"].append(c)
+                proto = _proto_of(st)
+                inb = _alloc_inbound(st, proto)
+                st["inbounds"][proto] = inb
+                c = _new_client(name, proto)
+                inb["clients"].append(c)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 host = self.headers.get("Host", "").split(":")[0]
                 return self._send(200, {"ok": True, "client": {
-                    "uuid": c["uuid"], "name": c["name"], "link": _link(st, host, c)}})
+                    "uuid": c["uuid"], "name": c["name"],
+                    "link": _link(inb, host, c, proto), "proto": proto}})
 
             if p == "/api/clients/delete":
                 b = self._body()
                 u = b.get("uuid")
                 st = _load(STATE)
-                if not st or not st.get("clients"):
+                if not st or _client_count(st) == 0:
                     return self._send(400, {"error": "нет клиентов"})
-                nlist = [c for c in st["clients"] if c["uuid"] != u]
-                if len(nlist) == len(st["clients"]):
-                    return self._send(404, {"error": "клиент не найден"})
-                if not nlist:
+                if _client_count(st) <= 1:
                     return self._send(400, {"error": "нельзя удалить последнего клиента"})
-                st["clients"] = nlist
+                proto, inb, _ = _find_client(st, u)
+                if not inb:
+                    return self._send(404, {"error": "клиент не найден"})
+                inb["clients"] = [c for c in inb["clients"] if c["uuid"] != u]
+                if not inb["clients"]:
+                    del st["inbounds"][proto]
+                    if st.get("active") == proto:
+                        st["active"] = _proto_of(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 return self._send(200, {"ok": True})
@@ -601,10 +755,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 u = b.get("uuid"); name = (b.get("name") or "").strip()
                 if not name: return self._send(400, {"error": "имя пустое"})
                 st = _load(STATE)
-                found = False
-                for c in st.get("clients", []):
-                    if c["uuid"] == u: c["name"] = name; found = True
-                if not found: return self._send(404, {"error": "клиент не найден"})
+                proto, inb, c = _find_client(st, u)
+                if not inb: return self._send(404, {"error": "клиент не найден"})
+                c["name"] = name
                 _save(STATE, st)
                 return self._send(200, {"ok": True})
 
