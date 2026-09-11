@@ -549,38 +549,38 @@ step_6_finish() {
   ip="${SERVER_IP:-$(curl -fsSL --max-time 5 "$IPIFY" 2>/dev/null || echo 'SERVER_IP')}"
 
   echo
-  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
-  echo -e "${B}                   Veil — установка завершена${C_N}"
-  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
+  echo -e "${C_B}================================================================${C_N}"
+  echo -e "${C_B}                  Veil - установка завершена${C_N}"
+  echo -e "${C_B}================================================================${C_N}"
   echo
-  echo -e "  🌐  ${B}Панель управления${C_N}"
+  echo -e "  Панель управления"
   echo -e "      URL:  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
   echo -e "      При первом входе панель попросит создать логин/пароль."
   echo
-  echo -e "  🔐  ${B}Xray (VLESS + Reality)${C_N}"
+  echo -e "  Xray (VLESS + Reality)"
   echo -e "      Порт: ${C_B}${XRAY_PORT}${C_N} (активируется из панели кнопкой)"
   echo
-  echo -e "  📨  ${B}Telegram MTProto прокси${C_N}"
+  echo -e "  Telegram MTProto прокси"
   echo -e "      Порт: ${C_B}${TELEMT_PORT}${C_N} (SNI: ${TLS_DOMAIN})"
-  echo -e "      DPI-fix: veil-zapret2 — ${C_G}активен${C_N}"
-  echo -e "      Ссылки и QR — во вкладке «VPN → Telegram прокси» панели."
+  echo -e "      DPI-fix: veil-zapret2 - ${C_G}активен${C_N}"
+  echo -e "      Ссылки и QR - во вкладке Telegram панели."
   echo
-  echo -e "  📦  ${B}Сервисы systemd${C_N}"
-  echo -e "      ${C_B}xray${C_N}            — VPN-ядро"
-  echo -e "      ${C_B}telemt${C_N}          — Telegram MTProto"
-  echo -e "      ${C_B}veil-zapret2${C_N}    — DPI-bypass fix"
-  echo -e "      ${C_B}vpnpanel${C_N}        — веб-панель"
+  echo -e "  Сервисы systemd"
+  echo -e "      ${C_B}xray${C_N}            - VPN-ядро"
+  echo -e "      ${C_B}telemt${C_N}          - Telegram MTProto"
+  echo -e "      ${C_B}veil-zapret2${C_N}    - DPI-bypass fix"
+  echo -e "      ${C_B}vpnpanel${C_N}        - веб-панель"
   echo
-  echo -e "  📄  ${B}Логи${C_N}"
+  echo -e "  Логи"
   echo -e "      ${INSTALL_LOG}"
   echo
-  echo -e "  ${B}Дальше:${C_N}"
-  echo -e "    1. Открой панель → создай логин и пароль"
-  echo -e "    2. Вкладка "VPN"           → активируй Xray, получи VLESS-ссылку"
-  echo -e "    3. Вкладка "VPN → Telegram" → скопируй MTProto-ссылку и добавь в Telegram"
-  echo -e "    4. Готово."
+  echo -e "  Дальше:"
+  echo -e "     1. Открой панель и создай логин/пароль"
+  echo -e "     2. Вкладка VPN - активируй Xray, получи VLESS-ссылку"
+  echo -e "     3. Вкладка VPN - копируй MTProto-ссылку и добавь в Telegram"
+  echo -e "     4. Готово."
   echo
-  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
+  echo -e "${C_B}================================================================${C_N}"
   echo
 }
 
