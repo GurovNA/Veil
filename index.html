@@ -159,6 +159,12 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
           <button onclick=doAdd()>Создать</button>
           <div class=msg id=addMsg></div>
         </div>
+        <div id=renameBox class="dialog hidden">
+          <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
+          <input id=renameName placeholder="Новое имя" maxlength=32>
+          <button onclick=doRename()>Сохранить</button>
+          <div class=msg id=renameMsg></div>
+        </div>
       </div>
 
       <div id=tgBlock class=hidden style="margin-top:20px;border-top:1px solid var(--br);padding-top:16px">
@@ -297,6 +303,7 @@ function renderClients(){
           <div class=uuid></div>
         </div>
         <div class=actions>
+          <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
           <button class="tiny sec" data-act=qr>QR</button>
           <button class="tiny sec" data-act=copy>Копировать</button>
           <button class="tiny danger" data-act=del>Удалить</button>
@@ -311,6 +318,7 @@ function renderClients(){
     div.querySelector('code').textContent=c.link;
     const _qrBtn = div.querySelector('[data-act=qr]');
     if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
+    div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
     div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
     div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
     box.appendChild(div);
@@ -428,6 +436,23 @@ async function doAdd(){
     $('vpnMsg').textContent='Клиент «'+name+'» создан';$('vpnMsg').className='msg ok';
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
+  }
+}
+
+let renameUuid=null;
+function showRename(c){renameUuid=c.uuid;$('renameName').value=c.name;$('renameMsg').textContent='';$('renameMsg').className='msg';$('renameBox').classList.remove('hidden');$('renameName').focus();$('renameName').select();}
+function hideRename(){renameUuid=null;$('renameBox').classList.add('hidden');$('renameName').value='';$('renameMsg').textContent='';}
+async function doRename(){
+  const name=$('renameName').value.trim();
+  if(!name){$('renameMsg').textContent='Введи имя';$('renameMsg').className='msg err';return;}
+  $('renameMsg').textContent='Сохраняю...';$('renameMsg').className='msg';
+  try{
+    await api('/api/clients/rename',{method:'POST',body:JSON.stringify({uuid:renameUuid,name})});
+    hideRename();
+    await loadClients();
+    $('vpnMsg').textContent='Клиент «'+name+'» переименован';$('vpnMsg').className='msg ok';
+  }catch(e){
+    $('renameMsg').textContent=e.message;$('renameMsg').className='msg err';
   }
 }
 
