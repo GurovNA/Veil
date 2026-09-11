@@ -537,6 +537,29 @@ step_5_panel() {
     [ -f /opt/vpnpanel/index.html ]    || die "в архиве нет index.html"
     ok "распаковано в /opt/vpnpanel (panel.py + index.html)"
     rm -f /tmp/veil.tar.gz
+
+    # создать config.json с рандомным паролем при первой установке
+    if [ ! -f /opt/vpnpanel/config.json ]; then
+      python3 - <<'PYCFG'
+import json, hashlib, os, secrets
+CFG = "/opt/vpnpanel/config.json"
+LOG = "/opt/vpnpanel/FIRST-LOGIN.txt"
+login = "admin"
+pw    = secrets.token_urlsafe(12)
+salt  = secrets.token_hex(16)
+h     = hashlib.sha256((salt + pw).encode()).hexdigest()
+with open(CFG, "w") as f:
+    json.dump({"login": login, "salt": salt, "pass_hash": h}, f, indent=2)
+os.chmod(CFG, 0o600)
+with open(LOG, "w") as f:
+    f.write(f"login:    {login}\npassword: {pw}\n")
+os.chmod(LOG, 0o600)
+print("config.json создан")
+PYCFG
+      ok "config.json создан (логин/пароль — в шаге 6)"
+    else
+      ok "config.json уже есть — не трогаю"
+    fi
   fi
 
   local UNIT='/etc/systemd/system/vpnpanel.service'
@@ -585,6 +608,14 @@ step_6_finish() {
   echo -e "  Панель управления"
   echo -e "      URL:  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
   echo -e "      При первом входе панель попросит создать логин/пароль."
+  if [ -f /opt/vpnpanel/FIRST-LOGIN.txt ]; then
+    local _L _P
+    _L="$(awk '/^login:/    {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
+    _P="$(awk '/^password:/ {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
+    echo -e "      ${C_B}Логин:  ${_L}${C_N}"
+    echo -e "      ${C_B}Пароль: ${_P}${C_N}"
+    echo -e "      (сохрани — сменить можно в панели, вкладка Безопасность)"
+  fi
   echo
   echo -e "  Xray (VLESS + Reality)"
   echo -e "      Порт: ${C_B}${XRAY_PORT}${C_N} (активируется из панели кнопкой)"
