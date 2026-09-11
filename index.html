@@ -38,6 +38,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .tab-pane{display:none}.tab-pane.active{display:block}
 .hidden{display:none}
 hr{border:0;border-top:1px solid var(--br);margin:14px 0}
+.bar{background:#0d1117;border:1px solid var(--br);border-radius:8px;height:10px;overflow:hidden}
+.bar-fill{background:var(--acc);height:100%;width:0%;border-radius:8px;transition:width .4s}
 .dialog{background:#0d1117;border:1px solid var(--acc);border-radius:8px;padding:12px;margin:8px 0}
 .dialog input{margin:6px 0}
 .dialog .row{margin-bottom:6px}
@@ -56,7 +58,7 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
   <nav class=tabs>
     <button data-tab=vpn class=active>VPN</button>
     <button data-tab=settings>Настройки</button>
-    <button data-tab=security>Безопасность</button><button data-tab=appearance>Оформление</button>
+    <button data-tab=security>Безопасность</button><button data-tab=appearance>Оформление</button><button data-tab=stats>Статистика</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active"><div class=card>
@@ -152,6 +154,18 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
     <button onclick=doSaveSecurity()>Сохранить</button>
     <div class=msg id=secMsg></div>
   </div></div>
+  <div id=tab-stats class="tab-pane"><div class=card>
+    <h2>Статистика</h2>
+    <div class=row><span class=mut>Аптайм Xray</span><b id=stXray>—</b></div>
+    <div class=row><span class=mut>Аптайм telemt</span><b id=stTelemt>—</b></div>
+    <div class=row><span class=mut>Клиенты в конфиге</span><b id=stClients>—</b></div>
+    <hr>
+    <p class=mut style="margin:0 0 6px">Диск (/) — <span id=stDiskLabel>—</span></p>
+    <div class=bar><div class=bar-fill id=stDiskFill></div></div>
+    <p class=mut style="margin:16px 0 6px">Память — <span id=stMemLabel>—</span></p>
+    <div class=bar><div class=bar-fill id=stMemFill></div></div>
+    <p class=mut style="margin-top:12px">Обновляется автоматически каждые 30 секунд.</p>
+  </div></div>
 </div>
 
 </div><script>
@@ -240,6 +254,7 @@ async function refresh(){
     await loadClients();
     await loadTg();
     await loadFix();
+    await loadStats();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -479,6 +494,26 @@ async function toggleFix(){
     btn.disabled = false;
   }
 }
+
+// ---- Статистика ----
+async function loadStats(){
+  if ($('panel').style.display === 'none') return;
+  try{
+    const s = await api('/api/stats');
+    $('stXray').textContent = s.uptime_xray || 'не запущен';
+    $('stTelemt').textContent = s.uptime_telemt || 'не запущен';
+    $('stClients').textContent = (s.clients_count || 0) + ' шт.';
+    if (s.disk_usage){
+      $('stDiskLabel').textContent = s.disk_usage.used + ' из ' + s.disk_usage.total;
+      $('stDiskFill').style.width = Math.min(100, s.disk_usage.percent) + '%';
+    }
+    if (s.memory_usage){
+      $('stMemLabel').textContent = s.memory_usage.used_mb + ' МБ из ' + s.memory_usage.total_mb + ' МБ';
+      $('stMemFill').style.width = Math.min(100, s.memory_usage.percent) + '%';
+    }
+  }catch(e){ /* ignore */ }
+}
+setInterval(loadStats, 30000);
 
 document.querySelectorAll('.tabs button').forEach(b=>{
   b.addEventListener('click',()=>{
