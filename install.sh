@@ -297,12 +297,40 @@ step_4_zapret2() {
 
   if [ "$DRY_RUN" != "1" ]; then
     local NFQ LUA_LIB LUA_DPI
-    NFQ="$(find $TMPZ -type f -name nfqws2 2>/dev/null | head -1)"
+    # 1) пробуем по известному пути binaries/linux-<arch>
+    local ZARCH
+    case "$(uname -m)" in
+      x86_64)  ZARCH="x86_64" ;;
+      aarch64) ZARCH="arm64" ;;
+      armv7l)  ZARCH="arm" ;;
+      i386|i686) ZARCH="x86" ;;
+      *)       ZARCH="" ;;
+    esac
+    if [ -n "$ZARCH" ] && [ -x "$TMPZ/binaries/linux-$ZARCH/nfqws2" ]; then
+      NFQ="$TMPZ/binaries/linux-$ZARCH/nfqws2"
+    fi
+    # 2) fallback: по ELF-магии
+    if [ -z "$NFQ" ]; then
+      local ELF_PAT
+      case "$(uname -m)" in
+        x86_64)  ELF_PAT="ELF 64-bit.*x86-64" ;;
+        aarch64) ELF_PAT="ELF 64-bit.*ARM aarch64" ;;
+        armv7l)  ELF_PAT="ELF 32-bit.*ARM" ;;
+        *)       ELF_PAT="ELF" ;;
+      esac
+      while IFS= read -r _cand; do
+        case "$_cand" in */android-*|*/windows-*|*/freebsd-*) continue ;; esac
+        if file "$_cand" 2>/dev/null | grep -qE "$ELF_PAT"; then
+          NFQ="$_cand"; break
+        fi
+      done < <(find "$TMPZ/binaries" -type f -name nfqws2 2>/dev/null)
+    fi
+    [ -n "$NFQ" ] || die "nfqws2 под $(uname -m) не найден в архиве zapret2"
     LUA_LIB="$(find $TMPZ -type f -name zapret-lib.lua 2>/dev/null | head -1)"
     LUA_DPI="$(find $TMPZ -type f -name zapret-antidpi.lua 2>/dev/null | head -1)"
-    [ -n "$NFQ"     ] || die "nfqws2 не найден в архиве zapret2"
     [ -n "$LUA_LIB" ] || die "zapret-lib.lua не найден в архиве"
     [ -n "$LUA_DPI" ] || die "zapret-antidpi.lua не найден в архиве"
+    ok "выбран: $NFQ"
     install -m 0755 "$NFQ"     /opt/veil-zapret2/bin/nfqws2
     install -m 0644 "$LUA_LIB" /opt/veil-zapret2/lua/zapret-lib.lua
     install -m 0644 "$LUA_DPI" /opt/veil-zapret2/lua/zapret-antidpi.lua
