@@ -4,9 +4,9 @@
 <title>Veil</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922}
+:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;justify-content:center;padding:24px}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:15px;line-height:1.5;display:flex;justify-content:center;padding:24px;min-height:100vh;box-sizing:border-box}body.has-wall{background-image:var(--wall);background-size:cover;background-attachment:fixed;background-position:center}body.has-wall .card,body.has-wall .tabs{background:rgba(22,27,34,.85);backdrop-filter:blur(10px)}
 .wrap{width:100%;max-width:560px}
 .card{background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;margin-bottom:16px}
 h1{font-size:20px;margin:0 0 4px}
@@ -56,7 +56,7 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
   <nav class=tabs>
     <button data-tab=vpn class=active>VPN</button>
     <button data-tab=settings>Настройки</button>
-    <button data-tab=security>Безопасность</button>
+    <button data-tab=security>Безопасность</button><button data-tab=appearance>Оформление</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active"><div class=card>
@@ -113,6 +113,34 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
     <button class="danger" onclick=doLogout()>Выйти из панели</button>
   </div></div>
 
+  <div id=tab-appearance class="tab-pane"><div class=card>
+    <h2>Оформление</h2>
+    <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0">
+      <label>Фон<input type=color id=th-bg></label>
+      <label>Карточки<input type=color id=th-card></label>
+      <label>Текст<input type=color id=th-fg></label>
+      <label>Мелкий<input type=color id=th-mut></label>
+      <label>Акцент<input type=color id=th-acc></label>
+      <label>Шрифт
+        <select id=th-font style="width:100%">
+          <option value="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">Системный</option>
+          <option value="Inter,system-ui,sans-serif">Inter</option>
+          <option value="Roboto,system-ui,sans-serif">Roboto</option>
+          <option value="'JetBrains Mono',ui-monospace,monospace">JetBrains Mono</option>
+          <option value="Georgia,serif">Georgia</option>
+          <option value="'Courier New',monospace">Courier</option>
+        </select>
+      </label>
+    </div>
+    <button onclick=saveTheme()>Сохранить цвета</button>
+    <button class=sec onclick=resetTheme() style="margin-left:8px">Сбросить</button>
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    <h3 style="margin:0 0 8px">Обои</h3>
+    <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
+    <input type=file id=th-wall accept=image/* onchange=uploadWall()>
+    <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
+  </div></div>
   <div id=tab-security class="tab-pane"><div class=card>
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
@@ -485,6 +513,69 @@ document.getElementById('qrModal').addEventListener('click', function(e){
 });
 
 refresh();
+
+// ---- Тема / оформление ----
+function applyTheme(t){
+  const r = document.documentElement.style;
+  if (t.bg) r.setProperty('--bg', t.bg);
+  if (t.card) r.setProperty('--card', t.card);
+  if (t.fg) r.setProperty('--fg', t.fg);
+  if (t.mut) r.setProperty('--mut', t.mut);
+  if (t.acc) r.setProperty('--acc', t.acc);
+  if (t.font) r.setProperty('--font', t.font);
+  if (t.wall_mime){
+    document.body.style.setProperty('--wall', 'url(/wallpaper?t='+Date.now()+')');
+    document.body.classList.add('has-wall');
+  } else {
+    document.body.classList.remove('has-wall');
+  }
+  ['bg','card','fg','mut','acc'].forEach(k=>{
+    const el = document.getElementById('th-'+k); if (el && t[k]) el.value = t[k];
+  });
+  const fs = document.getElementById('th-font'); if (fs && t.font) fs.value = t.font;
+}
+async function loadTheme(){
+  try { const r = await fetch('/api/theme',{cache:'no-store'}); applyTheme(await r.json()); } catch(e){}
+}
+async function saveTheme(){
+  const b = {
+    bg:   document.getElementById('th-bg').value,
+    card: document.getElementById('th-card').value,
+    fg:   document.getElementById('th-fg').value,
+    mut:  document.getElementById('th-mut').value,
+    acc:  document.getElementById('th-acc').value,
+    font: document.getElementById('th-font').value,
+  };
+  await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  await loadTheme();
+  alert('Сохранено');
+}
+async function resetTheme(){
+  await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bg:'#0e1116',card:'#161b22',fg:'#e6edf3',mut:'#8b949e',acc:'#2f81f7',
+      font:'system-ui,-apple-system,Segoe UI,Roboto,sans-serif'})});
+  await loadTheme();
+}
+async function uploadWall(){
+  const f = document.getElementById('th-wall').files[0]; if (!f) return;
+  if (f.size > 8*1024*1024){ alert('Максимум 8 МБ'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(',')[1];
+    const r = await fetch('/api/wallpaper',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({data: b64, mime: f.type || 'image/jpeg'})});
+    if (!r.ok){ alert('Ошибка загрузки'); return; }
+    await loadTheme();
+    alert('Обои установлены');
+  };
+  rd.readAsDataURL(f);
+}
+async function deleteWall(){
+  await fetch('/api/wallpaper/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  document.body.classList.remove('has-wall');
+  await loadTheme();
+}
+loadTheme();
 </script>
 <div id=qrModal style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);align-items:center;justify-content:center;padding:20px;z-index:9999">
   <div style="background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center" onclick="event.stopPropagation()">
