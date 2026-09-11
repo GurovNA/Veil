@@ -10,6 +10,7 @@ IPIFY="https://api.ipify.org"
 XRAY_PORT=443
 TELEMT_PORT=7443
 PANEL_PORT=8443
+TLS_DOMAIN="my.aeza.ru"
 
 # ---------- colors ----------
 if [ -t 1 ]; then
