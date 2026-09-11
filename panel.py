@@ -7,12 +7,14 @@ import shutil, tarfile, tempfile, datetime
 BASE = "/opt/vpnpanel"
 CFG = f"{BASE}/config.json"
 STATE = f"{BASE}/state.json"
+THEME = f"{BASE}/theme.json"
+WALL = f"{BASE}/wallpaper.bin"
 HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "0.7.0"
+VERSION = "1.1.0"
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -374,6 +376,27 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
+        if p == "/api/theme":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(_load(THEME, {})).encode())
+            return
+        if p == "/wallpaper":
+            if os.path.exists(WALL):
+                t = _load(THEME, {}) or {}
+                mime = t.get("wall_mime", "image/jpeg")
+                with open(WALL, "rb") as f: data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(404); self.end_headers()
+            return
         if p == "/api/fix/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _fix_status())
@@ -491,6 +514,46 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "relogin": True})
 
             # ---- update ----
+            if p == "/api/theme":
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try: body = json.loads(raw.decode() or "{}")
+                except Exception: body = {}
+                t = _load(THEME, {}) or {}
+                for k in ("bg","card","fg","mut","acc","font"):
+                    if k in body: t[k] = body[k]
+                _save(THEME, t)
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}'); return
+            if p == "/api/wallpaper":
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                data = b""; rem = n
+                while rem > 0:
+                    ch = self.rfile.read(min(rem, 65536))
+                    if not ch: break
+                    data += ch; rem -= len(ch)
+                try: body = json.loads(data.decode() or "{}")
+                except Exception: body = {}
+                b64 = body.get("data","")
+                mime = body.get("mime","image/jpeg")
+                if mime not in ("image/jpeg","image/png","image/webp","image/gif"):
+                    mime = "image/jpeg"
+                import base64 as _b64
+                try: blob = _b64.b64decode(b64)
+                except Exception: blob = b""
+                if not blob:
+                    self.send_response(400); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.wfile.write(b'{"error":"empty"}'); return
+                with open(WALL, "wb") as f: f.write(blob)
+                t = _load(THEME, {}) or {}; t["wall_mime"] = mime; _save(THEME, t)
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}'); return
+            if p == "/api/wallpaper/delete":
+                try: os.remove(WALL)
+                except FileNotFoundError: pass
+                t = _load(THEME, {}) or {}; t.pop("wall_mime", None); _save(THEME, t)
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}'); return
             if p == "/api/update/install":
                 try:
                     return self._send(200, _install_update())
