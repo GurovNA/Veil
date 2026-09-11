@@ -483,8 +483,106 @@ UNITEOF
     ok "veil-zapret2 активен"
   fi
 }
-step_5_panel()   { warn "Шаг 5 (панель) ещё не реализован"; }
-step_6_finish()  { warn "Шаг 6 (финал) ещё не реализован"; }
+step_5_panel() {
+  msg "Шаг 5: панель Veil"
+
+  if [ -x /opt/vpnpanel/panel.py ]; then
+    ok "панель уже установлена: $(grep -m1 '^VERSION' /opt/vpnpanel/panel.py 2>/dev/null || echo '?')"
+    return 0
+  fi
+
+  local TAG TARBALL_URL
+  TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"
+  [ -n "$TAG" ] || die "не удалось получить последний релиз ${REPO} (возможно репо приватный — сделай публичным)"
+
+  TARBALL_URL="https://github.com/${REPO}/releases/download/${TAG}/veil.tar.gz"
+  msg "Качаю релиз ${TAG}"
+
+  run "mkdir -p /opt/vpnpanel"
+  run "curl -fsSL -o /tmp/veil.tar.gz '$TARBALL_URL'"
+
+  if [ "$DRY_RUN" != "1" ]; then
+    tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel
+    [ -f /opt/vpnpanel/panel.py ]      || die "в архиве нет panel.py"
+    [ -f /opt/vpnpanel/index.html ]    || die "в архиве нет index.html"
+    ok "распаковано в /opt/vpnpanel (panel.py + index.html)"
+    rm -f /tmp/veil.tar.gz
+  fi
+
+  local UNIT='/etc/systemd/system/vpnpanel.service'
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write $UNIT\n"
+  else
+    cat > "$UNIT" <<'UNITEOF'
+[Unit]
+Description=VPN Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/vpnpanel/panel.py
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+    ok "systemd-unit: $UNIT"
+  fi
+
+  run "systemctl daemon-reload"
+  run "systemctl enable --now vpnpanel"
+
+  if [ "$DRY_RUN" != "1" ]; then
+    sleep 2
+    systemctl is-active --quiet vpnpanel || die "панель не запустилась — смотри $LOG_FILE"
+    ok "панель активна на :${PANEL_PORT}"
+  fi
+}
+step_6_finish() {
+  msg "Шаг 6: итог"
+
+  local ip
+  ip="${SERVER_IP:-$(curl -fsSL --max-time 5 "$IPIFY" 2>/dev/null || echo 'SERVER_IP')}"
+
+  echo
+  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
+  echo -e "${B}                   Veil — установка завершена${C_N}"
+  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
+  echo
+  echo -e "  🌐  ${B}Панель управления${C_N}"
+  echo -e "      URL:  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
+  echo -e "      При первом входе панель попросит создать логин/пароль."
+  echo
+  echo -e "  🔐  ${B}Xray (VLESS + Reality)${C_N}"
+  echo -e "      Порт: ${C_B}${XRAY_PORT}${C_N} (активируется из панели кнопкой)"
+  echo
+  echo -e "  📨  ${B}Telegram MTProto прокси${C_N}"
+  echo -e "      Порт: ${C_B}${TELEMT_PORT}${C_N} (SNI: ${TLS_DOMAIN})"
+  echo -e "      DPI-fix: veil-zapret2 — ${C_G}активен${C_N}"
+  echo -e "      Ссылки и QR — во вкладке «VPN → Telegram прокси» панели."
+  echo
+  echo -e "  📦  ${B}Сервисы systemd${C_N}"
+  echo -e "      ${C_B}xray${C_N}            — VPN-ядро"
+  echo -e "      ${C_B}telemt${C_N}          — Telegram MTProto"
+  echo -e "      ${C_B}veil-zapret2${C_N}    — DPI-bypass fix"
+  echo -e "      ${C_B}vpnpanel${C_N}        — веб-панель"
+  echo
+  echo -e "  📄  ${B}Логи${C_N}"
+  echo -e "      ${INSTALL_LOG}"
+  echo
+  echo -e "  ${B}Дальше:${C_N}"
+  echo -e "    1. Открой панель → создай логин и пароль"
+  echo -e "    2. Вкладка "VPN"           → активируй Xray, получи VLESS-ссылку"
+  echo -e "    3. Вкладка "VPN → Telegram" → скопируй MTProto-ссылку и добавь в Telegram"
+  echo -e "    4. Готово."
+  echo
+  echo -e "${B}════════════════════════════════════════════════════════════════${C_N}"
+  echo
+}
 
 # ---------- main ----------
 main() {
