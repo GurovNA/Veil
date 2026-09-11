@@ -14,7 +14,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 SESSIONS = {}
 
 # ---------- helpers ----------
@@ -324,6 +324,58 @@ def _fix_disable():
             capture_output=True, text=True, timeout=15)
     return _fix_status()
 
+# ---------- statistics ----------
+
+def _service_active_since(unit):
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return None
+    if "=" not in out:
+        return None
+    v = out.split("=", 1)[1].strip()
+    return v or None
+
+def _stats():
+    xc = _load(XRAY) or {}
+    ib = (xc.get("inbounds") or [{}])[0]
+    clients_count = len((ib.get("settings") or {}).get("clients") or [])
+
+    disk_usage = None
+    try:
+        out = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=5).stdout
+        line = out.splitlines()[1]
+        parts = line.split()
+        disk_usage = {
+            "total": parts[1], "used": parts[2], "avail": parts[3],
+            "percent": int(parts[4].rstrip("%")),
+        }
+    except Exception:
+        pass
+
+    memory_usage = None
+    try:
+        out = subprocess.run(["free", "-m"], capture_output=True, text=True, timeout=5).stdout
+        line = [l for l in out.splitlines() if l.startswith("Mem:")][0]
+        parts = line.split()
+        total = int(parts[1]); used = int(parts[2]); avail = int(parts[6])
+        memory_usage = {
+            "total_mb": total, "used_mb": used, "avail_mb": avail,
+            "percent": round(used * 100 / total) if total else 0,
+        }
+    except Exception:
+        pass
+
+    return {
+        "uptime_xray": _service_active_since("xray"),
+        "uptime_telemt": _service_active_since("telemt"),
+        "clients_count": clients_count,
+        "disk_usage": disk_usage,
+        "memory_usage": memory_usage,
+    }
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -403,6 +455,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
+        if p == "/api/stats":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _stats())
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
