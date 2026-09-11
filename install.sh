@@ -3,7 +3,7 @@
 # Usage: bash install.sh [--step N] [--dry-run] [--help]
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 REPO="GurovNA/Veil"
 LOG_FILE="/var/log/veil-install.log"
 IPIFY="https://api.ipify.org"
