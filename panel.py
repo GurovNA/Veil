@@ -14,7 +14,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 PROTOCOLS = [
     {"id": "reality",        "label": "VLESS + Reality",                        "net": "tcp",  "tls": False},
     {"id": "vmess-ws",       "label": "VMess + WebSocket",                      "net": "ws",   "tls": False},
@@ -141,15 +141,16 @@ def _gen_selfsigned(proto):
     os.makedirs(CERT_DIR, exist_ok=True)
     crt = f"{CERT_DIR}/{proto}.crt"
     key = f"{CERT_DIR}/{proto}.key"
-    if os.path.exists(crt) and os.path.exists(key):
-        return crt, key
-    r = subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-         "-keyout", key, "-out", crt, "-days", "3650",
-         "-subj", "/CN=Veil", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"],
-        capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError("openssl: " + (r.stderr or r.stdout))
+    if not (os.path.exists(crt) and os.path.exists(key)):
+        r = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", crt, "-days", "3650",
+             "-subj", "/CN=Veil", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("openssl: " + (r.stderr or r.stdout))
+    os.chmod(crt, 0o644)
+    os.chmod(key, 0o644)
     return crt, key
 
 def _new_inbound(proto):
