@@ -51,6 +51,7 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .client:hover{border-color:color-mix(in srgb,var(--acc) 55%,transparent);transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,.28)}
 .client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .client .name{font-weight:650;font-size:14px;word-break:break-word}
+.client .proto-tag{color:var(--acc);font-size:11px;font-family:ui-monospace,monospace;margin-top:4px;letter-spacing:.2px}
 .client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px;letter-spacing:.2px}
 .client .actions{display:flex;gap:6px;flex-shrink:0}
 .client .link-row{margin-top:10px}
@@ -113,10 +114,10 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <span class=mut>Протокол</span>
       <span class=proto-ctl>
         <select id=protoSel aria-label=Протокол onchange=setupProtoBtn()><option>…</option></select>
-        <button class="tiny sec hidden" id=protoApply onclick=doVPN()>Переоформить</button>
       </span>
     </div>
-    <p class=mut style="margin:0 0 10px;font-size:12px">Домен не нужен: Reality маскируется под сайт, WS-протоколы работают по IP.</p>
+    <button id=protoApply class="hidden" onclick=doVPN()>Добавить новую ссылку</button>
+    <p class=mut style="margin:0 0 10px;font-size:12px">Домен не нужен: Reality маскируется под сайт, остальное работает по IP. TLS-протоколы автоматически получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
 
     <div id=emptyState>
       <p class=mut>VPN ещё не настроен. Выбери протокол и нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первого клиента.</p>
@@ -224,6 +225,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 </div><script>
 const $=id=>document.getElementById(id);
 let clients=[];
+let protoLabels={};
 
 async function api(p,o){
   const r=await fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},o||{}));
@@ -259,6 +261,7 @@ function renderClients(){
       <div class=top>
         <div style="flex:1;min-width:0">
           <div class=name></div>
+          <div class=proto-tag></div>
           <div class=uuid></div>
         </div>
         <div class=actions>
@@ -271,6 +274,7 @@ function renderClients(){
         <code></code>
       </div>`;
     div.querySelector('.name').textContent=c.name;
+    div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
     div.querySelector('.uuid').textContent=c.uuid;
     div.querySelector('code').textContent=c.link;
     const _qrBtn = div.querySelector('[data-act=qr]');
@@ -293,6 +297,7 @@ async function loadClients(){
       $('emptyState').classList.remove('hidden');
       $('clientsBlock').classList.add('hidden');
     }
+    setupProtoBtn();
   }catch(e){
     $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
   }
@@ -307,7 +312,9 @@ async function loadProtocols(){
     const sel=$('protoSel');
     if(sel.options[0].value==='…'){
       sel.innerHTML='';
+      protoLabels={};
       (d.protocols||[]).forEach(p=>{
+        protoLabels[p.id]=p.label;
         const o=document.createElement('option');o.value=p.id;o.textContent=p.label;sel.appendChild(o);
       });
     }
@@ -319,7 +326,9 @@ async function loadProtocols(){
 function setupProtoBtn(){
   const sel=$('protoSel');const btn=$('protoApply');
   if(!sel||!btn) return;
-  btn.classList.toggle('hidden',!(clients.length&&sel.value!==protoCur));
+  btn.classList.toggle('hidden',!clients.length);
+  const lbl=(sel.options[sel.selectedIndex]||{}).textContent||'протокол';
+  btn.textContent=clients.length?('Добавить новую ссылку: '+lbl):'Хочу VPN';
 }
 
 async function refresh(){
@@ -344,10 +353,10 @@ async function refresh(){
 async function doVPN(){
   const btns=[$('vpnBtn'),$('protoApply')];
   btns.forEach(x=>{if(x&&!x.disabled)x.disabled=true;});
-  $('vpnMsg').textContent='Настраиваю...';$('vpnMsg').className='msg';
+  $('vpnMsg').textContent='Создаю новую ссылку...';$('vpnMsg').className='msg';
   try{
-    await api('/api/vpn',{method:'POST',body:JSON.stringify({proto:$('protoSel').value})});
-    $('vpnMsg').textContent='Готово';$('vpnMsg').className='msg ok';
+    const r=await api('/api/vpn',{method:'POST',body:JSON.stringify({proto:$('protoSel').value})});
+    $('vpnMsg').textContent='Готова новая ссылка: '+(r.name||'');$('vpnMsg').className='msg ok';
     await refresh();
   }catch(e){
     $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
