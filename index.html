@@ -4,45 +4,71 @@
 <title>Veil</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+:root{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#2f81f7;--ok:#3fb950;--err:#f85149;--br:#30363d;--warn:#d29922;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,color-mix(in srgb,var(--acc) 82%,#fff) 0%,var(--acc) 45%,color-mix(in srgb,var(--acc) 55%,#7c5cff) 100%)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:15px;line-height:1.5;display:flex;justify-content:center;padding:24px;min-height:100vh;box-sizing:border-box}body.has-wall{background-image:var(--wall);background-size:cover;background-attachment:fixed;background-position:center}body.has-wall .card,body.has-wall .tabs{background:rgba(22,27,34,.85);backdrop-filter:blur(10px)}
-.wrap{width:100%;max-width:560px}
-.card{background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;margin-bottom:16px}
-h1{font-size:20px;margin:0 0 4px}
-h2{font-size:16px;margin:0 0 12px}
+body{margin:0;background:
+  radial-gradient(900px 480px at 12% -12%,color-mix(in srgb,var(--acc) 16%,transparent),transparent 60%),
+  radial-gradient(760px 520px at 108% 4%,color-mix(in srgb,var(--acc) 11%,transparent),transparent 55%),
+  radial-gradient(700px 500px at 50% 115%,color-mix(in srgb,var(--warn) 7%,transparent),transparent 60%),
+  var(--bg);
+background-attachment:fixed;color:var(--fg);font-family:var(--font);font-size:15px;line-height:1.5;display:flex;justify-content:center;align-items:flex-start;padding:36px 20px 60px;min-height:100vh;box-sizing:border-box}
+body.has-wall{background-image:var(--wall);background-size:cover;background-attachment:fixed;background-position:center}
+body.has-wall .card,body.has-wall .tabs,body.has-wall .dialog{background:color-mix(in srgb,var(--card) 72%,transparent)}
+.wrap{width:100%;max-width:580px}
+.card{position:relative;background:linear-gradient(180deg,color-mix(in srgb,var(--card) 74%,transparent),color-mix(in srgb,var(--card) 42%,transparent));-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-radius:18px;padding:24px;margin-bottom:18px;box-shadow:0 12px 34px rgba(0,0,0,.38),inset 0 1px 0 rgba(255,255,255,.05)}
+h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;font-weight:700}
+.subtitle{color:var(--mut);font-size:12.5px;margin:0 0 4px;letter-spacing:.15px}
+h2{font-size:16px;margin:0 0 12px;font-weight:650;letter-spacing:.2px}
+.brand{font-weight:800;color:var(--fg)}
 .mut{color:var(--mut);font-size:13px}
-input,button{width:100%;padding:10px;margin:6px 0;border-radius:8px;font-size:15px;box-sizing:border-box}
-input{background:#0d1117;color:var(--fg);border:1px solid var(--br)}
-button{background:var(--acc);color:#fff;border:0;cursor:pointer;font-weight:600}
-button.sec{background:#21262d;color:var(--fg);border:1px solid var(--br)}
-button.danger{background:#8b1a1a;color:#fff;border:0}
-button.tiny{width:auto;padding:6px 10px;margin:0;font-size:13px;font-weight:500}
-button:disabled{opacity:.5;cursor:not-allowed}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-.on{background:var(--ok)}.off{background:var(--err)}
+input,button{width:100%;padding:11px 14px;margin:7px 0;border-radius:12px;font-size:15px;box-sizing:border-box;font-family:inherit}
+input{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);transition:border-color .18s,box-shadow .18s}
+input:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+button{background:var(--grad);color:#fff;border:0;cursor:pointer;font-weight:600;letter-spacing:.2px;transition:transform .12s,box-shadow .2s,filter .2s,background .2s}
+button:hover{transform:translateY(-1px);box-shadow:0 8px 22px color-mix(in srgb,var(--acc) 38%,transparent)}
+button:active{transform:translateY(0)}
+button.sec{background:color-mix(in srgb,var(--bg) 55%,transparent);color:var(--fg);border:1px solid var(--br);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+button.sec:hover{background:color-mix(in srgb,var(--fg) 7%,transparent);box-shadow:none;border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+button.danger{background:linear-gradient(135deg,#f85149,#b6232b);color:#fff;border:0}
+button.danger:hover{box-shadow:0 8px 22px rgba(248,81,73,.35)}
+button.tiny{width:auto;padding:7px 12px;margin:0;font-size:13px;font-weight:600;border-radius:9px}
+button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;position:relative}
+.on{background:var(--ok);box-shadow:0 0 10px color-mix(in srgb,var(--ok) 65%,transparent);animation:pulse 2s ease-in-out infinite}
+.off{background:var(--err);box-shadow:0 0 8px color-mix(in srgb,var(--err) 55%,transparent)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 45%,transparent)}70%{box-shadow:0 0 0 9px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .msg{margin-top:10px;font-size:13px}
 .err{color:var(--err)}.ok{color:var(--ok)}
 .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.clients{display:flex;flex-direction:column;gap:8px}
-.client{background:#0d1117;border:1px solid var(--br);border-radius:10px;padding:12px}
+.ver-pill{color:var(--mut);font-size:12.5px;font-family:ui-monospace,monospace;background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--br);border-radius:999px;padding:3px 10px}
+.status-line{display:flex;align-items:center;gap:2px;margin:10px 0 2px}
+.clients{display:flex;flex-direction:column;gap:10px}
+.client{background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid color-mix(in srgb,var(--br) 85%,transparent);border-radius:14px;padding:14px 16px;transition:border-color .18s,transform .18s,box-shadow .2s}
+.client:hover{border-color:color-mix(in srgb,var(--acc) 55%,transparent);transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,.28)}
 .client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.client .name{font-weight:600;font-size:14px;word-break:break-word}
-.client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px}
+.client .name{font-weight:650;font-size:14px;word-break:break-word}
+.client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px;letter-spacing:.2px}
 .client .actions{display:flex;gap:6px;flex-shrink:0}
-.client .link-row{margin-top:8px}
-.client code{display:block;background:#010409;border:1px solid var(--br);border-radius:6px;padding:8px;font-size:11px;word-break:break-all;color:var(--fg);max-height:60px;overflow:auto}
-.tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--card);border:1px solid var(--br);border-radius:10px;padding:4px}
-.tabs button{background:transparent;color:var(--mut);border:0;padding:10px;margin:0;font-weight:600;border-radius:6px;width:auto;flex:1}
-.tabs button.active{background:var(--acc);color:#fff}
-.tab-pane{display:none}.tab-pane.active{display:block}
+.client .link-row{margin-top:10px}
+.client code{display:block;background:color-mix(in srgb,var(--bg) 70%,transparent);border:1px solid var(--br);border-radius:9px;padding:9px;font-size:11px;word-break:break-all;color:var(--fg);max-height:60px;overflow:auto;font-family:ui-monospace,monospace}
+.tabs{display:flex;gap:4px;margin-bottom:22px;background:color-mix(in srgb,var(--card) 60%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid color-mix(in srgb,var(--br) 80%,transparent);border-radius:16px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
+.tabs button{background:transparent;color:var(--mut);border:0;padding:10px 12px;margin:0;font-weight:600;border-radius:11px;width:auto;flex:1;font-size:14px;transition:color .18s,background .18s,box-shadow .2s}
+.tabs button:hover{color:var(--fg);background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.tabs button.active{background:var(--grad);color:#fff;box-shadow:0 4px 14px color-mix(in srgb,var(--acc) 40%,transparent)}
+.tab-pane{display:none}.tab-pane.active{display:block;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .hidden{display:none}
-hr{border:0;border-top:1px solid var(--br);margin:14px 0}
-.bar{background:#0d1117;border:1px solid var(--br);border-radius:8px;height:10px;overflow:hidden}
-.bar-fill{background:var(--acc);height:100%;width:0%;border-radius:8px;transition:width .4s}
-.dialog{background:#0d1117;border:1px solid var(--acc);border-radius:8px;padding:12px;margin:8px 0}
+hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);margin:16px 0}
+.bar{background:color-mix(in srgb,var(--br) 42%,transparent);border-radius:999px;height:12px;overflow:hidden;border:1px solid color-mix(in srgb,var(--br) 65%,transparent)}
+.bar-fill{background:var(--grad);height:100%;width:0%;border-radius:999px;transition:width .7s cubic-bezier(.4,0,.2,1);box-shadow:0 0 12px color-mix(in srgb,var(--acc) 45%,transparent)}
+.dialog{background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 10px 26px rgba(0,0,0,.35)}
 .dialog input{margin:6px 0}
 .dialog .row{margin-bottom:6px}
+#qrModal{background:rgba(0,0,0,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease}
+#qrBox{overflow:hidden;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+@media(max-width:520px){body{padding:20px 12px 48px}.card{padding:18px}}
+@supports (color: color-mix(in srgb, red, transparent)){h1.brand{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}}
+@supports not (color: color-mix(in srgb, red, transparent)){body{background:var(--bg)}.card,.tabs,.dialog{background:var(--card)}button{background:var(--acc)}button.danger{background:#dc3545;}button:hover{box-shadow:none}}
 </style></head><body><div class=wrap>
 
 <div class=card id=loginCard>
@@ -62,8 +88,9 @@ hr{border:0;border-top:1px solid var(--br);margin:14px 0}
   </nav>
 
   <div id=tab-vpn class="tab-pane active"><div class=card>
-    <div class=row><h1>Veil</h1><span class=mut id=ver></span></div>
-    <p class=mut><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
+    <div class=row><h1 class=brand>Veil</h1><span class=ver-pill id=ver></span></div>
+    <p class="subtitle">VPN · Telegram · анти-DPI</p>
+    <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
 
     <div id=emptyState>
       <p class=mut>VPN ещё не настроен. Нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первый клиент.</p>
@@ -612,8 +639,8 @@ async function deleteWall(){
 }
 loadTheme();
 </script>
-<div id=qrModal style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);align-items:center;justify-content:center;padding:20px;z-index:9999">
-  <div style="background:var(--card);border:1px solid var(--br);border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center" onclick="event.stopPropagation()">
+<div id=qrModal style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:20px;z-index:9999">
+  <div style="background:linear-gradient(180deg,color-mix(in srgb,var(--card) 82%,transparent),color-mix(in srgb,var(--card) 55%,transparent));border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-radius:18px;padding:22px;max-width:420px;width:100%;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.5);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)" onclick="event.stopPropagation()">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <b id=qrTitle style="font-size:16px"></b>
       <button class=tiny onclick=hideQR()>Закрыть</button>
