@@ -269,7 +269,220 @@ UNITEOF
     ok "telemt активен на :${TELEMT_PORT}"
   fi
 }
-step_4_zapret2() { warn "Шаг 4 (veil-zapret2) ещё не реализован"; }
+step_4_zapret2() {
+  msg "Шаг 4: veil-zapret2 (DPI bypass для MTProto)"
+
+  if [ -x /opt/veil-zapret2/bin/nfqws2 ]; then
+    ok "veil-zapret2 уже установлен"
+    if systemctl is-active --quiet veil-zapret2 2>/dev/null; then
+      ok "сервис активен"
+    else
+      run "systemctl enable --now veil-zapret2"
+      ok "сервис запущен"
+    fi
+    return 0
+  fi
+
+  local ZV="v1.0.3"
+  local ZURL="https://github.com/bol-van/zapret2/releases/download/${ZV}/zapret2-${ZV}.tar.gz"
+  local TMPZ="/tmp/zapret2-src"
+  run "rm -rf $TMPZ /tmp/zapret2.tar.gz"
+  run "mkdir -p $TMPZ"
+  msg "Качаю zapret2 $ZV"
+  run "curl -fsSL -o /tmp/zapret2.tar.gz '$ZURL'"
+  run "tar -xzf /tmp/zapret2.tar.gz -C $TMPZ --strip-components=1 2>/dev/null || tar -xzf /tmp/zapret2.tar.gz -C $TMPZ"
+
+  run "mkdir -p /opt/veil-zapret2/bin /opt/veil-zapret2/lua /etc/veil-zapret2"
+
+  if [ "$DRY_RUN" != "1" ]; then
+    local NFQ LUA_LIB LUA_DPI
+    NFQ="$(find $TMPZ -type f -name nfqws2 2>/dev/null | head -1)"
+    LUA_LIB="$(find $TMPZ -type f -name zapret-lib.lua 2>/dev/null | head -1)"
+    LUA_DPI="$(find $TMPZ -type f -name zapret-antidpi.lua 2>/dev/null | head -1)"
+    [ -n "$NFQ"     ] || die "nfqws2 не найден в архиве zapret2"
+    [ -n "$LUA_LIB" ] || die "zapret-lib.lua не найден в архиве"
+    [ -n "$LUA_DPI" ] || die "zapret-antidpi.lua не найден в архиве"
+    install -m 0755 "$NFQ"     /opt/veil-zapret2/bin/nfqws2
+    install -m 0644 "$LUA_LIB" /opt/veil-zapret2/lua/zapret-lib.lua
+    install -m 0644 "$LUA_DPI" /opt/veil-zapret2/lua/zapret-antidpi.lua
+    ok "бинарник + lua-файлы zapret2 установлены"
+    run "rm -rf $TMPZ /tmp/zapret2.tar.gz"
+  fi
+
+  # --- veil-mtproto.lua (встроен) ---
+  local LM='/opt/veil-zapret2/lua/veil-mtproto.lua'
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write $LM\n"
+  else
+    cat > "$LM" <<'LUA_VEIL_EOF'
+-- Veil MTProto fix for zapret2
+-- Based on MTProxyL by LiafanX — https://github.com/Liafanx/MTProxyL
+-- (function lets_resend: disorder + badsum + window control + iOS fwmark bypass)
+-- Adapted for Veil — https://github.com/GurovNA/Veil
+
+function lets_resend(ctx, desync)
+    if bitand(desync.dis.tcp.th_flags, TH_SYN + TH_ACK) == TH_SYN then
+        if desync.dis.tcp.th_win == 65535 and
+           desync.dis.tcp.options[1].kind == 2 and
+           desync.dis.tcp.options[2].kind == 1 and
+           desync.dis.tcp.options[3].kind == 3 and
+           desync.dis.tcp.options[4].kind == 1 and
+           desync.dis.tcp.options[5].kind == 1 and
+           desync.dis.tcp.options[6].kind == 8 and
+           desync.dis.tcp.options[7].kind == 4 and
+           desync.dis.tcp.options[8].kind == 0 then
+            instance_cutoff(ctx, nil)
+            desync.arg.fwmark = 0x40000
+            rawsend_dissect_segmented(desync)
+            return VERDICT_DROP
+        end
+    end
+
+    if bitand(desync.dis.tcp.th_flags, TH_SYN + TH_ACK) == (TH_SYN + TH_ACK) then
+        desync.track.lua_state["ack0"] = desync.dis.tcp.th_ack
+        desync.dis.tcp.th_win = 1400
+        return VERDICT_MODIFY
+    end
+
+    if direction_check(desync) and bitand(desync.dis.tcp.th_flags, TH_SYN + TH_ACK) == (TH_ACK) then
+        local ack0 = desync.track and desync.track.lua_state["ack0"]
+        if ack0 and (desync.dis.tcp.th_ack - ack0 >= 1400) then
+            instance_cutoff(ctx, true)
+            desync.arg.fwmark = 0x40000
+            rawsend_dissect_segmented(desync)
+            return VERDICT_DROP
+        end
+        desync.dis.tcp.th_win = 2
+        return VERDICT_MODIFY
+    end
+
+    if #desync.dis.payload == 0 or desync.track == nil or desync.track.pos.client.tcp.rseq ~= 1 then
+        return VERDICT_PASS
+    end
+
+    local len = 400
+    local first  = string.sub(desync.dis.payload, 1, len)
+    local second = string.sub(desync.dis.payload, len + 1, 2 * len)
+    local third  = string.sub(desync.dis.payload, 2 * len + 1)
+    rawsend_payload_segmented(desync, first)
+    rawsend_payload_segmented(desync, third, 2 * len)
+    desync.arg["badsum"] = true
+    rawsend_payload_segmented(desync, second, len)
+    instance_cutoff(ctx, false)
+    return VERDICT_DROP
+end
+LUA_VEIL_EOF
+    chmod 0644 "$LM"
+    ok "lua: veil-mtproto.lua"
+  fi
+
+  # --- mtproto.conf ---
+  local CONF='/etc/veil-zapret2/mtproto.conf'
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write $CONF\n"
+  else
+    cat > "$CONF" <<CONFEOF
+--qnum 201 --fwmark=0x40000000 --server --uid=65534:65534  --lua-init=@/opt/veil-zapret2/lua/zapret-lib.lua --lua-init=@/opt/veil-zapret2/lua/zapret-antidpi.lua --lua-init=@/opt/veil-zapret2/lua/veil-mtproto.lua --filter-tcp=${TELEMT_PORT} --out-range=a --in-range=a --payload-disable=all --lua-desync=lets_resend
+CONFEOF
+    chmod 0644 "$CONF"
+    ok "config: /etc/veil-zapret2/mtproto.conf"
+  fi
+
+  # --- стартовый скрипт ---
+  local START='/usr/local/sbin/veil-zapret2-start.sh'
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write $START\n"
+  else
+    cat > "$START" <<STARTEOF
+#!/bin/bash
+set -e
+
+TABLE="veil_mtproto"
+FWMARK="0x40000000"
+PORT="${TELEMT_PORT}"
+QNUM="201"
+CT_MARK="0x00040000"
+COMBINED_MARK="0x40040000"
+BYPASS_MATCH="tcp flags & (fin | syn | rst | ack) == ack"
+
+IP=\$(curl -s -m 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print \$1}')
+[ -n "\$IP" ] || IP="0.0.0.0"
+SADDR="ip saddr \$IP "
+DADDR="ip daddr \$IP "
+
+sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || true
+
+nft delete table ip "\$TABLE" 2>/dev/null || true
+nft add table ip "\$TABLE"
+
+nft "add chain ip \$TABLE predefrag { type filter hook output priority -401; policy accept; }"
+nft "add rule ip \$TABLE predefrag meta mark \$COMBINED_MARK counter accept"
+nft "add rule ip \$TABLE predefrag meta mark and \$FWMARK != 0x00000000 counter notrack"
+
+nft "add chain ip \$TABLE output { type route hook output priority mangle; policy accept; }"
+nft "add rule ip \$TABLE output meta mark and \$COMBINED_MARK == \$COMBINED_MARK ct mark set \$CT_MARK counter accept"
+
+nft "add chain ip \$TABLE postrouting { type filter hook postrouting priority srcnat + 1; policy accept; }"
+nft "add rule ip \$TABLE postrouting \$BYPASS_MATCH ct mark \$CT_MARK counter accept"
+nft "add rule ip \$TABLE postrouting meta mark and \$FWMARK == 0x00000000 \${SADDR}tcp sport \$PORT counter queue num \$QNUM bypass"
+
+nft "add chain ip \$TABLE prerouting { type filter hook prerouting priority mangle; policy accept; }"
+nft "add rule ip \$TABLE prerouting ct state invalid counter drop"
+nft "add rule ip \$TABLE prerouting \$BYPASS_MATCH ct mark \$CT_MARK counter accept"
+nft "add rule ip \$TABLE prerouting meta mark and \$FWMARK == 0x00000000 \${DADDR}tcp dport \$PORT counter queue num \$QNUM bypass"
+
+echo "Veil: nft table \$TABLE applied (port=\$PORT qnum=\$QNUM ip=\$IP)"
+
+exec /opt/veil-zapret2/bin/nfqws2 @/etc/veil-zapret2/mtproto.conf
+STARTEOF
+    chmod 0755 "$START"
+    ok "start-script: $START"
+  fi
+
+  # --- systemd unit ---
+  local UNIT='/etc/systemd/system/veil-zapret2.service'
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write $UNIT\n"
+  else
+    cat > "$UNIT" <<'UNITEOF'
+[Unit]
+Description=Veil Zapret2 MTProto fix
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/veil-zapret2-start.sh
+ExecStop=/usr/sbin/nft delete table ip veil_mtproto
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+    ok "systemd-unit: $UNIT"
+  fi
+
+  # sysctl fwmark reuse
+  if [ "$DRY_RUN" = "1" ]; then
+    printf "${C_Y}[dry]${C_N} write /etc/sysctl.d/99-veil-zapret2.conf\n"
+  else
+    printf 'net.ipv4.tcp_tw_reuse = 1\n' > /etc/sysctl.d/99-veil-zapret2.conf
+    sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || true
+    ok "sysctl: tcp_tw_reuse=1"
+  fi
+
+  run "systemctl daemon-reload"
+  run "systemctl enable --now veil-zapret2"
+
+  if [ "$DRY_RUN" != "1" ]; then
+    sleep 1
+    systemctl is-active --quiet veil-zapret2 || die "veil-zapret2 не запустился"
+    ok "veil-zapret2 активен"
+  fi
+}
 step_5_panel()   { warn "Шаг 5 (панель) ещё не реализован"; }
 step_6_finish()  { warn "Шаг 6 (финал) ещё не реализован"; }
 
