@@ -573,7 +573,7 @@ step_6_finish() {
   echo -e "      ${C_B}vpnpanel${C_N}        - веб-панель"
   echo
   echo -e "  Логи"
-  echo -e "      ${INSTALL_LOG}"
+  echo -e "      ${LOG_FILE}"
   echo
   echo -e "  Дальше:"
   echo -e "     1. Открой панель и создай логин/пароль"
