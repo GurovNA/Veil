@@ -3,7 +3,7 @@
 # Usage: bash install.sh [--step N] [--dry-run] [--help]
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 REPO="GurovNA/Veil"
 LOG_FILE="/var/log/veil-install.log"
 IPIFY="https://api.ipify.org"
@@ -60,6 +60,23 @@ run() {
 }
 
 # ---------- step 0: pre-flight ----------
+# Найти свободный TCP-порт, начиная с $1
+find_free_port() {
+  python3 - "$1" <<'PYFP'
+import socket, sys
+start = int(sys.argv[1])
+for p in range(start, start + 50):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("", p)); s.close()
+        print(p); sys.exit(0)
+    except OSError:
+        s.close()
+print("нет свободного порта рядом с " + str(start), file=sys.stderr)
+sys.exit(1)
+PYFP
+}
+
 step_0_preflight() {
   msg "Шаг 0: pre-flight checks"
 
@@ -135,6 +152,12 @@ step_3_telemt() {
   if [ -x /usr/bin/telemt ]; then
     ok "telemt уже установлен: $(/usr/bin/telemt --version 2>/dev/null | head -1)"
     return 0
+  fi
+
+  # если конфига ещё нет — подбираем свободный порт сейчас (python3 уже стоит после шага 1)
+  if [ ! -f /etc/telemt/telemt.toml ]; then
+    TELEMT_PORT="$(find_free_port "$TELEMT_PORT")"
+    ok "свободный порт telemt: $TELEMT_PORT"
   fi
 
   local arch variant asset_name tag url
@@ -520,6 +543,12 @@ step_5_panel() {
     return 0
   fi
 
+  # свежая установка — ищем свободный порт для панели
+  if [ ! -f /opt/vpnpanel/config.json ]; then
+    PANEL_PORT="$(find_free_port "$PANEL_PORT")"
+    ok "свободный порт панели: $PANEL_PORT"
+  fi
+
   local TAG TARBALL_URL
   TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"
@@ -540,21 +569,23 @@ step_5_panel() {
 
     # создать config.json с рандомным паролем при первой установке
     if [ ! -f /opt/vpnpanel/config.json ]; then
-      python3 - <<'PYCFG'
-import json, hashlib, os, secrets
+      python3 - "$PANEL_PORT" <<'PYCFG'
+import json, hashlib, os, secrets, sys
 CFG = "/opt/vpnpanel/config.json"
 LOG = "/opt/vpnpanel/FIRST-LOGIN.txt"
+panel_port = int(sys.argv[1])
 login = "admin"
 pw    = secrets.token_urlsafe(12)
 salt  = secrets.token_hex(16)
 h     = hashlib.sha256((salt + pw).encode()).hexdigest()
 with open(CFG, "w") as f:
-    json.dump({"login": login, "salt": salt, "pass_hash": h}, f, indent=2)
+    json.dump({"login": login, "salt": salt, "pass_hash": h,
+               "panel_port": panel_port}, f, indent=2)
 os.chmod(CFG, 0o600)
 with open(LOG, "w") as f:
     f.write(f"login:    {login}\npassword: {pw}\n")
 os.chmod(LOG, 0o600)
-print("config.json создан")
+print(f"config.json создан (panel_port={panel_port})")
 PYCFG
       ok "config.json создан (логин/пароль — в шаге 6)"
     else
@@ -658,6 +689,30 @@ main() {
 
   [ -w /var/log ] || LOG_FILE="/tmp/veil-install.log"
   : >"$LOG_FILE"
+
+  # --- Автоопределение портов ---
+  # telemt: читаем из существующего конфига, иначе ищем свободный
+  if [ -f /etc/telemt/telemt.toml ]; then
+    _t="$(grep -oP '^[[:space:]]*port[[:space:]]*=[[:space:]]*\K[0-9]+' /etc/telemt/telemt.toml 2>/dev/null | head -1)"
+    [ -n "$_t" ] && TELEMT_PORT="$_t"
+  elif command -v python3 >/dev/null 2>&1; then
+    TELEMT_PORT="$(find_free_port "$TELEMT_PORT")"
+  fi
+
+  # панель: читаем panel_port из config.json, иначе ищем свободный
+  if [ -f /opt/vpnpanel/config.json ]; then
+    _p="$(python3 -c 'import json;print(json.load(open("/opt/vpnpanel/config.json")).get("panel_port",8443))' 2>/dev/null)"
+    [ -n "$_p" ] && PANEL_PORT="$_p"
+  elif command -v python3 >/dev/null 2>&1; then
+    PANEL_PORT="$(find_free_port "$PANEL_PORT")"
+  fi
+
+  # Xray: если конфиг уже есть — читаем порт первого inbound
+  if [ -f /usr/local/etc/xray/config.json ]; then
+    _x="$(python3 -c 'import json;c=json.load(open("/usr/local/etc/xray/config.json"));ib=c.get("inbounds") or [];print(ib[0]["port"] if ib else "")' 2>/dev/null)"
+    [ -n "$_x" ] && XRAY_PORT="$_x"
+  fi
+
 
   msg "Veil installer v$VERSION (log: $LOG_FILE)"
   [ "$DRY_RUN" = "1" ] && warn "DRY-RUN режим — команды НЕ выполняются"
