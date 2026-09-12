@@ -3,6 +3,7 @@ import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, time
 import socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime
+import zipfile
 
 BASE = "/opt/vpnpanel"
 CFG = f"{BASE}/config.json"
@@ -11,10 +12,11 @@ THEME = f"{BASE}/theme.json"
 WALL = f"{BASE}/wallpaper.bin"
 HTML = f"{BASE}/index.html"
 XRAY = "/usr/local/etc/xray/config.json"
+XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.7.5"
+VERSION = "1.7.6"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -724,6 +726,130 @@ def _service_active_since(unit):
     v = out.split("=", 1)[1].strip()
     return v or None
 
+def _xray_current_version():
+    try:
+        out = subprocess.run([XRAY_BIN, "version"], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+)", out)
+        return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+def _xray_versions():
+    req = urllib.request.Request(
+        "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=40",
+        headers=_gh_headers())
+    with urllib.request.urlopen(req, timeout=20) as r:
+        rels = json.load(r)
+    vers = []
+    for rel in rels:
+        if rel.get("prerelease") or rel.get("draft"):
+            continue
+        tag = str(rel.get("tag_name") or "").lstrip("v")
+        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag) and tag not in vers:
+            vers.append(tag)
+    return vers
+
+def _xray_min_req():
+    try:
+        with open(XRAY, "r", encoding="utf-8") as f:
+            txt = f.read()
+    except Exception:
+        txt = ""
+    if '"xhttp"' in txt:
+        return (24, 9, 0)
+    return (1, 8, 0)
+
+def _xray_switch(version):
+    version = version.strip().lstrip("v")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise RuntimeError("неверный формат версии")
+    cur = _xray_current_version()
+    if cur == version:
+        raise RuntimeError("эта версия уже установлена (" + cur + ")")
+    mreq = _xray_min_req()
+    if _ver_tuple(version) < mreq:
+        need = "v24.9" if mreq[0] == 24 else "v1.8"
+        raise RuntimeError("слишком старая версия — конфиг требует xray >= " + need)
+    with tempfile.TemporaryDirectory(prefix="xray-sw-") as tmp:
+        z = os.path.join(tmp, "x.zip")
+        url = "https://github.com/XTLS/Xray-core/releases/download/v" + version + "/Xray-linux-64.zip"
+        _dl(url, z)
+        with zipfile.ZipFile(z) as arc:
+            arc.extract("xray", tmp)
+        newbin = os.path.join(tmp, "xray")
+        if not os.path.exists(newbin):
+            raise RuntimeError("в архиве нет бинаря xray")
+        os.chmod(newbin, 0o755)
+        t = subprocess.run([newbin, "run", "-test", "-config", XRAY],
+                           capture_output=True, text=True, timeout=90)
+        if t.returncode:
+            raise RuntimeError("новая версия не прошла проверку конфига: " + (t.stderr or t.stdout)[-300:])
+        bdir = os.path.join(BASE, "backups", "xray", cur)
+        os.makedirs(bdir, exist_ok=True)
+        shutil.copy2(XRAY_BIN, os.path.join(bdir, "xray"))
+        tmpbin = XRAY_BIN + ".new"
+        shutil.copy2(newbin, tmpbin)
+        os.chmod(tmpbin, 0o755)
+        os.replace(tmpbin, XRAY_BIN)
+        subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
+    return {"ok": True, "from": cur, "to": version}
+
+def _panel_backups():
+    res = []
+    try:
+        entries = sorted(os.listdir(BASE), reverse=True)
+    except Exception:
+        return res
+    for d in entries:
+        dd = os.path.join(BASE, d)
+        m = re.fullmatch(r"backup-v([0-9]+\.[0-9]+\.[0-9]+)-.*", d)
+        if m and os.path.isdir(dd) and os.path.isfile(os.path.join(dd, "panel.py")):
+            res.append({"version": m.group(1), "dir": d})
+    return res
+
+def _xray_backups():
+    res = []
+    base = os.path.join(BASE, "backups", "xray")
+    if not os.path.isdir(base):
+        return res
+    for d in sorted(os.listdir(base), reverse=True):
+        if os.path.isfile(os.path.join(base, d, "xray")):
+            res.append({"version": d})
+    return res
+
+def _panel_restore(version):
+    for b in _panel_backups():
+        if b["version"] == version:
+            dd = os.path.join(BASE, b["dir"])
+            shutil.copy2(os.path.join(dd, "panel.py"), os.path.join(BASE, "panel.py"))
+            os.chmod(os.path.join(BASE, "panel.py"), 0o755)
+            if os.path.exists(os.path.join(dd, "index.html")):
+                shutil.copy2(os.path.join(dd, "index.html"), os.path.join(BASE, "index.html"))
+            subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"])
+            return {"ok": True, "type": "panel", "version": version}
+    raise RuntimeError("бэкап панели v" + version + " не найден")
+
+def _xray_restore(version):
+    src = os.path.join(BASE, "backups", "xray", version, "xray")
+    if not os.path.isfile(src):
+        raise RuntimeError("бэкап xray v" + version + " не найден")
+    cur = _xray_current_version()
+    if cur == version:
+        raise RuntimeError("эта версия уже стоит")
+    t = subprocess.run([src, "run", "-test", "-config", XRAY],
+                       capture_output=True, text=True, timeout=90)
+    if t.returncode:
+        raise RuntimeError("бэкап не прошёл проверку конфига: " + (t.stderr or t.stdout)[-300:])
+    bdir = os.path.join(BASE, "backups", "xray", cur)
+    os.makedirs(bdir, exist_ok=True)
+    shutil.copy2(XRAY_BIN, os.path.join(bdir, "xray"))
+    tmpbin = XRAY_BIN + ".new"
+    shutil.copy2(src, tmpbin)
+    os.chmod(tmpbin, 0o755)
+    os.replace(tmpbin, XRAY_BIN)
+    subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
+    return {"ok": True, "type": "xray", "version": version}
+
 def _stats():
     xc = _load(XRAY) or {}
     clients_count = 0
@@ -926,6 +1052,16 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"port": port, "free": free,
                                     "taken_by": taken_by,
                                     "current": (st.get("inbounds") or {}).get((qs.get("proto") or [""])[0], {}).get("port")})
+        if p == "/api/xray/info":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, {"current": _xray_current_version(),
+                                        "versions": _xray_versions()})
+            except Exception as e:
+                return self._send(502, {"error": str(e)})
+        if p == "/api/versions":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups()})
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
@@ -1098,6 +1234,27 @@ class H(http.server.BaseHTTPRequestHandler):
                 c["name"] = name
                 _save(STATE, st)
                 return self._send(200, {"ok": True})
+
+            if p == "/api/xray/switch":
+                try:
+                    b = self._body()
+                    return self._send(200, _xray_switch((b.get("version") or "").strip()))
+                except urllib.error.HTTPError as e:
+                    return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/versions/restore":
+                try:
+                    b = self._body()
+                    typ = (b.get("type") or "").strip()
+                    ver = (b.get("version") or "").strip()
+                    if typ == "panel":
+                        return self._send(200, _panel_restore(ver))
+                    if typ == "xray":
+                        return self._send(200, _xray_restore(ver))
+                    return self._send(400, {"error": "неизвестный тип"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
 
             # ---- security ----
             if p == "/api/security":

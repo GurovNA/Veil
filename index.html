@@ -288,6 +288,24 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <div class=msg id=backupMsg></div>
 
     <hr>
+    <hr>
+    <h3 style="margin:0 0 8px">Ядро Xray</h3>
+    <p class=mut style="margin:0 0 10px">Смена версии ядра. Старые приложения клиентов остаются совместимыми; для reality+xhttp нужен xray &ge; v24.9. Текущий бинарь перед сменой сохраняется для отката.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span class=mut>Сейчас: <b id=xvCur>—</b></span>
+      <select id=xvSel aria-label="версия xray" style="flex:1;min-width:220px"></select>
+      <button class=sec onclick=switchXray() id=xvBtn>Сменить версию</button>
+    </div>
+    <div style="margin-top:8px"><button class="tiny sec" onclick=loadXrayInfo()>&#x27F3; Обновить список версий</button></div>
+    <div class=msg id=xvMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Версии и откат</h3>
+    <p class=mut style="margin:0 0 10px">Панель: бэкапы создаются перед каждым обновлением. Xray: каждая смена/откат сохраняют прошлый бинарь.</p>
+    <div class=mut style="font-size:12px;margin-bottom:6px">Панель:</div>
+    <div id=verPanelList></div>
+    <div class=mut style="font-size:12px;margin:10px 0 6px">Ядро Xray:</div>
+    <div id=verXrayList></div>
+    <div class=msg id=verMsg></div>
     <button class="danger" onclick=doLogout()>Выйти из панели</button>
   </div></div>
 
@@ -780,6 +798,8 @@ async function refresh(){
     await loadFix();
     await loadStats();
     await loadSettings();
+    await loadXrayInfo();
+    await loadVersions();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -873,6 +893,63 @@ async function checkUpdate(){
   }finally{b.disabled=false;}
 }
 
+
+let xrayVersions=[];
+async function loadXrayInfo(){
+  setMsg('xvMsg','Загружаю список версий...','');
+  try{
+    const d=await api('/api/xray/info');
+    $('xvCur').textContent=d.current;
+    xrayVersions=d.versions||[];
+    const sel=$('xvSel');sel.innerHTML='';
+    const cur=document.createElement('option');cur.value='';cur.textContent=d.current+' (текущая)';sel.appendChild(cur);
+    for(const v of xrayVersions){if(v===d.current)continue;const o=document.createElement('option');o.value=v;o.textContent='v'+v;sel.appendChild(o);}
+    if(sel.options.length>1)sel.selectedIndex=1;
+    $('xvMsg').textContent='';$('xvMsg').className='msg';
+  }catch(e){setMsg('xvMsg',e.message,'err');}
+}
+async function switchXray(){
+  const vers=$('xvSel').value;
+  if(!vers){setMsg('xvMsg','выбери версию','err');return;}
+  if(!confirm('Сменить ядро Xray на v'+vers+'?'))return;
+  const s=$('xvMsg');s.textContent='Скачиваю и проверяю v'+vers+'... Может занять пару минут.';s.className='msg';
+  $('xvBtn').disabled=true;
+  try{
+    const r=await api('/api/xray/switch',{method:'POST',body:JSON.stringify({version:vers})});
+    setMsg('xvMsg','Готово: '+r.from+' → '+r.to,'ok');
+    loadXrayInfo();loadVersions();
+  }catch(e){setMsg('xvMsg',e.message,'err');}finally{$('xvBtn').disabled=false;}
+}
+async function loadVersions(){
+  try{
+    const d=await api('/api/versions');
+    const p=$('verPanelList');p.innerHTML='';
+    if(!d.panel||!d.panel.length){p.innerHTML='<span class=mut style="font-size:12px">нет бэкапов панели</span>';}
+    else for(const b of d.panel){
+      const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+      const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+b.version;
+      const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';bt.onclick=()=>restoreVer('panel',b.version);
+      row.appendChild(sp);row.appendChild(bt);p.appendChild(row);
+    }
+    const x=$('verXrayList');x.innerHTML='';
+    if(!d.xray||!d.xray.length){x.innerHTML='<span class=mut style="font-size:12px">нет бэкапов xray</span>';}
+    else for(const b of d.xray){
+      const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+      const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+b.version;
+      const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';bt.onclick=()=>restoreVer('xray',b.version);
+      row.appendChild(sp);row.appendChild(bt);x.appendChild(row);
+    }
+  }catch(e){setMsg('verMsg',e.message,'err');}
+}
+async function restoreVer(type,version){
+  if(!confirm('Откатить '+(type==='panel'?'панель':'ядро Xray')+' к v'+version+'?'))return;
+  setMsg('verMsg','Откатываю...','');
+  try{
+    const r=await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type,version})});
+    if(type==='panel'){setMsg('verMsg','Бэкап применён, панель перезапускается...','ok');setTimeout(()=>{location.reload();},1500);}
+    else{setMsg('verMsg','Готово: ядро v'+r.version,'ok');loadVersions();loadXrayInfo();}
+  }catch(e){setMsg('verMsg',e.message,'err');}
+}
 async function installUpdate(){
   const b=$('installBtn');b.disabled=true;
   $('setMsg').textContent='Скачиваю, проверяю sha256, ставлю...';$('setMsg').className='msg';
