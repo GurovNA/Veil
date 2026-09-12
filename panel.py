@@ -14,7 +14,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.5.1"
+VERSION = "1.7.0"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -36,6 +36,7 @@ PROTOCOLS = [
     {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS (self-signed)",        "group": "trojan",  "net": "tcp",      "tls": True},
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS (self-signed)",       "group": "trojan",  "net": "grpc",     "tls": True},
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
+    {"id": "shadowsocks-2022",    "label": "Shadowsocks 2022 (aes-128-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
 ]
 for _p in PROTOCOLS:
     _p["group_label"] = _GROUP_LABELS.get(_p["group"], _p["group"])
@@ -45,15 +46,28 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
-          "trojan-grpc-tls": 21443, "shadowsocks": 22443,
-          "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
-          "vless-splithttp-tls": 25443}
+"trojan-grpc-tls": 21443, "shadowsocks": 22443,
+           "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
+           "vless-splithttp-tls": 25443, "shadowsocks-2022": 26443}
 CERT_DIR = f"{BASE}/certs"
 
 def _proto_meta(proto):
     return _PROTO_MAP.get(proto, _PROTO_MAP["reality"])
 
 SESSIONS = {}
+SESSIONS_FILE = f"{BASE}/sessions.json"
+
+def _save_sessions():
+    _save(SESSIONS_FILE, dict(SESSIONS))
+
+def _load_sessions():
+    try:
+        d = json.load(open(SESSIONS_FILE)) or {}
+        now = time.time()
+        keep = {k: v for k, v in d.items() if isinstance(v, (int, float)) and v > now}
+        SESSIONS.update(keep)
+    except Exception:
+        pass
 
 # ---------- helpers ----------
 
@@ -173,6 +187,9 @@ def _new_inbound(proto):
                     "dest": "www.samsung.com:443"})
     if proto == "shadowsocks":
         inb["password"] = secrets.token_urlsafe(12)
+    if proto == "shadowsocks-2022":
+        inb["password"] = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode()
+        inb["method"] = "2022-blake3-aes-128-gcm"
     if _proto_meta(proto)["tls"]:
         inb["cert"], inb["key"] = _gen_selfsigned(proto)
     return inb
@@ -215,42 +232,111 @@ def _stream_settings(proto, inb):
 
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
-    ib = {"listen": "0.0.0.0", "port": inb["port"],
+    ib = {"listen": "0.0.0.0", "port": inb["port"], "tag": proto,
           "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}}
-    if proto == "shadowsocks":
+    if proto.startswith("shadowsocks"):
         ib["protocol"] = "shadowsocks"
-        ib["settings"] = {"method": "aes-256-gcm",
+        ib["settings"] = {"method": inb.get("method") or "aes-256-gcm",
                           "password": inb.get("password") or "", "network": "tcp,udp"}
         return ib
     if proto.startswith("trojan"):
         ib["protocol"] = "trojan"
         ib["settings"] = {"clients": [
-            {"password": c.get("password") or inb.get("password"), "flow": ""}
+            {"password": c.get("password") or inb.get("password"), "flow": "",
+             "email": c["uuid"]}
             for c in inb["clients"]], "decryption": "none"}
     elif proto.startswith("vmess"):
         ib["protocol"] = "vmess"
         ib["settings"] = {"clients": [
-            {"id": c["uuid"], "alterId": 0} for c in inb["clients"]]}
+            {"id": c["uuid"], "alterId": 0, "email": c["uuid"]}
+            for c in inb["clients"]]}
     else:
         ib["protocol"] = "vless"
         flow = "xtls-rprx-vision" if proto == "reality" else ""
         ib["settings"] = {"clients": [
-            {"id": c["uuid"], "flow": flow} for c in inb["clients"]],
+            {"id": c["uuid"], "flow": flow, "email": c["uuid"]}
+            for c in inb["clients"]],
             "decryption": "none"}
     ib["streamSettings"] = _stream_settings(proto, inb)
     return ib
+
+_STATS_PORT = 10088
 
 def _write_xray(st):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
         if inb.get("clients"):
             inbounds.append(_inbound(proto, inb))
+    inbounds.append({
+        "listen": "127.0.0.1", "port": _STATS_PORT, "protocol": "dokodemo-door",
+        "settings": {"address": "127.0.0.1"}, "tag": "api"})
     cfg = {
         "log": {"loglevel": "warning"},
+        "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
+        "stats": {},
         "inbounds": inbounds,
-        "outbounds": [{"protocol": "freedom"}]
-    }
+        "outbounds": [{"protocol": "freedom"}],
+        "routing": {"rules": [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]},
+        "policy": {
+            "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True,
+                             "statsUserOnline": True}},
+            "system": {"statsInboundUplink": True, "statsInboundDownlink": True}}}
     _save(XRAY, cfg, 0o644)
+
+def _statsquery():
+    try:
+        r = subprocess.run(
+            ["xray", "api", "statsquery", "--server", f"127.0.0.1:{_STATS_PORT}",
+             "--pattern", "user>>>", "--reset", "false"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return {}
+        d = json.loads(r.stdout)
+    except Exception:
+        return {}
+    arr = d.get("stat", d.get("stats", []))
+    if not isinstance(arr, list):
+        return {}
+    out = {}
+    for s in arr:
+        parts = [x for x in str(s.get("name", "")).split(">>>") if x]
+        # user>>>email>>>traffic>>>{uplink,downlink}
+        if len(parts) < 4 or parts[0] != "user" or parts[2] != "traffic":
+            continue
+        email, direction = parts[1], parts[3]
+        if direction not in ("uplink", "downlink"):
+            continue
+        out.setdefault(email, {"uplink": 0, "downlink": 0})
+        out[email][direction] = int(s.get("value", 0) or 0)
+    return out
+
+_ONLINE_CACHE = {}
+
+def _online_count(email):
+    now = time.time()
+    hit = _ONLINE_CACHE.get(email)
+    if hit and now - hit[0] < 30:
+        return hit[1]
+    v = None
+    if len(_ONLINE_CACHE) < 200:
+        try:
+            r = subprocess.run(
+                ["xray", "api", "statsonline", "--server", f"127.0.0.1:{_STATS_PORT}",
+                 "-email", email],
+                capture_output=True, text=True, timeout=8)
+            if r.returncode == 0:
+                d = json.loads(r.stdout)
+                st = d.get("stat") or {}
+                if "value" in st:
+                    v = int(st.get("value", 0))
+                else:
+                    v = 0
+        except Exception:
+            v = None
+    _ONLINE_CACHE[email] = (now, v)
+    if len(_ONLINE_CACHE) > 200:
+        _ONLINE_CACHE.clear()
+    return v
 
 def _restart_xray():
     t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
@@ -262,12 +348,13 @@ def _restart_xray():
 def _link(inb, host, client, proto):
     meta = _proto_meta(proto)
     name = client.get("name") or "Veil"
-    if proto == "shadowsocks":
-        cred = "aes-256-gcm:" + (inb.get("password") or "")
+    if proto.startswith("shadowsocks"):
+        cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
         raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
         return f"ss://{raw}@{host}:{inb['port']}#{urllib.parse.quote(name)}"
     if proto.startswith("vmess"):
-        p = {"v": "2", "ps": name, "add": host, "port": inb["port"],
+        add = host.strip("[]")
+        p = {"v": "2", "ps": name, "add": add, "port": inb["port"],
              "id": client["uuid"], "aid": "0", "scy": "auto",
              "net": meta["net"], "type": "none", "host": "",
              "path": "/veil" if meta["net"] == "ws" else "veil",
@@ -517,6 +604,69 @@ def _find_free_port(pref=None, avoid=()):
     raise RuntimeError("нет свободного порта")
 
 
+_IPV6_CACHE = {"t": 0, "v": None}
+
+_IPV4_CACHE = {"t": 0, "v": None}
+
+def _my_ip():
+    if time.time() - _IPV4_CACHE["t"] < 300:
+        return _IPV4_CACHE["v"]
+    v = None
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            toks = line.split()
+            idx = toks.index("inet") if "inet" in toks else -1
+            if idx != -1 and idx + 1 < len(toks):
+                v = toks[idx + 1].split("/")[0]
+                break
+    except Exception:
+        pass
+    _IPV4_CACHE["t"] = time.time(); _IPV4_CACHE["v"] = v
+    return v
+
+
+def _my_ipv6():
+    if time.time() - _IPV6_CACHE["t"] < 300:
+        return _IPV6_CACHE["v"]
+    v = None
+    try:
+        out = subprocess.run(["ip", "-6", "-o", "addr", "show", "scope", "global"],
+                             capture_output=True, text=True, timeout=5).stdout
+        addrs = []
+        for line in out.splitlines():
+            parts = line.split()
+            if "inet6" not in parts:
+                continue
+            addr = parts[parts.index("inet6") + 1].split("/")[0]
+            if addr and addr not in ("::1",) and "::1" != addr:
+                addrs.append(addr)
+        for a in addrs:
+            low = a.lower()
+            if not low.startswith(("fd", "fc", "fe")) and "." not in a:
+                v = a; break
+        if not v and addrs:
+            v = addrs[0]
+    except Exception:
+        pass
+    _IPV6_CACHE.update(t=time.time(), v=v)
+    return v
+
+_LOGIN_FAILS = {}
+
+def _login_throttle(client_ip):
+    now = time.time()
+    a = [x for x in _LOGIN_FAILS.get(client_ip, []) if x > now - 600]
+    _LOGIN_FAILS[client_ip] = a
+    return len(a) >= 5
+
+def _login_fail(client_ip):
+    _LOGIN_FAILS.setdefault(client_ip, []).append(time.time())
+
+def _login_ok(client_ip):
+    _LOGIN_FAILS.pop(client_ip, None)
+
 # ---------- veil-zapret2 fix ----------
 
 import subprocess as _sp
@@ -598,6 +748,73 @@ def _stats():
         "memory_usage": memory_usage,
     }
 
+# ---------- backup / restore ----------
+
+def _backup():
+    data = {
+        "meta": {"version": VERSION, "created": int(time.time()), "app": "Veil"},
+        "panel_config": _load(CFG, {}),
+        "state": _load(STATE),
+        "theme": _load(THEME, {}),
+        "xray_config": _load(XRAY),
+        "wallpaper": None,
+        "certs": {},
+    }
+    if os.path.exists(WALL):
+        with open(WALL, "rb") as f:
+            data["wallpaper"] = base64.b64encode(f.read()).decode()
+    for proto in _VALID_PROTOCOLS:
+        if not _PROTO_MAP[proto]["tls"] and proto not in ("reality", "vless-xhttp-reality"):
+            continue
+        for ext in ("crt", "key"):
+            p = f"{CERT_DIR}/{proto}.{ext}"
+            if os.path.exists(p):
+                with open(p, "rb") as f:
+                    data["certs"][f"{proto}.{ext}"] = base64.b64encode(f.read()).decode()
+    return data
+
+def _restore(data):
+    if not isinstance(data, dict) or "state" not in data:
+        raise RuntimeError("это не файл резервной копии Veil")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    bdir = f"{BASE}/restore-backup-{ts}"
+    os.makedirs(bdir, exist_ok=True)
+    for src, name in ((CFG, "panel_config.json"), (STATE, "state.json"), (XRAY, "xray_config.json")):
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(bdir, name))
+    if isinstance(data.get("panel_config"), dict):
+        _save(CFG, data["panel_config"], 0o600)
+    st = data.get("state")
+    if isinstance(st, dict):
+        _save(STATE, st, 0o600)
+        _write_xray(st)
+    if isinstance(data.get("theme"), dict):
+        _save(THEME, data["theme"], 0o644)
+    if data.get("wallpaper"):
+        try:
+            with open(WALL, "wb") as f:
+                f.write(base64.b64decode(data["wallpaper"]))
+        except Exception:
+            pass
+    for fname, b64 in (data.get("certs") or {}).items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.(crt|key)", fname or ""):
+            continue
+        try:
+            p = os.path.join(CERT_DIR, fname)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(base64.b64decode(b64))
+            os.chmod(p, 0o644)
+        except Exception:
+            pass
+    global CFG_CACHE
+    CFG_CACHE = _load(CFG, {}) or {}
+    try:
+        _restart_xray()
+    except Exception:
+        pass
+    return {"ok": True, "restored_at": ts, "clients": _client_count(st)}
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -629,7 +846,8 @@ class H(http.server.BaseHTTPRequestHandler):
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
                    "configured": _client_count(st) > 0,
-                   "proto": _proto_of(st)}
+                   "proto": _proto_of(st),
+                   "ipv6": _my_ipv6()}
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -642,18 +860,29 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             if not st: return self._send(200, {"clients": [], "configured": False})
             if _migrate_state(st): _save(STATE, st)
-            host = self.headers.get("Host", "").split(":")[0]
+            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            ipv6 = _my_ipv6()
+            tr = _statsquery()
             out = []
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
-                    out.append({"uuid": c["uuid"], "name": c["name"],
-                                "link": _link(inb, host, c, proto),
-                                "proto": proto, "port": inb["port"],
-                                "proto_label": _proto_meta(proto)["label"],
-                                "created": c.get("created", 0)})
+                    t = tr.get(c["uuid"], {})
+                    item = {"uuid": c["uuid"], "name": c["name"],
+                            "link": _link(inb, host, c, proto),
+                            "up": t.get("uplink", 0), "down": t.get("downlink", 0),
+                            "ipv6": ipv6,
+                            "proto": proto, "port": inb["port"],
+                            "proto_label": _proto_meta(proto)["label"],
+                            "created": c.get("created", 0)}
+                    if ipv6:
+                        item["link6"] = _link(inb, f"[{ipv6}]", c, proto)
+                    if len(out) < 16:
+                        item["online"] = _online_count(c["uuid"])
+                    out.append(item)
             return self._send(200, {"clients": out,
                                     "configured": bool(out),
-                                    "active": _proto_of(st)})
+                                    "active": _proto_of(st),
+                                    "ipv6": ipv6})
         if p == "/api/update":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -669,6 +898,35 @@ class H(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(_load(THEME, {})).encode())
             return
+        if p == "/api/settings":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            st = _load(STATE, {}) or {}
+            sni = ""
+            for inb in (st.get("inbounds") or {}).values():
+                if "sni" in inb:
+                    sni = inb["sni"]; break
+            if not sni: sni = "www.samsung.com"
+            domain = (CFG_CACHE.get("panel_domain") or "").strip()
+            out = {"sni": sni, "domain": domain,
+                   "ipv4": _my_ip(), "ipv6": _my_ipv6(),
+                   "a": [], "aaaa": [], "match4": None, "match6": None}
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                d = (qs.get("dns") or [""])[0].strip()
+                if d:
+                    import socket as _s
+                    infos = _s.getaddrinfo(d, None, _s.AF_UNSPEC, _s.SOCK_STREAM)
+                    for fi in infos:
+                        ip_ = fi[4][0]
+                        if ":" in ip_:
+                            if ip_ not in out["aaaa"]: out["aaaa"].append(ip_)
+                        else:
+                            if ip_ not in out["a"]: out["a"].append(ip_)
+                    out["match4"] = out["ipv4"] in out["a"] if out["ipv4"] else None
+                    out["match6"] = out["ipv6"] in out["aaaa"] if out["ipv6"] else None
+            except Exception:
+                pass
+            return self._send(200, out)
         if p == "/wallpaper":
             if os.path.exists(WALL):
                 t = _load(THEME, {}) or {}
@@ -692,6 +950,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
+        if p == "/api/backup":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _backup())
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
@@ -700,16 +961,26 @@ class H(http.server.BaseHTTPRequestHandler):
             p = urllib.parse.urlparse(self.path).path
             if p == "/api/login":
                 b = self._body()
+                cip = self.client_address[0]
+                if _login_throttle(cip):
+                    return self._send(429, {"error": "слишком много попыток. подожди 10 минут"})
                 if not (b.get("login") == CFG_CACHE.get("login") and
                         self._is_cur_pw(b.get("password", ""))):
+                    _login_fail(cip)
                     return self._send(401, {"error": "неверный логин или пароль"})
-                t = secrets.token_hex(32); SESSIONS[t] = time.time() + 72 * 3600
-                self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=259200; SameSite=Lax"]
+                _login_ok(cip)
+                t = secrets.token_hex(32)
+                rem = bool(b.get("remember"))
+                SESSIONS[t] = time.time() + (30 * 86400 if rem else 72 * 3600)
+                _save_sessions()
+                ma = 2592000 if rem else 259200
+                self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
                 return self._send(200, {"ok": True})
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             if p == "/api/logout":
                 t = _cookie(self)
-                if t: SESSIONS.pop(t, None)
+                if t:
+                    SESSIONS.pop(t, None); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
 
@@ -732,7 +1003,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 st["active"] = proto
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
-                host = self.headers.get("Host", "").split(":")[0]
+                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 return self._send(200, {"ok": True, "link": _link(inb, host, c, proto),
                                         "port": inb["port"], "proto": proto,
                                         "name": c["name"], "uuid": c["uuid"]})
@@ -752,7 +1023,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 inb["clients"].append(c)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
-                host = self.headers.get("Host", "").split(":")[0]
+                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 return self._send(200, {"ok": True, "client": {
                     "uuid": c["uuid"], "name": c["name"],
                     "link": _link(inb, host, c, proto), "proto": proto}})
@@ -806,11 +1077,45 @@ class H(http.server.BaseHTTPRequestHandler):
                     changed = True
                 if not changed: return self._send(400, {"error": "нечего менять"})
                 _save(CFG, CFG_CACHE)
-                SESSIONS.clear()
+                SESSIONS.clear(); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True, "relogin": True})
 
             # ---- update ----
+            if p == "/api/settings":
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                raw = b""; rem = n
+                while rem > 0:
+                    ch = self.rfile.read(min(rem, 65536))
+                    if not ch: break
+                    raw += ch; rem -= len(ch)
+                try: body = json.loads(raw.decode("utf-8", "replace") or "{}")
+                except Exception: body = {}
+                sni = (body.get("sni") or "").strip()
+                domain = (body.get("domain") or "").strip()
+                if sni and not re.fullmatch(r"[A-Za-z0-9.-]+", sni):
+                    return self._send(400, {"error": "SNI: только буквы/цифры/точки/дефисы"})
+                if domain and (domain.startswith("http") or "/" in domain or " " in domain):
+                    return self._send(400, {"error": "Домен: только имя хоста (без http:// и пути)"})
+                st = _load(STATE, {}) or {}
+                for inb in (st.get("inbounds") or {}).values():
+                    if "sni" in inb:
+                        if sni: inb["sni"] = sni
+                if sni:
+                    _save(STATE, st)
+                    try: _write_xray(st)
+                    except Exception as e: return self._send(500, {"error": f"xray: {e}"})
+                    try: _restart_xray()
+                    except Exception as e: return self._send(500, {"error": f"рестарт: {e}"})
+                if "domain" in body:
+                    if domain:
+                        CFG_CACHE["panel_domain"] = domain
+                    else:
+                        CFG_CACHE.pop("panel_domain", None)
+                    _save(CFG, CFG_CACHE)
+                out = {"ok": True, "sni": sni or "", "domain": domain}
+                if sni: out["restarted"] = True
+                return self._send(200, out)
             if p == "/api/theme":
                 n = int(self.headers.get("Content-Length", "0") or 0)
                 raw = self.rfile.read(n) if n else b""
@@ -888,6 +1193,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
 
+            if p == "/api/backup":
+                try:
+                    return self._send(200, _restore(self._body()))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
 
             return self._send(404, {"error": "not found"})
         except Exception as e:
@@ -900,5 +1210,16 @@ class S(socketserver.ThreadingTCPServer):
 if __name__ == "__main__":
     port = CFG_CACHE.get("panel_port", 8443)
     print("Veil " + VERSION + " слушает :" + str(port), flush=True)
+    _load_sessions()
+    try:
+        st = _load(STATE)
+        xc = _load(XRAY)
+        if (st and _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
+                (ib or {}).get("tag") == "api" for ib in (xc.get("inbounds") or [])))):
+            print("migrate: добавляю статистику/API в конфиг Xray", flush=True)
+            _write_xray(st)
+            _restart_xray()
+    except Exception as e:
+        print("migrate error: " + str(e), flush=True)
     with S(("0.0.0.0", port), H) as srv:
         srv.serve_forever()
