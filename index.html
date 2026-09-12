@@ -209,8 +209,9 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <h2>Настройки</h2>
     <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
     <p class=mut>Текущая версия: <b id=curVer>—</b></p>
-    <label class=mut style="display:block;margin-top:10px">SNI (Reality, маскировка):
-      <input id=setSni maxlength=64 style="margin-top:4px"></label>
+    <label class=mut style="display:block;margin-top:10px">SNI (по протоколам, маскировка):
+      <div id=sniBox style="margin-top:4px"></div></label>
+    <button class=sec onclick=saveSni() id=saveSniBtn disabled style="margin-top:8px">Сохранить SNI</button>
     <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
       <input id=setDomain maxlength=255 style="margin-top:4px"></label>
     <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
@@ -372,7 +373,9 @@ const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(
 const groupColor=g=>groupColors[g]||'var(--g-vless)';
 
 async function api(p,o){
-  const r=await fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},o||{}));
+  const h={'Content-Type':'application/json'};
+  if(!document.cookie.match(/(^|;)\s*sid=/)){const x=localStorage.getItem('veil_sid');if(x)h['X-Sid']=x;}
+  const r=await fetch(p,Object.assign({credentials:'same-origin',headers:h},o||{}));
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
   return d;
@@ -381,11 +384,19 @@ async function api(p,o){
 async function doLogin(){
   $('loginMsg').textContent='';
   try{
-    await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value,remember:$('remMe').checked})});
+    const d=await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value,remember:$('remMe').checked})});
+    if(d.sid){
+      if(d.remember)localStorage.setItem('veil_sid',d.sid);
+      else localStorage.removeItem('veil_sid');
+    }
     await refresh();
   }catch(e){$('loginMsg').textContent=e.message;}
 }
-async function doLogout(){ try{await api('/api/logout',{method:'POST'});}catch(e){} location.reload(); }
+async function doLogout(){
+  try{await api('/api/logout',{method:'POST'});}catch(e){}
+  localStorage.removeItem('veil_sid');
+  location.reload();
+}
 
 function applyState(s){
   $('ver').textContent='v'+s.version;
@@ -528,17 +539,55 @@ async function toast(html, cls){
   c.onclick=()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);};
   setTimeout(()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);},3600);
 }
+let ss_cur_sni='',sni_listed=[];
 async function loadSettings(){
   try{const s=await api('/api/settings');
-    $('setSni').value=s.sni||'';
+    sni_listed=s.sni_list||[];
+    const box=$('sniBox');
+    box.innerHTML='';
+    let cur='';
+    const rows=sni_listed.length?sni_listed:[{proto:'',label:'(протокол не настроен)',sni:ss_cur_sni||s.sni||'www.samsung.com'}];
+    rows.forEach((r,i)=>{
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap';
+      const lbl=document.createElement('span');lbl.style.cssText='min-width:210px;font-size:13px';lbl.textContent=r.label;
+      const inp=document.createElement('input');
+      inp.id='sniInp'+i;inp.maxLength=64;inp.style.cssText='flex:1;min-width:140px';
+      inp.value=r.sni||'';
+      inp.addEventListener('input',()=>{$('saveSniBtn').disabled=false;});
+      row.appendChild(lbl);row.appendChild(inp);
+      box.appendChild(row);
+      if(i===0)cur=r.sni||'';
+    });
+    ss_cur_sni=cur;
+    $('saveSniBtn').disabled=true;
     $('setDomain').value=s.domain||'';
-    let h='\u2611 SNI: '+s.sni;
+    let h='\u2611 SNI: '+cur;
     if(s.ipv4)h+='<br>\uD83C\uDF10 IPv4: '+s.ipv4;
     if(s.ipv6)h+='<br>\uD83C\uDF10 IPv6: '+s.ipv6;
     if(s.a&&s.a.length)h+='<br>\u2699 A домена: '+s.a.join(', ');
     if(s.aaaa&&s.aaaa.length)h+='<br>\u2699 AAAA домена: '+s.aaaa.join(', ');
     setMsg('setMsg2',h,'ok',false);
   }catch(e){setMsg('setMsg2',e.message,'err');}
+}
+async function saveSni(){
+  const rows=$('sniBox').children;
+  const jobs=[];
+  for(let i=0;i<rows.length;i++){
+    const inp=document.getElementById('sniInp'+i);
+    if(!inp)continue;
+    jobs.push({proto:(sni_listed[i]||{}).proto||'',sni:inp.value.trim()});
+  }
+  $('saveSetSpn').textContent='\u23F3 Сохраняю SNI...';
+  try{
+    for(const j of jobs){
+      if(!j.proto||!j.sni)continue;
+      await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proto:j.proto,sni:j.sni})});
+    }
+    setMsg('setMsg2','\u2705 SNI сохранён'+(jobs.some(j=>j.proto)?' (XRay перезапущен)':''),'ok');
+    await loadSettings();
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+  finally{$('saveSetSpn').textContent='';}
 }
 async function checkDns(){
   const d=$('setDomain').value.trim();
@@ -556,16 +605,12 @@ async function checkDns(){
   }catch(e){setMsg('setMsg2',e.message,'err');}
 }
 async function saveSettings(){
-  const sni=$('setSni').value.trim();
   const domain=$('setDomain').value.trim();
-  const body={};
-  if(sni)body.sni=sni;
-  if(domain)body.domain=domain;
-  if(!Object.keys(body).length){setMsg('setMsg2','Заполни хотя бы одно поле','err');return;}
+  if(!domain){setMsg('setMsg2','Заполни домен для ссылок','err');return;}
   $('saveSetSpn').textContent='\u23F3 Сохраняю...';
   try{
-    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    setMsg('setMsg2','\u2705 SNI='+s.sni+' Домен='+(s.domain||'\u2014')+(s.restarted?' (XRay перезапущен)':''),'ok');
+    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:domain})});
+    setMsg('setMsg2','\u2705 Домен='+(s.domain||'\u2014'),'ok');
   }catch(e){setMsg('setMsg2',e.message,'err');}
   finally{$('saveSetSpn').textContent='';}
 }
