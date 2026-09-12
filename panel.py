@@ -505,6 +505,8 @@ def _cookie(self):
 
 def _authed(self):
     t = _cookie(self)
+    if t is None:
+        t = (self.headers.get("X-Sid") or "").strip() or None
     e = SESSIONS.get(t) if t else None
     return bool(e and e > time.time())
 
@@ -902,12 +904,14 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
             sni = ""
-            for inb in (st.get("inbounds") or {}).values():
+            sni_list = []
+            for proto, inb in (st.get("inbounds") or {}).items():
                 if "sni" in inb:
-                    sni = inb["sni"]; break
+                    if not sni: sni = inb["sni"]
+                    sni_list.append({"proto": proto, "label": _proto_meta(proto)["label"], "sni": inb["sni"]})
             if not sni: sni = "www.samsung.com"
             domain = (CFG_CACHE.get("panel_domain") or "").strip()
-            out = {"sni": sni, "domain": domain,
+            out = {"sni": sni, "sni_list": sni_list, "domain": domain,
                    "ipv4": _my_ip(), "ipv6": _my_ipv6(),
                    "a": [], "aaaa": [], "match4": None, "match6": None}
             try:
@@ -975,10 +979,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 _save_sessions()
                 ma = 2592000 if rem else 259200
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
-                return self._send(200, {"ok": True})
+                return self._send(200, {"ok": True, "sid": t, "remember": rem})
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             if p == "/api/logout":
                 t = _cookie(self)
+                if t is None:
+                    t = (self.headers.get("X-Sid") or "").strip() or None
                 if t:
                     SESSIONS.pop(t, None); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
@@ -1092,16 +1098,29 @@ class H(http.server.BaseHTTPRequestHandler):
                 try: body = json.loads(raw.decode("utf-8", "replace") or "{}")
                 except Exception: body = {}
                 sni = (body.get("sni") or "").strip()
+                proto = (body.get("proto") or "").strip()
                 domain = (body.get("domain") or "").strip()
                 if sni and not re.fullmatch(r"[A-Za-z0-9.-]+", sni):
                     return self._send(400, {"error": "SNI: только буквы/цифры/точки/дефисы"})
                 if domain and (domain.startswith("http") or "/" in domain or " " in domain):
                     return self._send(400, {"error": "Домен: только имя хоста (без http:// и пути)"})
                 st = _load(STATE, {}) or {}
-                for inb in (st.get("inbounds") or {}).values():
-                    if "sni" in inb:
-                        if sni: inb["sni"] = sni
+                changed = False
                 if sni:
+                    if proto:
+                        inb = (st.get("inbounds") or {}).get(proto)
+                        if not inb or "sni" not in inb:
+                            return self._send(400, {"error": "Такой протокол не настроен или не использует SNI"})
+                        inb["sni"] = sni
+                        if inb.get("dest"): inb["dest"] = sni + ":443"
+                        changed = True
+                    else:
+                        for inb in (st.get("inbounds") or {}).values():
+                            if "sni" in inb:
+                                inb["sni"] = sni
+                                if inb.get("dest"): inb["dest"] = sni + ":443"
+                        changed = True
+                if changed:
                     _save(STATE, st)
                     try: _write_xray(st)
                     except Exception as e: return self._send(500, {"error": f"xray: {e}"})
@@ -1113,8 +1132,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     else:
                         CFG_CACHE.pop("panel_domain", None)
                     _save(CFG, CFG_CACHE)
-                out = {"ok": True, "sni": sni or "", "domain": domain}
-                if sni: out["restarted"] = True
+                out = {"ok": True, "sni": sni or "", "proto": proto or "", "domain": domain}
+                if changed: out["restarted"] = True
                 return self._send(200, out)
             if p == "/api/theme":
                 n = int(self.headers.get("Content-Length", "0") or 0)
