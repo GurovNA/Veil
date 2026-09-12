@@ -29,6 +29,7 @@ input,button{width:100%;padding:11px 14px;margin:7px 0;border-radius:12px;font-s
 input{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);transition:border-color .18s,box-shadow .18s}
 input:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
 input[type=color]{padding:4px;height:42px;cursor:pointer}
+input[type=checkbox]{width:auto;height:15px;padding:0;margin:0;accent-color:var(--acc);cursor:pointer}
 select{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);border-radius:12px;padding:9px 12px;font-size:14px;font-family:inherit;max-width:100%;cursor:pointer;transition:border-color .18s,box-shadow .18s}
 select:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
 select optgroup{background:var(--card);color:var(--fg);font-weight:700}
@@ -63,6 +64,19 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .client .actions{display:flex;gap:6px;flex-shrink:0}
 .client .link-row{margin-top:10px}
 .client code{display:block;background:color-mix(in srgb,var(--bg) 72%,transparent);border:1px solid var(--br);border-radius:9px;padding:9px;font-size:11px;word-break:break-all;color:var(--fg);max-height:60px;overflow:auto;font-family:ui-monospace,monospace}
+.client .traffic{display:flex;gap:14px;margin-top:10px;font-size:12px;color:var(--mut);align-items:center;flex-wrap:wrap}
+.client .traffic .t-up{color:var(--ok)}
+.client .traffic .t-down{color:var(--g-vmess)}
+.client .traffic .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin:0 4px 0 0;vertical-align:middle;background:var(--mut)}
+.client .traffic .dot.on{background:var(--ok);box-shadow:0 0 8px color-mix(in srgb,var(--ok) 60%,transparent);animation:pulse 2s ease-in-out infinite}
+#toasts{position:fixed;top:14px;right:14px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:320px}
+.toast{padding:10px 14px;border-radius:12px;background:var(--card);border:1px solid var(--br);box-shadow:0 10px 24px rgba(0,0,0,.4);font-size:13px;cursor:pointer;animation:toastIn .25s ease}
+.toast.ok{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}
+.toast.err{border-color:color-mix(in srgb,var(--err) 60%,transparent)}
+.toast.out{opacity:0;transform:translateY(-6px);transition:.35s}
+@keyframes toastIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+#thPresets{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+#thPresets button{width:auto;padding:8px 14px;font-size:13px}
 .tabs{display:flex;gap:4px;margin-bottom:22px;background:color-mix(in srgb,var(--card) 65%,transparent);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid color-mix(in srgb,var(--br) 82%,transparent);border-radius:16px;padding:6px;box-shadow:0 10px 28px rgba(0,0,0,.35)}
 .tabs button{background:transparent;color:var(--mut);border:0;padding:10px 12px;margin:0;font-weight:700;border-radius:11px;width:auto;flex:1;font-size:14px;transition:color .18s,background .18s,box-shadow .2s;box-shadow:none}
 .tabs button:hover{color:var(--fg);background:color-mix(in srgb,var(--fg) 7%,transparent)}
@@ -111,6 +125,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
   <p class=mut>Логин и пароль выданы при установке</p>
   <input id=l placeholder=логин autocomplete=username>
   <input id=p type=password placeholder=пароль autocomplete=current-password>
+  <label class=mut style="display:flex;align-items:center;gap:7px;font-size:13px;line-height:1.3;margin:4px 0 10px;white-space:nowrap"><input type=checkbox id=remMe> Запомнить меня (30 дней)</label>
   <button onclick=doLogin()>Войти</button>
   <div class="msg err" id=loginMsg></div>
 </div>
@@ -194,9 +209,27 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <h2>Настройки</h2>
     <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
     <p class=mut>Текущая версия: <b id=curVer>—</b></p>
+    <label class=mut style="display:block;margin-top:10px">SNI (Reality, маскировка):
+      <input id=setSni maxlength=64 style="margin-top:4px"></label>
+    <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
+      <input id=setDomain maxlength=255 style="margin-top:4px"></label>
+    <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
+    <div style="margin-top:10px">
+      <button class=sec onclick=checkDns()>⚙ Проверить A-запись</button>
+      <span id=saveSetSpn style="margin-left:10px"></span>
+    </div>
+    <div class=msg id=setMsg2></div>
     <button class=sec id=checkBtn onclick=checkUpdate()>Проверить обновления</button>
     <button id=installBtn class="hidden" onclick=installUpdate() style="margin-top:6px">Установить</button>
     <div class=msg id=setMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Резервное копирование</h3>
+    <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
+    <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
+    <button class=sec onclick=restorePick() id=restoreBtn style="margin-left:8px">⬆ Восстановить из файла</button>
+    <input type=file id=fold-backup accept=".json,.backup" class=hidden onchange=restoreFile(this)>
+    <div class=msg id=backupMsg></div>
+
     <hr>
     <button class="danger" onclick=doLogout()>Выйти из панели</button>
   </div></div>
@@ -223,6 +256,18 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
     <button onclick=saveTheme()>Сохранить цвета</button>
     <button class=sec onclick=resetTheme() style="margin-left:8px">Сбросить</button>
+    <div style="margin:12px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
+      <div id=thPresets style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">🌑🟣 Сирень</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
+      </div>
+    </div>
+
     <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
     <h3 style="margin:0 0 8px">Обои</h3>
     <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
@@ -257,6 +302,68 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 </div>
 
 </div><script>
+
+const TH_PRESETS={
+  'Тёмная':           {bg:'0b1023',card:'151c3d',fg:'eef2ff',mut:'a3aede',acc:'6d5df6'},
+  'Тёмная-сирень':    {bg:'120b28',card:'1d1440',fg:'f3edff',mut:'b3a6d8',acc:'8b5cf6'},
+  'Изумруд':          {bg:'0a1f16',card:'123324',fg:'e8fff5',mut:'9fbfae',acc:'10b981'},
+  'Океан':            {bg:'0a1626',card:'122640',fg:'e8f4ff',mut:'96b3cf',acc:'0ea5e9'},
+  'Светлая':          {bg:'eef1f9',card:'ffffff',fg:'1b2132',mut:'6b7385',acc:'6d5df6'},
+  'Неон':             {bg:'070919',card:'0f1430',fg:'eef2ff',mut:'8899c7',acc:'22d3ee'},
+};
+function applyThemePreset(name){
+  const p=TH_PRESETS[name];
+  if(!p)return;
+  ['th-bg','th-card','th-fg','th-mut','th-acc'].forEach((id,i)=>{
+    const v=Object.values(p)[i];
+    if(v)$('th-'+id.slice(3)).value='#'+v;
+  });
+  saveTheme();
+  toast(name+'-тема применена','ok');
+}
+async function makeBackup(){
+  const btn=$('backupBtn');if(btn)btn.disabled=true;
+  $('backupMsg').textContent='Собираю бэкап...';$('backupMsg').className='msg';
+  try{
+    const d=await api('/api/backup');
+    const blob=new Blob([JSON.stringify(d,null,1)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download='vpnpanel-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);document.body.removeChild(a);
+    $('backupMsg').textContent='Бэкап сохранён в файл';$('backupMsg').className='msg ok';
+    toast('Бэкап скачан','ok');
+  }catch(e){
+    $('backupMsg').textContent=e.message;$('backupMsg').className='msg err';
+  }finally{if(btn)btn.disabled=false;}
+}
+function restorePick(){
+  $('fold-backup').click();
+}
+async function restoreFile(file){
+  const f=file.files&&file.files[0];if(!f)return;
+  $('backupMsg').textContent='Восстанавливаю...';$('backupMsg').className='msg';
+  const btn=$('restoreBtn');if(btn)btn.disabled=true;
+  try{
+    const txt=await f.text();
+    await api('/api/backup',{method:'POST',body:txt,headers:{'Content-Type':'application/json'}});
+    $('backupMsg').textContent='Панель восстановлена';$('backupMsg').className='msg ok';
+    toast('Бэкап применён','ok');
+    await refresh();
+  }catch(e){
+    $('backupMsg').textContent=e.message;$('backupMsg').className='msg err';
+  }finally{if(btn)btn.disabled=false;file.value='';}
+}
+async function autoCheckForUpdate(){
+  try{
+    const u=await api('/api/update');
+    if(u.update_available){
+      toast('Доступна версия v'+u.latest,'ok');
+      const _in=$('installBtn');
+      if(_in){_in.textContent='Установить v'+u.latest;_in.classList.remove('hidden');}
+    }
+  }catch(e){ /* тихо — панель не должна капризничать без сети */ }
+}
+
 const $=id=>document.getElementById(id);
 let clients=[];
 let protoLabels={};
@@ -274,7 +381,7 @@ async function api(p,o){
 async function doLogin(){
   $('loginMsg').textContent='';
   try{
-    await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value})});
+    await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value,remember:$('remMe').checked})});
     await refresh();
   }catch(e){$('loginMsg').textContent=e.message;}
 }
@@ -286,6 +393,15 @@ function applyState(s){
   $('stTxt').textContent=s.running?'Xray работает':'Xray остановлен';
   if(s.login)$('curLogin').textContent=s.login;
   $('curVer').textContent='v'+s.version;
+}
+
+function fmtBytes(n){
+  n=Number(n)||0;
+  if(n<1024)return Math.round(n)+' Б';
+  const u=['КБ','МБ','ГБ','ТБ','ПБ'];
+  let i=-1;
+  do{n/=1024;i++;}while(n>=1024&&i<u.length-1);
+  return (n>=100?Math.round(n):n.toFixed(1))+' '+u[i];
 }
 
 function renderClients(){
@@ -303,6 +419,7 @@ function renderClients(){
           <div class=uuid></div>
         </div>
         <div class=actions>
+          <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
           <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
           <button class="tiny sec" data-act=qr>QR</button>
           <button class="tiny sec" data-act=copy>Копировать</button>
@@ -311,6 +428,8 @@ function renderClients(){
       </div>
       <div class="link-row">
         <code></code>
+      </div>
+      <div class=traffic>
       </div>`;
     div.querySelector('.name').textContent=c.name;
     div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
@@ -318,9 +437,21 @@ function renderClients(){
     div.querySelector('code').textContent=c.link;
     const _qrBtn = div.querySelector('[data-act=qr]');
     if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
+    div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
+    if(c.link6){div.querySelector('[data-act=v6]').classList.remove('hidden');}
     div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
     div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
     div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
+    div.querySelector('.traffic').innerHTML=`
+      <span class="t-up" title="Принято клиентом"><span class=t-ico>⬇</span><b></b></span>
+      <span class="t-down" title="Отправлено клиенту"><span class=t-ico>⬆</span><b></b></span>
+      <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
+    `;
+    const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
+    if(_up)_up.textContent=fmtBytes(c.up||0);
+    if(_down)_down.textContent=fmtBytes(c.down||0);
+    const _dot=div.querySelector('.t-online .dot');
+    if(_dot&&c.online){_dot.classList.add('on');div.querySelector('.t-online .t-otxt').textContent='онлайн';}
     box.appendChild(div);
   });
 }
@@ -390,6 +521,54 @@ function setupProtoBtn(){
   }
 }
 
+async function toast(html, cls){
+  const c=document.createElement('div'); c.className='toast '+(cls||'');
+  c.innerHTML=html;
+  $('toasts').appendChild(c);
+  c.onclick=()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);};
+  setTimeout(()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);},3600);
+}
+async function loadSettings(){
+  try{const s=await api('/api/settings');
+    $('setSni').value=s.sni||'';
+    $('setDomain').value=s.domain||'';
+    let h='\u2611 SNI: '+s.sni;
+    if(s.ipv4)h+='<br>\uD83C\uDF10 IPv4: '+s.ipv4;
+    if(s.ipv6)h+='<br>\uD83C\uDF10 IPv6: '+s.ipv6;
+    if(s.a&&s.a.length)h+='<br>\u2699 A домена: '+s.a.join(', ');
+    if(s.aaaa&&s.aaaa.length)h+='<br>\u2699 AAAA домена: '+s.aaaa.join(', ');
+    setMsg('setMsg2',h,'ok',false);
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+}
+async function checkDns(){
+  const d=$('setDomain').value.trim();
+  if(!d){setMsg('setMsg2','Введи домен','err');return;}
+  $('dnsRes').textContent='\u23F3 Проверяю A/AAAA...';
+  try{
+    const s=await api('/api/settings?dns='+encodeURIComponent(d));
+    let h='\u2699 A: '+(s.a&&s.a.length?s.a.join(', '):'\u2014');
+    h+=' &nbsp; AAAA: '+(s.aaaa&&s.aaaa.length?s.aaaa.join(', '):'\u2014');
+    if(s.match4===true)h+='<br>\u2705 IPv4 \u2014 ваша A-запись указывает на этот сервер';
+    else if(s.match4===false)h+='<br>\u26D4 IPv4 \u2014 A-запись НЕ указывает на сервер';
+    if(s.match6===true)h+='<br>\u2705 IPv6 \u2014 ваша AAAA-запись указывает на этот сервер';
+    else if(s.match6===false)h+='<br>\u26D4 IPv6 \u2014 AAAA-запись НЕ указывает на сервер';
+    $('dnsRes').innerHTML=h;
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+}
+async function saveSettings(){
+  const sni=$('setSni').value.trim();
+  const domain=$('setDomain').value.trim();
+  const body={};
+  if(sni)body.sni=sni;
+  if(domain)body.domain=domain;
+  if(!Object.keys(body).length){setMsg('setMsg2','Заполни хотя бы одно поле','err');return;}
+  $('saveSetSpn').textContent='\u23F3 Сохраняю...';
+  try{
+    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    setMsg('setMsg2','\u2705 SNI='+s.sni+' Домен='+(s.domain||'\u2014')+(s.restarted?' (XRay перезапущен)':''),'ok');
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+  finally{$('saveSetSpn').textContent='';}
+}
 async function refresh(){
   try{
     const s=await api('/api/state');
@@ -401,6 +580,7 @@ async function refresh(){
     await loadTg();
     await loadFix();
     await loadStats();
+    await loadSettings();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -712,6 +892,7 @@ document.getElementById('qrModal').addEventListener('click', function(e){
 });
 
 refresh();
+autoCheckForUpdate();
 
 // ---- Тема / оформление ----
 function applyTheme(t){
@@ -787,4 +968,5 @@ loadTheme();
     <div id=qrErr class="msg err"></div>
   </div>
 </div>
+<div id=toasts></div>
 </body></html>
