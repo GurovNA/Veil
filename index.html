@@ -113,6 +113,21 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 .stat-ico{font-size:20px;margin-bottom:4px}
 .stat-tile b{font-size:17px;display:block;word-break:break-word}
 .stat-tile .mut{font-size:11px;margin-top:2px}
+.mini-stats{display:flex;flex-wrap:wrap;gap:12px;margin-top:14px;animation:fadeIn .4s ease}
+.mstat{flex:1 1 150px;max-width:220px;display:flex;align-items:center;gap:12px;border:1px solid var(--br);border-radius:16px;padding:12px 14px;background:color-mix(in srgb,var(--card2) 62%,transparent)}
+.mstat .cap{font-size:11px;color:var(--mut);line-height:1.25;margin-top:2px}
+.mstat b{font-size:16px;display:block;font-variant-numeric:tabular-nums}
+.mstat .m-ico{font-size:22px;flex:none}
+.gauge{position:relative;width:46px;height:46px;flex:none}
+.gauge svg{transform:rotate(-90deg);width:46px;height:46px;display:block}
+.gauge .gbg{fill:none;stroke:color-mix(in srgb,var(--br) 55%,transparent);stroke-width:4}
+.gauge .gval{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100;transition:stroke-dashoffset 1s cubic-bezier(.4,0,.2,1)}
+.gauge .gval.g-disk{stroke:var(--g-vmess)}
+.gauge .gval.g-mem{stroke:var(--ok)}
+.gauge .gv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+@keyframes pulseUptime{0%{opacity:1}50%{opacity:.45}100%{opacity:1}}
+#stXrayUp{animation:pulseUptime 2.2s ease-in-out infinite}
+
 .dialog{background:color-mix(in srgb,var(--bg) 84%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 10px 26px rgba(0,0,0,.35)}
 .dialog input{margin:6px 0}
 .dialog .row{margin-bottom:6px}
@@ -151,7 +166,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
   <nav class=tabs>
     <button data-tab=vpn class=active>🛡 VPN</button>
     <button data-tab=settings>⚙️ Настройки</button>
-    <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button><button data-tab=stats>📊 Статистика</button>
+    <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active">
@@ -159,6 +174,31 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <div class=row><h1 class=brand>Veil</h1><span class=ver-pill id=ver></span></div>
       <p class=subtitle>VPN · Telegram · анти-DPI</p>
       <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
+    </div>
+
+    <div class="mini-stats">
+      <div class="mstat m-up">
+        <div class="m-ico">🚀</div>
+        <div style="min-width:0"><b id=stXrayUp>—</b><div class=cap>Аптайм Xray</div></div>
+      </div>
+      <div class="mstat m-cl">
+        <div class="m-ico">👥</div>
+        <div style="min-width:0"><b id=stClients2>0</b><div class=cap>Клиенты</div></div>
+      </div>
+      <div class="mstat m-disk">
+        <div class=gauge>
+          <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-disk" id=stDiskGauge cx=18 cy=18 r=15.9></circle></svg>
+          <div class=gv id=stDiskV>0%</div>
+        </div>
+        <div style="min-width:0"><b id=stDiskT>—</b><div class=cap>Диск /</div></div>
+      </div>
+      <div class="mstat m-mem">
+        <div class=gauge>
+          <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-mem" id=stMemGauge cx=18 cy=18 r=15.9></circle></svg>
+          <div class=gv id=stMemV>0%</div>
+        </div>
+        <div style="min-width:0"><b id=stMemT>—</b><div class=cap>Память</div></div>
+      </div>
     </div>
 
     <div class=card>
@@ -293,20 +333,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <button onclick=doSaveSecurity()>Сохранить</button>
     <div class=msg id=secMsg></div>
   </div></div>
-  <div id=tab-stats class="tab-pane"><div class=card>
-    <h2>Статистика</h2>
-    <div class=stat-grid>
-      <div class="stat-tile b-xray"><div class=stat-ico>🚀</div><b id=stXray>—</b><div class=mut>Аптайм Xray</div></div>
-      <div class="stat-tile b-tg"><div class=stat-ico>📨</div><b id=stTelemt>—</b><div class=mut>Аптайм telemt</div></div>
-      <div class="stat-tile b-ok"><div class=stat-ico>👥</div><b id=stClients>—</b><div class=mut>Клиенты в конфиге</div></div>
-    </div>
-    <hr>
-    <p class=mut style="margin:0 0 6px">💾 Диск (/) — <span id=stDiskLabel>—</span></p>
-    <div class=bar><div class=bar-fill id=stDiskFill></div></div>
-    <p class=mut style="margin:16px 0 6px">🧠 Память — <span id=stMemLabel>—</span></p>
-    <div class=bar><div class=bar-fill id=stMemFill></div></div>
-    <p class=mut style="margin-top:12px">Обновляется автоматически каждые 30 секунд.</p>
-  </div></div>
+
 </div>
 
 </div><script>
@@ -997,25 +1024,50 @@ async function toggleFix(){
   }
 }
 
-// ---- Статистика ----
-async function loadStats(){
-  if ($('panel').style.display === 'none') return;
-  try{
-    const s = await api('/api/stats');
-    $('stXray').textContent = s.uptime_xray || 'не запущен';
-    $('stTelemt').textContent = s.uptime_telemt || 'не запущен';
-    $('stClients').textContent = (s.clients_count || 0) + ' шт.';
-    if (s.disk_usage){
-      $('stDiskLabel').textContent = s.disk_usage.used + ' из ' + s.disk_usage.total;
-      $('stDiskFill').style.width = Math.min(100, s.disk_usage.percent) + '%';
-    }
-    if (s.memory_usage){
-      $('stMemLabel').textContent = s.memory_usage.used_mb + ' МБ из ' + s.memory_usage.total_mb + ' МБ';
-      $('stMemFill').style.width = Math.min(100, s.memory_usage.percent) + '%';
-    }
-  }catch(e){ /* ignore */ }
+// ---- Статистика (мини-полоса на главной) ----
+let _prevStats={};
+function animateCount(el,target,opts){
+  opts=opts||{};
+  const suffix=opts.suffix||'',decimals=opts.decimals||0,dur=opts.dur||700;
+  if(!el)return;
+  const prev=_prevStats[el.id];
+  _prevStats[el.id]=target;
+  const from=typeof prev==='number'?prev:0;
+  if(target===from){el.textContent=target.toFixed(decimals)+suffix;return;}
+  const t0=performance.now();
+  const step=t=>{
+    const p=Math.min(1,(t-t0)/dur);
+    const e=1-Math.pow(1-p,3);
+    el.textContent=(from+(target-from)*e).toFixed(decimals)+suffix;
+    if(p<1)requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
-setInterval(loadStats, 30000);
+async function loadStats(){
+  if($('panel').style.display==='none')return;
+  try{
+    const s=await api('/api/stats');
+    $('stXrayUp').textContent=s.uptime_xray||'не запущен';
+    animateCount($('stClients2'),s.clients_count||0,{suffix:' шт.'});
+    const disk=s.disk_usage;
+    if(disk){
+      const pct=Math.min(100,disk.percent||0);
+      const g=$('stDiskGauge');
+      if(g)g.style.strokeDashoffset=100-pct;
+      animateCount($('stDiskV'),pct,{suffix:'%'});
+      $('stDiskT').textContent=disk.used+' / '+disk.total;
+    }
+    const mem=s.memory_usage;
+    if(mem){
+      const pct=Math.min(100,mem.percent||0);
+      const g=$('stMemGauge');
+      if(g)g.style.strokeDashoffset=100-pct;
+      animateCount($('stMemV'),pct,{suffix:'%'});
+      $('stMemT').textContent=mem.used_mb+' из '+mem.total_mb+' МБ';
+    }
+  }catch(e){}
+}
+setInterval(loadStats,30000);
 
 document.querySelectorAll('.tabs button').forEach(b=>{
   b.addEventListener('click',()=>{
