@@ -14,7 +14,7 @@ XRAY = "/usr/local/etc/xray/config.json"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.7.0"
+VERSION = "1.7.3"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -1046,11 +1046,17 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"
+                want_proto = (b.get("proto") or "").strip()
                 st = _load(STATE)
                 if st is None:
-                    st = _new_state("reality")
+                    st = _new_state(want_proto or "reality")
                 _migrate_state(st)
-                proto = _proto_of(st)
+                if want_proto:
+                    if want_proto not in _VALID_PROTOCOLS:
+                        return self._send(400, {"error": "неизвестный протокол"})
+                    proto = want_proto
+                else:
+                    proto = _proto_of(st)
                 inb = _alloc_inbound(st, proto)
                 st["inbounds"][proto] = inb
                 c = _new_client(name, proto)

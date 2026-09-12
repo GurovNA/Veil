@@ -55,7 +55,24 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .status-line{display:flex;align-items:center;gap:2px;margin:12px 0 0;font-size:13.5px}
 .proto-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.3px;border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 55%,transparent);background:color-mix(in srgb,var(--gc,var(--g-vless)) 15%,transparent);color:var(--gc,var(--g-vless))}
 .clients{display:flex;flex-direction:column;gap:10px}
-.client{position:relative;border:1px solid var(--br);border-left:4px solid var(--gc,var(--g-vless));border-radius:14px;padding:14px 16px;background:linear-gradient(180deg,color-mix(in srgb,var(--card2) 72%,transparent),color-mix(in srgb,var(--bg2) 78%,transparent));transition:border-color .18s,transform .18s,box-shadow .2s}
+
+#protoCards{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.pgroup{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin:12px 4px 4px;opacity:.55;display:flex;align-items:center;gap:8px}
+.pcard{border:1px solid var(--br);border-radius:14px;background:color-mix(in srgb,var(--card2) 55%,transparent);transition:border-color .18s}
+.prow{display:flex;align-items:center;gap:10px;padding:9px 12px}
+.pacc{width:34px;height:34px;flex:none;border-radius:10px;font-size:20px;line-height:1;padding:0;font-weight:700;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--gc,var(--g-vless));border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer}
+.pname{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--gc,var(--g-vless));text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
+.pcheck{position:relative;width:36px;height:36px;flex:none;border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--mut);border-radius:10px}
+.pcheck:hover{background:color-mix(in srgb,var(--acc) 20%,transparent)}
+.pbody{display:flex;flex-direction:column;gap:10px;padding:2px 12px 12px}
+.pcard.collapsed .pbody{display:none}
+.pbody .empty-p{margin:0;font-size:13px}
+.pmenu{position:absolute;right:0;top:42px;background:color-mix(in srgb,var(--card2) 92%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border:1px solid var(--br);border-radius:12px;padding:6px;min-width:210px;box-shadow:0 12px 30px rgba(0,0,0,.35);z-index:60;display:none}
+.pmenu.open{display:block}
+.pmenu button{width:100%;background:transparent;border:0;color:var(--fg);text-align:left;padding:9px 10px;border-radius:8px;font-size:13px;cursor:pointer;display:flex;gap:8px;align-items:center}
+.pmenu button:hover{background:color-mix(in srgb,var(--acc) 22%,transparent)}
+
 .client:hover{border-color:color-mix(in srgb,var(--gc,var(--g-vless)) 60%,transparent);transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.4)}
 .client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .client .name{font-weight:700;font-size:14px;word-break:break-word}
@@ -147,39 +164,26 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <div class=card>
       <h2>Ссылки VPN</h2>
 
-      <div class="row proto-row">
-        <span class=mut>Протокол</span>
-        <span class=proto-ctl>
-          <select id=protoSel aria-label=Протокол onchange=setupProtoBtn()><option>…</option></select>
-        </span>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 10px">
-        <span class=proto-chip id=protoChip style="--gc:var(--g-vless)" hidden></span>
-      </div>
-      <button id=protoApply class="hidden" onclick=doVPN()>Добавить новую ссылку</button>
-      <p class=mut style="margin:0 0 10px;font-size:12px">Домен не нужен. Протоколы сгруппированы по типам. TLS-протоколы автоматически получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
+      <p class=mut style="margin:0 0 12px;font-size:12px">Протоколы — по строкам: <b>+</b> раскрывает клиентов протокола, <b>⋯</b> — добавить клиента. TLS-протоколы получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
 
-      <div id=emptyState>
-        <p class=mut>VPN ещё не настроен. Выбери протокол и нажми кнопку — панель подберёт порт, сгенерит ключи и создаст первого клиента.</p>
-        <button id=vpnBtn onclick=doVPN()>Хочу VPN</button>
+      <div id=emptyState class=hidden>
+        <p class=mut>Клиентов пока нет. Раскрой протокол (кнопка <b>+</b>) и через <b>⋯</b> добавь первого клиента.</p>
       </div>
 
-      <div id=clientsBlock class=hidden>
-        <div class=row><h2 style="margin:0">Клиенты</h2><span class=mut id=cntClients></span></div>
-        <div class=clients id=clientsList></div>
-        <button class="sec ok" style="margin-top:12px" onclick=showAdd()>＋ Добавить клиента</button>
-        <div id=addBox class="dialog hidden">
-          <div class=row><b>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
-          <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
-          <button onclick=doAdd()>Создать</button>
-          <div class=msg id=addMsg></div>
-        </div>
-        <div id=renameBox class="dialog hidden">
-          <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
-          <input id=renameName placeholder="Новое имя" maxlength=32>
-          <button onclick=doRename()>Сохранить</button>
-          <div class=msg id=renameMsg></div>
-        </div>
+      <div id=protoCards></div>
+
+      <div id=addBox class="dialog hidden">
+        <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
+        <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
+        <button onclick=doAdd()>Создать</button>
+        <div class=msg id=addMsg></div>
+      </div>
+      <div id=renameBox class="dialog hidden">
+        <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
+        <input id=renameName placeholder="Новое имя" maxlength=32>
+        <button onclick=doRename()>Сохранить</button>
+        <div class=msg id=renameMsg></div>
+      </div>
       </div>
 
       <div id=tgBlock class=hidden style="margin-top:20px;border-top:1px solid var(--br);padding-top:16px">
@@ -418,55 +422,65 @@ function fmtBytes(n){
   return (n>=100?Math.round(n):n.toFixed(1))+' '+u[i];
 }
 
+function clientCard(c){
+  const div=document.createElement('div');div.className='client';
+  div.style.setProperty('--gc', groupColor(protoGroups[c.proto]));
+  div.innerHTML=`
+    <div class=top>
+      <div style="flex:1;min-width:0">
+        <div class=name></div>
+        <div class=proto-tag></div>
+        <div class=uuid></div>
+      </div>
+      <div class=actions>
+        <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
+        <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
+        <button class="tiny sec" data-act=qr>QR</button>
+        <button class="tiny sec" data-act=copy>Копировать</button>
+        <button class="tiny danger" data-act=del>Удалить</button>
+      </div>
+    </div>
+    <div class="link-row">
+      <code></code>
+    </div>
+    <div class=traffic>
+    </div>`;
+  div.querySelector('.name').textContent=c.name;
+  div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
+  div.querySelector('.uuid').textContent=c.uuid;
+  div.querySelector('code').textContent=c.link;
+  const _qrBtn = div.querySelector('[data-act=qr]');
+  if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
+  div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
+  if(c.link6){div.querySelector('[data-act=v6]').classList.remove('hidden');}
+  div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
+  div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
+  div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
+  div.querySelector('.traffic').innerHTML=`
+    <span class="t-up" title="Принято клиентом"><span class=t-ico>⬇</span><b></b></span>
+    <span class="t-down" title="Отправлено клиенту"><span class=t-ico>⬆</span><b></b></span>
+    <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
+  `;
+  const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
+  if(_up)_up.textContent=fmtBytes(c.up||0);
+  if(_down)_down.textContent=fmtBytes(c.down||0);
+  const _dot=div.querySelector('.t-online .dot');
+  if(_dot&&c.online){_dot.classList.add('on');div.querySelector('.t-online .t-otxt').textContent='онлайн';}
+  return div;
+}
+
 function renderClients(){
-  const box=$('clientsList');
-  box.innerHTML='';
-  $('cntClients').textContent=clients.length+' шт.';
-  clients.forEach(c=>{
-    const div=document.createElement('div');div.className='client';
-    div.style.setProperty('--gc', groupColor(protoGroups[c.proto]));
-    div.innerHTML=`
-      <div class=top>
-        <div style="flex:1;min-width:0">
-          <div class=name></div>
-          <div class=proto-tag></div>
-          <div class=uuid></div>
-        </div>
-        <div class=actions>
-          <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
-          <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
-          <button class="tiny sec" data-act=qr>QR</button>
-          <button class="tiny sec" data-act=copy>Копировать</button>
-          <button class="tiny danger" data-act=del>Удалить</button>
-        </div>
-      </div>
-      <div class="link-row">
-        <code></code>
-      </div>
-      <div class=traffic>
-      </div>`;
-    div.querySelector('.name').textContent=c.name;
-    div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
-    div.querySelector('.uuid').textContent=c.uuid;
-    div.querySelector('code').textContent=c.link;
-    const _qrBtn = div.querySelector('[data-act=qr]');
-    if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
-    div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
-    if(c.link6){div.querySelector('[data-act=v6]').classList.remove('hidden');}
-    div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
-    div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
-    div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
-    div.querySelector('.traffic').innerHTML=`
-      <span class="t-up" title="Принято клиентом"><span class=t-ico>⬇</span><b></b></span>
-      <span class="t-down" title="Отправлено клиенту"><span class=t-ico>⬆</span><b></b></span>
-      <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
-    `;
-    const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
-    if(_up)_up.textContent=fmtBytes(c.up||0);
-    if(_down)_down.textContent=fmtBytes(c.down||0);
-    const _dot=div.querySelector('.t-online .dot');
-    if(_dot&&c.online){_dot.classList.add('on');div.querySelector('.t-online .t-otxt').textContent='онлайн';}
-    box.appendChild(div);
+  const map={};
+  clients.forEach(c=>{(map[c.proto]=map[c.proto]||[]).push(c);});
+  $('emptyState').classList.toggle('hidden',clients.length>0);
+  $('protoCards').querySelectorAll('.pcard').forEach(card=>{
+    const proto=card.dataset.proto;
+    const list=map[proto]||[];
+    card.querySelector('.pbadge').textContent=list.length;
+    const shelf=card.querySelector('.p-shelf');
+    shelf.innerHTML='';
+    list.forEach(c=>shelf.appendChild(clientCard(c)));
+    card.querySelector('.empty-p').classList.toggle('hidden',list.length>0);
   });
 }
 
@@ -474,65 +488,87 @@ async function loadClients(){
   try{
     const d=await api('/api/clients');
     clients=d.clients||[];
-    if(clients.length){
-      $('emptyState').classList.add('hidden');
-      $('clientsBlock').classList.remove('hidden');
-      renderClients();
-    }else{
-      $('emptyState').classList.remove('hidden');
-      $('clientsBlock').classList.add('hidden');
-    }
-    setupProtoBtn();
+    renderClients();
   }catch(e){
     $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
   }
 }
 
 let protoCur=null;
+let protoList=[];
+let autoExpand=null;
+
+function closeMenus(){document.querySelectorAll('.pmenu.open').forEach(m=>m.remove());}
+
+function renderProtoCards(){
+  const box=$('protoCards');box.innerHTML='';
+  const groups=[];const byGroup={};
+  protoList.forEach(p=>{
+    if(!byGroup[p.group]){byGroup[p.group]={label:p.group_label||p.group||'Прочее',items:[]};groups.push(byGroup[p.group]);}
+    byGroup[p.group].items.push(p);
+  });
+  groups.forEach(g=>{
+    const gh=document.createElement('div');gh.className='pgroup';gh.textContent=g.label;box.appendChild(gh);
+    g.items.forEach(p=>{
+      const card=document.createElement('div');card.className='pcard collapsed';
+      card.style.setProperty('--gc',groupColor(p.group));
+      card.dataset.proto=p.id;
+      card.innerHTML=
+        '<div class=prow>'+
+        '<button class=pacc title="Раскрыть клиентов">+</button>'+
+        '<div class=pname></div>'+
+        '<span class=pbadge>0</span>'+
+        '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
+        '</div>'+
+        '<div class=pbody>'+
+        '<div class="clients p-shelf"></div>'+
+        '<p class="mut empty-p" hidden>Нет клиентов этого протокола.</p>'+
+        '<button class="sec ok btn-add-client">＋ Добавить клиента</button>'+
+        '</div>';
+      card.querySelector('.pname').textContent=p.label;
+      const acc=card.querySelector('.pacc');
+      acc.onclick=()=>{
+        card.classList.toggle('collapsed');
+        acc.textContent=card.classList.contains('collapsed')?'+':'−';
+      };
+      const check=card.querySelector('.pcheck');
+      check.onclick=(e)=>{
+        e.stopPropagation();
+        closeMenus();
+        const m=document.createElement('div');m.className='pmenu open';
+        const b=document.createElement('button');
+        b.innerHTML='➕&nbsp;&nbsp; Добавить клиента';
+        b.onclick=()=>{showAdd(p.id);closeMenus();};
+        m.appendChild(b);
+        check.appendChild(m);
+      };
+      card.querySelector('.btn-add-client').onclick=()=>showAdd(p.id);
+      box.appendChild(card);
+    });
+  });
+  const target=autoExpand||protoCur;
+  if(target){
+    box.querySelectorAll('.pcard').forEach(c=>{
+      if(c.dataset.proto===target){
+        c.classList.remove('collapsed');
+        c.querySelector('.pacc').textContent='−';
+      }
+    });
+  }
+  autoExpand=null;
+  closeMenus();
+}
+document.addEventListener('click',()=>closeMenus());
 
 async function loadProtocols(){
   try{
     const d=await api('/api/vpn/protocols');
     protoCur=d.current||'reality';
-    const sel=$('protoSel');
-    if(sel.options.length===0||sel.options[0].value==='…'){
-      sel.innerHTML='';
-      protoLabels={}; protoGroups={};
-      const groups={};
-      (d.protocols||[]).forEach(p=>{
-        protoLabels[p.id]=p.label;
-        if(p.group){
-          protoGroups[p.id]=p.group;
-          if(!groups[p.group]){
-            groups[p.group]=document.createElement('optgroup');
-            groups[p.group].label=p.group_label||p.group;
-            sel.appendChild(groups[p.group]);
-          }
-          const o=document.createElement('option');o.value=p.id;o.textContent=p.label;
-          groups[p.group].appendChild(o);
-        }else{
-          const o=document.createElement('option');o.value=p.id;o.textContent=p.label;
-          sel.appendChild(o);
-        }
-      });
-    }
-    sel.value=protoCur;
-    setupProtoBtn();
+    protoList=d.protocols||[];
+    protoLabels={}; protoGroups={};
+    protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group;});
+    renderProtoCards();
   }catch(e){}
-}
-
-function setupProtoBtn(){
-  const sel=$('protoSel');const btn=$('protoApply');const chip=$('protoChip');
-  if(!sel||!btn) return;
-  btn.classList.toggle('hidden',!clients.length);
-  const opt=sel.options[sel.selectedIndex]||{};
-  const lbl=opt.textContent||'протокол';
-  btn.textContent=clients.length?('Добавить новую ссылку: '+lbl):'Хочу VPN';
-  if(chip){
-    chip.classList.toggle('hidden',!clients.length);
-    chip.textContent=lbl;
-    chip.style.setProperty('--gc', groupColor(protoGroups[opt.value]));
-  }
 }
 
 async function toast(html, cls){
@@ -716,30 +752,25 @@ async function refresh(){
   }
 }
 
-async function doVPN(){
-  const btns=[$('vpnBtn'),$('protoApply')];
-  btns.forEach(x=>{if(x&&!x.disabled)x.disabled=true;});
-  $('vpnMsg').textContent='Создаю новую ссылку...';$('vpnMsg').className='msg';
-  try{
-    const r=await api('/api/vpn',{method:'POST',body:JSON.stringify({proto:$('protoSel').value})});
-    $('vpnMsg').textContent='Готова новая ссылка: '+(r.name||'');$('vpnMsg').className='msg ok';
-    await refresh();
-  }catch(e){
-    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
-  }finally{btns.forEach(x=>{if(x)x.disabled=false;});}
+let addProto=null;
+function showAdd(proto){
+  addProto=proto||null;
+  $('addTitle').textContent='Новый клиент — '+(protoLabels[addProto]||addProto||'');
+  $('addBox').classList.remove('hidden');$('newName').focus();
 }
-
-function showAdd(){ $('addBox').classList.remove('hidden'); $('newName').focus(); }
-function hideAdd(){ $('addBox').classList.add('hidden'); $('newName').value=''; $('addMsg').textContent=''; }
+function hideAdd(){addProto=null;$('addBox').classList.add('hidden');$('newName').value='';$('addMsg').textContent='';}
 
 async function doAdd(){
   const name=$('newName').value.trim();
   if(!name){$('addMsg').textContent='Введи имя';$('addMsg').className='msg err';return;}
   $('addMsg').textContent='Создаю...';$('addMsg').className='msg';
   try{
-    await api('/api/clients/add',{method:'POST',body:JSON.stringify({name})});
+    const body={name};
+    if(addProto)body.proto=addProto;
+    autoExpand=addProto;
+    await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
-    await loadClients();
+    await refresh();
     $('vpnMsg').textContent='Клиент «'+name+'» создан';$('vpnMsg').className='msg ok';
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
