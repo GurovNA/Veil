@@ -92,6 +92,19 @@ def _free_port(pref=443):
     if pref and ok(pref): return pref
     s = socket.socket(); s.bind(("", 0)); p = s.getsockname()[1]; s.close(); return p
 
+def _port_free(port):
+    import socket
+    if not (isinstance(port, int) and 0 < port < 65536):
+        return False
+    for typ in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        s = socket.socket(socket.AF_INET, typ)
+        try:
+            s.bind(("", port))
+        except OSError:
+            s.close(); return False
+        s.close()
+    return True
+
 def _last_line(out, *keys):
     for line in out.splitlines():
         low = line.lower()
@@ -900,18 +913,33 @@ class H(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(_load(THEME, {})).encode())
             return
+        if p == "/api/port/check":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            port = int((qs.get("port") or ["0"])[0] or "0")
+            st = _load(STATE, {}) or {}
+            taken_by = None
+            for pr, inb in (st.get("inbounds") or {}).items():
+                if inb.get("port") == port and pr != (qs.get("proto") or [""])[0]:
+                    taken_by = pr; break
+            free = _port_free(port) and taken_by is None
+            return self._send(200, {"port": port, "free": free,
+                                    "taken_by": taken_by,
+                                    "current": (st.get("inbounds") or {}).get((qs.get("proto") or [""])[0], {}).get("port")})
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
             sni = ""
             sni_list = []
+            ports = []
             for proto, inb in (st.get("inbounds") or {}).items():
+                ports.append({"proto": proto, "label": _proto_meta(proto)["label"], "port": inb.get("port")})
                 if "sni" in inb:
                     if not sni: sni = inb["sni"]
                     sni_list.append({"proto": proto, "label": _proto_meta(proto)["label"], "sni": inb["sni"]})
             if not sni: sni = "www.samsung.com"
             domain = (CFG_CACHE.get("panel_domain") or "").strip()
-            out = {"sni": sni, "sni_list": sni_list, "domain": domain,
+            out = {"sni": sni, "sni_list": sni_list, "ports": ports, "domain": domain,
                    "ipv4": _my_ip(), "ipv6": _my_ipv6(),
                    "a": [], "aaaa": [], "match4": None, "match6": None}
             try:
@@ -1100,12 +1128,20 @@ class H(http.server.BaseHTTPRequestHandler):
                 sni = (body.get("sni") or "").strip()
                 proto = (body.get("proto") or "").strip()
                 domain = (body.get("domain") or "").strip()
+                port = body.get("port")
+                if port is not None:
+                    try: port = int(port)
+                    except (TypeError, ValueError):
+                        port = None
                 if sni and not re.fullmatch(r"[A-Za-z0-9.-]+", sni):
                     return self._send(400, {"error": "SNI: только буквы/цифры/точки/дефисы"})
                 if domain and (domain.startswith("http") or "/" in domain or " " in domain):
                     return self._send(400, {"error": "Домен: только имя хоста (без http:// и пути)"})
+                if port is not None and not (0 < port < 65536):
+                    return self._send(400, {"error": "Порт: 1-65535"})
                 st = _load(STATE, {}) or {}
                 changed = False
+                inb = None
                 if sni:
                     if proto:
                         inb = (st.get("inbounds") or {}).get(proto)
@@ -1120,6 +1156,22 @@ class H(http.server.BaseHTTPRequestHandler):
                                 inb["sni"] = sni
                                 if inb.get("dest"): inb["dest"] = sni + ":443"
                         changed = True
+                if port is not None:
+                    if not proto:
+                        return self._send(400, {"error": "Укажи proto для смены порта"})
+                    inb = (st.get("inbounds") or {}).get(proto)
+                    if not inb:
+                        return self._send(400, {"error": "Такой протокол не настроен"})
+                    if inb.get("port") == port:
+                        pass
+                    else:
+                        if not _port_free(port):
+                            return self._send(400, {"error": f"Порт {port} занят"})
+                        for pr, ib2 in (st.get("inbounds") or {}).items():
+                            if pr != proto and ib2.get("port") == port:
+                                return self._send(400, {"error": f"Порт {port} уже используется протоколом {pr}"})
+                        inb["port"] = port
+                        changed = True
                 if changed:
                     _save(STATE, st)
                     try: _write_xray(st)
@@ -1132,7 +1184,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     else:
                         CFG_CACHE.pop("panel_domain", None)
                     _save(CFG, CFG_CACHE)
-                out = {"ok": True, "sni": sni or "", "proto": proto or "", "domain": domain}
+                out = {"ok": True, "sni": sni or "", "proto": proto or "", "domain": domain,
+                       "port": (inb.get("port") if inb else None) if port is not None else None}
                 if changed: out["restarted"] = True
                 return self._send(200, out)
             if p == "/api/theme":
