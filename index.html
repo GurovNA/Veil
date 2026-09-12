@@ -212,6 +212,9 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <label class=mut style="display:block;margin-top:10px">SNI (по протоколам, маскировка):
       <div id=sniBox style="margin-top:4px"></div></label>
     <button class=sec onclick=saveSni() id=saveSniBtn disabled style="margin-top:8px">Сохранить SNI</button>
+    <label class=mut style="display:block;margin-top:14px">Порты (по протоколам; красный — занят, зелёный — свободен):
+      <div id=portBox style="margin-top:4px"></div></label>
+    <button class=sec onclick=savePort() id=savePortBtn disabled style="margin-top:8px">Применить порт</button>
     <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
       <input id=setDomain maxlength=255 style="margin-top:4px"></label>
     <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
@@ -561,6 +564,42 @@ async function loadSettings(){
     });
     ss_cur_sni=cur;
     $('saveSniBtn').disabled=true;
+    port_list=s.ports||[];
+    const pbox=$('portBox');
+    pbox.innerHTML='';
+    const sel=document.createElement('select');sel.id='portSelProto';
+    sel.style.cssText='padding:6px 8px;border-radius:8px;font-size:13px';
+    port_list.forEach((r,i)=>{
+      const opt=document.createElement('option');opt.value=r.proto;opt.textContent=r.label;
+      sel.appendChild(opt);
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap';
+      const lbl=document.createElement('span');lbl.style.cssText='min-width:210px;font-size:13px';
+      lbl.textContent=r.label+' ('+r.port+')';
+      const inp=document.createElement('input');
+      inp.id='portInp'+i;inp.type='number';inp.min=1;inp.max=65535;inp.value=r.port;
+      inp.style.cssText='flex:1;min-width:140px';
+      const dot=document.createElement('span');dot.id='portDot'+i;dot.style.cssText='font-size:13px;width:110px';
+      dot.textContent='\u25CF';
+      inp.addEventListener('input',()=>{refreshPort(r.proto,i);});
+      row.appendChild(lbl);row.appendChild(inp);row.appendChild(dot);
+      pbox.appendChild(row);
+    });
+    pbox.insertBefore(sel,pbox.firstChild);
+    sel.value=(port_list[0]||{}).proto||'';
+    sel.addEventListener('change',()=>{
+      const proto=sel.value;
+      let idx=-1;for(let i=0;i<port_list.length;i++)if(port_list[i].proto===proto)idx=i;
+      let changedFlag=false;
+      for(let i=0;i<port_list.length;i++){
+        const dot=document.getElementById('portDot'+i);
+        const f=document.getElementById('portInp'+i);
+        if(dot){dot.style.color='';dot.textContent='\u25CF';}
+        if(i===idx&&f&&port_list[i]&&Number(f.value)!==port_list[i].port)changedFlag=true;
+      }
+      $('savePortBtn').disabled=!changedFlag;
+    });
+    $('savePortBtn').disabled=true;
     $('setDomain').value=s.domain||'';
     let h='\u2611 SNI: '+cur;
     if(s.ipv4)h+='<br>\uD83C\uDF10 IPv4: '+s.ipv4;
@@ -611,6 +650,49 @@ async function saveSettings(){
   try{
     const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:domain})});
     setMsg('setMsg2','\u2705 Домен='+(s.domain||'\u2014'),'ok');
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+  finally{$('saveSetSpn').textContent='';}
+}
+let port_list=[],port_timers={};
+async function refreshPort(proto,idx){
+  clearTimeout(port_timers[idx]);
+  port_timers[idx]=setTimeout(async()=>{
+    const inp=document.getElementById('portInp'+idx);
+    if(!inp)return;
+    const raw=inp.value.trim();
+    const dot=document.getElementById('portDot'+idx);
+    if(!raw){if(dot){dot.style.color='';dot.textContent='●';}return;}
+    if(!/^\d+$/.test(raw)){if(dot){dot.style.color='var(--err)';dot.textContent='\u26A0';}return;}
+    try{
+      const cur=port_list[idx]||{};
+      const r=await api('/api/port/check?proto='+encodeURIComponent(cur.proto||'')+'&port='+raw);
+      if(dot){
+        if(Number(raw)===cur.port){dot.style.color='var(--mut)';dot.textContent='● (текущий)';}
+        else if(r.free){dot.style.color='var(--ok)';dot.textContent='\u2705 свободен';}
+        else if(r.taken_by){dot.style.color='var(--err)';dot.textContent='\u26D4 занят ('+r.taken_by+')';}
+        else{dot.style.color='var(--err)';dot.textContent='\u26D4 занят';}
+      }
+      if($('savePortBtn')&&cur){
+        const changed=Number(raw)!==cur.port;
+        $('savePortBtn').disabled=!changed;
+      }
+    }catch(e){ if(dot){dot.style.color='var(--err)';dot.textContent='?';} }
+  },300);
+}
+async function savePort(){
+  const row=$('portSelProto');
+  const proto=row?row.value:'';
+  if(!proto){setMsg('setMsg2','Выбери протокол','err');return;}
+  let idx=-1;for(let i=0;i<port_list.length;i++)if(port_list[i].proto===proto)idx=i;
+  if(idx<0){setMsg('setMsg2','Протокол не найден','err');return;}
+  const inp=document.getElementById('portInp'+idx);
+  const port=parseInt(inp.value,10);
+  if(!(port>0&&port<65536)){setMsg('setMsg2','Порт 1-65535','err');return;}
+  $('saveSetSpn').textContent='\u23F3 Применяю порт...';
+  try{
+    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proto:proto,port:port})});
+    setMsg('setMsg2','\u2705 Порт '+s.port+' примен\u0451н для '+proto+(s.restarted?' (XRay перезапущен)':''),'ok');
+    await loadSettings();
   }catch(e){setMsg('setMsg2',e.message,'err');}
   finally{$('saveSetSpn').textContent='';}
 }
