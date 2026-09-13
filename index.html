@@ -1221,7 +1221,7 @@ function renderWeb(web){
 async function doWebSetCarrier(k){
   try{
     setMsg('tgMsg','Смена транспорта на ' + k + '…','');
-    const d = await api('/api/tg/web/set', {carrier: k});
+    const d = await api('/api/tg/web/set', {method:'POST', body:JSON.stringify({carrier: k})});
     st.textContent = 'включён · ' + (d.host || '') + ' · ' + (d.carrier || '');
     setMsg('tgMsg','Carrier установлен: ' + d.carrier,'ok');
   }catch(e){
