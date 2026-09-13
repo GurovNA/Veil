@@ -1164,9 +1164,32 @@ function renderWeb(web){
     return;
   }
   st.textContent = 'включён · ' + (web.host || '') + ' · ' + (web.carrier || '');
+  const c = document.createElement('div');
+  c.className = 'client';
+  c.innerHTML = '<div class=top>' +
+    '<div style="flex:1;min-width:0">' +
+      '<div class=name>Транспорт (carrier)</div>' +
+      '<div class=uuid>для всех пользователей веб-профиля</div>' +
+    '</div>' +
+    '<div class=actions><select id=webCarrier style="max-width:200px"></select></div>' +
+  '</div>' +
+  '<div class="link-row"><code style="color:var(--mut)">https · https-lanes · websocket · websocket-lanes</code></div>';
+  c.querySelector('.actions').style.alignItems = 'flex-start';
+  const sel = c.querySelector('select');
+  sel.size = 4;
+  ['https','https-lanes','websocket','websocket-lanes'].forEach(function(k){
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k;
+    if (k === web.carrier) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = function(){ doWebSetCarrier(sel.value); };
+  box.appendChild(c);
   const users = web.profiles || [];
   if (!users.length){
-    box.innerHTML = '<code style="color:var(--mut)">Нет пользователей в веб-профиле</code>';
+    const nd = document.createElement('code');
+    nd.style.color = 'var(--mut)'; nd.textContent = 'Нет пользователей в веб-профиле';
+    box.appendChild(nd);
     return;
   }
   users.forEach(function(u){
@@ -1193,6 +1216,17 @@ function renderWeb(web){
     }
     box.appendChild(div);
   });
+}
+
+async function doWebSetCarrier(k){
+  try{
+    setMsg('tgMsg','Смена транспорта на ' + k + '…','');
+    const d = await api('/api/tg/web/set', {carrier: k});
+    st.textContent = 'включён · ' + (d.host || '') + ' · ' + (d.carrier || '');
+    setMsg('tgMsg','Carrier установлен: ' + d.carrier,'ok');
+  }catch(e){
+    setMsg('tgMsg','Смена транспорта: ' + e.message,'err');
+  }
 }
 
 function renderTg(){
