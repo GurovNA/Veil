@@ -279,6 +279,11 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       </div>
     </div>
     <div class=msg id=tgMsg></div>
+    <hr>
+    <div class=row style="margin-top:12px"><h3 style=margin:0>Веб-прокси (https:// → :443)</h3><span class=mut id=webStatus>—</span></div>
+    <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram Desktop/iOS через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
+    <div id=webBox class=clients></div>
+    <div class=msg id=webMsg></div>
   </div></div>
 
   <div id=tab-site class="tab-pane"><div class=card>
@@ -1143,9 +1148,51 @@ async function loadTg(){
     tgUsers = d.users || [];
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTg();
+    renderWeb(d.web);
   }catch(e){
     setMsg('tgMsg',e.message,'err');
   }
+}
+
+function renderWeb(web){
+  const box = document.getElementById('webBox');
+  const st = document.getElementById('webStatus');
+  box.innerHTML = '';
+  if (!web || !web.enabled){
+    st.textContent = 'выключен';
+    box.innerHTML = '<code style="color:var(--mut)">Веб-прокси не настроен</code>';
+    return;
+  }
+  st.textContent = 'включён · ' + (web.host || '') + ' · ' + (web.carrier || '');
+  const users = web.profiles || [];
+  if (!users.length){
+    box.innerHTML = '<code style="color:var(--mut)">Нет пользователей в веб-профиле</code>';
+    return;
+  }
+  users.forEach(function(u){
+    const uu = tgUsers.find(function(x){ return x.username === u; }) || {username:u};
+    const link = uu.web_link || '';
+    const div = document.createElement('div');
+    div.className = 'client';
+    div.innerHTML = '<div class=top>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class=name></div>' +
+        '<div class=uuid>web</div>' +
+      '</div>' +
+      '<div class=actions>' +
+        (link ? '<button class="tiny sec" data-act=qr>QR</button>' +
+                '<button class="tiny sec" data-act=copy>Копировать</button>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="link-row"><code></code></div>';
+    div.querySelector('.name').textContent = uu.username;
+    div.querySelector('code').textContent = link || '⚠ нет ссылки';
+    if (link){
+      div.querySelector('[data-act=qr]').onclick = function(){ showQR(link, 'Web: ' + uu.username); };
+      div.querySelector('[data-act=copy]').onclick = function(){ copyText(link, 'Web-ссылка скопирована'); };
+    }
+    box.appendChild(div);
+  });
 }
 
 function renderTg(){
@@ -1191,10 +1238,14 @@ async function doTgAdd(){
   if (!name){ document.getElementById('tgAddMsg').textContent = 'Введи имя'; return; }
   document.getElementById('tgAddMsg').textContent = 'Создаю...';
   try{
-    await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name})});
+    const r = await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name})});
     hideTgAdd();
     await loadTg();
-    document.getElementById('tgMsg').textContent = 'Пользователь «' + name + '» создан';
+    if (r && r.user && r.user.web_link){
+      document.getElementById('tgMsg').innerHTML = 'Пользователь «' + name + '» создан. <b>Веб-прокси:</b> <code style="word-break:break-all">' + r.user.web_link + '</code>';
+    } else {
+      document.getElementById('tgMsg').textContent = 'Пользователь «' + name + '» создан';
+    }
     document.getElementById('tgMsg').className = 'msg ok';
   }catch(e){
     document.getElementById('tgAddMsg').textContent = e.message;
