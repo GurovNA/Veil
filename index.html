@@ -178,6 +178,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 <div id=panel style=display:none>
   <nav class=tabs>
     <button data-tab=vpn class=active>🛡 VPN</button>
+    <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
     <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
@@ -216,7 +217,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
 
     <div class=card>
-      <h2>Ссылки VPN</h2>
+      <div class=row><h2>Ссылки VPN</h2><button class=pcheck id=vpnAddBtn title="Добавить клиента">+</button></div>
 
       <p class=mut style="margin:0 0 12px;font-size:12px">Протоколы — по строкам: <b>+</b> раскрывает клиентов протокола, <b>⋯</b> — добавить клиента. TLS-протоколы получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
 
@@ -257,29 +258,28 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       </div>
       </div>
 
-      <div id=tgBlock class=hidden style="margin-top:20px;border-top:1px solid var(--br);padding-top:16px">
-        <div class=row><h2 style="margin:0">Telegram прокси</h2><span class=mut id=tgStatus></span></div>
-        <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
-        <div class="row" style="margin:10px 0;gap:8px">
-          <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
-          <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
-        </div>
-        <div class=clients id=tgList></div>
-        <button class="sec ok" style="margin-top:12px" onclick=showTgAdd()>＋ Добавить пользователя Tg</button>
-        <div id=tgAddBox class="dialog hidden">
-          <div class=dcard>
-          <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
-          <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
-          <button onclick=doTgAdd()>Создать</button>
-          <div class=msg id=tgAddMsg></div>
-          </div>
-        </div>
-        <div class=msg id=tgMsg></div>
-      </div>
-
-
       <div class=msg id=vpnMsg></div>
     </div>
+
+  <div id=tab-proxy class="tab-pane"><div class=card>
+    <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
+    <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+    <div class="row" style="margin:10px 0;gap:8px">
+      <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
+      <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
+    </div>
+    <div class=clients id=tgList></div>
+    <button class="sec ok" style="margin-top:12px" onclick=showTgAdd()>＋ Добавить пользователя Tg</button>
+    <div id=tgAddBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
+      <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
+      <button onclick=doTgAdd()>Создать</button>
+      <div class=msg id=tgAddMsg></div>
+      </div>
+    </div>
+    <div class=msg id=tgMsg></div>
+  </div></div>
 
   <div id=tab-site class="tab-pane"><div class=card>
     <h2>Сайт, домен и HTTPS</h2>
@@ -337,6 +337,14 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
     <button id=installBtn class="hidden" onclick=installUpdate()>Установить</button>
     <div class=msg id=setMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Порт панели</h3>
+    <p class=mut style="margin:0 0 10px">Веб-интерфейс слушает <span id=pnlPortCur>—</span>. После смены порта панель перезапустится и ты попадёшь на новый адрес <code>https://<code id=pnlPortHost>…</code>:<span id=pnlPortNew>…</span></code>. Убедись, что порт открыт в файрволе.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id=pnlPortInp type=number min=1 max=65535 style="width:110px" placeholder="8444">
+      <button class=sec onclick=savePanelPort() id=pnlPortBtn>Сменить порт</button>
+    </div>
+    <div class=msg id=pnlPortMsg></div>
     <hr>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
     <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
@@ -486,6 +494,7 @@ const $=id=>document.getElementById(id);
 let clients=[];
 let protoLabels={};
 let protoGroups={};
+let protoUILabels={};
 const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(--g-vmess)',trojan:'var(--g-trojan)',ss:'var(--g-ss)'};
 const groupColor=g=>groupColors[g]||'var(--g-vless)';
 
@@ -632,12 +641,26 @@ let autoExpand=null;
 
 function closeMenus(){document.querySelectorAll('.pmenu.open').forEach(m=>m.remove());}
 
+function openAddMenu(anchor){
+  closeMenus();
+  const m=document.createElement('div');m.className='pmenu open';
+  (protoList||[]).forEach(p=>{
+    const b=document.createElement('button');
+    b.innerHTML='➕&nbsp;&nbsp; '+p.label;
+    b.onclick=()=>{showAdd(p.id);closeMenus();};
+    m.appendChild(b);
+  });
+  m.style.maxHeight='70vh';m.style.overflowY='auto';
+  anchor.appendChild(m);
+}
+
 function renderProtoCards(){
   const box=$('protoCards');box.innerHTML='';
   const groups=[];const byGroup={};
   protoList.forEach(p=>{
-    if(!byGroup[p.group]){byGroup[p.group]={label:p.group_label||p.group||'Прочее',items:[]};groups.push(byGroup[p.group]);}
-    byGroup[p.group].items.push(p);
+    const ug=p.ui_group||p.group||'Прочее';
+    if(!byGroup[ug]){byGroup[ug]={label:p.ui_group_label||p.group_label||p.group||'Прочее',items:[]};groups.push(byGroup[ug]);}
+    byGroup[ug].items.push(p);
   });
   groups.forEach(g=>{
     const gh=document.createElement('div');gh.className='pgroup';gh.textContent=g.label;box.appendChild(gh);
@@ -701,8 +724,8 @@ async function loadProtocols(){
     const d=await api('/api/vpn/protocols');
     protoCur=d.current||'reality';
     protoList=d.protocols||[];
-    protoLabels={}; protoGroups={};
-    protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group;});
+    protoLabels={}; protoGroups={}; protoUILabels={};
+    protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group; if(p.ui_group_label)protoUILabels[p.id]=p.ui_group_label;});
     renderProtoCards();
   }catch(e){}
 }
@@ -736,6 +759,22 @@ async function loadSettings(){
     if(h)setMsg('setMsg2',h,'ok',false);
     else setMsg('setMsg2','','',false);
   }catch(e){setMsg('setMsg2',e.message,'err');}
+  try{const st=await api('/api/state');
+    $('pnlPortCur').textContent=': '+st.panel_port;
+    $('pnlPortNew').textContent=st.panel_port;
+    $('pnlPortHost').textContent=location.hostname;
+    $('pnlPortInp').value=st.panel_port;
+  }catch(e){}
+}
+async function savePanelPort(){
+  const p=+($('pnlPortInp').value||'');
+  if(!(p>0&&p<65536)){setMsg('pnlPortMsg','Введи порт от 1 до 65535','err');return;}
+  setMsg('pnlPortMsg','Проверяю порт...','');
+  try{
+    const r=await api('/api/panel/port',{port:p});
+    if(r.restarting)setMsg('pnlPortMsg','Порт изменён, панель перезапускается. Открой <b>'+location.protocol+'//'+location.hostname+':'+p+'</b> через несколько секунд.','ok');
+    else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
+  }catch(e){setMsg('pnlPortMsg',e.message,'err');}
 }
 async function checkDns(){
   const d=$('setDomain').value.trim();
@@ -1109,15 +1148,15 @@ async function loadTg(){
   try{
     const d = await api('/api/tg/status');
     if (!d.installed){
-      document.getElementById('tgBlock').classList.add('hidden');
+      document.getElementById('tgList').innerHTML='';
+      setMsg('tgMsg','MTProto-прокси не установлен. Установи пакет <b>telemt</b> и перезапусти панель.','');
       return;
     }
-    document.getElementById('tgBlock').classList.remove('hidden');
     tgUsers = d.users || [];
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTg();
   }catch(e){
-    document.getElementById('tgBlock').classList.add('hidden');
+    setMsg('tgMsg',e.message,'err');
   }
 }
 
@@ -1283,6 +1322,11 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     $('tab-'+b.dataset.tab).classList.add('active');
     if(b.dataset.tab==='settings')autoCheckForUpdate();
   });
+});
+const vpnAddBtn=$('vpnAddBtn');
+if(vpnAddBtn)vpnAddBtn.addEventListener('click',e=>{
+  e.stopPropagation();
+  openAddMenu(vpnAddBtn);
 });
 
 function showQR(text, title){
