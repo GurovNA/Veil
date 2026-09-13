@@ -21,13 +21,13 @@ _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
 PROTOCOLS = [
-    {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "net": "tcp",       "tls": False},
-    {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "net": "xhttp",     "tls": False},
-    {"id": "vless-ws",            "label": "VLESS + WebSocket",                       "group": "vless",   "net": "ws",       "tls": False},
-    {"id": "vless-ws-tls",        "label": "VLESS + WebSocket + TLS (self-signed)",   "group": "vless",   "net": "ws",       "tls": True},
-    {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS (self-signed)",         "group": "vless",   "net": "tcp",      "tls": True},
-    {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS (self-signed)",        "group": "vless",   "net": "grpc",     "tls": True},
-    {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS (self-signed)",       "group": "vless",   "net": "xhttp",    "tls": True},
+    {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "ui_group": "vless", "net": "tcp",       "tls": False},
+    {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "ui_group": "vless", "net": "xhttp",     "tls": False},
+    {"id": "vless-ws",            "label": "VLESS + WebSocket",                       "group": "vless",   "ui_group": "vless", "net": "ws",       "tls": False},
+    {"id": "vless-ws-tls",        "label": "VLESS + WebSocket + TLS (self-signed)",   "group": "vless",   "ui_group": "vless", "net": "ws",       "tls": True},
+    {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS (self-signed)",         "group": "vless",   "ui_group": "vless", "net": "tcp",      "tls": True},
+    {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS (self-signed)",        "group": "vless",   "ui_group": "vless", "net": "grpc",     "tls": True},
+    {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS (self-signed)",       "group": "vless",   "ui_group": "vless", "net": "xhttp",    "tls": True},
     {"id": "vmess-ws",            "label": "VMess + WebSocket",                       "group": "vmess",   "net": "ws",       "tls": False},
     {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS (self-signed)",   "group": "vmess",   "net": "ws",       "tls": True},
     {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS (self-signed)",         "group": "vmess",   "net": "tcp",      "tls": True},
@@ -41,6 +41,8 @@ PROTOCOLS = [
 ]
 for _p in PROTOCOLS:
     _p["group_label"] = _GROUP_LABELS.get(_p["group"], _p["group"])
+    _p.setdefault("ui_group", _p["group"])
+    _p["ui_group_label"] = _GROUP_LABELS.get(_p["ui_group"], _p["ui_group"])
 _VALID_PROTOCOLS = tuple(p["id"] for p in PROTOCOLS)
 _PROTO_MAP = {p["id"]: p for p in PROTOCOLS}
 _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
@@ -99,6 +101,7 @@ def _port_free(port):
         return False
     for typ in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
         s = socket.socket(socket.AF_INET, typ)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("", port))
         except OSError:
@@ -1309,9 +1312,10 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
-                   "configured": _client_count(st) > 0,
-                   "proto": _proto_of(st),
-                   "ipv6": _my_ipv6()}
+       "configured": _client_count(st) > 0,
+       "proto": _proto_of(st),
+       "panel_port": CFG_CACHE.get("panel_port", 8443),
+       "ipv6": _my_ipv6()}
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -1677,6 +1681,26 @@ class H(http.server.BaseHTTPRequestHandler):
                 SESSIONS.clear(); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True, "relogin": True})
+
+            if p == "/api/panel/port":
+                b = self._body()
+                port = b.get("port")
+                try: port = int(port)
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "Порт: 1-65535"})
+                if not (0 < port < 65536):
+                    return self._send(400, {"error": "Порт: 1-65535"})
+                cur = CFG_CACHE.get("panel_port", 8443)
+                if port == int(cur):
+                    return self._send(200, {"ok": True, "port": cur, "restarting": False})
+                if not _port_free(port):
+                    return self._send(400, {"error": f"Порт {port} занят"})
+                CFG_CACHE["panel_port"] = port
+                _save(CFG, CFG_CACHE)
+                subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+                return self._send(200, {"ok": True, "port": port, "restarting": True})
 
             # ---- update ----
             if p == "/api/settings":
