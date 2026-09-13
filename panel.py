@@ -568,7 +568,7 @@ def _tg_status():
             "username": u.get("username", ""),
             "enabled": bool(u.get("enabled")),
             "link": link,
-            "connections": u.get("current_connections", 0),
+            "connections": u.get("active_unique_ips", 1 if u.get("current_connections", 0) else 0),
             "total_octets": u.get("total_octets", 0),
         })
     for u in users:

@@ -137,6 +137,10 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 #stXrayUp{animation:pulseUptime 2.2s ease-in-out infinite}
 
 .dialog{background:color-mix(in srgb,var(--bg) 84%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 10px 26px rgba(0,0,0,.35)}
+.dialog.open{position:fixed;inset:0;z-index:10000;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.55);border:0;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease;overflow:auto;padding:20px}
+.dialog.open>.dcard{width:100%;max-width:380px;background:color-mix(in srgb,var(--card) 92%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;box-shadow:0 10px 26px rgba(0,0,0,.35)}
+.dialog.open>.dcard input{margin:8px 0}
+.dialog.open>.dcard .row{margin-bottom:10px}
 .dialog input{margin:6px 0}
 .dialog .row{margin-bottom:6px}
 #qrModal{background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease}
@@ -174,6 +178,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 <div id=panel style=display:none>
   <nav class=tabs>
     <button data-tab=vpn class=active>🛡 VPN</button>
+    <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
     <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
   </nav>
@@ -222,16 +227,33 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <div id=protoCards></div>
 
       <div id=addBox class="dialog hidden">
+        <div class=dcard>
         <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
         <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
         <button onclick=doAdd()>Создать</button>
         <div class=msg id=addMsg></div>
+        </div>
       </div>
       <div id=renameBox class="dialog hidden">
+        <div class=dcard>
         <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
         <input id=renameName placeholder="Новое имя" maxlength=32>
         <button onclick=doRename()>Сохранить</button>
         <div class=msg id=renameMsg></div>
+        </div>
+      </div>
+      <div id=inbBox class="dialog hidden">
+        <div class=dcard>
+        <div class=row><b id=inbTitle>Настройки inbound</b><button class=tiny onclick=hideInb()>Отмена</button></div>
+        <label class=mut style="display:block">Порт:
+          <input id=inbPort type=number min=1 max=65535 style="margin-top:4px">
+        </label>
+        <label class=mut id=inbSniBlock style="display:none;margin-top:8px">SNI (маскировка):
+          <input id=inbSni maxlength=64 placeholder="www.samsung.com" style="margin-top:4px;text-transform:lowercase">
+        </label>
+        <button onclick=saveInb() id=inbSaveBtn style="margin-top:10px">Сохранить</button>
+        <div class=msg id=inbMsg></div>
+        </div>
       </div>
       </div>
 
@@ -245,10 +267,12 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
         <div class=clients id=tgList></div>
         <button class="sec ok" style="margin-top:12px" onclick=showTgAdd()>＋ Добавить пользователя Tg</button>
         <div id=tgAddBox class="dialog hidden">
+          <div class=dcard>
           <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
           <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
           <button onclick=doTgAdd()>Создать</button>
           <div class=msg id=tgAddMsg></div>
+          </div>
         </div>
         <div class=msg id=tgMsg></div>
       </div>
@@ -256,18 +280,9 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 
       <div class=msg id=vpnMsg></div>
     </div>
-  </div>
 
-  <div id=tab-settings class="tab-pane"><div class=card>
-    <h2>Настройки</h2>
-    <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
-    <p class=mut>Текущая версия: <b id=curVer>—</b></p>
-    <label class=mut style="display:block;margin-top:10px">SNI (по протоколам, маскировка):
-      <div id=sniBox style="margin-top:4px"></div></label>
-    <button class=sec onclick=saveSni() id=saveSniBtn disabled style="margin-top:8px">Сохранить SNI</button>
-    <label class=mut style="display:block;margin-top:14px">Порты (по протоколам; красный — занят, зелёный — свободен):
-      <div id=portBox style="margin-top:4px"></div></label>
-    <button class=sec onclick=savePort() id=savePortBtn disabled style="margin-top:8px">Применить порт</button>
+  <div id=tab-site class="tab-pane"><div class=card>
+    <h2>Сайт, домен и HTTPS</h2>
     <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
       <input id=setDomain maxlength=255 style="margin-top:4px"></label>
     <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
@@ -276,18 +291,6 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <span id=saveSetSpn style="margin-left:10px"></span>
     </div>
     <div class=msg id=setMsg2></div>
-    <button class=sec id=checkBtn onclick=checkUpdate()>Проверить обновления</button>
-    <button id=installBtn class="hidden" onclick=installUpdate() style="margin-top:6px">Установить</button>
-    <div class=msg id=setMsg></div>
-    <hr>
-    <h3 style="margin:0 0 8px">Резервное копирование</h3>
-    <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
-    <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
-    <button class=sec onclick=restorePick() id=restoreBtn style="margin-left:8px">⬆ Восстановить из файла</button>
-    <input type=file id=fold-backup accept=".json,.backup" class=hidden onchange=restoreFile(this)>
-    <div class=msg id=backupMsg></div>
-
-    <hr>
     <hr>
     <h3 style="margin:0 0 8px">Домен и DDNS (dynv6)</h3>
     <p class=mut style="margin:0 0 10px">Сервер сам обновляет A/AAAA домена при смене IP. Когда записи актуальны, домен автоматически подставляется в ссылки клиентов.</p>
@@ -311,6 +314,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <div class=msg id=ztMsg></div>
     </div>
     <div class=msg id=dvMsg></div>
+    </div>
 
     <hr>
     <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
@@ -325,6 +329,21 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
       <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
     </div>
     <div class=msg id=certMsg></div>
+  </div></div>
+
+  <div id=tab-settings class="tab-pane"><div class=card>
+    <h2>Настройки</h2>
+    <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
+    <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
+    <button id=installBtn class="hidden" onclick=installUpdate()>Установить</button>
+    <div class=msg id=setMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Резервное копирование</h3>
+    <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
+    <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
+    <button class=sec onclick=restorePick() id=restoreBtn style="margin-left:8px">⬆ Восстановить из файла</button>
+    <input type=file id=fold-backup accept=".json,.backup" class=hidden onchange=restoreFile(this)>
+    <div class=msg id=backupMsg></div>
     <hr>
     <h3 style="margin:0 0 8px">Ядро Xray</h3>
     <p class=mut style="margin:0 0 10px">Смена версии ядра. Старые приложения клиентов остаются совместимыми; для reality+xhttp нужен xray &ge; v24.9. Текущий бинарь перед сменой сохраняется для отката.</p>
@@ -516,6 +535,7 @@ function fmtBytes(n){
 function clientCard(c){
   const div=document.createElement('div');div.className='client';
   div.style.setProperty('--gc', groupColor(protoGroups[c.proto]));
+  div.dataset.uuid=c.uuid;
   div.innerHTML=`
     <div class=top>
       <div style="flex:1;min-width:0">
@@ -585,6 +605,27 @@ async function loadClients(){
   }
 }
 
+async function refreshOnline(){
+  if($('panel').style.display==='none')return;
+  try{
+    const d=await api('/api/clients');
+    const list=d.clients||[];
+    const map={};list.forEach(c=>map[c.uuid]=c);
+    document.querySelectorAll('#protoCards .client').forEach(card=>{
+      const c=map[card.dataset.uuid];
+      if(!c)return;
+      const _dot=card.querySelector('.t-online .dot');
+      if(_dot){
+        if(c.online){_dot.classList.add('on');card.querySelector('.t-online .t-otxt').textContent='онлайн';}
+        else{_dot.classList.remove('on');card.querySelector('.t-online .t-otxt').textContent='офлайн';}
+      }
+      const _up=card.querySelector('.t-up b');const _down=card.querySelector('.t-down b');
+      if(_up)_up.textContent=fmtBytes(c.up||0);
+      if(_down)_down.textContent=fmtBytes(c.down||0);
+    });
+  }catch(e){}
+}
+
 let protoCur=null;
 let protoList=[];
 let autoExpand=null;
@@ -631,6 +672,10 @@ function renderProtoCards(){
         b.innerHTML='➕&nbsp;&nbsp; Добавить клиента';
         b.onclick=()=>{showAdd(p.id);closeMenus();};
         m.appendChild(b);
+        const s=document.createElement('button');
+        s.innerHTML='⚙&nbsp;&nbsp; Настройки inbound';
+        s.onclick=()=>{showInb(p.id);closeMenus();};
+        m.appendChild(s);
         check.appendChild(m);
       };
       card.querySelector('.btn-add-client').onclick=()=>showAdd(p.id);
@@ -680,91 +725,17 @@ function setMsg(id,msg,cls,stick){
     el.dataset.msgT=setTimeout(()=>{el.innerHTML='';el.className='msg';delete el.dataset.msgT;},5000);
   }
 }
-let ss_cur_sni='',sni_listed=[];
 async function loadSettings(){
   try{const s=await api('/api/settings');
-    sni_listed=s.sni_list||[];
-    const box=$('sniBox');
-    box.innerHTML='';
-    let cur='';
-    const rows=sni_listed.length?sni_listed:[{proto:'',label:'(протокол не настроен)',sni:ss_cur_sni||s.sni||'www.samsung.com'}];
-    rows.forEach((r,i)=>{
-      const row=document.createElement('div');
-      row.style.cssText='display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap';
-      const lbl=document.createElement('span');lbl.style.cssText='min-width:210px;font-size:13px';lbl.textContent=r.label;
-      const inp=document.createElement('input');
-      inp.id='sniInp'+i;inp.maxLength=64;inp.style.cssText='flex:1;min-width:140px';
-      inp.value=r.sni||'';
-      inp.addEventListener('input',()=>{$('saveSniBtn').disabled=false;});
-      row.appendChild(lbl);row.appendChild(inp);
-      box.appendChild(row);
-      if(i===0)cur=r.sni||'';
-    });
-    ss_cur_sni=cur;
-    $('saveSniBtn').disabled=true;
-    port_list=s.ports||[];
-    const pbox=$('portBox');
-    pbox.innerHTML='';
-    const sel=document.createElement('select');sel.id='portSelProto';
-    sel.style.cssText='padding:6px 8px;border-radius:8px;font-size:13px';
-    port_list.forEach((r,i)=>{
-      const opt=document.createElement('option');opt.value=r.proto;opt.textContent=r.label;
-      sel.appendChild(opt);
-      const row=document.createElement('div');
-      row.style.cssText='display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap';
-      const lbl=document.createElement('span');lbl.style.cssText='min-width:210px;font-size:13px';
-      lbl.textContent=r.label+' ('+r.port+')';
-      const inp=document.createElement('input');
-      inp.id='portInp'+i;inp.type='number';inp.min=1;inp.max=65535;inp.value=r.port;
-      inp.style.cssText='flex:1;min-width:140px';
-      const dot=document.createElement('span');dot.id='portDot'+i;dot.style.cssText='font-size:13px;width:110px';
-      dot.textContent='\u25CF';
-      inp.addEventListener('input',()=>{refreshPort(r.proto,i);});
-      row.appendChild(lbl);row.appendChild(inp);row.appendChild(dot);
-      pbox.appendChild(row);
-    });
-    pbox.insertBefore(sel,pbox.firstChild);
-    sel.value=(port_list[0]||{}).proto||'';
-    sel.addEventListener('change',()=>{
-      const proto=sel.value;
-      let idx=-1;for(let i=0;i<port_list.length;i++)if(port_list[i].proto===proto)idx=i;
-      let changedFlag=false;
-      for(let i=0;i<port_list.length;i++){
-        const dot=document.getElementById('portDot'+i);
-        const f=document.getElementById('portInp'+i);
-        if(dot){dot.style.color='';dot.textContent='\u25CF';}
-        if(i===idx&&f&&port_list[i]&&Number(f.value)!==port_list[i].port)changedFlag=true;
-      }
-      $('savePortBtn').disabled=!changedFlag;
-    });
-    $('savePortBtn').disabled=true;
     $('setDomain').value=s.domain||'';
-    let h='\u2611 SNI: '+cur;
-    if(s.ipv4)h+='<br>\uD83C\uDF10 IPv4: '+s.ipv4;
+    let h='';
+    if(s.ipv4)h+='\uD83C\uDF10 IPv4: '+s.ipv4;
     if(s.ipv6)h+='<br>\uD83C\uDF10 IPv6: '+s.ipv6;
     if(s.a&&s.a.length)h+='<br>\u2699 A домена: '+s.a.join(', ');
     if(s.aaaa&&s.aaaa.length)h+='<br>\u2699 AAAA домена: '+s.aaaa.join(', ');
-    setMsg('setMsg2',h,'ok',false);
+    if(h)setMsg('setMsg2',h,'ok',false);
+    else setMsg('setMsg2','','',false);
   }catch(e){setMsg('setMsg2',e.message,'err');}
-}
-async function saveSni(){
-  const rows=$('sniBox').children;
-  const jobs=[];
-  for(let i=0;i<rows.length;i++){
-    const inp=document.getElementById('sniInp'+i);
-    if(!inp)continue;
-    jobs.push({proto:(sni_listed[i]||{}).proto||'',sni:inp.value.trim()});
-  }
-  $('saveSetSpn').textContent='\u23F3 Сохраняю SNI...';
-  try{
-    for(const j of jobs){
-      if(!j.proto||!j.sni)continue;
-      await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proto:j.proto,sni:j.sni})});
-    }
-    setMsg('setMsg2','\u2705 SNI сохранён'+(jobs.some(j=>j.proto)?' (XRay перезапущен)':''),'ok');
-    await loadSettings();
-  }catch(e){setMsg('setMsg2',e.message,'err');}
-  finally{$('saveSetSpn').textContent='';}
 }
 async function checkDns(){
   const d=$('setDomain').value.trim();
@@ -780,59 +751,6 @@ async function checkDns(){
     else if(s.match6===false)h+='<br>\u26D4 IPv6 \u2014 AAAA-запись НЕ указывает на сервер';
     $('dnsRes').innerHTML=h;
   }catch(e){setMsg('setMsg2',e.message,'err');}
-}
-async function saveSettings(){
-  const domain=$('setDomain').value.trim();
-  if(!domain){setMsg('setMsg2','Заполни домен для ссылок','err');return;}
-  $('saveSetSpn').textContent='\u23F3 Сохраняю...';
-  try{
-    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:domain})});
-    setMsg('setMsg2','\u2705 Домен='+(s.domain||'\u2014'),'ok');
-  }catch(e){setMsg('setMsg2',e.message,'err');}
-  finally{$('saveSetSpn').textContent='';}
-}
-let port_list=[],port_timers={};
-async function refreshPort(proto,idx){
-  clearTimeout(port_timers[idx]);
-  port_timers[idx]=setTimeout(async()=>{
-    const inp=document.getElementById('portInp'+idx);
-    if(!inp)return;
-    const raw=inp.value.trim();
-    const dot=document.getElementById('portDot'+idx);
-    if(!raw){if(dot){dot.style.color='';dot.textContent='●';}return;}
-    if(!/^\d+$/.test(raw)){if(dot){dot.style.color='var(--err)';dot.textContent='\u26A0';}return;}
-    try{
-      const cur=port_list[idx]||{};
-      const r=await api('/api/port/check?proto='+encodeURIComponent(cur.proto||'')+'&port='+raw);
-      if(dot){
-        if(Number(raw)===cur.port){dot.style.color='var(--mut)';dot.textContent='● (текущий)';}
-        else if(r.free){dot.style.color='var(--ok)';dot.textContent='\u2705 свободен';}
-        else if(r.taken_by){dot.style.color='var(--err)';dot.textContent='\u26D4 занят ('+r.taken_by+')';}
-        else{dot.style.color='var(--err)';dot.textContent='\u26D4 занят';}
-      }
-      if($('savePortBtn')&&cur){
-        const changed=Number(raw)!==cur.port;
-        $('savePortBtn').disabled=!changed;
-      }
-    }catch(e){ if(dot){dot.style.color='var(--err)';dot.textContent='?';} }
-  },300);
-}
-async function savePort(){
-  const row=$('portSelProto');
-  const proto=row?row.value:'';
-  if(!proto){setMsg('setMsg2','Выбери протокол','err');return;}
-  let idx=-1;for(let i=0;i<port_list.length;i++)if(port_list[i].proto===proto)idx=i;
-  if(idx<0){setMsg('setMsg2','Протокол не найден','err');return;}
-  const inp=document.getElementById('portInp'+idx);
-  const port=parseInt(inp.value,10);
-  if(!(port>0&&port<65536)){setMsg('setMsg2','Порт 1-65535','err');return;}
-  $('saveSetSpn').textContent='\u23F3 Применяю порт...';
-  try{
-    const s=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proto:proto,port:port})});
-    setMsg('setMsg2','\u2705 Порт '+s.port+' примен\u0451н для '+proto+(s.restarted?' (XRay перезапущен)':''),'ok');
-    await loadSettings();
-  }catch(e){setMsg('setMsg2',e.message,'err');}
-  finally{$('saveSetSpn').textContent='';}
 }
 async function refresh(){
   try{
@@ -862,9 +780,9 @@ let addProto=null;
 function showAdd(proto){
   addProto=proto||null;
   $('addTitle').textContent='Новый клиент — '+(protoLabels[addProto]||addProto||'');
-  $('addBox').classList.remove('hidden');$('newName').focus();
+  showModal('addBox');
 }
-function hideAdd(){addProto=null;$('addBox').classList.add('hidden');$('newName').value='';$('addMsg').textContent='';}
+function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';}
 
 async function doAdd(){
   const name=$('newName').value.trim();
@@ -883,9 +801,78 @@ async function doAdd(){
   }
 }
 
+let inbProto=null;
+function showInb(proto){
+  inbProto=proto;
+  $('inbTitle').textContent='Настройки — '+(protoLabels[proto]||proto||'');
+  $('inbMsg').textContent='';$('inbMsg').className='msg';
+  const meta=protoGroups[proto]==='reality';
+  $('inbSniBlock').style.display=meta?'':'none';
+  $('inbSaveBtn').disabled=true;
+  $('inbBox').classList.remove('hidden');
+  api('/api/settings').then(s=>{
+    const pmap={};(s.ports||[]).forEach(r=>pmap[r.proto]=r);
+    const smap={};(s.sni_list||[]).forEach(r=>smap[r.proto]=r);
+    const cur=pmap[proto];
+    if(cur)$('inbPort').value=cur.port;
+    else $('inbPort').value='';
+    if(meta)$('inbSni').value=(smap[proto]||{}).sni||'';
+    $('inbSaveBtn').disabled=false;
+  }).catch(e=>{$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';});
+  showModal('inbBox');
+}
+function hideInb(){inbProto=null;}
+async function saveInb(){
+  if(!inbProto)return;
+  const port=parseInt($('inbPort').value,10);
+  if(!(port>0&&port<65536)){$('inbMsg').textContent='Порт: 1-65535';$('inbMsg').className='msg err';return;}
+  $('inbMsg').textContent='Применяю...';$('inbMsg').className='msg';
+  try{
+    const body={proto:inbProto,port};
+    const isReality=protoGroups[inbProto]==='reality';
+    if(isReality){
+      const sni=$('inbSni').value.trim().toLowerCase();
+      if(!sni){$('inbMsg').textContent='SNI обязателен для Reality';$('inbMsg').className='msg err';return;}
+      body.sni=sni;
+    }
+    await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    $('inbMsg').textContent='Сохранено'+(body.sni?' (XRay перезапущен)':'');$('inbMsg').className='msg ok';
+    await loadSettings();
+  }catch(e){$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';}
+}
+
+function showModal(id){
+  const el=$(id); if(!el)return;
+  hideModal();
+  el.classList.remove('hidden');
+  el.classList.add('open');
+  const firstInp=el.querySelector('input,textarea');
+  if(firstInp)setTimeout(()=>{try{firstInp.focus();}catch(e){}},150);
+}
+function hideModal(){
+  document.querySelectorAll('.dialog.open').forEach(d=>{
+    d.classList.remove('open');d.classList.add('hidden');
+  });
+}
+function closeModal(){
+  const o=document.querySelector('.dialog.open');
+  if(o){
+    const id=o.id;
+    hideModal();
+    if(id==='addBox')hideAdd();
+    if(id==='inbBox')hideInb();
+    if(id==='renameBox')hideRename();
+    if(id==='tgAddBox')hideTgAdd();
+  }
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+document.addEventListener('click',e=>{
+  if(e.target.classList&&e.target.classList.contains('dialog')&&e.target.classList.contains('open'))closeModal();
+});
+
 let renameUuid=null;
-function showRename(c){renameUuid=c.uuid;$('renameName').value=c.name;$('renameMsg').textContent='';$('renameMsg').className='msg';$('renameBox').classList.remove('hidden');$('renameName').focus();$('renameName').select();}
-function hideRename(){renameUuid=null;$('renameBox').classList.add('hidden');$('renameName').value='';$('renameMsg').textContent='';}
+function showRename(c){renameUuid=c.uuid;$('renameName').value=c.name;$('renameMsg').textContent='';$('renameMsg').className='msg';showModal('renameBox');$('renameName').select();}
+function hideRename(){renameUuid=null;hideModal();$('renameName').value='';$('renameMsg').textContent='';}
 async function doRename(){
   const name=$('renameName').value.trim();
   if(!name){$('renameMsg').textContent='Введи имя';$('renameMsg').className='msg err';return;}
@@ -924,7 +911,6 @@ function copyText(text,okMsg){
 }
 
 async function checkUpdate(){
-  const b=$('checkBtn');b.disabled=true;
   $('setMsg').textContent='Проверяю GitHub...';$('setMsg').className='msg';
   $('installBtn').classList.add('hidden');
   try{
@@ -1154,7 +1140,8 @@ function renderTg(){
     '</div>' +
     '<div class="link-row"><code></code></div>';
     div.querySelector('.name').textContent = u.username;
-    div.querySelector('.uuid').textContent = 'соединений: ' + (u.connections || 0);
+    const conns = u.connections || 0;
+    div.querySelector('.uuid').textContent = conns > 0 ? ('онлайн: ' + conns) : 'офлайн';
     div.querySelector('code').textContent = u.link;
     div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'Tg: ' + u.username); };
     div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка Tg скопирована'); };
@@ -1164,11 +1151,10 @@ function renderTg(){
 }
 
 function showTgAdd(){
-  document.getElementById('tgAddBox').classList.remove('hidden');
-  document.getElementById('tgNewName').focus();
+  showModal('tgAddBox');
 }
 function hideTgAdd(){
-  document.getElementById('tgAddBox').classList.add('hidden');
+  hideModal();
   document.getElementById('tgNewName').value = '';
   document.getElementById('tgAddMsg').textContent = '';
 }
@@ -1287,6 +1273,7 @@ async function loadStats(){
   }catch(e){}
 }
 setInterval(loadStats,30000);
+setInterval(refreshOnline,10000);
 
 document.querySelectorAll('.tabs button').forEach(b=>{
   b.addEventListener('click',()=>{
@@ -1294,6 +1281,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     $('tab-'+b.dataset.tab).classList.add('active');
+    if(b.dataset.tab==='settings')autoCheckForUpdate();
   });
 });
 
