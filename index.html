@@ -217,7 +217,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
 
     <div class=card>
-      <div class=row><h2>Ссылки VPN</h2><button class=pcheck id=vpnAddBtn title="Добавить клиента">+</button></div>
+      <div class=row><h2>Ссылки VPN</h2></div>
 
       <p class=mut style="margin:0 0 12px;font-size:12px">Протоколы — по строкам: <b>+</b> раскрывает клиентов протокола, <b>⋯</b> — добавить клиента. TLS-протоколы получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
 
@@ -641,19 +641,6 @@ let autoExpand=null;
 
 function closeMenus(){document.querySelectorAll('.pmenu.open').forEach(m=>m.remove());}
 
-function openAddMenu(anchor){
-  closeMenus();
-  const m=document.createElement('div');m.className='pmenu open';
-  (protoList||[]).forEach(p=>{
-    const b=document.createElement('button');
-    b.innerHTML='➕&nbsp;&nbsp; '+p.label;
-    b.onclick=()=>{showAdd(p.id);closeMenus();};
-    m.appendChild(b);
-  });
-  m.style.maxHeight='70vh';m.style.overflowY='auto';
-  anchor.appendChild(m);
-}
-
 function renderProtoCards(){
   const box=$('protoCards');box.innerHTML='';
   const groups=[];const byGroup={};
@@ -860,7 +847,7 @@ function showInb(proto){
   }).catch(e=>{$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';});
   showModal('inbBox');
 }
-function hideInb(){inbProto=null;}
+function hideInb(){inbProto=null;hideModal();$('inbPort').value='';$('inbSni').value='';$('inbMsg').textContent='';$('inbMsg').className='msg';}
 async function saveInb(){
   if(!inbProto)return;
   const port=parseInt($('inbPort').value,10);
@@ -875,7 +862,8 @@ async function saveInb(){
       body.sni=sni;
     }
     await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
-    $('inbMsg').textContent='Сохранено'+(body.sni?' (XRay перезапущен)':'');$('inbMsg').className='msg ok';
+    hideInb();
+    toast('Порт/SNI inbound сохранены'+(body.sni?' (XRay перезапущен)':''),'ok');
     await loadSettings();
   }catch(e){$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';}
 }
@@ -1322,11 +1310,6 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     $('tab-'+b.dataset.tab).classList.add('active');
     if(b.dataset.tab==='settings')autoCheckForUpdate();
   });
-});
-const vpnAddBtn=$('vpnAddBtn');
-if(vpnAddBtn)vpnAddBtn.addEventListener('click',e=>{
-  e.stopPropagation();
-  openAddMenu(vpnAddBtn);
 });
 
 function showQR(text, title){
