@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, time
-import socketserver, http.server
+import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading
+import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime
 import zipfile
@@ -16,7 +16,7 @@ XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.7.6"
+VERSION = "1.8.0"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -206,7 +206,11 @@ def _new_inbound(proto):
         inb["password"] = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode()
         inb["method"] = "2022-blake3-aes-128-gcm"
     if _proto_meta(proto)["tls"]:
-        inb["cert"], inb["key"] = _gen_selfsigned(proto)
+        cp = _cert_pathes()
+        if cp["cert"] and cp["key"]:
+            inb["cert"], inb["key"] = cp["cert"], cp["key"]
+        else:
+            inb["cert"], inb["key"] = _gen_selfsigned(proto)
     return inb
 
 def _alloc_inbound(st, proto):
@@ -568,7 +572,16 @@ def _tg_status():
             "connections": u.get("current_connections", 0),
             "total_octets": u.get("total_octets", 0),
         })
+    for u in users:
+        u["link"] = _tg_host_ok(u.get("link") or "")
     return {"installed": True, "users": users}
+
+
+def _tg_host_ok(link):
+    host = (CFG_CACHE.get("panel_domain") or "").strip()
+    if not host or not link:
+        return link
+    return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
 
 def _tg_add(username):
     name = (username or "").strip().replace(" ", "_")
@@ -586,7 +599,7 @@ def _tg_add(username):
             link = l; break
     if not link and tls:
         link = tls[0]
-    return {"username": name, "secret": secret, "link": link}
+    return {"username": name, "secret": secret, "link": _tg_host_ok(link)}
 
 def _tg_remove(username):
     if not username:
@@ -850,6 +863,261 @@ def _xray_restore(version):
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
     return {"ok": True, "type": "xray", "version": version}
 
+_DDNS = {"configured": False, "host": "", "updated": None, "error": "", "response": "", "ipv4": None, "ipv6": None}
+CERT_DIR = f"{BASE}/certs"
+_CERT_STATE = {"domain": "", "issued": None, "expire": None, "cert": "", "key": "", "error": "", "busy": False}
+
+def _dynv6_conf():
+    c = CFG_CACHE or {}
+    return {"host": (c.get("dynv6_host") or "").strip(),
+            "token": (c.get("dynv6_token") or "").strip()}
+
+def _pub_ip4():
+    for u in ("https://ipv4.icanhazip.com", "https://api.ipify.org"):
+        try:
+            with urllib.request.urlopen(u, timeout=8) as r:
+                ip = r.read().decode().strip()
+            if re.fullmatch(r"[0-9.]+", ip):
+                return ip
+        except Exception:
+            pass
+    v = _my_ip()
+    return v if v and re.fullmatch(r"[0-9.]+", v) else None
+
+def _pub_ip6():
+    for u in ("https://v6.ident.me", "https://ipv6.icanhazip.com"):
+        try:
+            with urllib.request.urlopen(u, timeout=8) as r:
+                ip = r.read().decode().strip()
+            if ":" in ip:
+                return ip
+        except Exception:
+            pass
+    return _my_ipv6()
+
+def _dynv6_create_zone(name, account_token):
+    """Создание зоны через dynv6 REST v2 API (нужен Bearer account-token)."""
+    name = (name or "").strip().lower()
+    account_token = (account_token or "").strip()
+    if not name or not account_token:
+        raise RuntimeError("нужны имя зоны и account-token dynv6")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,31}", name):
+        raise RuntimeError("имя зоны: латиница/цифры/- (2–32 символа)")
+    body = json.dumps({"name": name}).encode()
+    req = urllib.request.Request("https://dynv6.com/api/v2/zones", data=body,
+                                 method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": "Bearer " + account_token})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        d = json.loads(r.read().decode("utf-8", "replace"))
+    host = (d.get("name") or "").strip()
+    token = (d.get("token") or "").strip()
+    if not host or not token:
+        raise RuntimeError("dynv6: ответ API не содержит name/token: " + json.dumps(d, ensure_ascii=False)[:200])
+    # сохраняем новую зону как текущую dynv6-configured
+    CFG_CACHE["dynv6_host"] = host
+    CFG_CACHE["dynv6_token"] = token
+    _save(CFG, CFG_CACHE)
+    if not (CFG_CACHE.get("panel_domain") or "").strip():
+        CFG_CACHE["panel_domain"] = host
+        CFG_CACHE["dynv6_host"] = host
+        _save(CFG, CFG_CACHE)
+    up = None
+    try:
+        up = _dynv6_update()
+    except Exception as e:
+        up = {"ok": False, "error": str(e)}
+    return {"ok": True, "host": host, "zone_created": True, "update": up}
+
+def _dynv6_update():
+    conf = _dynv6_conf()
+    host, token = conf["host"], conf["token"]
+    if not host or not token:
+        raise RuntimeError("dynv6 не настроен (нужны host и token)")
+    if not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", host):
+        raise RuntimeError("некорректный dynv6-host")
+    ip4, ip6 = _pub_ip4(), _pub_ip6()
+    p = [("hostname", host)]
+    if ip4: p.append(("ipv4", ip4))
+    if ip6: p.append(("ipv6", ip6))
+    p.append(("token", token))
+    url = "https://dynv6.com/api/update?" + urllib.parse.urlencode(p)
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=25) as r:
+        body = r.read().decode("utf-8", "replace").strip()
+    ok = body.lower().startswith("addresses updated")
+    _DDNS.update(configured=True, host=host, ipv4=ip4, ipv6=ip6,
+                 response=body, error="" if ok else body)
+    if ok:
+        _DDNS["updated"] = time.time()
+        if not CFG_CACHE.get("panel_domain"):
+            CFG_CACHE["panel_domain"] = host
+            _save(CFG, CFG_CACHE)
+    else:
+        _DDNS["error"] = "dynv6: " + body
+        raise RuntimeError("dynv6: " + body[:200])
+    return {"ok": True, "host": host, "ipv4": ip4, "ipv6": ip6, "response": body}
+
+_WEB_CTX = None
+
+def _web_tls_ctx():
+    """SSLContext из сохранённого серта (или None). Вызывать при старте и после перевыпуска."""
+    global _WEB_CTX
+    cp = _cert_pathes()
+    cp2 = _cert_pathes()
+    cert = (CFG_CACHE.get("cert") or "").strip()
+    key = (CFG_CACHE.get("cert_key") or "").strip()
+    if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        ctx.load_cert_chain(cert, key)
+    except Exception:
+        return None
+    _WEB_CTX = ctx
+    return ctx
+
+def _cert_pathes():
+    c = CFG_CACHE or {}
+    return {"cert": (c.get("cert") or "").strip(),
+            "key": (c.get("cert_key") or "").strip(),
+            "domain": (c.get("cert_domain") or "").strip()}
+
+def _cert_expire(path):
+    try:
+        out = subprocess.run(["openssl", "x509", "-enddate", "-noout", "-in", path],
+                             capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"notAfter=(.+)", out)
+        if not m: return None
+        t = re.sub(r"\s*GMT\s*$", " UTC", m.group(1))
+        return datetime.datetime.strptime(t, "%b %d %H:%M:%S %Y %Z").timestamp()
+    except Exception:
+        return None
+
+def _cert_status():
+    cp = _cert_pathes()
+    if cp["cert"] and os.path.exists(cp["cert"]):
+        _CERT_STATE.update(domain=cp["domain"] or "", cert=cp["cert"], key=cp["key"],
+                           issued=os.path.getmtime(cp["cert"]),
+                           expire=_cert_expire(cp["cert"]))
+    return dict(_CERT_STATE)
+
+def _domain_points(domain, cands):
+    """True, если домен из вне (DoH Cloudflare/Google) резолвится в один из cands."""
+    def _doh(url):
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                d = json.load(r)
+            return {x.get("data") for x in (d.get("Answer") or []) if x.get("type") == 1}
+        except Exception:
+            return set()
+    ips = set()
+    for a in range(6):
+        ips = _doh("https://cloudflare-dns.com/dns-query?name=" + urllib.parse.quote(domain) + "&type=A") | \
+              _doh("https://dns.google/resolve?name=" + urllib.parse.quote(domain) + "&type=A")
+        if any(ip in cands for ip in ips):
+            return True
+        time.sleep(12)
+    return False
+
+def _cert_issue():
+    if _CERT_STATE.get("busy"):
+        raise RuntimeError("выпуск сертификата уже идёт")
+    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    if not domain or re.fullmatch(r"[0-9.]+", domain) or ":" in domain or "//" in domain:
+        raise RuntimeError("сначала задай домен (не IP) — в поле ниже или через DDNS")
+    cur = _pub_ip4()
+    if cur:
+        ok = False
+        last = set()
+        point = _domain_points(domain, {cur})
+        ok = point
+        last = set()
+        if not ok:
+            raise RuntimeError("домен " + domain + " сейчас не указывает на этот сервер (" +
+                               cur + ") — сначала DDNS / A-запись (DoH: " +
+                               ",".join(sorted(last)) + ")")
+    if not _port_free(80):
+        raise RuntimeError("порт 80 занят — Let's Encrypt (HTTP-01) невозможен")
+    os.makedirs(CERT_DIR, exist_ok=True)
+    live = f"{CERT_DIR}/live/veil-{domain}"
+    certp = f"{live}/fullchain.pem"; keyp = f"{live}/privkey.pem"
+    _CERT_STATE["busy"] = True
+    try:
+        args = ["certbot", "certonly", "--standalone", "--preferred-challenges", "http",
+                "-d", domain, "--non-interactive", "--agree-tos",
+                "--register-unsafely-without-email",
+                "--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
+                "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=280)
+        if r.returncode != 0:
+            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        if not (os.path.exists(certp) and os.path.exists(keyp)):
+            raise RuntimeError("certbot завершился, но no fullchain/privkey")
+        CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
+        CFG_CACHE["cert_domain"] = domain
+        _save(CFG, CFG_CACHE)
+        _CERT_STATE.update(domain=domain, cert=certp, key=keyp,
+                           issued=os.path.getmtime(certp), expire=_cert_expire(certp), error="")
+        _attach_cert_to_tls()
+        return {"ok": True, "domain": domain, "cert": certp, "key": keyp}
+    finally:
+        _CERT_STATE["busy"] = False
+
+def _attach_cert_to_tls():
+    cp = _cert_pathes()
+    if not (cp["cert"] and cp["key"]): return
+    st = _load(STATE, {}) or {}
+    changed = False
+    for proto, inb in (st.get("inbounds") or {}).items():
+        if (_proto_meta(proto).get("tls") or False) and inb.get("port"):
+            inb["cert"], inb["key"] = cp["cert"], cp["key"]
+            changed = True
+    if changed:
+        _save(STATE, st)
+        try:
+            _write_xray(st)
+            _restart_xray()
+        except Exception:
+            pass
+
+def _cert_maybe_renew():
+    cp = _cert_pathes()
+    if not (cp["cert"] and os.path.exists(cp["cert"])):
+        return
+    exp = _cert_expire(cp["cert"])
+    if exp and exp > time.time() + 30 * 86400:
+        return
+    subprocess.run(["certbot", "renew", "--config-dir", CERT_DIR,
+                    "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
+                    "--non-interactive"], capture_output=True, text=True, timeout=280)
+
+def _ddns_loop():
+    time.sleep(6)
+    try:
+        if _dynv6_conf()["host"]:
+            _dynv6_update()
+    except Exception as e:
+        _DDNS.update(configured=bool(_dynv6_conf()["host"]), error=str(e))
+    last_day = ""
+    while True:
+        time.sleep(600)
+        try:
+            if _dynv6_conf()["host"]:
+                _dynv6_update()
+        except Exception as e:
+            _DDNS["error"] = str(e)
+        day = datetime.date.today().isoformat()
+        if day != last_day:
+            last_day = day
+            try:
+                _cert_maybe_renew()
+            except Exception as e:
+                _CERT_STATE["error"] = str(e)
+
+threading.Thread(target=_ddns_loop, daemon=True).start()
+
 def _stats():
     xc = _load(XRAY) or {}
     clients_count = 0
@@ -1062,6 +1330,16 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/versions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups()})
+        if p == "/api/dynv6/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            conf = _dynv6_conf()
+            return self._send(200, {"host": conf["host"], "configured": bool(conf["host"] and conf["token"]),
+                                    "updated": _DDNS.get("updated"), "error": _DDNS.get("error"),
+                                    "response": _DDNS.get("response"), "ipv4": _DDNS.get("ipv4"),
+                                    "ipv6": _DDNS.get("ipv6")})
+        if p == "/api/cert/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _cert_status())
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
@@ -1255,6 +1533,50 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "неизвестный тип"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/dynv6/save":
+                try:
+                    b = self._body()
+                    host = (b.get("host") or "").strip()
+                    token = (b.get("token") or "").strip()
+                    if not host or not token:
+                        return self._send(400, {"error": "нужны host и token"})
+                    if not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", host):
+                        return self._send(400, {"error": "некорректный host"})
+                    CFG_CACHE["dynv6_host"] = host
+                    CFG_CACHE["dynv6_token"] = token
+                    _save(CFG, CFG_CACHE)
+                    try:
+                        return self._send(200, _dynv6_update())
+                    except Exception as e:
+                        return self._send(200, {"ok": False, "error": str(e), "saved": True})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/dynv6/create-zone":
+                try:
+                    b2 = self._body()
+                    name = (b2.get("name") or "").strip()
+                    atok = (b2.get("account_token") or "").strip()
+                    return self._send(200, _dynv6_create_zone(name, atok))
+                except urllib.error.HTTPError as e:
+                    try:
+                        err = e.read().decode("utf-8", "replace")[:300]
+                    except Exception:
+                        err = ""
+                    return self._send(502, {"error": f"dynv6 HTTP {e.code}" + ((": " + err) if err else "")})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/dynv6/update":
+                try:
+                    return self._send(200, _dynv6_update())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/cert/issue":
+                try:
+                    return self._send(200, _cert_issue())
+                except urllib.error.HTTPError as e:
+                    return self._send(502, {"error": f"HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
 
             # ---- security ----
             if p == "/api/security":
@@ -1442,6 +1764,17 @@ class S(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
+    def get_request(self):
+        sock, addr = super().get_request()
+        if _WEB_CTX is not None:
+            try:
+                sock = _WEB_CTX.wrap_socket(sock, server_side=True)
+            except Exception:
+                try: sock.close()
+                except Exception: pass
+                raise
+        return sock, addr
+
 if __name__ == "__main__":
     port = CFG_CACHE.get("panel_port", 8443)
     print("Veil " + VERSION + " слушает :" + str(port), flush=True)
@@ -1456,5 +1789,6 @@ if __name__ == "__main__":
             _restart_xray()
     except Exception as e:
         print("migrate error: " + str(e), flush=True)
+    _web_tls_ctx()
     with S(("0.0.0.0", port), H) as srv:
         srv.serve_forever()

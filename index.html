@@ -289,6 +289,36 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 
     <hr>
     <hr>
+    <h3 style="margin:0 0 8px">Домен и DDNS (dynv6)</h3>
+    <p class=mut style="margin:0 0 10px">Сервер сам обновляет A/AAAA домена при смене IP. Когда записи актуальны, домен автоматически подставляется в ссылки клиентов.</p>
+    <label class=mut style="display:block">Host:
+      <input id=dvHost maxlength=80 placeholder="имя.dynv6.net" style="margin-top:4px"></label>
+    <label class=mut style="display:block;margin-top:8px">Token:
+      <input id=dvToken type=password maxlength=120 placeholder="токен dynv6" style="margin-top:4px"></label>
+    <div style="margin-top:10px">
+      <button class=sec onclick=saveDynv6()>Сохранить</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="tiny sec" onclick=triggerDynv6() style="margin-left:6px">Обновить IP сейчас</button>
+      <button class="tiny sec" onclick=toggleZoneForm() style="margin-left:4px">+ Создать зону через API</button>
+    </div>
+    <div id=zoneForm style="display:none;margin-top:10px;padding:10px;border:1px solid #3a3f4b;border-radius:8px">
+      <div class=mut style="margin:0 0 6px">Токен аккаунта dynv6 (Bearer, из раздела Keys на dynv6.com) + имя новой зоны. Зона создается, host и token зоны сохраняются автоматически, IP обновится сразу.</div>
+      <label class=mut style="display:block">Account token:
+        <input id=ztAccount type=password maxlength=120 style="margin-top:4px"></label>
+      <label class=mut style="display:block;margin-top:8px">Имя зоны (латиница/цифры/-, 2–32):
+        <input id=ztName maxlength=32 style="margin-top:4px" placeholder="myzone"></label>
+      <button class=sec style="margin-top:10px" onclick=createDynv6Zone()>Создать зону</button>
+      <div class=msg id=ztMsg></div>
+    </div>
+    <div class=msg id=dvMsg></div>
+
+    <hr>
+    <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
+    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена (нужен свободный порт 80). Он автоматически подключается к TLS-протоколам (ws/grpc/xhttp) вместо самоподписанного. Автообновление раз в сутки.</p>
+    <div class=mut>Статус: <b id=certStatus>—</b></div>
+    <div style="margin-top:10px"><button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button></div>
+    <div class=msg id=certMsg></div>
+    <hr>
     <h3 style="margin:0 0 8px">Ядро Xray</h3>
     <p class=mut style="margin:0 0 10px">Смена версии ядра. Старые приложения клиентов остаются совместимыми; для reality+xhttp нужен xray &ge; v24.9. Текущий бинарь перед сменой сохраняется для отката.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -798,6 +828,8 @@ async function refresh(){
     await loadFix();
     await loadStats();
     await loadSettings();
+    await loadDynv6();
+    await loadCert();
     await loadXrayInfo();
     await loadVersions();
   }catch(e){
@@ -895,6 +927,69 @@ async function checkUpdate(){
 
 
 let xrayVersions=[];
+
+async function loadDynv6(){
+  try{
+    const d=await api('/api/dynv6/status');
+    $('dvHost').value=d.host||'';
+    if(!d.configured){setMsg('dvMsg','не настроен','');$('dvMsg').textContent='dynv6 пока не настроен.';return;}
+    let h='Статус: '+($('dvHost').value||'-');
+    if(d.updated)h+='<br>Обновлено: '+new Date(d.updated*1000).toLocaleString();
+    if(d.ipv4||d.ipv6)h+='<br>IPv4: '+(d.ipv4||'—')+' · IPv6: '+(d.ipv6||'—');
+    if(d.response)h+='<br>Ответ dynv6: '+d.response;
+    if(d.error)h+='<br>Ошибка: '+d.error;
+    setMsg('dvMsg',h,d.error?'err':'ok');
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function saveDynv6(){
+  const host=$('dvHost').value.trim(),token=$('dvToken').value.trim();
+  if(!host||!token){setMsg('dvMsg','заполни host и token','err');return;}
+  setMsg('dvMsg','Сохраняю и обновляю DNS...','');
+  try{
+    const d=await api('/api/dynv6/save',{method:'POST',body:JSON.stringify({host,token})});
+    if(d.ok)setMsg('dvMsg','Готово: '+d.host+' → IPv4 '+(d.ipv4||'—')+' · IPv6 '+(d.ipv6||'—')+'. Домен: '+d.host,'ok');
+    else setMsg('dvMsg','Сохранено, но обновление: '+(d.error||'ошибка')+(d.saved?' (попробую ещё раз сам)':''),'err');
+    loadDynv6();
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function toggleZoneForm(){const f=$('zoneForm');f.style.display=f.style.display==='none'?'block':'none';}
+async function createDynv6Zone(){
+  const acct=($('ztAccount').value||'').trim(), nm=($('ztName').value||'').trim();
+  setMsg('ztMsg','Создаю зону...');
+  try{
+    const r=await api('api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
+    if(!r.ok)throw new Error(r.error||'ошибка dynv6');
+    setMsg('ztMsg','Зона создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok');
+    $('dvHost').value=$h(r.host); $('dvToken').value=r.token||'';
+    loadDynv6(); triggerDynv6();
+  }catch(e){setMsg('ztMsg','Ошибка: '+$h(e.message||e),'err');}
+}
+function triggerDynv6(){
+  setMsg('dvMsg','Обновляю...','');
+  try{
+    const d=await api('/api/dynv6/update',{method:'POST',body:'{}'});
+    setMsg('dvMsg','Готово: '+d.host+' → IPv4 '+(d.ipv4||'—')+' · IPv6 '+(d.ipv6||'—'),'ok');
+    loadDynv6();
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function loadCert(){
+  try{
+    const d=await api('/api/cert/status');
+    const el=$('certStatus');
+    if(d.cert){el.textContent=d.domain+(d.expire?' · истекает '+new Date(d.expire*1000).toLocaleDateString():'');el.className='';}
+    else{el.textContent='нет сертификата';}
+  }catch(e){$('certStatus').textContent='—';}
+}
+async function issueCert(){
+  if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? (нужен свободный порт 80)'))return;
+  const s=$('certMsg');s.textContent='Выпускаю... Может занять до минуты. Порт 80 временно занят сертификатом.';s.className='msg';
+  $('certBtn').disabled=true;
+  try{
+    const d=await api('/api/cert/issue',{method:'POST',body:'{}'});
+    setMsg('certMsg','Сертификат выпущен: '+d.domain,'ok');
+    loadCert();
+  }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
+}
 async function loadXrayInfo(){
   setMsg('xvMsg','Загружаю список версий...','');
   try{
