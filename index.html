@@ -1289,8 +1289,8 @@ function showQR(text, title){
 function hideQR(){
   document.getElementById('qrModal').style.display = 'none';
 }
-document.getElementById('qrModal').addEventListener('click', function(e){
-  if (e.target.id === 'qrModal') hideQR();
+document.addEventListener('click', function(e){
+  if (e.target && e.target.id === 'qrModal') hideQR();
 });
 
 refresh();
