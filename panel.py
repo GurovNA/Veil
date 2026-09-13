@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "1.8.11"
+VERSION = "1.8.12"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -53,6 +53,9 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
            "shadowsocks-2022": 26443}
+# Порт 443/80 заняты nginx (webproxy/decoy и Let's Encrypt), 18080 — telemt web,
+# 9091 — telemt API, 7443 — telemt MTProto. Панель не должна их занимать.
+_RESERVED_PORTS = {80, 443, 8080, 18080, 9091, 7443}
 CERT_DIR = f"{BASE}/certs"
 
 def _proto_meta(proto):
@@ -711,9 +714,32 @@ def _tg_web_set_profiles(users):
     vhosts[0] = v
     _tg_api("PATCH", "/v1/config", {"web": {"vhosts": vhosts}})
 
+_WEB_CARRIERS = ("https", "https-lanes", "websocket", "websocket-lanes")
+
+def _tg_web_set(carrier=None, enabled=None):
+    """Сменить [web] carrier / включить-выключить WEB (hot-reload, без перезапуска)."""
+    patch = {}
+    if enabled is not None:
+        patch["enabled"] = bool(enabled)
+    if carrier is not None:
+        carrier = (carrier or "").strip().lower()
+        if carrier not in _WEB_CARRIERS:
+            raise RuntimeError("carrier: https, https-lanes, websocket, websocket-lanes")
+        patch["carrier"] = carrier
+    d = _tg_api("GET", "/v1/config").get("data", {})
+    w = d.get("web") or {}
+    if (patch.get("enabled", w.get("enabled")) and
+            (carrier or w.get("carrier")) == "https-lanes"):
+        mh = (w.get("limits") or {}).get("max_http_handlers", 512)
+        if isinstance(mh, int) and mh < 4:
+            raise RuntimeError("https-lanes требует max_http_handlers >= 4")
+    _tg_api("PATCH", "/v1/config", {"web": patch})
+    return _tg_web_get()
+
 def _find_free_port(pref=None, avoid=()):
     import socket
     avoid = set(avoid or ())
+    avoided = _RESERVED_PORTS | avoid
     if pref is None:
         prefs = (7443, 2443, 8843, 6443, 9443)
     elif isinstance(pref, int):
@@ -721,7 +747,7 @@ def _find_free_port(pref=None, avoid=()):
     else:
         prefs = tuple(pref) or (7443, 2443, 8843, 6443, 9443)
     for port in prefs:
-        if port in avoid: continue
+        if port in avoided: continue
         s = socket.socket()
         try:
             s.bind(("", port)); s.close(); return port
@@ -733,7 +759,7 @@ def _find_free_port(pref=None, avoid=()):
             s.bind(("", 0)); port = s.getsockname()[1]; s.close()
         except OSError:
             s.close(); continue
-        if port not in avoid:
+        if port not in avoided:
             return port
     raise RuntimeError("нет свободного порта")
 
@@ -969,6 +995,98 @@ def _xray_restore(version):
     os.replace(tmpbin, XRAY_BIN)
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
     return {"ok": True, "type": "xray", "version": version}
+
+# ---------- telemt version / update / rollback ----------
+
+def _tg_current_version():
+    try:
+        out = subprocess.run(["/usr/bin/telemt", "--version"],
+                             capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+)", out)
+        return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+def _tg_versions():
+    req = urllib.request.Request(
+        "https://api.github.com/repos/telemt/telemt/releases?per_page=100",
+        headers=_gh_headers())
+    with urllib.request.urlopen(req, timeout=20) as r:
+        rels = json.load(r)
+    vers = []
+    pre = []
+    for rel in rels:
+        if rel.get("draft"):
+            continue
+        tag = str(rel.get("tag_name") or "").lstrip("v")
+        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag) and tag not in vers:
+            vers.append(tag)
+            if rel.get("prerelease"):
+                pre.append(tag)
+    return {"versions": vers, "pre": pre}
+
+def _tg_switch(version):
+    version = version.strip().lstrip("v")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise RuntimeError("неверный формат версии")
+    cur = _tg_current_version()
+    if cur == version:
+        raise RuntimeError("эта версия уже установлена (" + cur + ")")
+    if (_tg_versions()["versions"] and version not in _tg_versions()["versions"]):
+        raise RuntimeError("версия v" + version + " не найдена в релизах telemt")
+    with tempfile.TemporaryDirectory(prefix="telemt-sw-") as tmp:
+        z = os.path.join(tmp, "t.tar.gz")
+        url = ("https://github.com/telemt/telemt/releases/download/" + version +
+               "/telemt-x86_64-linux-gnu.tar.gz")
+        _dl(url, z)
+        with tarfile.open(z, "r:gz") as arc:
+            arc.extract("telemt", tmp)
+        newbin = os.path.join(tmp, "telemt")
+        if not os.path.exists(newbin):
+            raise RuntimeError("в архиве нет бинаря telemt")
+        os.chmod(newbin, 0o755)
+        t = subprocess.run([newbin, "--version"], capture_output=True, text=True, timeout=20)
+        if t.returncode:
+            raise RuntimeError("бинар не запускается: " + (t.stderr or t.stdout)[-300:])
+        bdir = os.path.join(BASE, "backups", "telemt", cur)
+        os.makedirs(bdir, exist_ok=True)
+        shutil.copy2("/usr/bin/telemt", os.path.join(bdir, "telemt"))
+        tmpbin = "/usr/bin/telemt.new"
+        shutil.copy2(newbin, tmpbin)
+        os.chmod(tmpbin, 0o755)
+        os.replace(tmpbin, "/usr/bin/telemt")
+        subprocess.run(["systemctl", "restart", "telemt"], check=True, capture_output=True, timeout=60)
+    return {"ok": True, "from": cur, "to": version}
+
+def _tg_backups():
+    res = []
+    base = os.path.join(BASE, "backups", "telemt")
+    if not os.path.isdir(base):
+        return res
+    for d in sorted(os.listdir(base), reverse=True):
+        if os.path.isfile(os.path.join(base, d, "telemt")):
+            res.append({"version": d})
+    return res
+
+def _tg_restore(version):
+    src = os.path.join(BASE, "backups", "telemt", version, "telemt")
+    if not os.path.isfile(src):
+        raise RuntimeError("бэкап telemt v" + version + " не найден")
+    cur = _tg_current_version()
+    if cur == version:
+        raise RuntimeError("эта версия уже стоит")
+    t = subprocess.run([src, "--version"], capture_output=True, text=True, timeout=20)
+    if t.returncode:
+        raise RuntimeError("бэкап не запускается: " + (t.stderr or t.stdout)[-300:])
+    bdir = os.path.join(BASE, "backups", "telemt", cur)
+    os.makedirs(bdir, exist_ok=True)
+    shutil.copy2("/usr/bin/telemt", os.path.join(bdir, "telemt"))
+    tmpbin = "/usr/bin/telemt.new"
+    shutil.copy2(src, tmpbin)
+    os.chmod(tmpbin, 0o755)
+    os.replace(tmpbin, "/usr/bin/telemt")
+    subprocess.run(["systemctl", "restart", "telemt"], check=True, capture_output=True, timeout=60)
+    return {"ok": True, "type": "telemt", "version": version}
 
 _DDNS = {"configured": False, "host": "", "updated": None, "error": "", "response": "", "ipv4": None, "ipv6": None}
 CERT_DIR = f"{BASE}/certs"
@@ -1489,9 +1607,17 @@ class H(http.server.BaseHTTPRequestHandler):
                                         "versions": vp["versions"], "pre": vp["pre"]})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
+        if p == "/api/tg/versions":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                vp = _tg_versions()
+                return self._send(200, {"current": _tg_current_version(),
+                                        "versions": vp["versions"], "pre": vp["pre"]})
+            except Exception as e:
+                return self._send(502, {"error": str(e)})
         if p == "/api/versions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups()})
+            return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups(), "telemt": _tg_backups()})
         if p == "/api/dynv6/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             conf = _dynv6_conf()
@@ -1683,6 +1809,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/tg/switch":
+                try:
+                    b = self._body()
+                    return self._send(200, _tg_switch((b.get("version") or "").strip()))
+                except urllib.error.HTTPError as e:
+                    return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             if p == "/api/versions/restore":
                 try:
                     b = self._body()
@@ -1692,6 +1826,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(200, _panel_restore(ver))
                     if typ == "xray":
                         return self._send(200, _xray_restore(ver))
+                    if typ == "telemt":
+                        return self._send(200, _tg_restore(ver))
                     return self._send(400, {"error": "неизвестный тип"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
@@ -1795,6 +1931,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 cur = CFG_CACHE.get("panel_port", 8443)
                 if port == int(cur):
                     return self._send(200, {"ok": True, "port": cur, "restarting": False})
+                if port in _RESERVED_PORTS:
+                    return self._send(400, {"error": f"Порт {port} зарезервирован под nginx/webproxy/telemt"})
                 if not _port_free(port):
                     return self._send(400, {"error": f"Порт {port} занят"})
                 CFG_CACHE["panel_port"] = port
@@ -1951,6 +2089,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     _tg_remove(b.get("username", ""))
                     return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/web/set":
+                b = self._body()
+                try:
+                    return self._send(200, {"ok": True, "web": _tg_web_set(
+                        b.get("carrier"), b.get("enabled"))})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
 
