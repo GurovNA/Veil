@@ -16,7 +16,7 @@ XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.8.3"
+VERSION = "1.8.4"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
