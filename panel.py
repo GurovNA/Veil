@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading
+import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket
 import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime
@@ -1869,12 +1869,33 @@ class S(socketserver.ThreadingTCPServer):
     def get_request(self):
         sock, addr = super().get_request()
         if _WEB_CTX is not None:
+            sock.settimeout(5)
             try:
-                sock = _WEB_CTX.wrap_socket(sock, server_side=True)
+                first = sock.recv(1, socket.MSG_PEEK)
             except Exception:
                 try: sock.close()
                 except Exception: pass
                 raise
+            if first == b"\x16":
+                try:
+                    sock = _WEB_CTX.wrap_socket(sock, server_side=True)
+                except Exception:
+                    try: sock.close()
+                    except Exception: pass
+                    raise
+            else:
+                # plain-HTTP запрос на HTTPS-порт → 301 на https
+                host = (CFG_CACHE.get("panel_domain") or "127.0.0.1").strip()
+                port = CFG_CACHE.get("panel_port", 8443)
+                try:
+                    sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
+                                  "Location: https://%s:%d/\r\n"
+                                  "Content-Length: 0\r\n"
+                                  "Connection: close\r\n\r\n" % (host, int(port))).encode())
+                except Exception: pass
+                try: sock.close()
+                except Exception: pass
+                raise ConnectionRefusedError("plain http -> https")
         return sock, addr
 
 if __name__ == "__main__":
