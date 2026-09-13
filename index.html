@@ -314,9 +314,16 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 
     <hr>
     <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
-    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена (нужен свободный порт 80). Он автоматически подключается к TLS-протоколам (ws/grpc/xhttp) вместо самоподписанного. Автообновление раз в сутки.</p>
+    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена (нужен свободный порт 80). Он автоматически подключается к TLS-протоколам (ws/grpc/xhttp) вместо самоподписанного. Автопродление раз в сутки.</p>
     <div class=mut>Статус: <b id=certStatus>—</b></div>
-    <div style="margin-top:10px"><button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button></div>
+    <label class=mut style="display:block;margin-top:8px">Email для Let&rsquo;s Encrypt (уведомления об истечении, необязательно):
+      <input id=certEmail type=email maxlength=120 style="margin-top:4px" placeholder="you@example.com"></label>
+    <label class=mut style="display:block;margin-top:8px"><input id=certAuto type=checkbox> Автопродление за 30 дней до истечения</label>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button>
+      <button class=tiny onclick=saveCertCfg()>&#x1F4CE; Сохранить email/авто</button>
+      <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
+    </div>
     <div class=msg id=certMsg></div>
     <hr>
     <h3 style="margin:0 0 8px">Ядро Xray</h3>
@@ -983,20 +990,39 @@ async function triggerDynv6(){
     loadDynv6();
   }catch(e){setMsg('dvMsg',e.message,'err');}
 }
-async function loadCert(){
+async function loadCert(cfg){
   try{
-    const d=await api('/api/cert/status');
+    if(!cfg)cfg=await api('/api/cert/status');
     const el=$('certStatus');
-    if(d.cert){el.textContent=d.domain+(d.expire?' · истекает '+new Date(d.expire*1000).toLocaleDateString():'');el.className='';}
-    else{el.textContent='нет сертификата';}
+    if(cfg.cert){el.textContent=cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():'')+(cfg.auto?' · автопродление вкл':' · автопродление выкл');el.className='';}
+    else{el.textContent='нет сертификата'+(cfg.auto?' · автопродление вкл':' · автопродление выкл');}
+    $('certEmail').value=cfg.email||'';
+    $('certAuto').checked=!!cfg.auto;
   }catch(e){$('certStatus').textContent='—';}
+}
+async function saveCertCfg(){
+  try{
+    const cfg=await api('/api/cert/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim(),auto:$('certAuto').checked})});
+    setMsg('certMsg','Настройки сохранены','ok');
+    loadCert(cfg);
+  }catch(e){setMsg('certMsg',e.message,'err');}
+}
+async function renewCert(){
+  if(!confirm('Продлить Let\'s Encrypt сертификат сейчас? (нужен свободный порт 80)'))return;
+  const s=$('certMsg');s.textContent='Продлеваю... До минуты, порт 80 временно занят.';s.className='msg';
+  $('renBtn').disabled=true;
+  try{
+    const cfg=await api('/api/cert/renew',{method:'POST',body:'{}'});
+    setMsg('certMsg','Сертификат продлён: '+cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():''),'ok');
+    loadCert(cfg);
+  }catch(e){setMsg('certMsg',e.message,'err');}finally{$('renBtn').disabled=false;}
 }
 async function issueCert(){
   if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? (нужен свободный порт 80)'))return;
   const s=$('certMsg');s.textContent='Выпускаю... Может занять до минуты. Порт 80 временно занят сертификатом.';s.className='msg';
   $('certBtn').disabled=true;
   try{
-    const d=await api('/api/cert/issue',{method:'POST',body:'{}'});
+    const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim()})});
     setMsg('certMsg','Сертификат выпущен: '+d.domain,'ok');
     loadCert();
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
@@ -1007,9 +1033,10 @@ async function loadXrayInfo(){
     const d=await api('/api/xray/info');
     $('xvCur').textContent=d.current;
     xrayVersions=d.versions||[];
+    const preSet=new Set(d.pre||[]);
     const sel=$('xvSel');sel.innerHTML='';
-    const cur=document.createElement('option');cur.value='';cur.textContent=d.current+' (текущая)';sel.appendChild(cur);
-    for(const v of xrayVersions){if(v===d.current)continue;const o=document.createElement('option');o.value=v;o.textContent='v'+v;sel.appendChild(o);}
+    const cur=document.createElement('option');cur.value='';cur.textContent=d.current+(preSet.has(d.current)?' (preview)':'')+' (текущая)';sel.appendChild(cur);
+    for(const v of xrayVersions){if(v===d.current)continue;const o=document.createElement('option');o.value=v;o.textContent='v'+v+(preSet.has(v)?' (preview)':'');sel.appendChild(o);}
     if(sel.options.length>1)sel.selectedIndex=1;
     $('xvMsg').textContent='';$('xvMsg').className='msg';
   }catch(e){setMsg('xvMsg',e.message,'err');}

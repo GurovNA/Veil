@@ -16,7 +16,7 @@ XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.8.4"
+VERSION = "1.8.6"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -748,18 +748,21 @@ def _xray_current_version():
 
 def _xray_versions():
     req = urllib.request.Request(
-        "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=40",
+        "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=100",
         headers=_gh_headers())
     with urllib.request.urlopen(req, timeout=20) as r:
         rels = json.load(r)
     vers = []
+    pre = []
     for rel in rels:
-        if rel.get("prerelease") or rel.get("draft"):
+        if rel.get("draft"):
             continue
         tag = str(rel.get("tag_name") or "").lstrip("v")
         if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag) and tag not in vers:
             vers.append(tag)
-    return vers
+            if rel.get("prerelease"):
+                pre.append(tag)
+    return {"versions": vers, "pre": pre}
 
 def _xray_min_req():
     try:
@@ -864,7 +867,8 @@ def _xray_restore(version):
 
 _DDNS = {"configured": False, "host": "", "updated": None, "error": "", "response": "", "ipv4": None, "ipv6": None}
 CERT_DIR = f"{BASE}/certs"
-_CERT_STATE = {"domain": "", "issued": None, "expire": None, "cert": "", "key": "", "error": "", "busy": False}
+_CERT_STATE = {"domain": "", "issued": None, "expire": None, "cert": "", "key": "", "error": "", "busy": False,
+               "email": "", "auto": True}
 
 def _dynv6_conf():
     c = CFG_CACHE or {}
@@ -994,6 +998,8 @@ def _cert_expire(path):
         return None
 
 def _cert_status():
+    _CERT_STATE["email"] = (CFG_CACHE.get("cert_email") or "").strip()
+    _CERT_STATE["auto"] = bool(CFG_CACHE.get("cert_auto", True))
     cp = _cert_pathes()
     if cp["cert"] and os.path.exists(cp["cert"]):
         _CERT_STATE.update(domain=cp["domain"] or "", cert=cp["cert"], key=cp["key"],
@@ -1020,7 +1026,7 @@ def _domain_points(domain, cands):
         time.sleep(12)
     return False
 
-def _cert_issue():
+def _cert_issue(email=None):
     if _CERT_STATE.get("busy"):
         raise RuntimeError("выпуск сертификата уже идёт")
     domain = (CFG_CACHE.get("panel_domain") or "").strip()
@@ -1044,16 +1050,22 @@ def _cert_issue():
     certp = f"{live}/fullchain.pem"; keyp = f"{live}/privkey.pem"
     _CERT_STATE["busy"] = True
     try:
+        email = (email or CFG_CACHE.get("cert_email") or "").strip()
         args = ["certbot", "certonly", "--standalone", "--preferred-challenges", "http",
-                "-d", domain, "--non-interactive", "--agree-tos",
-                "--register-unsafely-without-email",
-                "--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
-                "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
+                "-d", domain, "--non-interactive", "--agree-tos"]
+        if email:
+            args += ["--email", email]
+        else:
+            args += ["--register-unsafely-without-email"]
+        args += ["--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
+                 "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
         r = subprocess.run(args, capture_output=True, text=True, timeout=280)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
         if not (os.path.exists(certp) and os.path.exists(keyp)):
             raise RuntimeError("certbot завершился, но no fullchain/privkey")
+        if email:
+            CFG_CACHE["cert_email"] = email
         CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
         CFG_CACHE["cert_domain"] = domain
         _save(CFG, CFG_CACHE)
@@ -1081,16 +1093,60 @@ def _attach_cert_to_tls():
         except Exception:
             pass
 
+def _reload_cert_runtime():
+    """После перевыпуска/изменения сертификата: обновить TLS-контекст панели и рестартовать Xray."""
+    try:
+        _web_tls_ctx()
+    except Exception:
+        pass
+    try:
+        _write_xray(_load(STATE, {}) or {})
+        _restart_xray()
+    except Exception:
+        pass
+
 def _cert_maybe_renew():
+    if not CFG_CACHE.get("cert_auto", True):
+        return
     cp = _cert_pathes()
     if not (cp["cert"] and os.path.exists(cp["cert"])):
         return
     exp = _cert_expire(cp["cert"])
     if exp and exp > time.time() + 30 * 86400:
         return
-    subprocess.run(["certbot", "renew", "--config-dir", CERT_DIR,
-                    "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                    "--non-interactive"], capture_output=True, text=True, timeout=280)
+    if not _port_free(80):
+        _CERT_STATE["error"] = "порт 80 занят — автопродление сейчас невозможно"
+        return
+    r = subprocess.run(["certbot", "renew", "--config-dir", CERT_DIR,
+                        "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
+                        "--non-interactive"], capture_output=True, text=True, timeout=280)
+    if r.returncode == 0:
+        _cert_status()
+        _reload_cert_runtime()
+    else:
+        _CERT_STATE["error"] = "автопродление: " + (r.stderr or r.stdout)[-300:]
+
+def _cert_renew_now():
+    cp = _cert_pathes()
+    if not (cp["cert"] and os.path.exists(cp["cert"])):
+        raise RuntimeError("нет выпущенного сертификата — сначала выпусти")
+    if _CERT_STATE.get("busy"):
+        raise RuntimeError("операция с сертификатом уже идёт")
+    if not _port_free(80):
+        raise RuntimeError("порт 80 занят — продление (HTTP-01) невозможно")
+    _CERT_STATE["busy"] = True
+    try:
+        r = subprocess.run(["certbot", "renew", "--force-renewal",
+                            "--config-dir", CERT_DIR,
+                            "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
+                            "--non-interactive"], capture_output=True, text=True, timeout=280)
+        if r.returncode != 0:
+            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        _cert_status()
+        _reload_cert_runtime()
+        return dict(_CERT_STATE)
+    finally:
+        _CERT_STATE["busy"] = False
 
 def _ddns_loop():
     time.sleep(6)
@@ -1322,8 +1378,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/xray/info":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
+                vp = _xray_versions()
                 return self._send(200, {"current": _xray_current_version(),
-                                        "versions": _xray_versions()})
+                                        "versions": vp["versions"], "pre": vp["pre"]})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
         if p == "/api/versions":
@@ -1571,7 +1628,29 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": str(e)})
             if p == "/api/cert/issue":
                 try:
-                    return self._send(200, _cert_issue())
+                    b = self._body()
+                    return self._send(200, _cert_issue((b or {}).get("email") or CFG_CACHE.get("cert_email")))
+                except urllib.error.HTTPError as e:
+                    return self._send(502, {"error": f"HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/cert/config":
+                try:
+                    b = self._body() or {}
+                    email = (b.get("email") or "").strip()
+                    if email:
+                        CFG_CACHE["cert_email"] = email
+                    elif "email" in b:
+                        CFG_CACHE.pop("cert_email", None)
+                    if "auto" in b:
+                        CFG_CACHE["cert_auto"] = bool(b.get("auto"))
+                    _save(CFG, CFG_CACHE)
+                    return self._send(200, _cert_status())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/cert/renew":
+                try:
+                    return self._send(200, _cert_renew_now())
                 except urllib.error.HTTPError as e:
                     return self._send(502, {"error": f"HTTP {e.code}"})
                 except Exception as e:
