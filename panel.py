@@ -15,8 +15,9 @@ XRAY = "/usr/local/etc/xray/config.json"
 XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
+TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "1.8.10"
+VERSION = "1.8.11"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -557,6 +558,8 @@ def _tg_status():
         d = _tg_api("GET", "/v1/users")
     except Exception:
         return {"installed": False, "users": []}
+    web = _tg_web_get()
+    web_links = {u: _tg_web_link(u) for u in (web["profiles"] if web else [])}
     users = []
     for u in d.get("data", []):
         links = (u.get("links") or {}).get("tls") or []
@@ -571,12 +574,16 @@ def _tg_status():
             "username": u.get("username", ""),
             "enabled": bool(u.get("enabled")),
             "link": link,
+            "web_link": web_links.get(u.get("username", ""), ""),
             "connections": u.get("active_unique_ips", 1 if u.get("current_connections", 0) else 0),
             "total_octets": u.get("total_octets", 0),
         })
     for u in users:
         u["link"] = _tg_host_ok(u.get("link") or "")
-    return {"installed": True, "users": users}
+    res = {"installed": True, "users": users}
+    if web:
+        res["web"] = web
+    return res
 
 
 def _tg_host_ok(link):
@@ -601,13 +608,108 @@ def _tg_add(username):
             link = l; break
     if not link and tls:
         link = tls[0]
-    return {"username": name, "secret": secret, "link": _tg_host_ok(link)}
+    web_link = ""
+    w = _tg_web_get()
+    if w and w.get("enabled") and w.get("host"):
+        users = list(w["profiles"])
+        if name not in users:
+            users.append(name)
+            try:
+                _tg_web_set_profiles(users)
+                w = _tg_web_get()
+            except Exception:
+                w = None
+        if w and name in w["profiles"]:
+            s = secret or _tg_web_secret(name)
+            web_link = "tg://webproxy?server=%s&secret=dd%s" % (w["host"], s) if s else ""
+    return {"username": name, "secret": secret, "link": _tg_host_ok(link), "web_link": web_link}
 
 def _tg_remove(username):
     if not username:
         raise RuntimeError("имя пустое")
+    w = _tg_web_get()
+    if w and username in w["profiles"]:
+        try:
+            _tg_web_set_profiles([u for u in w["profiles"] if u != username])
+        except Exception:
+            pass
     _tg_api("DELETE", "/v1/users/" + urllib.parse.quote(username))
     return {"ok": True}
+
+def _tg_web_get():
+    """WEB-конфиг telemt: enabled, carrier, vhosts-профили, host."""
+    try:
+        d = _tg_api("GET", "/v1/config").get("data", {})
+    except Exception:
+        return None
+    w = d.get("web") or {}
+    vhosts = w.get("vhosts") or []
+    out = {
+        "enabled": bool(w.get("enabled")),
+        "carrier": w.get("carrier"),
+        "host": "",
+        "public_addr": "",
+        "profiles": [],
+    }
+    if vhosts:
+        v = vhosts[0]
+        out["host"] = v.get("host", "")
+        out["public_addr"] = v.get("public_addr", "")
+        out["profiles"] = [p.get("user") for p in (v.get("profiles") or [])]
+    return out
+
+def _tg_web_secret(username):
+    """Секрет пользователя из telemt.toml [access.users]."""
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return ""
+    m = re.search(r"(?ms)^\s*\[access\.users\]\s*$(.+?)(?=^\s*\[|\Z)", text)
+    if not m:
+        return ""
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        mm = re.match(r'^"?([^"=\s]+)"?\s*=\s*"([0-9a-fA-F]+)"', line)
+        if mm and mm.group(1) == username:
+            return mm.group(2)
+    return ""
+
+def _tg_web_link(username):
+    """tg://webproxy?server=HOST&secret=dd<secret> для пользователя."""
+    w = _tg_web_get()
+    if not (w and w.get("enabled") and w.get("host")):
+        return ""
+    if username not in w["profiles"]:
+        return ""
+    secret = _tg_web_secret(username)
+    if not secret:
+        return ""
+    return "tg://webproxy?server=%s&secret=dd%s" % (w["host"], secret)
+
+def _tg_web_set_profiles(users):
+    """PATCH [web].vhosts[].profiles целиком (hot-reload, без перезапуска)."""
+    d = _tg_api("GET", "/v1/config").get("data", {})
+    w = d.get("web") or {}
+    vhosts = list(w.get("vhosts") or [])
+    if not vhosts:
+        return
+    v = dict(vhosts[0])
+    existing = {}
+    for p in (v.get("profiles") or []):
+        existing[p.get("user")] = dict(p)
+    new_profiles = []
+    for u in users:
+        p = existing.get(u) or {"user": u, "secret_mode": "dd",
+                                 "max_sessions": 8, "max_streams": 512,
+                                 "max_streams_per_session": 64}
+        p["user"] = u
+        if "secret_mode" not in p:
+            p["secret_mode"] = "dd"
+        new_profiles.append(p)
+    v["profiles"] = new_profiles
+    vhosts[0] = v
+    _tg_api("PATCH", "/v1/config", {"web": {"vhosts": vhosts}})
 
 def _find_free_port(pref=None, avoid=()):
     import socket
