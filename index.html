@@ -662,6 +662,17 @@ async function toast(html, cls){
   c.onclick=()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);};
   setTimeout(()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);},3600);
 }
+function setMsg(id,msg,cls,stick){
+  const el=$(id);
+  if(!el)return;
+  el.innerHTML=msg||'';
+  el.className='msg'+(cls?' '+cls:'');
+  const t=parseInt(el.dataset.msgT||0,10)||0;
+  if(t)clearTimeout(t);
+  if(stick!==false){
+    el.dataset.msgT=setTimeout(()=>{el.innerHTML='';el.className='msg';delete el.dataset.msgT;},5000);
+  }
+}
 let ss_cur_sni='',sni_listed=[];
 async function loadSettings(){
   try{const s=await api('/api/settings');
