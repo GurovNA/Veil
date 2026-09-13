@@ -964,7 +964,7 @@ async function createDynv6Zone(){
     loadDynv6(); triggerDynv6();
   }catch(e){setMsg('ztMsg','Ошибка: '+$h(e.message||e),'err');}
 }
-function triggerDynv6(){
+async function triggerDynv6(){
   setMsg('dvMsg','Обновляю...','');
   try{
     const d=await api('/api/dynv6/update',{method:'POST',body:'{}'});
