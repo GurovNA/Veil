@@ -16,7 +16,7 @@ XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 REPO = "GurovNA/Veil"
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -28,7 +28,6 @@ PROTOCOLS = [
     {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS (self-signed)",         "group": "vless",   "net": "tcp",      "tls": True},
     {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS (self-signed)",        "group": "vless",   "net": "grpc",     "tls": True},
     {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS (self-signed)",       "group": "vless",   "net": "xhttp",    "tls": True},
-    {"id": "vless-splithttp-tls", "label": "VLESS + SplitHTTP + TLS (self-signed)",   "group": "vless",   "net": "splithttp", "tls": True},
     {"id": "vmess-ws",            "label": "VMess + WebSocket",                       "group": "vmess",   "net": "ws",       "tls": False},
     {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS (self-signed)",   "group": "vmess",   "net": "ws",       "tls": True},
     {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS (self-signed)",         "group": "vmess",   "net": "tcp",      "tls": True},
@@ -50,7 +49,7 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
-           "vless-splithttp-tls": 25443, "shadowsocks-2022": 26443}
+           "shadowsocks-2022": 26443}
 CERT_DIR = f"{BASE}/certs"
 
 def _proto_meta(proto):
