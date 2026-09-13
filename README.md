@@ -3,7 +3,7 @@
 VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 Установка одной строкой на Ubuntu 22.04 / 24.04 / 26.04.
 
-Актуальная версия: **v1.8.1**
+Актуальная версия: **v1.8.2**
 
 ## Установка
 
@@ -11,6 +11,10 @@ VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 
 В конце скрипт выведет URL панели, логин и пароль (сгенерирован автоматически).
 Логин и пароль можно сменить в разделе Безопасность панели.
+
+## Что нового в v1.8.2
+
+- **Убран VLESS + SplitHTTP + TLS (self-signed).** Первопричина падения Xray целиком: при этом протоколе панель пишет в inbound `certificateFile`=`/opt/vpnpanel/certs/live/veil-…/fullchain.pem`, а `/opt/vpnpanel/certs` лежит `root:root drw-------` и не читается процессом Xray, который здесь под `User=nobody` => `permission denied` => xray не стартует => падала ВСЯ VPN. Протокол убран из панели; SplitHTTP без TLS, Reality, ws/grpc/xhttp/tcp, Shadowsocks — работают как раньше.
 
 ## Что нового в v1.8.1
 
