@@ -500,6 +500,7 @@ let clients=[];
 let protoLabels={};
 let protoGroups={};
 let protoUILabels={};
+let webStatus=null;
 const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(--g-vmess)',trojan:'var(--g-trojan)',ss:'var(--g-ss)'};
 const groupColor=g=>groupColors[g]||'var(--g-vless)';
 
@@ -1156,14 +1157,14 @@ async function loadTg(){
 
 function renderWeb(web){
   const box = document.getElementById('webBox');
-  const st = document.getElementById('webStatus');
+  webStatus = document.getElementById('webStatus');
   box.innerHTML = '';
   if (!web || !web.enabled){
-    st.textContent = 'выключен';
+    webStatus.textContent = 'выключен';
     box.innerHTML = '<code style="color:var(--mut)">Веб-прокси не настроен</code>';
     return;
   }
-  st.textContent = 'включён · ' + (web.host || '') + ' · ' + (web.carrier || '');
+  webStatus.textContent = 'включён · ' + (web.host || '') + ' · ' + (web.carrier || '');
   const c = document.createElement('div');
   c.className = 'client';
   c.innerHTML = '<div class=top>' +
@@ -1222,7 +1223,7 @@ async function doWebSetCarrier(k){
   try{
     setMsg('tgMsg','Смена транспорта на ' + k + '…','');
     const d = await api('/api/tg/web/set', {method:'POST', body:JSON.stringify({carrier: k})});
-    st.textContent = 'включён · ' + (d.host || '') + ' · ' + (d.carrier || '');
+    if(webStatus) webStatus.textContent = 'включён · ' + (d.host || '') + ' · ' + (d.carrier || '');
     setMsg('tgMsg','Carrier установлен: ' + d.carrier,'ok');
   }catch(e){
     setMsg('tgMsg','Смена транспорта: ' + e.message,'err');
