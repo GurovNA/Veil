@@ -1685,8 +1685,31 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
         if p == "/api/backup":
-            if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            return self._send(200, _backup())
+            if not _authed(self): return self._send(200, _backup())
+        if p in ("/icon-1024.png", "/icon-512.png", "/icon-192.png", "/icon-veil.png",
+                 "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
+                 "/apple-touch-icon-180x180.png", "/apple-touch-icon-167x167.png",
+                 "/apple-touch-icon-152x152.png", "/apple-touch-icon-144x144.png",
+                 "/apple-touch-icon-120x120.png", "/apple-touch-icon-87x87.png",
+                 "/apple-touch-icon-80x80.png", "/apple-touch-icon-76x76.png",
+                 "/apple-touch-icon-58x58.png", "/logo.jpg", "/manifest.json"):
+            try:
+                with open(os.path.join(BASE, os.path.basename(p)), "rb") as f: data = f.read()
+                if p.endswith(".json"):
+                    ctype = "application/manifest+json; charset=utf-8"
+                elif p.endswith(".jpg"):
+                    ctype = "image/jpeg"
+                else:
+                    ctype = "image/png"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store, no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except FileNotFoundError:
+                return self._send(404, {"error": "not found"}, "application/json")
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
