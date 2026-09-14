@@ -35,6 +35,9 @@ body.has-wall .card,body.has-wall .tabs,body.has-wall .dialog{background:color-m
 .login-logo{width:72px;height:72px;border-radius:50%;object-fit:cover;display:block;animation:floatY 3.2s ease-in-out infinite}
 @keyframes logoRing{0%{transform:scale(.92);opacity:.8}70%{transform:scale(1.08);opacity:0}100%{transform:scale(.92);opacity:0}}
 @keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.header-logo{width:36px;height:36px;border-radius:10px;object-fit:cover;margin-right:10px;animation:logoFloat 3.5s ease-in-out infinite,logoGlow 4s ease-in-out infinite}
+@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
+@keyframes logoGlow{0%,100%{filter:drop-shadow(0 0 8px color-mix(in srgb,var(--acc) 50%,transparent))}50%{filter:drop-shadow(0 0 16px color-mix(in srgb,var(--acc2) 70%,transparent))}}
 #loginCard{text-align:center;animation:fadeIn .5s ease}
 #loginCard input{text-align:center}
 #loginCard input::placeholder{text-align:center}
@@ -89,6 +92,8 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
 .pcheck{position:relative;width:36px;height:36px;flex:none;border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--mut);border-radius:10px}
 .pcheck:hover{background:color-mix(in srgb,var(--acc) 20%,transparent)}
+.pstar{width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--mut);border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer;transition:color .18s,background .18s,border-color .18s}
+.pstar:hover{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);border-color:var(--warn)}
 .pbody{display:flex;flex-direction:column;gap:10px;padding:2px 12px 12px}
 .pcard.collapsed .pbody{display:none}
 .pbody .empty-p{margin:0;font-size:13px}
@@ -202,9 +207,16 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 
   <div id=tab-vpn class="tab-pane active">
     <div class="card hero">
-      <div class=row><h1 class=brand>Veil</h1><span class=ver-pill id=ver></span></div>
+      <div class=row>
+        <img id=headerLogo class=header-logo hidden>
+        <h1 class=brand>Veil</h1>
+        <span class=ver-pill id=ver></span>
+      </div>
       <p class=subtitle>VPN · Telegram · анти-DPI</p>
-      <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span></p>
+      <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span>
+        <button id=xrayStop class="tiny sec" style="margin-left:12px" onclick=stopXray() hidden>⏹ Остановить</button>
+        <button id=xrayRestart class="tiny" style="margin-left:6px" onclick=restartXray() hidden>⟳ Перезагрузить</button>
+      </p>
     </div>
 
     <div class="mini-stats">
@@ -400,6 +412,28 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
     <div class=msg id=pnlPortMsg></div>
     <hr>
+    <h3 style="margin:0 0 8px">Сетевые настройки</h3>
+    <div style="margin:8px 0">
+      <label class=mut style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type=checkbox id=ruBypass> <span>RU-сайты в обход VPN (split routing)</span>
+      </label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Российские IP/домены (geoip:ru, geosite:ru) пойдут напрямую, минуя VPN. Требует перезапуска Xray.</p>
+    </div>
+    <div style="margin:12px 0">
+      <label>Адрес прослушивания панели<input id=panelBind type=text placeholder="0.0.0.0 (пусто — все интерфейсы)" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Оставьте пустым, чтобы прослушивать все домены и IP-адреса. Пример: 127.0.0.1 для только локального доступа.</p>
+    </div>
+    <div style="margin:12px 0">
+      <label>Путь к публичному ключу сертификата панели<input id=panelCertPath type=text placeholder="/path/to/cert.pem" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
+    </div>
+    <div style="margin:12px 0">
+      <label>Путь к приватному ключу сертификата панели<input id=panelKeyPath type=text placeholder="/path/to/key.pem" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
+    </div>
+    <button class=sec onclick=saveNetworkSettings()>Сохранить сетевые настройки</button>
+    <div class=msg id=netMsg></div>
+    <hr>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
     <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
     <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
@@ -430,6 +464,48 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
   <div id=tab-appearance class="tab-pane"><div class=card>
     <h2>Оформление</h2>
     <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
+    
+    <div style="margin:12px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
+      <div id=thPresets style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">🌑🟣 Сирень</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
+      </div>
+    </div>
+
+    <div style="margin:16px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Стили приложений:</span>
+      <div id=thPresetsApps style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Happ Plus Style')">📱 Happ Plus</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Incy Style')">🔷 Incy</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Shadowrocket Style')">🚀 Shadowrocket</button>
+      </div>
+    </div>
+
+    <div style="margin:16px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Ретро ОС:</span>
+      <div id=thPresetsOS style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 95')">🪟 Windows 95</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows XP')">🌄 Windows XP</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows Vista')">💎 Windows Vista</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 11')">✨ Windows 11</button>
+      </div>
+    </div>
+
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    
+    <h3 style="margin:16px 0 8px">Логотип панели</h3>
+    <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP, до 2 МБ. Появится рядом с заголовком Veil.</p>
+    <input type=file id=th-logo accept="image/*" onchange=uploadLogo()>
+    <button class=sec onclick=deleteLogo() style="margin-left:8px">Удалить логотип</button>
+    <div id=logoPreview style="margin-top:8px;display:none"><img id=logoPreviewImg style="max-height:48px;border-radius:8px;border:1px solid var(--br)"></div>
+
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0">
       <label>Фон<input type=color id=th-bg value=#0b1023></label>
       <label>Карточки<input type=color id=th-card value=#151c3d></label>
@@ -449,17 +525,6 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
     <button onclick=saveTheme()>Сохранить цвета</button>
     <button class=sec onclick=resetTheme() style="margin-left:8px">Сбросить</button>
-    <div style="margin:12px 0 4px">
-      <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
-      <div id=thPresets style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
-        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">🌑🟣 Сирень</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
-      </div>
-    </div>
 
     <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
     <h3 style="margin:0 0 8px">Обои</h3>
@@ -490,6 +555,13 @@ const TH_PRESETS={
   'Океан':            {bg:'0a1626',card:'122640',fg:'e8f4ff',mut:'96b3cf',acc:'0ea5e9'},
   'Светлая':          {bg:'eef1f9',card:'ffffff',fg:'1b2132',mut:'6b7385',acc:'6d5df6'},
   'Неон':             {bg:'070919',card:'0f1430',fg:'eef2ff',mut:'8899c7',acc:'22d3ee'},
+  'Happ Plus Style':  {bg:'0d0d0d',card:'1a1a1a',fg:'ffffff',mut:'888888',acc:'00d4aa'},
+  'Incy Style':       {bg:'0f0f1a',card:'18182a',fg:'f0f0f0',mut:'8a8aa0',acc:'ff6b9d'},
+  'Shadowrocket Style':{bg:'0a0a0a',card:'151515',fg:'ffffff',mut:'8e8e93',acc:'007aff'},
+  'Windows 95':       {bg:'008080',card:'c0c0c0',fg:'000000',mut:'808080',acc:'0000ff'},
+  'Windows XP':       {bg:'0078d7',card:'eef5fd',fg:'1a1a2e',mut:'6b6b8a',acc:'0078d7'},
+  'Windows Vista':    {bg:'1e3a5f',card:'d6e8f7',fg:'1a3a5c',mut:'6b8a9c',acc:'0078d7'},
+  'Windows 11':       {bg:'111111',card:'1e1e1e',fg:'ffffff',mut:'8a8a8a',acc:'0067c0'},
 };
 function applyThemePreset(name){
   const p=TH_PRESETS[name];
@@ -585,6 +657,9 @@ function applyState(s){
   $('stTxt').textContent=s.running?'Xray работает':'Xray остановлен';
   if(s.login)$('curLogin').textContent=s.login;
   $('curVer').textContent='v'+s.version;
+  favList=s.favorites||[];
+  $('xrayStop').hidden=!s.running;
+  $('xrayRestart').hidden=!s.running;
 }
 
 function fmtBytes(n){
@@ -708,6 +783,7 @@ async function refreshOnline(){
 let protoCur=null;
 let protoList=[];
 let autoExpand=null;
+let favList=[];
 
 function closeMenus(){document.querySelectorAll('.pmenu.open').forEach(m=>m.remove());}
 
@@ -720,15 +796,22 @@ function renderProtoCards(){
     byGroup[ug].items.push(p);
   });
   groups.forEach(g=>{
+    g.items.sort((a,b)=>{
+      const af=favList.includes(a.id)?0:1;
+      const bf=favList.includes(b.id)?0:1;
+      return af-bf;
+    });
     const gh=document.createElement('div');gh.className='pgroup';gh.textContent=g.label;box.appendChild(gh);
     g.items.forEach(p=>{
       const card=document.createElement('div');card.className='pcard collapsed';
       card.style.setProperty('--gc',groupColor(p.group));
       card.dataset.proto=p.id;
+      const isFav=favList.includes(p.id);
       card.innerHTML=
         '<div class=prow>'+
         '<button class=pacc title="Раскрыть клиентов">+</button>'+
         '<div class=ptitle><div class=pname></div><span class=pbadge>0</span></div>'+
+        '<button class=pstar '+(isFav?'style="color:var(--warn)"':'')+' title="'+(isFav?'Убрать из избранного':'Добавить в избранное')+'">★</button>'+
         '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
         '</div>'+
         '<div class=pbody>'+
@@ -741,6 +824,20 @@ function renderProtoCards(){
       acc.onclick=()=>{
         card.classList.toggle('collapsed');
         acc.textContent=card.classList.contains('collapsed')?'+':'−';
+      };
+      const star=card.querySelector('.pstar');
+      star.onclick=async(e)=>{
+        e.stopPropagation();
+        try{
+          const r=await api('/api/favorite',{method:'POST',body:JSON.stringify({proto:p.id})});
+          if(r.ok){
+            favList=r.favorites||[];
+            const isNowFav=favList.includes(p.id);
+            star.style.color=isNowFav?'var(--warn)':'';
+            star.title=isNowFav?'Убрать из избранного':'Добавить в избранное';
+            renderProtoCards();
+          }
+        }catch(err){toast('Ошибка: '+err,'err');}
       };
       const check=card.querySelector('.pcheck');
       check.onclick=(e)=>{
@@ -1613,6 +1710,23 @@ function applyTheme(t){
   } else {
     document.body.classList.remove('has-wall');
   }
+  if (t.logo_mime){
+    const logo = document.getElementById('headerLogo');
+    logo.src = '/logo?t=' + Date.now();
+    logo.hidden = false;
+  } else {
+    const logo = document.getElementById('headerLogo');
+    logo.src = '';
+    logo.hidden = true;
+  }
+  const preview = document.getElementById('logoPreview');
+  const previewImg = document.getElementById('logoPreviewImg');
+  if (t.logo_mime){
+    previewImg.src = '/logo?t=' + Date.now();
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
   ['bg','card','fg','mut','acc'].forEach(k=>{
     const el = document.getElementById('th-'+k); if (el && t[k]) el.value = t[k];
   });
@@ -1659,6 +1773,77 @@ async function deleteWall(){
   document.body.classList.remove('has-wall');
   await loadTheme();
 }
+async function uploadLogo(){
+  const f = document.getElementById('th-logo').files[0]; if (!f) return;
+  if (f.size > 2*1024*1024){ alert('Максимум 2 МБ'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(',')[1];
+    const r = await fetch('/api/logo',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({data: b64, mime: f.type || 'image/png'})});
+    if (!r.ok){ alert('Ошибка загрузки'); return; }
+    await loadTheme();
+    toast('Логотип установлен','ok');
+  };
+  rd.readAsDataURL(f);
+}
+async function deleteLogo(){
+  await fetch('/api/logo/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  await loadTheme();
+  toast('Логотип удалён','ok');
+}
+async function loadNetworkSettings(){
+  try{
+    const r=await api('/api/network/settings');
+    if(r.ru_bypass!==undefined)$('ruBypass').checked=r.ru_bypass;
+    if(r.bind!==undefined)$('panelBind').value=r.bind;
+    if(r.cert_path!==undefined)$('panelCertPath').value=r.cert_path;
+    if(r.key_path!==undefined)$('panelKeyPath').value=r.key_path;
+  }catch(e){}
+}
+async function saveNetworkSettings(){
+  const btn=event.target; btn.disabled=true;
+  $('netMsg').textContent='Сохраняю...'; $('netMsg').className='msg';
+  try{
+    const body={
+      ru_bypass: $('ruBypass').checked,
+      bind: $('panelBind').value.trim(),
+      cert_path: $('panelCertPath').value.trim(),
+      key_path: $('panelKeyPath').value.trim()
+    };
+    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
+    if(r.ok){
+      $('netMsg').textContent='Сохранено. Перезапуск панели...'; $('netMsg').className='msg ok';
+      toast('Настройки сохранены','ok');
+      setTimeout(()=>location.reload(),1500);
+    }else{
+      throw new Error(r.error||'Ошибка');
+    }
+  }catch(e){
+    $('netMsg').textContent=e.message; $('netMsg').className='msg err';
+  }finally{btn.disabled=false;}
+}
+async function stopXray(){
+  const btn=$('xrayStop'); btn.disabled=true;
+  try{
+    await api('/api/xray/stop',{method:'POST'});
+    toast('Xray остановлен','ok');
+    await refresh();
+  }catch(e){
+    toast('Ошибка: '+e.message,'err');
+  }finally{btn.disabled=false;}
+}
+async function restartXray(){
+  const btn=$('xrayRestart'); btn.disabled=true;
+  try{
+    await api('/api/xray/restart',{method:'POST'});
+    toast('Xray перезагружен','ok');
+    await refresh();
+  }catch(e){
+    toast('Ошибка: '+e.message,'err');
+  }finally{btn.disabled=false;}
+}
+loadNetworkSettings();
 loadTheme();
 </script>
 <div id=qrModal style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:20px;z-index:9999">

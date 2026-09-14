@@ -18,6 +18,7 @@ TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
 VERSION = "2.0.3"
+LOGO_FILE = f"{BASE}/logo.bin"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks",
@@ -204,7 +205,7 @@ def _proto_of(st):
 
 def _new_state(proto="reality"):
     if proto not in _VALID_PROTOCOLS: proto = "reality"
-    return {"active": proto, "inbounds": {}}
+    return {"active": proto, "inbounds": {}, "favorites": []}
 
 def _gen_selfsigned(proto):
     os.makedirs(CERT_DIR, exist_ok=True)
@@ -381,13 +382,26 @@ def _write_xray(st):
     inbounds.append({
         "listen": "127.0.0.1", "port": _STATS_PORT, "protocol": "dokodemo-door",
         "settings": {"address": "127.0.0.1"}, "tag": "api"})
+    
+    routing_rules = [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]
+    outbounds = [{"protocol": "freedom", "tag": "direct"}]
+    
+    if CFG_CACHE.get("ru_bypass"):
+        outbounds.insert(0, {"protocol": "freedom", "tag": "direct"})
+        routing_rules.append({
+            "type": "field",
+            "outboundTag": "direct",
+            "geoip": ["ru"],
+            "geosite": ["ru"]
+        })
+    
     cfg = {
         "log": {"loglevel": "warning"},
         "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
         "stats": {},
         "inbounds": inbounds,
-        "outbounds": [{"protocol": "freedom"}],
-        "routing": {"rules": [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]},
+        "outbounds": outbounds,
+        "routing": {"rules": routing_rules},
         "policy": {
             "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True,
                              "statsUserOnline": True}},
@@ -449,6 +463,9 @@ def _online_count(email):
         _ONLINE_CACHE.clear()
     return v
 
+def _stop_xray():
+    subprocess.run(["systemctl", "stop", "xray"], capture_output=True)
+
 def _restart_xray():
     t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
                        capture_output=True, text=True)
@@ -476,12 +493,14 @@ def _link(inb, host, client, proto):
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}\n"
-                f"DNS = 1.1.1.1, 8.8.8.8\n\n"
+                f"DNS = 1.1.1.1, 8.8.8.8\n"
+                f"MTU = {inb.get('mtu', 1420)}\n\n"
                 "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
                 f"Endpoint = {host}:{inb['port']}\n"
                 "AllowedIPs = 0.0.0.0/0, ::/0\n"
-                "PersistentKeepalive = 25\n")
+                "PersistentKeepalive = 25\n"
+                "")
     if proto.startswith("shadowsocks"):
         cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
         raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
@@ -1440,10 +1459,11 @@ _WEB_CTX = None
 def _web_tls_ctx():
     """SSLContext из сохранённого серта (или None). Вызывать при старте и после перевыпуска."""
     global _WEB_CTX
-    cp = _cert_pathes()
-    cp2 = _cert_pathes()
-    cert = (CFG_CACHE.get("cert") or "").strip()
-    key = (CFG_CACHE.get("cert_key") or "").strip()
+    cert = (CFG_CACHE.get("panel_cert_path") or "").strip()
+    key = (CFG_CACHE.get("panel_key_path") or "").strip()
+    if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
+        cert = (CFG_CACHE.get("cert") or "").strip()
+        key = (CFG_CACHE.get("cert_key") or "").strip()
     if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
         return None
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -1783,10 +1803,11 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
-       "configured": _client_count(st) > 0,
-       "proto": _proto_of(st),
-       "panel_port": CFG_CACHE.get("panel_port", 8443),
-       "ipv6": _my_ipv6()}
+                   "configured": _client_count(st) > 0,
+                   "proto": _proto_of(st),
+                   "panel_port": CFG_CACHE.get("panel_port", 8443),
+                   "ipv6": _my_ipv6(),
+                   "favorites": st.get("favorites", []) if st else []}
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -1916,11 +1937,33 @@ class H(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
             return self._send(200, out)
+        if p == "/api/network/settings":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {
+                "ru_bypass": bool(CFG_CACHE.get("ru_bypass")),
+                "bind": CFG_CACHE.get("panel_bind", ""),
+                "cert_path": CFG_CACHE.get("panel_cert_path", ""),
+                "key_path": CFG_CACHE.get("panel_key_path", ""),
+            })
         if p == "/wallpaper":
             if os.path.exists(WALL):
                 t = _load(THEME, {}) or {}
                 mime = t.get("wall_mime", "image/jpeg")
                 with open(WALL, "rb") as f: data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(404); self.end_headers()
+            return
+        if p == "/logo":
+            if os.path.exists(LOGO_FILE):
+                t = _load(THEME, {}) or {}
+                mime = t.get("logo_mime", "image/png")
+                with open(LOGO_FILE, "rb") as f: data = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
                 self.send_header("Content-Length", str(len(data)))
@@ -2081,6 +2124,21 @@ class H(http.server.BaseHTTPRequestHandler):
                 c["name"] = name
                 _save(STATE, st)
                 return self._send(200, {"ok": True})
+
+            if p == "/api/favorite":
+                b = self._body()
+                proto = (b.get("proto") or "").strip()
+                if proto not in _VALID_PROTOCOLS:
+                    return self._send(400, {"error": "неизвестный протокол"})
+                st = _load(STATE) or _new_state()
+                fav = set(st.get("favorites", []))
+                if proto in fav:
+                    fav.remove(proto)
+                else:
+                    fav.add(proto)
+                st["favorites"] = list(fav)
+                _save(STATE, st)
+                return self._send(200, {"ok": True, "favorites": list(fav)})
 
             if p == "/api/xray/switch":
                 try:
@@ -2350,6 +2408,87 @@ class H(http.server.BaseHTTPRequestHandler):
                 t = _load(THEME, {}) or {}; t.pop("wall_mime", None); _save(THEME, t)
                 self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
+            if p == "/api/logo":
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                data = b""; rem = n
+                while rem > 0:
+                    ch = self.rfile.read(min(rem, 65536))
+                    if not ch: break
+                    data += ch; rem -= len(ch)
+                try: body = json.loads(data.decode() or "{}")
+                except Exception: body = {}
+                b64 = body.get("data","")
+                mime = body.get("mime","image/png")
+                if mime not in ("image/png","image/jpeg","image/webp"):
+                    mime = "image/png"
+                import base64 as _b64
+                try: blob = _b64.b64decode(b64)
+                except Exception: blob = b""
+                if not blob:
+                    self.send_response(400); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.wfile.write(b'{"error":"empty"}'); return
+                with open(LOGO_FILE, "wb") as f: f.write(blob)
+                t = _load(THEME, {}) or {}; t["logo_mime"] = mime; _save(THEME, t)
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}'); return
+            if p == "/api/logo/delete":
+                try: os.remove(LOGO_FILE)
+                except FileNotFoundError: pass
+                t = _load(THEME, {}) or {}; t.pop("logo_mime", None); _save(THEME, t)
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}'); return
+            if p == "/api/network/settings":
+                n = int(self.headers.get("Content-Length", "0") or 0)
+                data = b""; rem = n
+                while rem > 0:
+                    ch = self.rfile.read(min(rem, 65536))
+                    if not ch: break
+                    data += ch; rem -= len(ch)
+                try: body = json.loads(data.decode() or "{}")
+                except Exception: body = {}
+                changed = False
+                if "ru_bypass" in body:
+                    CFG_CACHE["ru_bypass"] = bool(body["ru_bypass"])
+                    changed = True
+                if "bind" in body:
+                    bind = (body["bind"] or "").strip()
+                    if bind:
+                        CFG_CACHE["panel_bind"] = bind
+                    else:
+                        CFG_CACHE.pop("panel_bind", None)
+                    changed = True
+                if "cert_path" in body:
+                    cert_path = (body["cert_path"] or "").strip()
+                    if cert_path:
+                        CFG_CACHE["panel_cert_path"] = cert_path
+                    else:
+                        CFG_CACHE.pop("panel_cert_path", None)
+                    changed = True
+                if "key_path" in body:
+                    key_path = (body["key_path"] or "").strip()
+                    if key_path:
+                        CFG_CACHE["panel_key_path"] = key_path
+                    else:
+                        CFG_CACHE.pop("panel_key_path", None)
+                    changed = True
+                if changed:
+                    _save(CFG, CFG_CACHE)
+                    subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+                return self._send(200, {"ok": True, "restarting": changed})
+            if p == "/api/xray/stop":
+                try:
+                    _stop_xray()
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(500, {"error": str(e)})
+            if p == "/api/xray/restart":
+                try:
+                    _restart_xray()
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(500, {"error": str(e)})
             if p == "/api/update/install":
                 try:
                     return self._send(200, _install_update())
@@ -2447,7 +2586,8 @@ class S(socketserver.ThreadingTCPServer):
 
 if __name__ == "__main__":
     port = CFG_CACHE.get("panel_port", 8443)
-    print("Veil " + VERSION + " слушает :" + str(port), flush=True)
+    bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
+    print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
     _load_sessions()
     try:
         st = _load(STATE)
@@ -2460,5 +2600,5 @@ if __name__ == "__main__":
     except Exception as e:
         print("migrate error: " + str(e), flush=True)
     _web_tls_ctx()
-    with S(("0.0.0.0", port), H) as srv:
+    with S((bind, port), H) as srv:
         srv.serve_forever()
