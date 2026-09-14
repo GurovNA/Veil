@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -112,6 +112,26 @@ def _port_free(port):
             s.close(); return False
         s.close()
     return True
+
+def _sni_ok(host, timeout=5):
+    import socket
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host or ""):
+        return True
+    try:
+        addrs = [i[4][0] for i in socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)]
+    except Exception:
+        return "SNI: домен '" + host + "' не найден в DNS — Reality перестанет работать. Укажи реальный сайт."
+    for ip in addrs[:2]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((ip, 443))
+            s.close()
+            return True
+        except OSError:
+            s.close()
+            continue
+    return "SNI: домен '" + host + "' не отвечает на 443 — Reality перестанет работать. Укажи реальный сайт (например www.samsung.com)."
 
 def _last_line(out, *keys):
     for line in out.splitlines():
@@ -2129,6 +2149,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         port = None
                 if sni and not re.fullmatch(r"[A-Za-z0-9.-]+", sni):
                     return self._send(400, {"error": "SNI: только буквы/цифры/точки/дефисы"})
+                if sni and body.get("proto"):
+                    _sni_check = _sni_ok(sni)
+                    if _sni_check is not True:
+                        return self._send(400, {"error": _sni_check})
                 if domain and (domain.startswith("http") or "/" in domain or " " in domain):
                     return self._send(400, {"error": "Домен: только имя хоста (без http:// и пути)"})
                 if port is not None and not (0 < port < 65536):
