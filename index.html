@@ -388,6 +388,23 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     </div>
     <div class=msg id=pnlPortMsg></div>
     <hr>
+    <h3 style="margin:0 0 8px">Отпечаток TLS (fingerprint)</h3>
+    <p class=mut style="margin:0 0 10px">Отпечаток TLS-клиента в ссылках VPN. По умолчанию <b>firefox</b> — с ним Reality-рукопожатие стабильнее всего (с chrome падает на части клиентов). Применяется ко всем протоколам с TLS: reality, xhttp, ws/grpc, trojan, vmess.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id=fpSel aria-label="fingerprint" style="flex:1;min-width:220px">
+        <option value=firefox>firefox (рекомендуется)</option>
+        <option value=chrome>chrome</option>
+        <option value=safari>safari</option>
+        <option value=ios>ios</option>
+        <option value=android>android</option>
+        <option value=edge>edge</option>
+        <option value=randomized>randomized</option>
+        <option value=random>random</option>
+      </select>
+      <button class=sec onclick=saveFingerprint() id=fpBtn>Сохранить</button>
+    </div>
+    <div class=msg id=fpMsg></div>
+    <hr>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
     <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
     <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
@@ -780,6 +797,7 @@ function setMsg(id,msg,cls,stick){
 async function loadSettings(){
   try{const s=await api('/api/settings');
     $('setDomain').value=s.domain||'';
+    if(s.fp)$('fpSel').value=s.fp;
     let h='';
     if(s.ipv4)h+='\uD83C\uDF10 IPv4: '+s.ipv4;
     if(s.ipv6)h+='<br>\uD83C\uDF10 IPv6: '+s.ipv6;
@@ -804,6 +822,15 @@ async function savePanelPort(){
     if(r.restarting)setMsg('pnlPortMsg','Порт изменён, панель перезапускается. Открой <b>'+location.protocol+'//'+location.hostname+':'+p+'</b> через несколько секунд.','ok');
     else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
   }catch(e){setMsg('pnlPortMsg',e.message,'err');}
+}
+async function saveFingerprint(){
+  const fp=$('fpSel').value;
+  $('fpBtn').disabled=true; setMsg('fpMsg','Сохраняю...','');
+  try{
+    await api('/api/settings',{method:'POST',body:JSON.stringify({fp})});
+    setMsg('fpMsg','Отпечаток '+fp+' сохранён. Новые ссылки будут с твоим fingerprint.','ok');
+  }catch(e){setMsg('fpMsg',e.message,'err');}
+  $('fpBtn').disabled=false;
 }
 async function checkDns(){
   const d=$('setDomain').value.trim();

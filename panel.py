@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -370,8 +370,15 @@ def _restart_xray():
         raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
 
+_FP_VALUES = {"firefox", "chrome", "safari", "ios", "android", "edge", "randomized", "random"}
+
+def _fp():
+    v = (CFG_CACHE.get("fp") or "").strip().lower()
+    return v if v in _FP_VALUES else "firefox"
+
 def _link(inb, host, client, proto):
     meta = _proto_meta(proto)
+    fp = _fp()
     name = client.get("name") or "Veil"
     if proto.startswith("shadowsocks"):
         cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
@@ -385,7 +392,7 @@ def _link(inb, host, client, proto):
              "path": "/veil" if meta["net"] == "ws" else "veil",
              "tls": "tls" if meta["tls"] else ""}
         if meta["tls"]:
-            p["sni"] = host; p["allowInsecure"] = True; p["fp"] = "chrome"
+            p["sni"] = host; p["allowInsecure"] = True; p["fp"] = fp
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
     if proto.startswith("trojan"):
         scheme = "trojan://" + urllib.parse.quote(client.get("password") or inb.get("password") or "") + "@"
@@ -400,14 +407,14 @@ def _link(inb, host, client, proto):
         qparts["path"] = "/veil"
     if proto in ("reality", "vless-xhttp-reality"):
         qparts.update({"security": "reality", "pbk": inb["public_key"],
-                       "fp": "chrome", "sni": inb["sni"], "sid": inb["sid"],
+                       "fp": fp, "sni": inb["sni"], "sid": inb["sid"],
                        "spx": "/"})
         if proto == "reality":
             qparts["flow"] = "xtls-rprx-vision"
         else:
             qparts["host"] = inb["sni"]
     elif meta["tls"]:
-        qparts.update({"security": "tls", "sni": host, "fp": "chrome",
+        qparts.update({"security": "tls", "sni": host, "fp": fp,
                        "allowInsecure": "1"})
         if meta["net"] in ("xhttp", "splithttp"):
             qparts["alpn"] = "h2,http/1.1"
@@ -1775,6 +1782,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if not sni: sni = "www.samsung.com"
             domain = (CFG_CACHE.get("panel_domain") or "").strip()
             out = {"sni": sni, "sni_list": sni_list, "ports": ports, "domain": domain,
+                   "fp": _fp(), "fp_values": sorted(_FP_VALUES),
                    "ipv4": _my_ip(), "ipv6": _my_ipv6(),
                    "a": [], "aaaa": [], "match4": None, "match6": None}
             try:
@@ -2170,7 +2178,17 @@ class H(http.server.BaseHTTPRequestHandler):
                     else:
                         CFG_CACHE.pop("panel_domain", None)
                     _save(CFG, CFG_CACHE)
+                if "fp" in body:
+                    fp = (str(body["fp"] or "")).strip().lower()
+                    if fp:
+                        if fp not in _FP_VALUES:
+                            return self._send(400, {"error": "Неизвестный отпечаток: " + fp})
+                        CFG_CACHE["fp"] = fp
+                    else:
+                        CFG_CACHE.pop("fp", None)
+                    _save(CFG, CFG_CACHE)
                 out = {"ok": True, "sni": sni or "", "proto": proto or "", "domain": domain,
+                       "fp": _fp(),
                        "port": (inb.get("port") if inb else None) if port is not None else None}
                 if changed: out["restarted"] = True
                 return self._send(200, out)
