@@ -23,7 +23,7 @@
   var ROMS = [
     { file: "smb.nes",         name: "Super Mario Bros.",         sub: "Nintendo · 1985" },
     { file: "battlecity.nes",  name: "Battle City",               sub: "Namco · 1985" },
-    { file: "contra.nes",      name: "Contra",                    sub: "Konami · 1987" },
+    
     { file: "chipndale.nes",   name: "Chip 'n Dale Rescue Rangers", sub: "Capcom · 1990" },
     { file: "battletadsdd.nes", name: "Battletoads & Double Dragon", sub: "Rare · 1993" }
   ];

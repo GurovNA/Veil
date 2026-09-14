@@ -8,3 +8,4 @@ state.json
 .DS_Store
 .idea/
 .vscode/
+webroot/roms/
