@@ -2,14 +2,16 @@
   "name": "Veil NES",
   "short_name": "Veil NES",
   "description": "Классические 8-битные игры в браузере",
-  "start_url": "/",
-  "scope": "/",
+  "lang": "ru",
+  "start_url": "https://926923.v6.navy/",
+  "scope": "https://926923.v6.navy/",
   "display": "standalone",
+  "orientation": "any",
   "background_color": "#0e0b16",
   "theme_color": "#0e0b16",
   "icons": [
-    { "src": "icon-veil.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
-    { "src": "apple-touch-icon-152x152.png", "sizes": "152x152", "type": "image/png", "purpose": "any" },
-    { "src": "apple-touch-icon-120x120.png", "sizes": "120x120", "type": "image/png", "purpose": "any" }
+    { "src": "https://926923.v6.navy/icon-veil.png", "sizes": "180x180 192x192 512x512", "type": "image/png", "purpose": "any" },
+    { "src": "https://926923.v6.navy/apple-touch-icon-152x152.png", "sizes": "152x152", "type": "image/png", "purpose": "any" },
+    { "src": "https://926923.v6.navy/apple-touch-icon-120x120.png", "sizes": "120x120", "type": "image/png", "purpose": "any" }
   ]
 }
