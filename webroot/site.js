@@ -150,8 +150,15 @@
 
   function setKey(name, down) {
     if (!nes) return;
-    if (down) nes.buttonDown(name); else nes.buttonUp(name);
+    var idx = NAMEIDX[name];
+    if (idx === undefined) return;
+    if (down) nes.buttonDown(1, idx); else nes.buttonUp(1, idx);
   }
+
+  var NAMEIDX = {
+    "A": 0, "B": 1, "SELECT": 2, "START": 3,
+    "UP": 4, "DOWN": 5, "LEFT": 6, "RIGHT": 7
+  };
 
   function bindTouchBtn(b) {
     var name = b.getAttribute("data-btn");
