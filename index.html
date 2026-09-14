@@ -1,7 +1,22 @@
 <!doctype html>
 <html lang=ru><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Veil</title>
+<title>Veil Panel</title>
+<meta name=apple-mobile-web-app-capable content=yes>
+<meta name=mobile-web-app-capable content=yes>
+<meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
+<meta name=apple-mobile-web-app-title content="Veil Panel">
+<link rel=manifest href=/manifest.json>
+<link rel=apple-touch-icon sizes=180x180 href=/icon-veil.png>
+<link rel=apple-touch-icon sizes=167x167 href=/apple-touch-icon-167x167.png>
+<link rel=apple-touch-icon sizes=152x152 href=/apple-touch-icon-152x152.png>
+<link rel=apple-touch-icon sizes=120x120 href=/apple-touch-icon-120x120.png>
+<link rel=apple-touch-icon sizes=87x87 href=/apple-touch-icon-87x87.png>
+<link rel=apple-touch-icon sizes=80x80 href=/apple-touch-icon-80x80.png>
+<link rel=apple-touch-icon sizes=76x76 href=/apple-touch-icon-76x76.png>
+<link rel=apple-touch-icon sizes=58x58 href=/apple-touch-icon-58x58.png>
+<link rel=apple-touch-icon-precomposed href=/icon-veil.png>
+<link rel=icon type=image/png href=/icon-192.png>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root{--bg:#0b1023;--bg2:#0d1230;--card:#151c3d;--card2:#1a2350;--fg:#eef2ff;--mut:#a3aede;--br:#333d72;--acc:#6d5df6;--acc2:#22d3ee;--ok:#34d399;--err:#fb7185;--warn:#fbbf24;--g-reality:#22d3ee;--g-vless:#a78bfa;--g-vmess:#34d399;--g-trojan:#fbbf24;--g-ss:#f472b6;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,#8b5cf6,#6d5df6 45%,#22d3ee);--grad2:linear-gradient(135deg,#34d399,#06b6d4)}
@@ -1223,8 +1238,9 @@ async function doWebSetCarrier(k){
   try{
     setMsg('tgMsg','Смена транспорта на ' + k + '…','');
     const d = await api('/api/tg/web/set', {method:'POST', body:JSON.stringify({carrier: k})});
-    if(webStatus) webStatus.textContent = 'включён · ' + (d.host || '') + ' · ' + (d.carrier || '');
-    setMsg('tgMsg','Carrier установлен: ' + d.carrier,'ok');
+    const w = d.web || {};
+    if(webStatus) webStatus.textContent = 'включён · ' + (w.host || '') + ' · ' + (w.carrier || '');
+    setMsg('tgMsg','Carrier установлен: ' + (w.carrier || ''),'ok');
   }catch(e){
     setMsg('tgMsg','Смена транспорта: ' + e.message,'err');
   }
