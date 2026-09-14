@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NES Console</title>
+<style>
+  :root { --bg:#0b1023; --card:#151c3d; --fg:#eef2ff; --mut:#a3aede; --acc:#6d5df6; --err:#ff6b6b; --ok:#4cd964; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px; }
+  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:24px; margin:0; } h1 span{ color:var(--acc); }
+  .mut { color:var(--mut); font-size:13px; }
+  .card { background:var(--card); border-radius:14px; padding:18px; margin-top:14px; }
+  .games { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:10px; }
+  button.game {
+    background:var(--bg); color:var(--fg); border:1px solid #2a3040; border-radius:10px;
+    padding:12px; font-size:15px; cursor:pointer; text-align:left;
+  }
+  button.game:hover, button.game.on { border-color:var(--acc); background:#1d2450; }
+  button.game small { display:block; color:var(--mut); font-size:12px; margin-top:4px; }
+  #screen { width:100%; max-width:640px; aspect-ratio:4/3; display:block; background:#000; border-radius:8px; margin:14px auto 0; image-rendering:pixelated; }
+  .controls { display:flex; gap:8px; justify-content:center; margin-top:12px; flex-wrap:wrap; }
+  .controls button { background:#232a4d; border:1px solid #333c66; color:var(--fg); border-radius:8px; padding:8px 14px; cursor:pointer; font-size:14px; }
+  .controls button:hover { background:var(--acc); }
+  .pad { display:grid; grid-template-columns:repeat(3,54px); grid-template-rows:repeat(2,54px); gap:6px; justify-content:center; margin:12px auto 0; }
+  .pad button { font-size:18px; background:#1d2450; border:1px solid #333c66; border-radius:10px; color:var(--fg); cursor:pointer; }
+  .pad button:active { background:var(--acc); }
+  bar { display:block; font-size:13px; }
+  .msg { color:var(--err); font-size:13px; min-height:18px; margin-top:8px; text-align:center; }
+  input[type=file] { display:none; }
+  footer { text-align:center; color:var(--mut); font-size:12px; margin-top:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>▣</span> NES Console</h1>
+    <span class="mut" id="status">загрузка игр…</span>
+  </header>
+
+  <div class="card">
+    <div class="mut" style="margin-bottom:10px">Выбери игру:</div>
+    <div class="games" id="games"></div>
+    <canvas id="screen" width="640" height="480"></canvas>
+    <div class="controls">
+      <button id="btnStart">▶ Старт</button>
+      <button id="btnSel">Select</button>
+      <button id="btnReset">↺ Сброс</button>
+      <button id="btnPause">⏸ Пауза</button>
+      <button id="btnVol">🔊 Звук</button>
+      <button id="btnFull">⛶ Во весь экран</button>
+      <button id="btnUpload">📁 Загрузить свой .nes</button>
+      <input type="file" id="file" accept=".nes">
+    </div>
+    <div class="pad">
+      <span></span><button data-k="UP">▲</button><span></span>
+      <button data-k="LEFT">◀</button><button data-k="SELECT">Sel</button><button data-k="RIGHT">▶</button>
+      <button data-k="DOWN">▼</button><button data-k="START">St</button><button data-k="B">B</button>
+      <button data-k="A" style="grid-column:2">A</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <footer>Доступно в Telegram-прокси · NES-эмулятор JSNES (Public Domain)</footer>
+</div>
+
+<script src="jsnes.min.js"></script>
+<script>
+var KEYMAP = {
+  "B":["b","B",83],"A":["a","A",68],"SELECT":["ShiftLeft","","76"],"START":["EnterKey","","81"],
+  "UP":["ArrowUp","","70"],"DOWN":["ArrowDown","","86"],"LEFT":["ArrowLeft","","73"],"RIGHT":["ArrowRight","","74"]
+};
+var EMPTY = new Uint32Array(256*240);
+var nes = null, romName = "", paused = false, sound = true, lastTime = 0, raf = null;
+
+function rgb335(n){ return 0xff000000 | ((n&255)<<16) | (((n>>8)&255)<<8) | ((n>>16)&255); }
+
+function newNes(){
+  nes = new jsnes.NES({
+    onFrame: function(buf){ var c=document.getElementById("screen"); var ctx=c.getContext("2d");
+      var img=ctx.createImageData(256,240); var d=img.data, i=0;
+      for(var y=0;y<240;y++){ for(var x=0;x<256;x++){ var p=buf[i++]; d[(y*256+x)*4]=p&255;
+        d[(y*256+x)*4+1]=(p>>8)&255; d[(y*256+x)*4+2]=(p>>16)&255; d[(y*256+x)*4+3]=255; } }
+      ctx.putImageData(img,0,0);
+    },
+    onAudioSample: function(l,r){ if(sound){ try{ var ac=window.audioCtx;
+       if(!ac){ ac=new (window.AudioContext||window.webkitAudioContext)(); window.audioCtx=ac; }
+       if(ac.state==="suspended") ac.resume();
+       var buf=ac.createBuffer(2,1,44100); buf.getChannelData(0)[0]=l; buf.getChannelData(1)[0]=r;
+       var src=ac.createBufferSource(); src.buffer=buf; src.connect(ac.destination); src.start(); }catch(e){} } }
+  });
+}
+
+function frame(){
+  if (!nes) return;
+  nes.frame();
+  if (raf) raf = requestAnimationFrame(frame);
+}
+
+function setPaused(v){
+  paused = v;
+  document.getElementById("btnPause").textContent = paused ? "▶ Продолжить" : "⏸ Пауза";
+}
+
+function loadRom(u8, name){
+  try{
+    if (!nes) newNes();
+    var arr = (u8 instanceof Uint8Array) ? u8 : new Uint8Array(u8);
+    var str = "";
+    var chunk = 32768;
+    for (var i = 0; i < arr.length; i += chunk) {
+      str += String.fromCharCode.apply(null, arr.subarray(i, i + chunk));
+    }
+    nes.loadROM(str);
+    romName = name || "игра";
+    controlsOn(true);
+    setPaused(false);
+    document.getElementById("status").textContent = "Игра: " + romName;
+    document.getElementById("msg").textContent = "";
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(frame);
+    setTimeout(function(){ if(window.audioCtx && window.audioCtx.state==="suspended") window.audioCtx.resume(); }, 200);
+  }catch(e){
+    document.getElementById("msg").textContent = "Не удалось загрузить ROM: " + e.message;
+  }
+}
+
+function controlsOn(on){
+  ["btnReset","btnPause"].forEach(function(id){ document.getElementById(id).disabled=!on; });
+}
+
+function fetchRom(url, name){
+  document.getElementById("status").textContent = "Загружаю " + name + "…";
+  fetch(url).then(function(r){
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return r.arrayBuffer();
+  }).then(function(ab){ loadRom(ab, name); })
+  .catch(function(e){ document.getElementById("msg").textContent = "Ошибка загрузки ROM: " + e.message; });
+}
+
+var ROMS = [
+  { file: "Duelito.nes",    name: "Duelito" },
+  { file: "apocalypse.nes", name: "Apocalypse" },
+  { file: "Deadline.nes",   name: "Deadline (8bitpeoples)" },
+  { file: "Sayoonara.nes",  name: "Sayoonara!" },
+  { file: "minipack.nes",   name: "MiniPack demo" }
+];
+
+function gameList(){
+  var box = document.getElementById("games");
+  box.innerHTML = "";
+  ROMS.forEach(function(g, idx){
+    var b = document.createElement("button");
+    b.className = "game" + (idx === 0 ? " on" : "");
+    b.innerHTML = "<b>*</b> " + g.name + "<small>" + g.file + "</small>";
+    b.onclick = function(){ box.querySelectorAll("button.game").forEach(function(x){x.classList.remove("on");}); b.classList.add("on"); fetchRom("roms/" + encodeURIComponent(g.file), g.name); };
+    box.appendChild(b);
+  });
+  document.getElementById("status").textContent = ROMS.length + " игр";
+}
+
+function setKey(name, down){
+  if (!nes) return;
+  if (down) nes.buttonDown(name); else nes.buttonUp(name);
+}
+
+function setup(){
+  newNes();
+  controlsOn(false);
+  gameList();
+  fetchRom("roms/" + encodeURIComponent(ROMS[0].file), ROMS[0].name);
+
+  document.getElementById("btnReset").onclick = function(){ if(nes){ nes.reset(); loadRom(null); } };
+  document.getElementById("btnPause").onclick = function(){ if(!nes) return; setPaused(!paused); };
+  document.getElementById("btnVol").onclick = function(){ sound = !sound; this.textContent = sound ? "🔊 Звук" : "🔇 Тихо"; };
+  document.getElementById("btnFull").onclick = function(){ var s=document.getElementById("screen");
+    if(s.requestFullscreen) s.requestFullscreen(); else if(s.webkitRequestFullscreen) s.webkitRequestFullscreen(); };
+  document.getElementById("btnUpload").onclick = function(){ document.getElementById("file").click(); };
+  document.getElementById("file").onchange = function(ev){
+    var f = ev.target.files[0]; if(!f) return;
+    var rd = new FileReader();
+    rd.onload = function(){ loadRom(rd.result, f.name); };
+    rd.readAsArrayBuffer(f);
+  };
+
+  document.querySelectorAll(".pad button[data-k]").forEach(function(btn){
+    var down = function(e){ e.preventDefault(); setKey(btn.getAttribute("data-k"), true); };
+    var up = function(e){ e.preventDefault(); setKey(btn.getAttribute("data-k"), false); };
+    btn.addEventListener("pointerdown", down);
+    btn.addEventListener("pointerup", up);
+    btn.addEventListener("pointerleave", up);
+  });
+
+  document.getElementById("btnStart").onclick = function(){ setKey("START", true); setTimeout(function(){ setKey("START", false); }, 80); };
+  document.getElementById("btnSel").onclick = function(){ setKey("SELECT", true); setTimeout(function(){ setKey("SELECT", false); }, 80); };
+
+  window.addEventListener("keydown", function(e){
+    var m = { "ArrowUp":"UP","ArrowDown":"DOWN","ArrowLeft":"LEFT","ArrowRight":"RIGHT",
+              "ShiftLeft":"SELECT","Enter":"START","ShiftRight":"SELECT","KeyS":"B","KeyA":"A",
+              "KeyD":"B","KeyF":"A","KeyW":"UP","KeyX":"DOWN" };
+    var k = m[e.code];
+    if(k){ e.preventDefault(); setKey(k, true); }
+    if(e.code==="Space"){ e.preventDefault(); if(nes) setPaused(!paused); }
+  });
+  window.addEventListener("keyup", function(e){
+    var m = { "ArrowUp":"UP","ArrowDown":"DOWN","ArrowLeft":"LEFT","ArrowRight":"RIGHT",
+              "ShiftLeft":"SELECT","Enter":"START","ShiftRight":"SELECT","KeyS":"B","KeyA":"A",
+              "KeyD":"B","KeyF":"A","KeyW":"UP","KeyX":"DOWN" };
+    var k = m[e.code];
+    if(k){ e.preventDefault(); setKey(k, false); }
+  });
+}
+
+document.addEventListener("DOMContentLoaded", setup);
+</script>
+</body>
+</html>
