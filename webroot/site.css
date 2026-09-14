@@ -10,8 +10,12 @@ body{
   display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:24px 14px;
 }
 .head{text-align:center; margin-bottom:18px}
-.logo{font-size:15px; letter-spacing:4px; color:var(--acc2); font-style:italic; text-transform:uppercase; font-family:'Courier New',monospace}
-h1{font-size:26px; margin:6px 0 4px; font-weight:600}
+.brand{display:inline-block; width:74px; height:74px; border-radius:50%; overflow:hidden;
+  border:2px solid var(--line); box-shadow:0 0 0 4px rgba(124,92,255,.15), 0 10px 30px rgba(0,0,0,.4);
+  transition:transform .2s, border-color .2s}
+.brand:hover{transform:scale(1.05); border-color:var(--acc)}
+.brand-logo{width:100%; height:100%; object-fit:cover; display:block}
+h1{font-size:26px; margin:12px 0 4px; font-weight:600}
 .sub{color:var(--mut); font-size:13px}
 .wrap{width:100%; max-width:640px}
 .card{background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden;
@@ -20,6 +24,9 @@ h1{font-size:26px; margin:6px 0 4px; font-weight:600}
 #screen{display:block; width:100%; height:auto; image-rendering:pixelated; cursor:pointer}
 .msg{position:absolute; left:0; right:0; bottom:0; background:rgba(10,8,20,.75); color:#ffd3dd;
   font:12px ui-monospace,monospace; padding:6px 10px; min-height:20px}
+.exit-fs{position:absolute; top:8px; right:8px; z-index:70; width:38px; height:38px; border-radius:50%;
+  border:1px solid var(--line); background:rgba(20,15,35,.7); color:var(--txt); font-size:16px;
+  cursor:pointer; backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px)}
 .bar{display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-top:1px solid var(--line)}
 .status{color:var(--mut); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .sp{flex:1}
@@ -38,3 +45,45 @@ h1{font-size:26px; margin:6px 0 4px; font-weight:600}
 .tip{margin:16px 0 0; color:var(--mut); font-size:12px; text-align:center; line-height:1.8}
 kbd{background:#221a36; border:1px solid var(--line); border-radius:5px; padding:1px 6px; color:var(--txt); font-size:11px}
 footer{color:var(--mut); font-size:11px; margin-top:18px; text-align:center}
+footer a{color:var(--acc2); text-decoration:none}
+footer a:hover{text-decoration:underline}
+
+.pad{position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; align-items:flex-end;
+  justify-content:space-between; gap:8px; padding:6px 10px calc(8px + env(safe-area-inset-bottom));
+  pointer-events:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none}
+.pad .dpad{display:grid; grid-template-columns:repeat(3,44px); grid-template-rows:repeat(3,44px);
+  gap:4px; pointer-events:auto}
+.pad .ab{display:flex; align-items:flex-end; gap:8px; pointer-events:auto}
+.pad .k{border:1px solid rgba(124,92,255,.45); background:rgba(26,20,39,.55); color:var(--txt);
+  border-radius:13px; font:13px ui-monospace,monospace; display:flex; align-items:center; justify-content:center;
+  touch-action:none; cursor:pointer; backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+  transition:background .1s}
+.pad .k.pressed{background:rgba(124,92,255,.6); border-color:var(--acc)}
+.dpad .up{grid-column:2; grid-row:1}
+.dpad .left{grid-column:1; grid-row:2}
+.dpad .down{grid-column:2; grid-row:3}
+.dpad .right{grid-column:3; grid-row:2}
+.pad .act{border-radius:50%}
+.pad .b,.pad .a{width:46px; height:46px}
+.pad .a{background:rgba(55,230,164,.22)}
+.pad .b{background:rgba(255,120,120,.22)}
+.pad .sel,.pad .sta{width:40px; height:26px; border-radius:999px; font-size:10px}
+@media (max-width:350px){
+  .pad .dpad{grid-template-columns:repeat(3,38px); grid-template-rows:repeat(3,38px)}
+  .pad .b,.pad .a{width:40px; height:40px}
+  .pad .sel,.pad .sta{width:36px; height:24px}
+}
+@media (min-width:700px){
+  .pad .dpad{grid-template-columns:repeat(3,54px); grid-template-rows:repeat(3,54px)}
+  .pad .b,.pad .a{width:58px; height:58px}
+  .pad .sel,.pad .sta{width:48px; height:32px}
+}
+body.has-pad{padding-bottom:120px}
+
+body.fs .head, body.fs .games, body.fs .tip, body.fs footer, body.fs .bar,
+body.fs-sim .head, body.fs-sim .games, body.fs-sim .tip, body.fs-sim footer, body.fs-sim .bar{display:none}
+body.fs .wrap, body.fs-sim .wrap{max-width:none}
+body.fs .card, body.fs-sim .card{border-radius:0; border:none; box-shadow:none; min-height:100vh}
+body.fs .stage, body.fs-sim .stage{height:calc(100vh - 0px); display:flex; align-items:center; justify-content:center}
+body.fs #screen, body.fs-sim #screen{width:auto; height:auto}
+body.fs body, body.fs-sim body{padding:0}

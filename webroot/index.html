@@ -2,31 +2,42 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0e0b16">
 <title>NES Console — 8-bit Games</title>
 <meta name="description" content="Онлайн NES-эмулятор. Играй в классические 8-битные игры прямо в браузере.">
+<link rel="icon" href="logo.jpg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Veil NES">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
   <div class="wrap">
     <div class="head">
-      <div class="logo">NES ★ Console</div>
+      <a class="brand" href="https://github.com/GurovNA/Veil" title="Veil — проект на GitHub">
+        <img class="brand-logo" src="logo.jpg" alt="Veil">
+      </a>
       <h1>Ретро-консоль</h1>
       <div class="sub">Nintendo Entertainment System — эмуляция в браузере</div>
     </div>
 
     <div class="card">
-      <div class="stage">
+      <div class="stage" id="stage">
         <canvas id="screen" width="256" height="240"></canvas>
         <div class="msg" id="msg"></div>
+        <button id="btnExitFull" class="exit-fs" hidden>✕</button>
       </div>
       <div class="bar">
         <span class="status" id="status">Загрузка…</span>
         <span class="sp"></span>
+        <button id="btnPad" title="Виртуальный геймпад">🎮</button>
         <button id="btnPause" disabled>⏸ Пауза</button>
         <button id="btnReset" disabled>↺ Сброс</button>
         <button id="btnVol">🔊 Звук</button>
-        <button id="btnFull">⛶ На весь экран</button>
+        <button id="btnFull">⛶ Во весь экран</button>
       </div>
       <div class="games" id="games"></div>
     </div>
@@ -34,9 +45,24 @@
     <div class="tip">
       Управление: <kbd>←↑↓→</kbd> стрелки · <kbd>S</kbd> = B / <kbd>A</kbd> = A · <kbd>Enter</kbd> = Start ·
       <kbd>Shift</kbd> = Select · <kbd>Space</kbd> = пауза · <kbd>Q</kbd> = сброс
-      <br>Можно мышкой нажать кнопки на экране и загрузить свой .nes-файл.
+      <br>На телефоне — виртуальный геймпад. Можно мышкой нажать кнопки на экране и загрузить свой .nes-файл.
     </div>
-    <footer>Подключение к 926923.v6.navy · Доступно в Telegram-прокси</footer>
+    <footer>Проект на GitHub: <a href="https://github.com/GurovNA/Veil">github.com/GurovNA/Veil</a></footer>
+  </div>
+
+  <div class="pad" id="pad" hidden>
+    <div class="dpad">
+      <button type="button" class="k up" data-btn="UP"><span>▲</span></button>
+      <button type="button" class="k left" data-btn="LEFT"><span>◀</span></button>
+      <button type="button" class="k down" data-btn="DOWN"><span>▼</span></button>
+      <button type="button" class="k right" data-btn="RIGHT"><span>▶</span></button>
+    </div>
+    <div class="ab">
+      <button type="button" class="k act sel" data-btn="SELECT"><span>SEL</span></button>
+      <button type="button" class="k act sta" data-btn="START"><span>ST</span></button>
+      <button type="button" class="k act b" data-btn="B"><span>B</span></button>
+      <button type="button" class="k act a" data-btn="A"><span>A</span></button>
+    </div>
   </div>
 
   <script src="jsnes.min.js"></script>

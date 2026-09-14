@@ -21,11 +21,11 @@
   };
 
   var ROMS = [
-    { file: "Duelito.nes",    name: "Duelito" },
-    { file: "apocalypse.nes", name: "Apocalypse" },
-    { file: "Deadline.nes",   name: "Deadline (8bitpeoples)" },
-    { file: "Sayoonara.nes",  name: "Sayoonara!" },
-    { file: "minipack.nes",   name: "MiniPack demo" }
+    { file: "smb.nes",         name: "Super Mario Bros.",         sub: "Nintendo · 1985" },
+    { file: "battlecity.nes",  name: "Battle City",               sub: "Namco · 1985" },
+    { file: "contra.nes",      name: "Contra",                    sub: "Konami · 1987" },
+    { file: "chipndale.nes",   name: "Chip 'n Dale Rescue Rangers", sub: "Capcom · 1990" },
+    { file: "battletadsdd.nes", name: "Battletoads & Double Dragon", sub: "Rare · 1993" }
   ];
 
   var nes = null, romName = "", paused = false, sound = true, raf = null;
@@ -33,7 +33,7 @@
 
   var el = {
     screen: null, ctx: null, msg: null, status: null, games: null,
-    btnPause: null, btnReset: null, btnVol: null, btnFull: null
+    btnPause: null, btnReset: null, btnVol: null, btnFull: null, btnPad: null, pad: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -117,7 +117,7 @@
 
   function setMsg(t) { el.msg.textContent = t; }
 
-  function fetchRom(url, name) {
+  function fetchRom(url, name, file) {
     el.status.textContent = "Загружаю " + name + "…";
     fetch(url).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -125,7 +125,7 @@
     }).then(function (ab) {
       loadRom(ab, name);
     }).catch(function (e) {
-      setMsg("Ошибка загрузки ROM: " + e.message);
+      setMsg("ROM «" + name + "» не найден (" + file + "). Положите файл в roms/.");
     });
   }
 
@@ -135,13 +135,13 @@
       var b = document.createElement("button");
       b.className = "game" + (i === 0 ? " on" : "");
       var b2 = document.createElement("b"); b2.textContent = g.name;
-      var s = document.createElement("small"); s.textContent = g.file;
+      var s = document.createElement("small"); s.textContent = g.sub;
       b.appendChild(b2); b.appendChild(s);
       b.addEventListener("click", function () {
         var all = el.games.querySelectorAll("button.game");
         for (var k = 0; k < all.length; k++) all[k].classList.remove("on");
         b.classList.add("on");
-        fetchRom("roms/" + encodeURIComponent(g.file), g.name);
+        fetchRom("roms/" + encodeURIComponent(g.file), g.name, g.file);
       });
       el.games.appendChild(b);
     });
@@ -151,6 +151,118 @@
   function setKey(name, down) {
     if (!nes) return;
     if (down) nes.buttonDown(name); else nes.buttonUp(name);
+  }
+
+  function bindTouchBtn(b) {
+    var name = b.getAttribute("data-btn");
+    function on(e) {
+      e.preventDefault();
+      b.classList.add("pressed");
+      setKey(name, true);
+    }
+    function off(e) {
+      if (e) e.preventDefault();
+      b.classList.remove("pressed");
+      setKey(name, false);
+    }
+    b.addEventListener("touchstart", on, { passive: false });
+    b.addEventListener("touchend", off, { passive: false });
+    b.addEventListener("touchcancel", off, { passive: false });
+    b.addEventListener("mousedown", function (e) { e.preventDefault(); on(e); });
+    b.addEventListener("mouseup", off);
+    b.addEventListener("mouseleave", off);
+  }
+
+  function isTouch() {
+    return ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+  }
+
+  function padVisible() { return !el.pad.hidden; }
+
+  function setPad(on) {
+    el.pad.hidden = !on;
+    if (on) document.body.classList.add("has-pad");
+    else document.body.classList.remove("has-pad");
+    el.btnPad.textContent = on ? "🎮 ✓" : "🎮";
+  }
+
+  function fitCanvas() {
+    var stage = document.getElementById("stage");
+    if (!stage) return;
+    var W = stage.clientWidth, H = stage.clientHeight;
+    if (W && H) {
+      var s = Math.min(W / 256, H / 240);
+      el.screen.style.width = Math.floor(256 * s) + "px";
+      el.screen.style.height = Math.floor(240 * s) + "px";
+    }
+  }
+
+  var fsSim = false;
+
+  function fsClass(on) {
+    document.body.classList.toggle("fs-sim", on);
+    document.body.classList.toggle("fs", on);
+    el.btnExitFull.hidden = !on;
+    if (on) document.body.classList.add("has-pad");
+  }
+
+  function onFsChange() {
+    var real = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    fsClass(real);
+    fsSim = false;
+    fitCanvas();
+  }
+
+  function tryLock() {
+    try {
+      if (!(document.fullscreenElement || document.webkitFullscreenElement)) return;
+      var o = screen.orientation;
+      if (o && o.lock && o.lock.call) o.lock("landscape").catch(function () {});
+    } catch (e) {}
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      exitFullscreen();
+      return;
+    }
+    if (fsSim) { exitFullscreen(); return; }
+    var stage = document.getElementById("stage");
+    var req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+    if (req && !isIosSafari()) {
+      try {
+        req.call(stage);
+        setTimeout(function () {
+          if (!(document.fullscreenElement || document.webkitFullscreenElement)) simFs();
+          else tryLock();
+        }, 300);
+      } catch (e) { simFs(); }
+      return;
+    }
+    simFs();
+  }
+
+  function exitFullscreen() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      var exf = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exf) exf.call(document);
+      else { fsSim = false; fsClass(false); }
+      return;
+    }
+    fsSim = false;
+    fsClass(false);
+  }
+
+  function isIosSafari() {
+    var ua = navigator.userAgent;
+    return /iPhone|iPad|iPod/i.test(ua) && /Safari/i.test(ua) && !/CriOS|FxiOS|OPT|Edge/i.test(ua);
+  }
+
+  function simFs() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return;
+    fsSim = true;
+    fsClass(true);
+    fitCanvas();
   }
 
   function setup() {
@@ -163,11 +275,23 @@
     el.btnReset = $("btnReset");
     el.btnVol = $("btnVol");
     el.btnFull = $("btnFull");
+    el.btnPad = $("btnPad");
+    el.pad = $("pad");
+    el.btnExitFull = $("btnExitFull");
 
     newNes();
     controlsOn(false);
     gameList();
-    fetchRom("roms/" + encodeURIComponent(ROMS[0].file), ROMS[0].name);
+
+    if (isTouch()) {
+      setPad(true);
+      var keys = el.pad.querySelectorAll(".k");
+      for (var i = 0; i < keys.length; i++) bindTouchBtn(keys[i]);
+    } else {
+      setPad(false);
+    }
+
+    fetchRom("roms/" + encodeURIComponent(ROMS[0].file), ROMS[0].name, ROMS[0].file);
 
     el.btnReset.addEventListener("click", function () {
       if (nes) { nes.reset(); setMsg("Сброс"); }
@@ -179,14 +303,18 @@
       sound = !sound;
       el.btnVol.textContent = sound ? "🔊 Звук" : "🔇 Тихо";
     });
-    el.btnFull.addEventListener("click", function () {
-      var s = el.screen;
-      if (s.requestFullscreen) s.requestFullscreen();
-      else if (s.webkitRequestFullscreen) s.webkitRequestFullscreen();
+    el.btnFull.addEventListener("click", toggleFullscreen);
+    el.btnExitFull.addEventListener("click", exitFullscreen);
+    el.btnPad.addEventListener("click", function () {
+      setPad(!padVisible());
     });
     el.screen.addEventListener("click", function () {
       if (nes) setPaused(!paused);
     });
+
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    window.addEventListener("resize", fitCanvas);
 
     var btnUp = document.createElement("button");
     btnUp.textContent = "⬆ Загрузить .nes";
