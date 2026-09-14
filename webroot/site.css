@@ -1,0 +1,40 @@
+:root{
+  --bg:#0e0b16; --card:#1a1427; --line:#2c2340; --txt:#e9e4f2; --mut:#8f86a8;
+  --acc:#7c5cff; --acc2:#37e6a4;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:radial-gradient(1200px 600px at 70% -10%, #241a3d 0%, var(--bg) 55%), var(--bg);
+  color:var(--txt); font-family:'Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:24px 14px;
+}
+.head{text-align:center; margin-bottom:18px}
+.logo{font-size:15px; letter-spacing:4px; color:var(--acc2); font-style:italic; text-transform:uppercase; font-family:'Courier New',monospace}
+h1{font-size:26px; margin:6px 0 4px; font-weight:600}
+.sub{color:var(--mut); font-size:13px}
+.wrap{width:100%; max-width:640px}
+.card{background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden;
+  box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.stage{position:relative; background:#000; image-rendering:pixelated}
+#screen{display:block; width:100%; height:auto; image-rendering:pixelated; cursor:pointer}
+.msg{position:absolute; left:0; right:0; bottom:0; background:rgba(10,8,20,.75); color:#ffd3dd;
+  font:12px ui-monospace,monospace; padding:6px 10px; min-height:20px}
+.bar{display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-top:1px solid var(--line)}
+.status{color:var(--mut); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.sp{flex:1}
+.bar button{font:inherit; font-size:12px; color:var(--txt); background:#221a36; border:1px solid var(--line);
+  border-radius:8px; padding:6px 10px; cursor:pointer; transition:border-color .15s}
+.bar button:hover:not(:disabled){border-color:var(--acc)}
+.bar button:disabled{opacity:.4; cursor:default}
+.games{display:flex; flex-wrap:wrap; gap:8px; padding:12px; border-top:1px solid var(--line)}
+.games button{flex:1 1 auto; min-width:150px; font:inherit; font-size:13px; color:var(--txt);
+  background:#221a36; border:1px solid var(--line); border-radius:10px; padding:9px 12px; cursor:pointer;
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px; transition:border-color .15s, background .15s}
+.games button:hover{border-color:var(--acc); background:#2a2142}
+.games button.on{border-color:var(--acc2); box-shadow:0 0 0 1px var(--acc2) inset}
+.games button b{font-weight:600}
+.games button small{color:var(--mut); font-size:11px}
+.tip{margin:16px 0 0; color:var(--mut); font-size:12px; text-align:center; line-height:1.8}
+kbd{background:#221a36; border:1px solid var(--line); border-radius:5px; padding:1px 6px; color:var(--txt); font-size:11px}
+footer{color:var(--mut); font-size:11px; margin-top:18px; text-align:center}
