@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "1.9.0"
+VERSION = "2.0.0"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks"}
@@ -735,6 +735,139 @@ def _tg_web_set(carrier=None, enabled=None):
             raise RuntimeError("https-lanes требует max_http_handlers >= 4")
     _tg_api("PATCH", "/v1/config", {"web": patch})
     return _tg_web_get()
+
+_NG_WEBPROXY_TEMPLATE = """map $http_upgrade $telemt_connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+map $uri $cache_control {
+    default                 "public, max-age=300";
+    "~^/$"                  "no-store, no-cache";
+    "~^/index\\.html$"     "no-store, no-cache";
+    "~^/manifest\\.json$"  "no-store, no-cache";
+    "~*\\.(png|jpg|jpeg|ico)$" "no-store, no-cache";
+}
+
+upstream telemt_web {
+    server 127.0.0.1:18080;
+    keepalive 64;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name {domain};
+    access_log /var/log/nginx/decoy-access.log;
+
+    ssl_certificate     {cert};
+    ssl_certificate_key {key};
+
+    client_max_body_size 2m;
+
+    location = /manifest.json {
+        proxy_pass http://telemt_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $telemt_connection_upgrade;
+
+        proxy_hide_header Content-Type;
+        proxy_hide_header Cache-Control;
+        add_header Content-Type "application/manifest+json; charset=utf-8" always;
+        add_header Cache-Control "no-store, no-cache" always;
+    }
+
+    location / {
+        proxy_pass http://telemt_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $telemt_connection_upgrade;
+
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control $cache_control always;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 65s;
+        proxy_read_timeout 65s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_next_upstream off;
+    }
+}
+"""
+
+_NG_CONF = "/etc/nginx/conf.d/webproxy.conf"
+
+def _ng_certs(domain):
+    live = f"{CERT_DIR}/live/veil-{domain}"
+    cp = _cert_pathes()
+    if cp["cert"] and os.path.exists(cp["cert"]) and cp["key"] and os.path.exists(cp["key"]):
+        return cp["cert"], cp["key"]
+    if os.path.exists(f"{live}/fullchain.pem") and os.path.exists(f"{live}/privkey.pem"):
+        return f"{live}/fullchain.pem", f"{live}/privkey.pem"
+    crt = f"{CERT_DIR}/webproxy-{domain}.crt"; key = f"{CERT_DIR}/webproxy-{domain}.key"
+    if not (os.path.exists(crt) and os.path.exists(key)):
+        os.makedirs(CERT_DIR, exist_ok=True)
+        r = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", crt, "-days", "3650",
+             "-subj", "/CN=" + domain, "-addext", "subjectAltName=DNS:" + domain],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("openssl: " + (r.stderr or r.stdout))
+    return crt, key
+
+def _webproxy_status():
+    nginx_bin = shutil.which("nginx")
+    ng_conf = os.path.exists(_NG_CONF)
+    ng_active = False
+    if nginx_bin:
+        r = subprocess.run(["systemctl", "is-active", "--quiet", "nginx"])
+        ng_active = r.returncode == 0
+    installed = bool(nginx_bin and ng_conf and ng_active)
+    free80 = _port_free(80)
+    free443 = _port_free(443)
+    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    domain_set = bool(domain and not re.fullmatch(r"[0-9.]+", domain)
+                      and ":" not in domain and "//" not in domain)
+    busy = []
+    if not free80: busy.append(80)
+    if not free443: busy.append(443)
+    return {"installed": installed, "nginx": bool(nginx_bin), "config": ng_conf,
+            "active": ng_active, "port80": free80, "port443": free443,
+            "busy": busy, "domain": domain, "domain_set": domain_set,
+            "can_install": (not installed) and (not busy) and domain_set}
+
+def _webproxy_install():
+    st = _webproxy_status()
+    if st["installed"]:
+        return {"ok": True, "status": st, "message": "Web Proxy уже установлен и работает"}
+    if st["busy"]:
+        raise RuntimeError("порт %s занят — освободи его, после этого кнопка установки появится" %
+                           "/".join(map(str, st["busy"])))
+    if not st["domain_set"]:
+        raise RuntimeError("нет домена или DDNS — внеси его во вкладке Сайт (раздел DDNS)")
+    domain = st["domain"]
+    if not st["nginx"]:
+        r = subprocess.run(["apt-get", "install", "-y", "-qq", "nginx"],
+                           capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            raise RuntimeError("apt nginx: " + (r.stderr or r.stdout)[-300:])
+    cert, key = _ng_certs(domain)
+    conf = _NG_WEBPROXY_TEMPLATE.format(domain=domain, cert=cert, key=key)
+    os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
+    with open(_NG_CONF, "w") as f:
+        f.write(conf)
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=20)
+    if t.returncode != 0:
+        raise RuntimeError("nginx -t: " + (t.stderr or t.stdout)[-400:])
+    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
+    subprocess.run(["systemctl", "restart", "nginx"], check=True, capture_output=True, timeout=60)
+    return {"ok": True, "status": _webproxy_status()}
 
 def _find_free_port(pref=None, avoid=()):
     import socket
@@ -1681,6 +1814,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
+        if p == "/api/webproxy/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _webproxy_status())
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
@@ -2119,6 +2255,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     return self._send(200, {"ok": True, "web": _tg_web_set(
                         b.get("carrier"), b.get("enabled"))})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/webproxy/install":
+                try:
+                    return self._send(200, _webproxy_install())
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
 

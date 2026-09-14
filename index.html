@@ -84,7 +84,8 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .pcard{border:1px solid var(--br);border-radius:14px;background:color-mix(in srgb,var(--card2) 55%,transparent);transition:border-color .18s}
 .prow{display:flex;align-items:center;gap:10px;padding:9px 12px}
 .pacc{width:34px;height:34px;flex:none;border-radius:10px;font-size:20px;line-height:1;padding:0;font-weight:700;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--gc,var(--g-vless));border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer}
-.pname{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--gc,var(--g-vless));text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.ptitle{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:10px}
+.pname{min-width:0;font-size:14px;font-weight:700;color:var(--gc,var(--g-vless));text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
 .pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
 .pcheck{position:relative;width:36px;height:36px;flex:none;border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--mut);border-radius:10px}
 .pcheck:hover{background:color-mix(in srgb,var(--acc) 20%,transparent)}
@@ -299,6 +300,27 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
     <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram Desktop/iOS через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
     <div id=webBox class=clients></div>
     <div class=msg id=webMsg></div>
+    <hr>
+    <div class=row style="margin-top:12px"><h3 style=margin:0>Web Proxy (nginx :443 → telemt)</h3><span class=mut id=wpStatus>—</span></div>
+    <div class="mut" id=wpHint style="font-size:12px;margin:4px 0 0"></div>
+    <div style="margin-top:10px" id=wpInstallRow>
+      <button class="sec ok hidden" id=wpInstallBtn onclick=installWebproxy()>⚙ Установить Web Proxy (nginx)</button>
+    </div>
+    <div class=msg id=wpMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Telemt: обновление и откат</h3>
+    <p class=mut style="margin:0 0 10px">Проверка новой версии прокси-движка telemt и откат на прошлую. Текущий бинарь перед сменой сохраняется.</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <span class=mut>Сейчас: <b id=tvCur>—</b></span>
+      <button class="tiny sec" onclick=loadTgVerInfo()>&#x27F3; Проверить обновления</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <select id=tvSel aria-label="версия telemt" style="flex:1;min-width:220px"></select>
+      <button class=sec onclick=switchTgVer() id=tvBtn disabled>Сменить версию</button>
+    </div>
+    <div class=mut style="font-size:12px;margin:10px 0 6px">Откат на прошлую версию:</div>
+    <div id=tvBackList></div>
+    <div class=msg id=tvMsg></div>
   </div></div>
 
   <div id=tab-site class="tab-pane"><div class=card>
@@ -679,8 +701,7 @@ function renderProtoCards(){
       card.innerHTML=
         '<div class=prow>'+
         '<button class=pacc title="Раскрыть клиентов">+</button>'+
-        '<div class=pname></div>'+
-        '<span class=pbadge>0</span>'+
+        '<div class=ptitle><div class=pname></div><span class=pbadge>0</span></div>'+
         '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
         '</div>'+
         '<div class=pbody>'+
@@ -713,7 +734,7 @@ function renderProtoCards(){
       box.appendChild(card);
     });
   });
-  const target=autoExpand||protoCur;
+  const target=autoExpand||(protoCur==='shadowsocks-2022'?null:protoCur);
   if(target){
     box.querySelectorAll('.pcard').forEach(c=>{
       if(c.dataset.proto===target){
@@ -808,7 +829,7 @@ async function refresh(){
     await loadProtocols();
     await loadClients();
     await loadTg();
-    await loadFix();
+    await loadTgVerInfo();
     await loadStats();
     await loadSettings();
     await loadDynv6();
@@ -1165,9 +1186,116 @@ async function loadTg(){
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTg();
     renderWeb(d.web);
+    loadWp();
   }catch(e){
     setMsg('tgMsg',e.message,'err');
   }
+}
+
+async function loadWp(){
+  try{
+    const s = await api('/api/webproxy/status');
+    const st = document.getElementById('wpStatus');
+    const hint = document.getElementById('wpHint');
+    const btn = document.getElementById('wpInstallBtn');
+    if(s.installed){
+      st.textContent = 'установлен · nginx активен';
+      st.style.color = 'var(--ok)';
+      hint.textContent = 'nginx слушает :443 и проксирует на telemt web (:18080).';
+      btn.classList.add('hidden');
+      return;
+    }
+    st.style.color = 'var(--mut)';
+    if(s.busy && s.busy.length){
+      st.textContent = 'порт ' + s.busy.join(', ') + ' занят';
+      hint.textContent = 'Установка Web Proxy станет доступна после освобождения порта ' + s.busy.join(', ') + '.';
+      btn.classList.add('hidden');
+    } else if(!s.domain_set){
+      st.textContent = 'нет домена/DDNS';
+      hint.textContent = 'Нет домена или DDNS — внеси его во вкладке «Сайт» (раздел DDNS/dynv6), после этого появится кнопка установки.';
+      btn.classList.add('hidden');
+    } else {
+      st.textContent = 'готов к установке';
+      hint.textContent = 'Порты 80/443 свободны, домен ' + (s.domain||'') + ' задан.';
+      btn.classList.remove('hidden');
+    }
+  }catch(e){ /* ignore */ }
+}
+
+async function installWebproxy(){
+  const btn = document.getElementById('wpInstallBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = 'Устанавливаю nginx…';
+  try{
+    const r = await api('/api/webproxy/install', {method:'POST'});
+    await loadWp();
+    setMsg('wpMsg', r.message || 'Web Proxy установлен', 'ok');
+  }catch(e){
+    setMsg('wpMsg', e.message, 'err');
+    btn.textContent = old;
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function loadTgVerInfo(){
+  const cur=$('tvCur'), sel=$('tvSel'), btn=$('tvBtn');
+  cur.textContent='…'; btn.disabled=true;
+  try{
+    const d=await api('/api/tg/versions');
+    cur.textContent='v'+d.current;
+    sel.innerHTML='';
+    for(const v of d.versions){
+      const o=document.createElement('option');
+      o.value=v; o.textContent='v'+v+(d.pre.includes(v)?' (pre)':'')+(v===d.current?' — текущая':'');
+      if(v===d.current) o.selected=true;
+      sel.appendChild(o);
+    }
+    btn.disabled=true;
+    sel.onchange=()=>{btn.disabled=(sel.value===d.current);};
+    const list=$('tvBackList');
+    list.innerHTML='';
+    try{
+      const b=await api('/api/versions');
+      const tb=b.telemt||[];
+      if(!tb.length){list.innerHTML='<span class=mut style="font-size:12px">бэкапы ещё не созданы (появятся после первой смены версии)</span>';}
+      else for(const bk of tb){
+        const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+        const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+bk.version;
+        const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';
+        bt.disabled=(bk.version===d.current);
+        bt.onclick=()=>restoreTgVer(bk.version);
+        row.appendChild(sp);row.appendChild(bt);list.appendChild(row);
+      }
+    }catch(e){/* бэкапы не критичны */}
+    btn.disabled=true; // sel.onchange перекликается вручную
+    sel.onchange=()=>{btn.disabled=(sel.value===d.current);};
+  }catch(e){setMsg('tvMsg',e.message,'err');}
+}
+
+async function switchTgVer(){
+  const version=$('tvSel').value;
+  if(!version){setMsg('tvMsg','выбери версию','err');return;}
+  if(!confirm('Сменить telemt на v'+version+'? Текущий бинарь сохранится для отката.'))return;
+  $('tvBtn').disabled=true;
+  setMsg('tvMsg','Скачиваю и ставлю v'+version+'…','');
+  try{
+    const r=await api('/api/tg/switch',{method:'POST',body:JSON.stringify({version})});
+    setMsg('tvMsg','Готово: '+r.from+' → '+r.to,'ok');
+    loadTgVerInfo(); loadTg();
+  }catch(e){setMsg('tvMsg',e.message,'err');}
+  finally{ $('tvBtn').disabled=false; loadTgVerInfo(); }
+}
+
+async function restoreTgVer(version){
+  if(!confirm('Откатить telemt к v'+version+'?'))return;
+  setMsg('tvMsg','Откатываю на v'+version+'…','');
+  try{
+    await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type:'telemt',version})});
+    setMsg('tvMsg','Готово, telemt v'+version+' восстановлен. Перезапускаю…','ok');
+    setTimeout(()=>{loadTgVerInfo();loadTg();},400);
+  }catch(e){setMsg('tvMsg',e.message,'err');}
 }
 
 function renderWeb(web){
