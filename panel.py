@@ -17,10 +17,11 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.0.2"
-_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss")
+VERSION = "2.0.3"
+_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
-                 "trojan": "Trojan", "ss": "Shadowsocks"}
+                 "trojan": "Trojan", "ss": "Shadowsocks",
+                 "hy2": "Hysteria2", "wg": "WireGuard"}
 PROTOCOLS = [
     {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "ui_group": "vless", "net": "tcp",       "tls": False},
     {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "ui_group": "vless", "net": "xhttp",     "tls": False},
@@ -39,6 +40,8 @@ PROTOCOLS = [
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS (self-signed)",       "group": "trojan",  "net": "grpc",     "tls": True},
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
     {"id": "shadowsocks-2022",    "label": "Shadowsocks 2022 (aes-128-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
+    {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
+    {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
 ]
 for _p in PROTOCOLS:
     _p["group_label"] = _GROUP_LABELS.get(_p["group"], _p["group"])
@@ -52,7 +55,8 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
-           "shadowsocks-2022": 26443}
+           "shadowsocks-2022": 26443,
+           "hysteria2": 27443, "wireguard": 28443}
 # Порт 443/80 заняты nginx (webproxy/decoy и Let's Encrypt), 18080 — telemt web,
 # 9091 — telemt API, 7443 — telemt MTProto. Панель не должна их занимать.
 _RESERVED_PORTS = {80, 443, 8080, 18080, 9091, 7443}
@@ -231,6 +235,12 @@ def _new_inbound(proto):
     if proto == "shadowsocks-2022":
         inb["password"] = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode()
         inb["method"] = "2022-blake3-aes-128-gcm"
+    if proto == "hysteria2":
+        pass
+    if proto == "wireguard":
+        priv, pub = _gen_keys()
+        inb.update({"private_key": priv, "public_key": pub,
+                    "address": "10.10.0.1/32", "mtu": 1420, "next_address": 2})
     if _proto_meta(proto)["tls"]:
         cp = _cert_pathes()
         if cp["cert"] and cp["key"]:
@@ -248,8 +258,43 @@ def _alloc_inbound(st, proto):
         inb["port"] = _find_free_port(_PORTS.get(proto), used)
     return inb
 
+HY2_CERT = "/usr/local/etc/xray/hy2_cert.pem"
+HY2_KEY = "/usr/local/etc/xray/hy2_key.pem"
+
+def _ensure_hy2_cert(dom):
+    if os.path.exists(HY2_CERT): return
+    try:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-nodes", "-days", "3650", "-newkey", "rsa:2048",
+             "-keyout", HY2_KEY, "-out", HY2_CERT, "-subj", "/CN=" + dom,
+             "-addext", "subjectAltName=DNS:" + dom],
+            capture_output=True, timeout=30)
+        os.chmod(HY2_CERT, 0o644)
+        os.chmod(HY2_KEY, 0o600)
+        try: shutil.chown(HY2_CERT, user="nobody", group="nogroup")
+        except Exception: pass
+        try: shutil.chown(HY2_KEY, user="nobody", group="nogroup")
+        except Exception: pass
+    except Exception as e:
+        print(f"не удалось создать hy2 cert: {e}", flush=True)
+
 def _stream_settings(proto, inb):
     meta = _proto_meta(proto)
+    if proto == "hysteria2":
+        dom = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+        _ensure_hy2_cert(dom)
+        masq = {"type": "proxy", "url": "https://" + dom} if dom else {"type": "404"}
+        return {"network": "hysteria",
+                "security": "tls",
+                "tlsSettings": {"serverName": dom, "alpn": ["h3"],
+                                "certificates": [{"certificateFile": "/usr/local/etc/xray/hy2_cert.pem",
+                                                   "keyFile": "/usr/local/etc/xray/hy2_key.pem"}]},
+                "hysteriaSettings": {
+                    "version": 2,
+                    "udpIdleTimeout": 60,
+                    "masquerade": masq}}
+    if proto == "wireguard":
+        return {}
     def _reality():
         return {"show": False, "dest": inb["dest"], "xver": 0,
                 "serverNames": [inb["sni"]], "privateKey": inb["private_key"],
@@ -277,8 +322,29 @@ def _stream_settings(proto, inb):
 
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
-    ib = {"listen": "0.0.0.0", "port": inb["port"], "tag": proto,
-          "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]}}
+    ib = {"listen": "0.0.0.0", "port": inb["port"], "tag": proto}
+    if proto == "hysteria2":
+        ib["protocol"] = "hysteria"
+        ib["settings"] = {"version": 2, "clients": [
+            {"auth": c.get("auth") or c["uuid"], "email": c["uuid"]}
+            for c in inb["clients"]]}
+        ib["sniffing"] = {"enabled": False}
+        ib["streamSettings"] = _stream_settings(proto, inb)
+        return ib
+    if proto == "wireguard":
+        ib["protocol"] = "wireguard"
+        ib["settings"] = {
+            "secretKey": inb["private_key"],
+            "address": [inb.get("address", "10.10.0.1/24")],
+            "noKernelTun": True,
+            "mtu": inb.get("mtu", 1420),
+            "peers": [{"publicKey": c["client_public_key"],
+                       "allowedIPs": [c.get("address", "10.10.0.0/24")],
+                       "email": c["uuid"]}
+                      for c in inb["clients"]]}
+        ib["sniffing"] = {"enabled": False}
+        return ib
+    ib["sniffing"] = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
     if proto.startswith("shadowsocks"):
         ib["protocol"] = "shadowsocks"
         ib["settings"] = {"method": inb.get("method") or "aes-256-gcm",
@@ -400,6 +466,22 @@ def _link(inb, host, client, proto):
     meta = _proto_meta(proto)
     fp = _fp()
     name = client.get("name") or "Veil"
+    if proto == "hysteria2":
+        dom = (CFG_CACHE.get("panel_domain") or "").strip() or host
+        auth = client.get("auth") or client["uuid"]
+        q = urllib.parse.urlencode({"sni": dom,
+                                    "insecure": 1})
+        return f"hy2://{auth}@{host}:{inb['port']}/?{q}#{urllib.parse.quote(name)}"
+    if proto == "wireguard":
+        return ("[Interface]\n"
+                f"PrivateKey = {client['client_private_key']}\n"
+                f"Address = {client['address']}\n"
+                f"DNS = 1.1.1.1, 8.8.8.8\n\n"
+                "[Peer]\n"
+                f"PublicKey = {inb['public_key']}\n"
+                f"Endpoint = {host}:{inb['port']}\n"
+                "AllowedIPs = 0.0.0.0/0, ::/0\n"
+                "PersistentKeepalive = 25\n")
     if proto.startswith("shadowsocks"):
         cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
         raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
@@ -443,12 +525,21 @@ def _link(inb, host, client, proto):
     q = urllib.parse.urlencode(qparts)
     return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
 
-def _new_client(name, proto=None):
+def _new_client(name, proto=None, inb=None):
     c = {"uuid": str(uuidlib.uuid4()),
          "name": (name or "").strip() or "Клиент",
          "created": int(time.time())}
     if proto and proto.startswith("trojan"):
         c["password"] = secrets.token_urlsafe(12)
+    if proto == "hysteria2":
+        c["auth"] = secrets.token_hex(16)
+    if proto == "wireguard" and inb is not None:
+        priv, pub = _gen_keys()
+        addr = inb.get("next_address", 2)
+        inb["next_address"] = addr + 1
+        c["client_private_key"] = priv
+        c["client_public_key"] = pub
+        c["address"] = f"10.10.0.{addr}/32"
     return c
 
 # ---------- github / update ----------
@@ -1724,6 +1815,9 @@ class H(http.server.BaseHTTPRequestHandler):
                             "created": c.get("created", 0)}
                     if ipv6:
                         item["link6"] = _link(inb, f"[{ipv6}]", c, proto)
+                    if proto == "wireguard" and c.get("address"):
+                        item["address"] = c["address"]
+                        item["link6"] = ""
                     if len(out) < 16:
                         item["online"] = _online_count(c["uuid"])
                     out.append(item)
@@ -1921,7 +2015,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 inb = _alloc_inbound(st, proto)
                 st["inbounds"][proto] = inb
                 name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
-                c = _new_client(name, proto)
+                c = _new_client(name, proto, inb)
                 inb["clients"].append(c)
                 st["active"] = proto
                 _write_xray(st); _save(STATE, st)
@@ -1948,7 +2042,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     proto = _proto_of(st)
                 inb = _alloc_inbound(st, proto)
                 st["inbounds"][proto] = inb
-                c = _new_client(name, proto)
+                c = _new_client(name, proto, inb)
                 inb["clients"].append(c)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()

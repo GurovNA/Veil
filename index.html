@@ -19,7 +19,7 @@
 <link rel=icon type=image/png href=/icon-192.png>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-:root{--bg:#0b1023;--bg2:#0d1230;--card:#151c3d;--card2:#1a2350;--fg:#eef2ff;--mut:#a3aede;--br:#333d72;--acc:#6d5df6;--acc2:#22d3ee;--ok:#34d399;--err:#fb7185;--warn:#fbbf24;--g-reality:#22d3ee;--g-vless:#a78bfa;--g-vmess:#34d399;--g-trojan:#fbbf24;--g-ss:#f472b6;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,#8b5cf6,#6d5df6 45%,#22d3ee);--grad2:linear-gradient(135deg,#34d399,#06b6d4)}
+:root{--bg:#0b1023;--bg2:#0d1230;--card:#151c3d;--card2:#1a2350;--fg:#eef2ff;--mut:#a3aede;--br:#333d72;--acc:#6d5df6;--acc2:#22d3ee;--ok:#34d399;--err:#fb7185;--warn:#fbbf24;--g-reality:#22d3ee;--g-vless:#a78bfa;--g-vmess:#34d399;--g-trojan:#fbbf24;--g-ss:#f472b6;--g-hy2:#f97316;--g-wg:#facc15;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,#8b5cf6,#6d5df6 45%,#22d3ee);--grad2:linear-gradient(135deg,#34d399,#06b6d4)}
 *{box-sizing:border-box}
 body{margin:0;background:
   radial-gradient(900px 620px at 8% -12%,rgba(93,80,255,.34),transparent 60%),
@@ -550,7 +550,7 @@ let protoLabels={};
 let protoGroups={};
 let protoUILabels={};
 let webStatus=null;
-const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(--g-vmess)',trojan:'var(--g-trojan)',ss:'var(--g-ss)'};
+const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(--g-vmess)',trojan:'var(--g-trojan)',ss:'var(--g-ss)',hy2:'var(--g-hy2)',wg:'var(--g-wg)'};
 const groupColor=g=>groupColors[g]||'var(--g-vless)';
 
 async function api(p,o){
@@ -598,6 +598,7 @@ function fmtBytes(n){
 
 function clientCard(c){
   const div=document.createElement('div');div.className='client';
+  const isWG=c.proto==='wireguard';
   div.style.setProperty('--gc', groupColor(protoGroups[c.proto]));
   div.dataset.uuid=c.uuid;
   div.innerHTML=`
@@ -610,7 +611,8 @@ function clientCard(c){
       <div class=actions>
         <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
         <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
-        <button class="tiny sec" data-act=qr>QR</button>
+        ${isWG?'':'<button class="tiny sec" data-act=qr>QR</button>'}
+        ${isWG?'<button class="tiny sec" data-act=conf title="Скачать .conf">⬇</button>':''}
         <button class="tiny sec" data-act=copy>Копировать</button>
         <button class="tiny danger" data-act=del>Удалить</button>
       </div>
@@ -622,14 +624,18 @@ function clientCard(c){
     </div>`;
   div.querySelector('.name').textContent=c.name;
   div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
-  div.querySelector('.uuid').textContent=c.uuid;
-  div.querySelector('code').textContent=c.link;
+  div.querySelector('.uuid').textContent=isWG?('IP: '+(c.address||c.uuid)):c.uuid;
+  const _code=div.querySelector('code');
+  _code.textContent=c.link;
+  if(isWG)_code.style.maxHeight='150px';
   const _qrBtn = div.querySelector('[data-act=qr]');
   if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
   div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
-  if(c.link6){div.querySelector('[data-act=v6]').classList.remove('hidden');}
+  if(c.link6&&!isWG){div.querySelector('[data-act=v6]').classList.remove('hidden');}
+  const _conf=div.querySelector('[data-act=conf]');
+  if(_conf)_conf.onclick=()=>downloadConf(c.link,c.name);
   div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
-  div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,'Ссылка скопирована');
+  div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,isWG?'Конфиг скопирован':'Ссылка скопирована');
   div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
   div.querySelector('.traffic').innerHTML=`
     <span class="t-up" title="Принято клиентом"><span class=t-ico>⬇</span><b></b></span>
@@ -642,6 +648,15 @@ function clientCard(c){
   const _dot=div.querySelector('.t-online .dot');
   if(_dot&&c.online){_dot.classList.add('on');div.querySelector('.t-online .t-otxt').textContent='онлайн';}
   return div;
+}
+
+function downloadConf(text,name){
+  try{
+    const blob=new Blob([text],{type:'text/plain'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=(name||'client').replace(/[^\wа-яёА-ЯЁ -]+/g,'').trim().replace(/\s+/g,'_')+'.conf';
+    document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);document.body.removeChild(a);
+  }catch(e){copyText(text,'Не удалось скачать — конфиг скопирован');}
 }
 
 function renderClients(){
