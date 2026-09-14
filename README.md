@@ -3,7 +3,7 @@
 VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 Установка одной строкой на Ubuntu 22.04 / 24.04 / 26.04.
 
-Актуальная версия: **v2.0.2**
+Актуальная версия: **v2.0.3**
 
 ## Установка
 
@@ -11,6 +11,13 @@ VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 
 В конце скрипт выведет URL панели, логин и пароль (сгенерирован автоматически).
 Логин и пароль можно сменить в разделе Безопасность панели.
+
+## Что нового в v2.0.3
+
+- **Hysteria2 и WireGuard прямо в Xray.** Две новые группы протоколов «Hysteria2» (UDP 27443) и «WireGuard» (UDP 28443), реализованы целиком на Xray-core — отдельного демона не нужно.
+  - **Hysteria2** (QUIC/UDP): автоматический самоподписной TLS-сертификат (генерируется при первом включении), masquerade-прокси на домен панели (активный провайдер видит лишь HTTP/3-трафик к текущему домену). Ссылка — `hy2://` с параметрами `sni` и `insecure=1` (самоподписной сертификат), QR-код для мобильных клиентов (Hiddify, v2rayNG, NekoBox).
+  - **WireGuard** (userspace UDP): пара x25519-ключей на сервер, каждому клиенту — свой ключ и адрес из сети `10.10.0.0/32` (10.10.0.2, 10.10.0.3, …). Вместо ссылки — готовый `.conf`-файл (кнопка ⬇ «Скачать .conf»), который открывается официальным WireGuard-приложением / WireGuard-клиентом.
+  - Оба протокола получают клиентов так же, как остальные: «+» на карточке протокола → ссылка/QR сразу. Счётчик, переименование, удаление, трафик — всё работает как обычно.
 
 ## Что нового в v2.0.2
 
@@ -74,7 +81,7 @@ VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 
 | Компонент | Что делает |
 |---|---|
-| Xray | VLESS + Reality VPN, активируется кнопкой из панели |
+| Xray | VLESS + Reality VPN, Hysteria2, WireGuard — активируется кнопкой из панели |
 | telemt | Telegram MTProto прокси с FakeTLS |
 | veil-zapret2 | DPI-bypass для MTProto (nfqws2 + nft + lua) |
 | vpnpanel | Веб-панель управления на порту 8443 |
@@ -82,7 +89,7 @@ VPN-панель + Telegram MTProto прокси с DPI-фиксом.
 ## Что умеет панель
 
 - VPN: включить/выключить Xray, ссылка и QR для v2rayNG, Streisand, Hiddify
-- 17 протоколов по группам (Reality / VLESS / VMess / Trojan / Shadowsocks): VLESS + Reality и XHTTP + Reality, VLESS на WS/TCP/gRPC/XHTTP/SplitHTTP (с TLS), VMess и Trojan на WS/TCP/gRPC (с TLS), Shadowsocks AEAD
+- 19 протоколов по группам (Reality / VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / WireGuard): VLESS + Reality и XHTTP + Reality, VLESS на WS/TCP/gRPC/XHTTP/SplitHTTP (с TLS), VMess и Trojan на WS/TCP/gRPC (с TLS), Shadowsocks AEAD, Hysteria2 (QUIC), WireGuard (UDP)
 - TLS-протоколы получают автоматический самоподписной сертификат, XHTTP поддерживает HTTP/2 / HTTP/3 streaming — домен не нужен
 - Протоколы не конфликтуют: каждый живёт на своём порту, старые ссылки не ломаются; новая ссылка всегда добавляется отдельным клиентом
 - Telegram: MTProto-ссылка и QR, кнопка Отключить fix (zapret2)
