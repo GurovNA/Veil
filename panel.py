@@ -745,6 +745,17 @@ def _authed(self):
 
 # ---------- telemt / telegram proxy ----------
 
+
+def verify_api_token(environ):
+    auth_header = environ.get("HTTP_AUTHORIZATION", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        tokens = CFG_CACHE.get("api_tokens", [])
+        if token in tokens:
+            return True
+    return False
+
+
 def _tg_api(method, path, body=None):
     import urllib.request, urllib.error
     url = TELEMT_API + path
