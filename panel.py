@@ -18,6 +18,87 @@ TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
 VERSION = "2.1.0"
+
+
+# ========== ENTERPRISE FEATURES (v2.1.0) ==========
+
+import base64, hashlib, hmac, struct, time, os, json, socket
+
+NODES_CONFIG_FILE = f"{BASE}/nodes.json"
+
+def get_nodes():
+    if os.path.exists(NODES_CONFIG_FILE):
+        try:
+            return json.load(open(NODES_CONFIG_FILE))
+        except Exception:
+            return []
+    return []
+
+def save_nodes(nodes):
+    json.dump(nodes, open(NODES_CONFIG_FILE, "w"), indent=2)
+
+def generate_totp(secret_key, interval=30):
+    try:
+        key = base64.b32decode(secret_key.upper() + "=" * ((8 - len(secret_key)) % 8))
+    except Exception:
+        key = secret_key.encode('utf-8')
+    counter = int(time.time() // interval)
+    msg = struct.pack(">Q", counter)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    o = digest[19] & 15
+    code_int = (struct.unpack(">I", digest[o:o+4])[0] & 0x7fffffff) % 1000000
+    return f"{code_int:06d}"
+
+def verify_totp(secret_key, code):
+    if not secret_key:
+        return True
+    interval = 30
+    for offset in [-interval, 0, interval]:
+        if generate_totp(secret_key, interval) == str(code).strip():
+            return True
+    return False
+
+def get_system_metrics():
+    metrics = {"cpu_percent": 0.0, "ram_percent": 0.0, "net_rx": 0, "net_tx": 0}
+    try:
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+            parts = [int(x) for x in line.split()[1:]]
+            idle = parts[3]
+            total = sum(parts)
+            metrics["cpu_percent"] = round(100.0 * (1.0 - idle / max(1, total)), 1)
+    except Exception:
+        pass
+    try:
+        meminfo = {}
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    meminfo[parts[0].strip()] = int(parts[1].split()[0])
+        total_mem = meminfo.get("MemTotal", 1)
+        avail_mem = meminfo.get("MemAvailable", total_mem)
+        metrics["ram_percent"] = round(100.0 * (1.0 - avail_mem / max(1, total_mem)), 1)
+    except Exception:
+        pass
+    return metrics
+
+def run_protocol_self_test():
+    results = {}
+    for port in [443, 8444, 7443]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        try:
+            s.connect(("127.0.0.1", port))
+            results[port] = "OK"
+        except Exception as e:
+            results[port] = f"FAIL: {e}"
+        finally:
+            s.close()
+    return results
+
+# ==================================================
+
 LOGO_FILE = f"{BASE}/logo.bin"
 _GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
@@ -1875,6 +1956,19 @@ class H(http.server.BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/sub":
+            # Подписка v2rayNG / Hiddify
+            users = _xray_users_get()
+            links = [u.get("link") for u in users if u.get("link")]
+            encoded = base64.b64encode("\n".join(links).encode()).decode()
+            return self._send(200, encoded.encode(), "text/plain; charset=utf-8")
+        if p == "/api/metrics":
+            return self._send(200, get_system_metrics())
+        if p == "/api/selftest":
+            return self._send(200, run_protocol_self_test())
+        if p == "/api/nodes":
+            return self._send(200, get_nodes())
+
         if p in ("/", "/index.html"):
             with open(HTML, "rb") as f: return self._send(200, f.read(), "text/html; charset=utf-8")
         if p == "/api/state":
