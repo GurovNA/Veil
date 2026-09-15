@@ -225,7 +225,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
-    <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active">
@@ -237,6 +237,11 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       </div>
       <p class=subtitle>VPN · Telegram · анти-DPI</p>
       <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span>
+      <div style="margin-top:12px;padding:10px;background:rgba(255,255,255,0.05);border-radius:8px;font-size:13px;display:flex;gap:15px">
+        <div><strong>CPU:</strong> <span id=cpuUsage>...</span></div>
+        <div><strong>RAM:</strong> <span id=ramUsage>...</span></div>
+        <div><strong>Порты:</strong> <span id=portsStatus>OK</span></div>
+      </div>
         <span class=xrbtns>
           <button id=xrayStart class="tiny" onclick=startXray() hidden>▶ Запустить</button>
           <button id=xrayStop class="tiny" onclick=stopXray() hidden>⏹ Остановить</button>
@@ -571,7 +576,31 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <input type=file id=th-wall accept=image/* onchange=uploadWall()>
     <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
   </div></div>
-  <div id=tab-security class="tab-pane"><div class=card>
+  
+  <!-- Вкладка Подписка -->
+  <div id=tab-subscription class="tab-pane">
+    <div class=card>
+      <h3>Универсальная подписка (Subscription URL)</h3>
+      <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список протоколов.</p>
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <input type=text id=subUrlInput readonly style="flex:1;background:var(--bg2);border:1px solid var(--brd);padding:8px;border-radius:6px">
+        <button class="sec" onclick="copyText($('subUrlInput').value, 'Ссылка подписки скопирована')">Копировать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Вкладка Ноды -->
+  <div id=tab-nodes class="tab-pane">
+    <div class=card>
+      <h3>Мультисерверность (Управление нодами)</h3>
+      <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.</p>
+      <div style="margin-top:10px">
+        <button class="sec" onclick="alert('Добавление нод доступно в версии Enterprise')">+ Добавить ноду</button>
+      </div>
+    </div>
+  </div>
+
+<div id=tab-security class="tab-pane"><div class=card>
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
     <input id=curPass type=password placeholder="текущий пароль (обязательно)" autocomplete=current-password>
