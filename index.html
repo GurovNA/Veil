@@ -439,13 +439,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <div class=msg id=pnlPortMsg></div>
     <hr>
     <h3 style="margin:0 0 8px">Сетевые настройки</h3>
-    <div style="margin:8px 0">
-      <label class=mut style="display:flex;align-items:center;gap:10px;cursor:pointer">
-        <input type=checkbox id=ruBypass> <span>RU-сайты в обход VPN (split routing)</span>
-      </label>
-      <button class="tiny sec" onclick=applyRuBypass() style="margin-top:8px">Применить</button>
-      <p class=mut style="margin:4px 0 0;font-size:12px">Российские IP/домены (geoip:ru, geosite:ru) пойдут напрямую, минуя VPN. Нажми «Применить» — перезапустится только Xray.</p>
-      <div class=msg id=ruMsg></div>
+    <p class=mut style="margin:4px 0 0;font-size:12px">RU-обход убран из панели: сервер в Финляндии, гео-исключения не дают российский IP.</p>
     </div>
     <div style="margin:12px 0">
       <label>Адрес прослушивания панели<input id=panelBind type=text placeholder="0.0.0.0 (пусто — все интерфейсы)" style="width:100%;margin-top:4px"></label>
@@ -1148,6 +1142,25 @@ async function doDelete(c){
   }
 }
 
+function openProxyInTg(link){
+  if (!link) return;
+  let url = link.trim();
+  
+  if (/^tg:\/\//i.test(url)) {
+    window.location.href = url;
+    toast('Открываем Telegram...', 'ok');
+    return;
+  }
+  
+  let a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function copyText(text,okMsg){
   const done=()=>{$('vpnMsg').textContent=okMsg;$('vpnMsg').className='msg ok';};
   const fail=()=>{$('vpnMsg').textContent='Не скопировалось — выдели вручную';$('vpnMsg').className='msg err';};
@@ -1536,6 +1549,7 @@ function renderWeb(web){
     div.querySelector('.name').textContent = uu.username;
     div.querySelector('code').textContent = link || '⚠ нет ссылки';
     if (link){
+      div.querySelector('[data-act=open]').onclick = function(){ openProxyInTg(link); };
       div.querySelector('[data-act=qr]').onclick = function(){ showQR(link, 'Web: ' + uu.username); };
       div.querySelector('[data-act=copy]').onclick = function(){ copyText(link, 'Web-ссылка скопирована'); };
     }
@@ -1567,6 +1581,7 @@ function renderTg(){
         '<div class=uuid></div>' +
       '</div>' +
       '<div class=actions>' +
+        '<button class="tiny sec" data-act=open title="Открыть этот прокси в приложении Telegram">Открыть в Telegram</button>' +
         '<button class="tiny sec" data-act=qr>QR</button>' +
         '<button class="tiny sec" data-act=copy>Копировать</button>' +
         '<button class="tiny danger" data-act=del>Удалить</button>' +
@@ -1577,6 +1592,7 @@ function renderTg(){
     const conns = u.connections || 0;
     div.querySelector('.uuid').textContent = conns > 0 ? ('онлайн: ' + conns) : 'офлайн';
     div.querySelector('code').textContent = u.link;
+    div.querySelector('[data-act=open]').onclick = function(){ openProxyInTg(u.link); };
     div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'Tg: ' + u.username); };
     div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка Tg скопирована'); };
     div.querySelector('[data-act=del]').onclick = function(){ doTgDelete(u); };
