@@ -1,0 +1,2007 @@
+<!doctype html>
+<html lang=ru><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Veil Panel</title>
+<meta name=apple-mobile-web-app-capable content=yes>
+<meta name=mobile-web-app-capable content=yes>
+<meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
+<meta name=apple-mobile-web-app-title content="Veil Panel">
+<link rel=manifest href=/manifest.json>
+<link rel=apple-touch-icon sizes=180x180 href=/icon-veil.png>
+<link rel=apple-touch-icon sizes=167x167 href=/apple-touch-icon-167x167.png>
+<link rel=apple-touch-icon sizes=152x152 href=/apple-touch-icon-152x152.png>
+<link rel=apple-touch-icon sizes=120x120 href=/apple-touch-icon-120x120.png>
+<link rel=apple-touch-icon sizes=87x87 href=/apple-touch-icon-87x87.png>
+<link rel=apple-touch-icon sizes=80x80 href=/apple-touch-icon-80x80.png>
+<link rel=apple-touch-icon sizes=76x76 href=/apple-touch-icon-76x76.png>
+<link rel=apple-touch-icon sizes=58x58 href=/apple-touch-icon-58x58.png>
+<link rel=apple-touch-icon-precomposed href=/icon-veil.png>
+<link rel=icon type=image/png href=/icon-192.png>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#0b1023;--bg2:#0d1230;--card:#151c3d;--card2:#1a2350;--fg:#eef2ff;--mut:#a3aede;--br:#333d72;--acc:#6d5df6;--acc2:#22d3ee;--ok:#34d399;--err:#fb7185;--warn:#fbbf24;--g-reality:#22d3ee;--g-vless:#a78bfa;--g-vmess:#34d399;--g-trojan:#fbbf24;--g-ss:#f472b6;--g-hy2:#f97316;--g-wg:#facc15;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,#8b5cf6,#6d5df6 45%,#22d3ee);--grad2:linear-gradient(135deg,#34d399,#06b6d4)}
+*{box-sizing:border-box}
+body{margin:0;background:
+  radial-gradient(900px 620px at 8% -12%,rgba(93,80,255,.34),transparent 60%),
+  radial-gradient(820px 540px at 104% 0%,rgba(34,211,238,.26),transparent 55%),
+  radial-gradient(760px 620px at 55% 118%,rgba(244,114,182,.16),transparent 62%),
+  linear-gradient(160deg,var(--bg),var(--bg2));
+background-attachment:fixed;color:var(--fg);font-family:var(--font);font-size:15px;line-height:1.5;display:flex;justify-content:center;align-items:flex-start;padding:36px 20px 60px;min-height:100vh;box-sizing:border-box}
+body.has-wall{background-image:var(--wall);background-size:cover;background-attachment:fixed;background-position:center}
+body.has-wall .card,body.has-wall .tabs,body.has-wall .dialog{background:color-mix(in srgb,var(--card) 74%,transparent)}
+.wrap{width:100%;max-width:640px}
+.card{position:relative;background:linear-gradient(180deg,color-mix(in srgb,var(--card) 80%,transparent),color-mix(in srgb,var(--card2) 58%,transparent));-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid color-mix(in srgb,var(--br) 82%,transparent);border-radius:20px;padding:24px;margin-bottom:18px;box-shadow:0 16px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.07)}.login-logo-wrap{margin:0 auto 12px;width:88px;height:88px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative}
+.login-logo-wrap::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid color-mix(in srgb,var(--acc) 55%,transparent);animation:logoRing 2.6s ease-out infinite}
+.login-logo{width:72px;height:72px;border-radius:50%;object-fit:cover;display:block;animation:floatY 3.2s ease-in-out infinite}
+@keyframes logoRing{0%{transform:scale(.92);opacity:.8}70%{transform:scale(1.08);opacity:0}100%{transform:scale(.92);opacity:0}}
+@keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.header-logo{width:36px;height:36px;border-radius:10px;object-fit:cover;margin-right:10px;animation:logoFloat 3.5s ease-in-out infinite,logoGlow 4s ease-in-out infinite}
+@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
+@keyframes logoGlow{0%,100%{filter:drop-shadow(0 0 8px color-mix(in srgb,var(--acc) 50%,transparent))}50%{filter:drop-shadow(0 0 16px color-mix(in srgb,var(--acc2) 70%,transparent))}}
+#loginCard{text-align:center;animation:fadeIn .5s ease}
+#loginCard input{text-align:center}
+#loginCard input::placeholder{text-align:center}
+
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;border-radius:20px 20px 0 0;background:var(--grad);opacity:.9}
+.card.hero::before{background:var(--grad)}
+h1{font-size:23px;margin:0 0 4px;letter-spacing:.3px;font-weight:800}
+.subtitle{color:var(--mut);font-size:12.5px;margin:0 0 4px;letter-spacing:.15px}
+h2{font-size:16px;margin:0 0 12px;font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 45%,transparent),transparent);margin-left:4px}
+.brand{font-weight:900;background:linear-gradient(135deg,#a78bfa,#6d5df6 45%,#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;filter:drop-shadow(0 2px 10px rgba(109,93,246,.45))}
+.brand-on{background:linear-gradient(135deg,#34d399,#06b6d4);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+.mut{color:var(--mut);font-size:13px}
+input,button{width:100%;padding:11px 14px;margin:7px 0;border-radius:12px;font-size:15px;box-sizing:border-box;font-family:inherit}
+input{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);transition:border-color .18s,box-shadow .18s}
+input:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+input[type=color]{padding:4px;height:42px;cursor:pointer}
+input[type=checkbox]{width:auto;height:15px;padding:0;margin:0;accent-color:var(--acc);cursor:pointer}
+select{background:color-mix(in srgb,var(--bg) 78%,transparent);color:var(--fg);border:1px solid var(--br);border-radius:12px;padding:9px 12px;font-size:14px;font-family:inherit;max-width:100%;cursor:pointer;transition:border-color .18s,box-shadow .18s}
+select:focus{outline:none;border-color:color-mix(in srgb,var(--acc) 65%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+select optgroup{background:var(--card);color:var(--fg);font-weight:700}
+select option{background:var(--card);color:var(--fg)}
+button{background:var(--grad);color:#fff;border:0;cursor:pointer;font-weight:700;letter-spacing:.2px;transition:transform .12s,box-shadow .2s,filter .2s,background .2s;box-shadow:0 6px 18px rgba(109,93,246,.32)}
+button:hover{transform:translateY(-1px);filter:brightness(1.08);box-shadow:0 10px 26px rgba(34,211,238,.35)}
+button:active{transform:translateY(0)}
+button.ok{background:var(--grad2);box-shadow:0 6px 18px rgba(52,211,153,.3)}
+button.sec{background:color-mix(in srgb,var(--bg) 55%,transparent);color:var(--fg);border:1px solid var(--br);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:none}
+button.sec:hover{background:color-mix(in srgb,var(--fg) 8%,transparent);box-shadow:none;border-color:color-mix(in srgb,var(--acc) 50%,transparent)}
+button.danger{background:linear-gradient(135deg,#fb7185,#e11d48);color:#fff;box-shadow:0 6px 18px rgba(244,63,94,.32)}
+button.danger:hover{box-shadow:0 10px 26px rgba(244,63,94,.4)}
+button.tiny{width:auto;padding:7px 12px;margin:0;font-size:13px;font-weight:600;border-radius:9px}
+.xrbtns{white-space:nowrap;margin-left:12px}
+.xrbtns button.tiny{margin-left:6px}
+button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;vertical-align:middle;position:relative}
+.on{background:var(--ok);box-shadow:0 0 10px color-mix(in srgb,var(--ok) 65%,transparent);animation:pulse 2s ease-in-out infinite}
+.off{background:var(--err);box-shadow:0 0 8px color-mix(in srgb,var(--err) 55%,transparent)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 45%,transparent)}70%{box-shadow:0 0 0 9px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.msg{margin-top:10px;font-size:13px}
+.err{color:var(--err)}.ok{color:var(--ok)}
+.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px}
+.ver-pill{color:var(--acc2);font-size:12.5px;font-family:ui-monospace,monospace;background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid color-mix(in srgb,var(--acc2) 45%,transparent);border-radius:999px;padding:3px 10px;font-weight:700}
+.status-line{display:flex;align-items:center;gap:2px;margin:12px 0 0;font-size:13.5px}
+.proto-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.3px;border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 55%,transparent);background:color-mix(in srgb,var(--gc,var(--g-vless)) 15%,transparent);color:var(--gc,var(--g-vless))}
+.clients{display:flex;flex-direction:column;gap:10px}
+
+#protoCards{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.pgroup{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin:12px 4px 4px;opacity:.55;display:flex;align-items:center;gap:8px}
+.pcard{border:1px solid var(--br);border-radius:14px;background:color-mix(in srgb,var(--card2) 55%,transparent);transition:border-color .18s}
+.prow{display:flex;align-items:center;gap:10px;padding:9px 12px}
+.pacc{width:34px;height:34px;flex:none;border-radius:10px;font-size:20px;line-height:1;padding:0;font-weight:700;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--gc,var(--g-vless));border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer}
+.ptitle{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:10px}
+.pname{min-width:0;font-size:14px;font-weight:700;color:var(--gc,var(--g-vless));text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
+.pcheck{position:relative;width:36px;height:36px;flex:none;border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--mut);border-radius:10px}
+.pcheck:hover{background:color-mix(in srgb,var(--acc) 20%,transparent)}
+.pstar{width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--mut);border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer;transition:color .18s,background .18s,border-color .18s}
+.pstar:hover{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);border-color:var(--warn)}
+.pbody{display:flex;flex-direction:column;gap:10px;padding:2px 12px 12px}
+.pcard.collapsed .pbody{display:none}
+.pbody .empty-p{margin:0;font-size:13px}
+.pmenu{position:absolute;right:0;top:42px;background:color-mix(in srgb,var(--card2) 92%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border:1px solid var(--br);border-radius:12px;padding:6px;min-width:210px;box-shadow:0 12px 30px rgba(0,0,0,.35);z-index:60;display:none}
+.pmenu.open{display:block}
+.pmenu button{width:100%;background:transparent;border:0;color:var(--fg);text-align:left;padding:9px 10px;border-radius:8px;font-size:13px;cursor:pointer;display:flex;gap:8px;align-items:center}
+.pmenu button:hover{background:color-mix(in srgb,var(--acc) 22%,transparent)}
+
+.client:hover{border-color:color-mix(in srgb,var(--gc,var(--g-vless)) 60%,transparent);transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.4)}
+.client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.client .name{font-weight:700;font-size:14px;word-break:break-word}
+.client .proto-tag{display:inline-block;color:var(--gc,var(--g-vless));font-size:11px;font-family:ui-monospace,monospace;margin-top:5px;letter-spacing:.2px;border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 45%,transparent);background:color-mix(in srgb,var(--gc,var(--g-vless)) 13%,transparent);padding:1px 8px;border-radius:999px}
+.client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px;letter-spacing:.2px}
+.client .actions{display:flex;gap:6px;flex-shrink:0}
+.client .link-row{margin-top:10px}
+.client code{display:block;background:color-mix(in srgb,var(--bg) 72%,transparent);border:1px solid var(--br);border-radius:9px;padding:9px;font-size:11px;word-break:break-all;color:var(--fg);max-height:60px;overflow:auto;font-family:ui-monospace,monospace}
+.client .traffic{display:flex;gap:14px;margin-top:10px;font-size:12px;color:var(--mut);align-items:center;flex-wrap:wrap}
+.client .traffic .t-up{color:var(--ok)}
+.client .traffic .t-down{color:var(--g-vmess)}
+.client .traffic .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin:0 4px 0 0;vertical-align:middle;background:var(--mut)}
+.client .traffic .dot.on{background:var(--ok);box-shadow:0 0 8px color-mix(in srgb,var(--ok) 60%,transparent);animation:pulse 2s ease-in-out infinite}
+#toasts{position:fixed;top:14px;right:14px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:320px}
+.toast{padding:10px 14px;border-radius:12px;background:var(--card);border:1px solid var(--br);box-shadow:0 10px 24px rgba(0,0,0,.4);font-size:13px;cursor:pointer;animation:toastIn .25s ease}
+.toast.ok{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}
+.toast.err{border-color:color-mix(in srgb,var(--err) 60%,transparent)}
+.toast.out{opacity:0;transform:translateY(-6px);transition:.35s}
+@keyframes toastIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+#thPresets{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+#thPresets button{width:auto;padding:8px 14px;font-size:13px}
+.tabs{display:flex;gap:4px;margin-bottom:22px;background:color-mix(in srgb,var(--card) 65%,transparent);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid color-mix(in srgb,var(--br) 82%,transparent);border-radius:16px;padding:6px;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+.tabs button{background:transparent;color:var(--mut);border:0;padding:10px 12px;margin:0;font-weight:700;border-radius:11px;width:auto;flex:1;font-size:14px;transition:color .18s,background .18s,box-shadow .2s;box-shadow:none}
+.tabs button:hover{color:var(--fg);background:color-mix(in srgb,var(--fg) 7%,transparent)}
+.tabs button.active{background:var(--grad);color:#fff;box-shadow:0 4px 14px color-mix(in srgb,var(--acc) 45%,transparent)}
+.tab-pane{display:none}.tab-pane.active{display:block;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.hidden{display:none}
+hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);margin:16px 0}
+.bar{background:color-mix(in srgb,var(--br) 42%,transparent);border-radius:999px;height:12px;overflow:hidden;border:1px solid color-mix(in srgb,var(--br) 65%,transparent)}
+.bar-fill{background:var(--grad);height:100%;width:0%;border-radius:999px;transition:width .7s cubic-bezier(.4,0,.2,1);box-shadow:0 0 12px color-mix(in srgb,var(--acc) 50%,transparent)}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:4px 0 16px}
+.stat-tile{background:linear-gradient(180deg,color-mix(in srgb,var(--card2) 75%,transparent),color-mix(in srgb,var(--bg2) 80%,transparent));border:1px solid var(--br);border-radius:14px;padding:12px 8px;text-align:center;transition:transform .15s,box-shadow .2s}
+.stat-tile:hover{transform:translateY(-1px)}
+.stat-tile.b-xray{border-top:3px solid var(--g-reality)}
+.stat-tile.b-tg{border-top:3px solid var(--g-vless)}
+.stat-tile.b-ok{border-top:3px solid var(--g-vmess)}
+.stat-ico{font-size:20px;margin-bottom:4px}
+.stat-tile b{font-size:17px;display:block;word-break:break-word}
+.stat-tile .mut{font-size:11px;margin-top:2px}
+.mini-stats{display:flex;flex-wrap:wrap;gap:12px;margin-top:14px;animation:fadeIn .4s ease}
+.mstat{flex:1 1 150px;max-width:220px;display:flex;align-items:center;gap:12px;border:1px solid var(--br);border-radius:16px;padding:12px 14px;background:color-mix(in srgb,var(--card2) 62%,transparent)}
+.mstat .cap{font-size:11px;color:var(--mut);line-height:1.25;margin-top:2px}
+.mstat b{font-size:16px;display:block;font-variant-numeric:tabular-nums}
+.mstat .m-ico{font-size:22px;flex:none}
+.gauge{position:relative;width:46px;height:46px;flex:none}
+.gauge svg{transform:rotate(-90deg);width:46px;height:46px;display:block}
+.gauge .gbg{fill:none;stroke:color-mix(in srgb,var(--br) 55%,transparent);stroke-width:4}
+.gauge .gval{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100;transition:stroke-dashoffset 1s cubic-bezier(.4,0,.2,1)}
+.gauge .gval.g-disk{stroke:var(--g-vmess)}
+.gauge .gval.g-mem{stroke:var(--ok)}
+.gauge .gv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+@keyframes pulseUptime{0%{opacity:1}50%{opacity:.45}100%{opacity:1}}
+#stXrayUp{animation:pulseUptime 2.2s ease-in-out infinite}
+
+.dialog{background:color-mix(in srgb,var(--bg) 84%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 10px 26px rgba(0,0,0,.35)}
+.dialog.open{position:fixed;inset:0;z-index:10000;margin:0;display:flex;align-items:center;background:rgba(0,0,0,.55);border:0;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease;overflow:auto;padding:20px}
+.dialog.open>.dcard{width:100%;max-width:380px;margin:auto;background:color-mix(in srgb,var(--card) 92%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;box-shadow:0 10px 26px rgba(0,0,0,.35)}
+.dialog.open>.dcard input{margin:8px 0}
+.dialog.open>.dcard .row{margin-bottom:10px}
+.dialog input{margin:6px 0}
+.dialog .row{margin-bottom:6px}
+#qrModal{background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease}
+#qrBox{overflow:hidden;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+@media(max-width:640px){
+  body{padding:16px 12px 48px}
+  h1{font-size:20px}
+  .card{padding:18px;border-radius:16px}
+  .card::before{border-radius:16px 16px 0 0}
+  .tabs{overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tabs button{flex:0 0 auto;font-size:12.5px;padding:9px 12px;white-space:nowrap}
+  .stat-grid{grid-template-columns:repeat(2,1fr)}
+  .proto-row{flex-direction:column;align-items:stretch}
+  .proto-ctl{flex-wrap:wrap;width:100%}
+  .proto-ctl select{flex:1 1 auto}
+  .client .top{flex-wrap:wrap}
+  .client .actions{width:100%;justify-content:flex-end}
+  .status-line{flex-wrap:wrap}
+}
+/* === live theme: фон подстраивается под акценты + живые блобы + раскладки === */
+body{background:
+  radial-gradient(900px 620px at 8% -12%,color-mix(in srgb,var(--acc) 30%,transparent),transparent 62%),
+  radial-gradient(820px 540px at 104% 0%,color-mix(in srgb,var(--acc2) 26%,transparent),transparent 58%),
+  radial-gradient(760px 620px at 52% 120%,color-mix(in srgb,var(--acc) 18%,transparent),transparent 60%),
+  linear-gradient(165deg,var(--bg),var(--bg2))}
+#bgFx{position:fixed;inset:0;overflow:hidden;pointer-events:none}
+#bgFx .blob{position:absolute;border-radius:50%;filter:blur(110px)}
+#bgFx .b1{width:540px;height:540px;left:-170px;top:-150px;opacity:.5;background:radial-gradient(circle,var(--acc),transparent 68%);animation:blobA 26s ease-in-out infinite}
+#bgFx .b2{width:500px;height:500px;right:-160px;bottom:-130px;opacity:.45;background:radial-gradient(circle,var(--acc2),transparent 68%);animation:blobB 30s ease-in-out infinite}
+#bgFx .b3{width:380px;height:380px;left:36%;top:56%;opacity:.24;background:radial-gradient(circle,var(--acc) 30%,var(--acc2) 75%,transparent 78%);animation:blobC 34s ease-in-out infinite}
+@keyframes blobA{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(48px,34px) scale(1.14)}}
+@keyframes blobB{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-44px,-28px) scale(1.18)}}
+@keyframes blobC{0%,100%{transform:translate(-32px,22px) scale(1)}50%{transform:translate(34px,-26px) scale(1.12)}}
+body.layout-desk .wrap{max-width:1180px}
+body.layout-desk #protoCards{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+body.layout-desk #protoCards .pgroup{grid-column:1/-1;margin-top:6px}
+body.layout-desk .tabs button{font-size:14px}
+body.layout-desk .mini-stats .mstat{min-width:150px}
+.tiny.sel{outline:2px solid color-mix(in srgb,var(--acc) 65%,transparent);outline-offset:1px;color:var(--fg)}
+@supports not (color: color-mix(in srgb, red, transparent)){body{background:var(--bg)}.card,.tabs,.dialog{background:var(--card)}button{background:var(--acc)}button.danger{background:#dc3545;}button:hover{box-shadow:none}}
+</style></head><body><div class=wrap>
+<div id=bgFx aria-hidden=true><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+
+<div class=card id=loginCard>
+  <div class="login-logo-wrap"><img class=login-logo id=loginLogo alt="logo" src="data:image/jpeg;base64,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RRQAoopKKAFooop3AKSjNFIBaKSloAKKKKLgFFFFACY5paKKEAUUUUxC0UlLQAhooNFABS0lLQAZooooAWiiimAvagdKbmjtQApopKKACiiikAUtJRTAKKM0UgFHFFFFMAopO9FABRRSUgCiiigYUUUUIAooooAKKKKQBRRQKAA0lKaSgAooooAKKKKACiiigAooooAKKKKACloooASlzRRigAo6UUUAFFJRQAtFFFABRRRTELSUZooAKKKWgAooooAKWkpaAENFLRQAlFFFABRRRQAUlLSUAApaSigB1IaKKAEpaTNFAxaSiigAooopAFFFFABRRRQAUGkzS0AJRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUZoooAWkoooAWikooAKKMUuKACiikoAWikpaACl7UlLTQhKM0UUDDNFFFFwFpabSjpQIWgikzRmgAoooNABRSUUAFFFFAwooooAKOtFFABRRRQAUUUUAJS0UUgCiiigAoopDQAUUUUAFFFFABRRRQAUUUmaAFopKKAFooooAKKKKACiiigAooooAKKKKACiiigApaSigAooooAKWkooAWiiigAooopgFFFFIApaSimgFopKMUCFzRSUUDCiiikAUUUUAFIM0tJQAtFFFABRRRQAUUUUAFFFIaAFpKWkNABmiiigAooooAKKKKACiiigApKWkoAKKKKACjNLRQAUUUUAFFJ3paACiiigAooooAKKKKACiiigAooooAKKKKAClpKWgAoopDQAtGaSgUALRSd6WmAtJQOlFAgooooGFFFFIApKDRQAUUUCgBaKKSgBaKSlFABRmkNFAC0lFFABRRRQAUUUUAFFFFABRRRQAUUneloAQ0UGikB//9k="></div>
+  <h1>Вход в Veil</h1>
+  <p class=mut>Логин и пароль выданы при установке</p>
+  <input id=l placeholder=логин autocomplete=username>
+  <input id=p type=password placeholder=пароль autocomplete=current-password>
+  <label class=mut style="display:flex;align-items:center;gap:7px;font-size:13px;line-height:1.3;margin:4px 0 10px;white-space:nowrap"><input type=checkbox id=remMe> Запомнить меня (30 дней)</label>
+  <button onclick=doLogin()>Войти</button>
+  <div class="msg err" id=loginMsg></div>
+</div>
+
+<div id=panel style=display:none>
+  <nav class=tabs>
+    <button data-tab=vpn class=active>🛡 VPN</button>
+    <button data-tab=proxy>📡 Proxy</button>
+    <button data-tab=site>🌐 Сайт</button>
+    <button data-tab=settings>⚙️ Настройки</button>
+    <button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
+  </nav>
+
+  <div id=tab-vpn class="tab-pane active">
+    <div class="card hero">
+      <div class=row>
+        <img id=headerLogo class=header-logo hidden>
+        <h1 class=brand>Veil</h1>
+        <span class=ver-pill id=ver></span>
+      </div>
+      <p class=subtitle>VPN · Telegram · анти-DPI</p>
+      <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span>
+        <span class=xrbtns>
+          <button id=xrayStart class="tiny" onclick=startXray() hidden>▶ Запустить</button>
+          <button id=xrayStop class="tiny" onclick=stopXray() hidden>⏹ Остановить</button>
+          <button id=xrayRestart class="tiny" onclick=restartXray() hidden>⟳ Перезагрузить</button>
+        </span>
+      </p>
+    </div>
+
+    <div class="mini-stats">
+      <div class="mstat m-up">
+        <div class="m-ico">🚀</div>
+        <div style="min-width:0"><b id=stXrayUp>—</b><div class=cap>Аптайм Xray</div></div>
+      </div>
+      <div class="mstat m-cl">
+        <div class="m-ico">👥</div>
+        <div style="min-width:0"><b id=stClients2>0</b><div class=cap>Клиенты</div></div>
+      </div>
+      <div class="mstat m-disk">
+        <div class=gauge>
+          <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-disk" id=stDiskGauge cx=18 cy=18 r=15.9></circle></svg>
+          <div class=gv id=stDiskV>0%</div>
+        </div>
+        <div style="min-width:0"><b id=stDiskT>—</b><div class=cap>Диск /</div></div>
+      </div>
+      <div class="mstat m-mem">
+        <div class=gauge>
+          <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-mem" id=stMemGauge cx=18 cy=18 r=15.9></circle></svg>
+          <div class=gv id=stMemV>0%</div>
+        </div>
+        <div style="min-width:0"><b id=stMemT>—</b><div class=cap>Память</div></div>
+      </div>
+    </div>
+
+    <div class=card>
+      <div class=row><h2>Ссылки VPN</h2></div>
+
+      <p class=mut style="margin:0 0 12px;font-size:12px">Протоколы — по строкам: <b>+</b> раскрывает клиентов протокола, <b>⋯</b> — добавить клиента. TLS-протоколы получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
+
+      <div id=emptyState class=hidden>
+        <p class=mut>Клиентов пока нет. Раскрой протокол (кнопка <b>+</b>) и через <b>⋯</b> добавь первого клиента.</p>
+      </div>
+
+      <div id=protoCards></div>
+
+      <div id=addBox class="dialog hidden">
+        <div class=dcard>
+        <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
+        <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
+        <button onclick=doAdd()>Создать</button>
+        <div class=msg id=addMsg></div>
+        </div>
+      </div>
+      <div id=renameBox class="dialog hidden">
+        <div class=dcard>
+        <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
+        <input id=renameName placeholder="Новое имя" maxlength=32>
+        <button onclick=doRename()>Сохранить</button>
+        <div class=msg id=renameMsg></div>
+        </div>
+      </div>
+      <div id=inbBox class="dialog hidden">
+        <div class=dcard>
+        <div class=row><b id=inbTitle>Настройки inbound</b><button class=tiny onclick=hideInb()>Отмена</button></div>
+        <label class=mut style="display:block">Порт:
+          <input id=inbPort type=number min=1 max=65535 style="margin-top:4px">
+        </label>
+        <label class=mut id=inbSniBlock style="display:none;margin-top:8px">SNI (маскировка):
+          <input id=inbSni maxlength=64 placeholder="www.samsung.com" style="margin-top:4px;text-transform:lowercase">
+        </label>
+        <label class=mut style="display:block;margin-top:8px">Отпечаток TLS (fingerprint):
+          <select id=inbFp style="width:100%;margin-top:4px">
+            <option value=firefox>firefox (рекомендуется)</option>
+            <option value=chrome>chrome</option>
+            <option value=safari>safari</option>
+            <option value=ios>ios</option>
+            <option value=android>android</option>
+            <option value=edge>edge</option>
+            <option value=randomized>randomized</option>
+            <option value=random>random</option>
+          </select>
+        </label>
+        <button onclick=saveInb() id=inbSaveBtn style="margin-top:10px">Сохранить</button>
+        <div class=msg id=inbMsg></div>
+        </div>
+      </div>
+      </div>
+
+      <div class=msg id=vpnMsg></div>
+    </div>
+
+  <div id=tab-proxy class="tab-pane"><div class=card>
+    <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
+    <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+    <div class="row" style="margin:10px 0;gap:8px">
+      <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
+      <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
+    </div>
+    <div class=clients id=tgList></div>
+    <button class="sec ok" style="margin-top:12px" onclick=showTgAdd()>＋ Добавить пользователя Tg</button>
+    <div id=tgAddBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
+      <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
+      <button onclick=doTgAdd()>Создать</button>
+      <div class=msg id=tgAddMsg></div>
+      </div>
+    </div>
+    <div class=msg id=tgMsg></div>
+    <hr>
+    <div class=row style="margin-top:12px"><h3 style=margin:0>Веб-прокси (https:// → :443)</h3><span class=mut id=webStatus>—</span></div>
+    <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram Desktop/iOS через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
+    <div id=webBox class=clients></div>
+    <div class=msg id=webMsg></div>
+    <hr>
+    <div class=row style="margin-top:12px"><h3 style=margin:0>Web Proxy (nginx :443 → telemt)</h3><span class=mut id=wpStatus>—</span></div>
+    <div class="mut" id=wpHint style="font-size:12px;margin:4px 0 0"></div>
+    <div style="margin-top:10px" id=wpInstallRow>
+      <button class="sec ok hidden" id=wpInstallBtn onclick=installWebproxy()>⚙ Установить Web Proxy (nginx)</button>
+    </div>
+    <div class=msg id=wpMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Telemt: обновление и откат</h3>
+    <p class=mut style="margin:0 0 10px">Проверка новой версии прокси-движка telemt и откат на прошлую. Текущий бинарь перед сменой сохраняется.</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <span class=mut>Сейчас: <b id=tvCur>—</b></span>
+      <button class="tiny sec" onclick=loadTgVerInfo()>&#x27F3; Проверить обновления</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <select id=tvSel aria-label="версия telemt" style="flex:1;min-width:220px"></select>
+      <button class=sec onclick=switchTgVer() id=tvBtn disabled>Сменить версию</button>
+    </div>
+    <div class=mut style="font-size:12px;margin:10px 0 6px">Откат на прошлую версию:</div>
+    <div id=tvBackList></div>
+    <div class=msg id=tvMsg></div>
+  </div></div>
+
+  <div id=tab-site class="tab-pane"><div class=card>
+    <h2>Сайт, домен и HTTPS</h2>
+    <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
+      <input id=setDomain maxlength=255 style="margin-top:4px"></label>
+    <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
+    <div style="margin-top:10px">
+      <button class=sec onclick=checkDns()>⚙ Проверить A-запись</button>
+      <span id=saveSetSpn style="margin-left:10px"></span>
+    </div>
+    <div class=msg id=setMsg2></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Домен и DDNS (dynv6)</h3>
+    <p class=mut style="margin:0 0 10px">Сервер сам обновляет A/AAAA домена при смене IP. Когда записи актуальны, домен автоматически подставляется в ссылки клиентов.</p>
+    <label class=mut style="display:block">Host:
+      <input id=dvHost maxlength=80 placeholder="имя.dynv6.net" style="margin-top:4px"></label>
+    <label class=mut style="display:block;margin-top:8px">Token:
+      <input id=dvToken type=password maxlength=120 placeholder="токен dynv6" style="margin-top:4px"></label>
+    <div style="margin-top:10px">
+      <button class=sec onclick=saveDynv6()>Сохранить</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="tiny sec" onclick=triggerDynv6() style="margin-left:6px">Обновить IP сейчас</button>
+      <button class="tiny sec" onclick=toggleZoneForm() style="margin-left:4px">+ Создать зону через API</button>
+    </div>
+    <div id=zoneForm style="display:none;margin-top:10px;padding:10px;border:1px solid #3a3f4b;border-radius:8px">
+      <div class=mut style="margin:0 0 6px">Токен аккаунта dynv6 (Bearer, из раздела Keys на dynv6.com) + имя новой зоны. Зона создается, host и token зоны сохраняются автоматически, IP обновится сразу.</div>
+      <label class=mut style="display:block">Account token:
+        <input id=ztAccount type=password maxlength=120 style="margin-top:4px"></label>
+      <label class=mut style="display:block;margin-top:8px">Имя зоны (латиница/цифры/-, 2–32):
+        <input id=ztName maxlength=32 style="margin-top:4px" placeholder="myzone"></label>
+      <button class=sec style="margin-top:10px" onclick=createDynv6Zone()>Создать зону</button>
+      <div class=msg id=ztMsg></div>
+    </div>
+    <div class=msg id=dvMsg></div>
+    </div>
+
+    <hr>
+    <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
+    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена (нужен свободный порт 80). Он автоматически подключается к TLS-протоколам (ws/grpc/xhttp) вместо самоподписанного. Автопродление раз в сутки.</p>
+    <div class=mut>Статус: <b id=certStatus>—</b></div>
+    <label class=mut style="display:block;margin-top:8px">Email для Let&rsquo;s Encrypt (уведомления об истечении, необязательно):
+      <input id=certEmail type=email maxlength=120 style="margin-top:4px" placeholder="you@example.com"></label>
+    <label class=mut style="display:block;margin-top:8px"><input id=certAuto type=checkbox> Автопродление за 30 дней до истечения</label>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button>
+      <button class=tiny onclick=saveCertCfg()>&#x1F4CE; Сохранить email/авто</button>
+      <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
+    </div>
+    <div class=msg id=certMsg></div>
+  </div></div>
+
+  <div id=tab-settings class="tab-pane"><div class=card>
+    <h2>Настройки</h2>
+    <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
+    <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
+    <button id=installBtn class="hidden" onclick=installUpdate()>Установить</button>
+    <div class=msg id=setMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Порт панели</h3>
+    <p class=mut style="margin:0 0 10px">Веб-интерфейс слушает <span id=pnlPortCur>—</span>. После смены порта панель перезапустится и ты попадёшь на новый адрес <code>https://<code id=pnlPortHost>…</code>:<span id=pnlPortNew>…</span></code>. Убедись, что порт открыт в файрволе.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id=pnlPortInp type=number min=1 max=65535 style="width:110px" placeholder="8444">
+      <button class=sec onclick=savePanelPort() id=pnlPortBtn>Сменить порт</button>
+    </div>
+    <div class=msg id=pnlPortMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Сетевые настройки</h3>
+    <div style="margin:8px 0">
+      <label class=mut style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type=checkbox id=ruBypass> <span>RU-сайты в обход VPN (split routing)</span>
+      </label>
+      <button class="tiny sec" onclick=applyRuBypass() style="margin-top:8px">Применить</button>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Российские IP/домены (geoip:ru, geosite:ru) пойдут напрямую, минуя VPN. Нажми «Применить» — перезапустится только Xray.</p>
+      <div class=msg id=ruMsg></div>
+    </div>
+    <div style="margin:12px 0">
+      <label>Адрес прослушивания панели<input id=panelBind type=text placeholder="0.0.0.0 (пусто — все интерфейсы)" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Оставьте пустым, чтобы прослушивать все домены и IP-адреса. Пример: 127.0.0.1 для только локального доступа.</p>
+    </div>
+    <div style="margin:12px 0">
+      <label>Путь к публичному ключу сертификата панели<input id=panelCertPath type=text placeholder="/path/to/cert.pem" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
+      <button class="tiny sec" onclick=searchCerts() style="margin-top:8px">🔍 Найти сертификат</button>
+      <div id=certSearchList style="margin-top:8px"></div>
+    </div>
+    <div style="margin:12px 0">
+      <label>Путь к приватному ключу сертификата панели<input id=panelKeyPath type=text placeholder="/path/to/key.pem" style="width:100%;margin-top:4px"></label>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
+    </div>
+    <button class=sec onclick=saveNetworkSettings()>Сохранить сетевые настройки</button>
+    <div class=msg id=netMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Резервное копирование</h3>
+    <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
+    <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
+    <button class=sec onclick=restorePick() id=restoreBtn style="margin-left:8px">⬆ Восстановить из файла</button>
+    <input type=file id=fold-backup accept=".json,.backup" class=hidden onchange=restoreFile(this)>
+    <div class=msg id=backupMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Ядро Xray</h3>
+    <p class=mut style="margin:0 0 10px">Смена версии ядра. Старые приложения клиентов остаются совместимыми; для reality+xhttp нужен xray &ge; v24.9. Текущий бинарь перед сменой сохраняется для отката.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span class=mut>Сейчас: <b id=xvCur>—</b></span>
+      <select id=xvSel aria-label="версия xray" style="flex:1;min-width:220px"></select>
+      <button class=sec onclick=switchXray() id=xvBtn>Сменить версию</button>
+    </div>
+    <div style="margin-top:8px"><button class="tiny sec" onclick=loadXrayInfo()>&#x27F3; Обновить список версий</button></div>
+    <div class=msg id=xvMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Версии и откат</h3>
+    <p class=mut style="margin:0 0 10px">Панель: бэкапы создаются перед каждым обновлением. Xray: каждая смена/откат сохраняют прошлый бинарь.</p>
+    <div class=mut style="font-size:12px;margin-bottom:6px">Панель:</div>
+    <div id=verPanelList></div>
+    <div class=mut style="font-size:12px;margin:10px 0 6px">Ядро Xray:</div>
+    <div id=verXrayList></div>
+    <div class=msg id=verMsg></div>
+    <button class="danger" onclick=doLogout()>Выйти из панели</button>
+  </div></div>
+
+  <div id=tab-appearance class="tab-pane"><div class=card>
+    <h2>Оформление</h2>
+    <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
+    
+    <div style="margin:12px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
+      <div id=thPresets style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">🌑🟣 Сирень</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Хакер')">🖥 Хакер</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Киберпанк')">🌆 Киберпанк</button>
+      </div>
+    </div>
+
+    <div style="margin:16px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Раскладка панели:</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type=button class="tiny sec" id=lyAuto onclick="setLayout('auto')">🔄 Авто</button>
+        <button type=button class="tiny sec" id=lyMob onclick="setLayout('mob')">📱 Мобильная</button>
+        <button type=button class="tiny sec" id=lyDesk onclick="setLayout('desk')">🖥️ Десктоп</button>
+      </div>
+      <p class=mut style="margin:8px 0 0">«Авто» сам определяет по ширине экрана: телефон — одна колонка, широкий экран — две колонки.</p>
+    </div>
+    <div style="margin:16px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Стили приложений:</span>
+      <div id=thPresetsApps style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Happ Plus Style')">📱 Happ Plus</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Incy Style')">🔷 Incy</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Shadowrocket Style')">🚀 Shadowrocket</button>
+      </div>
+    </div>
+
+    <div style="margin:16px 0 4px">
+      <span class=mut style="display:block;margin-bottom:6px">Ретро ОС:</span>
+      <div id=thPresetsOS style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 95')">🪟 Windows 95</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows XP')">🌄 Windows XP</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows Vista')">💎 Windows Vista</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 11')">✨ Windows 11</button>
+      </div>
+    </div>
+
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    
+    <h3 style="margin:16px 0 8px">Логотип панели</h3>
+    <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF (анимированный отображается), до 2 МБ. Появится рядом с заголовком Veil и на экране входа.</p>
+    <input type=file id=th-logo accept="image/*" onchange=uploadLogo()>
+    <button class=sec onclick=deleteLogo() style="margin-left:8px">Удалить логотип</button>
+    <div id=logoPreview style="margin-top:8px;display:none"><img id=logoPreviewImg style="max-height:48px;border-radius:8px;border:1px solid var(--br)"></div>
+
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0">
+      <label>Фон<input type=color id=th-bg value=#0b1023></label>
+      <label>Фон 2<input type=color id=th-bg2 value=#0d1230></label>
+      <label>Карточки<input type=color id=th-card value=#151c3d></label>
+      <label>Карточки 2<input type=color id=th-card2 value=#1a2350></label>
+      <label>Текст<input type=color id=th-fg value=#eef2ff></label>
+      <label>Мелкий<input type=color id=th-mut value=#a3aede></label>
+      <label>Границы<input type=color id=th-br value=#333d72></label>
+      <label>Акцент<input type=color id=th-acc value=#6d5df6></label>
+      <label>Акцент 2<input type=color id=th-acc2 value=#22d3ee></label>
+      <label>Шрифт
+        <select id=th-font style="width:100%">
+          <option value="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">Системный</option>
+          <option value="Inter,system-ui,sans-serif">Inter</option>
+          <option value="Roboto,system-ui,sans-serif">Roboto</option>
+          <option value="'JetBrains Mono',ui-monospace,monospace">JetBrains Mono</option>
+          <option value="Georgia,serif">Georgia</option>
+          <option value="'Courier New',monospace">Courier</option>
+        </select>
+      </label>
+    </div>
+    <button onclick=saveTheme()>Сохранить цвета</button>
+    <button class=sec onclick=resetTheme() style="margin-left:8px">Сбросить</button>
+
+    <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    <h3 style="margin:0 0 8px">Обои</h3>
+    <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
+    <input type=file id=th-wall accept=image/* onchange=uploadWall()>
+    <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
+  </div></div>
+  <div id=tab-security class="tab-pane"><div class=card>
+    <h2>Безопасность</h2>
+    <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
+    <input id=curPass type=password placeholder="текущий пароль (обязательно)" autocomplete=current-password>
+    <hr>
+    <input id=nLogin placeholder="новый логин (пусто — не менять)" autocomplete=off>
+    <input id=nPass type=password placeholder="новый пароль (пусто — не менять)" autocomplete=new-password>
+    <input id=nPass2 type=password placeholder="повтори новый пароль" autocomplete=new-password>
+    <button onclick=doSaveSecurity()>Сохранить</button>
+    <div class=msg id=secMsg></div>
+  </div></div>
+
+</div>
+
+</div><script>
+
+const TH_PRESETS={
+  'Тёмная':           {bg:'0b1023',bg2:'0d1230',card:'151c3d',card2:'1a2350',br:'333d72',fg:'eef2ff',mut:'a3aede',acc:'6d5df6',acc2:'22d3ee'},
+  'Тёмная-сирень':    {bg:'120b28',bg2:'150e33',card:'1d1440',card2:'261853',br:'49357d',fg:'f3edff',mut:'b3a6d8',acc:'8b5cf6',acc2:'e879f9'},
+  'Изумруд':          {bg:'0a1f16',bg2:'07271c',card:'123324',card2:'14402d',br:'24563c',fg:'e8fff5',mut:'9fbfae',acc:'10b981',acc2:'2dd4bf'},
+  'Океан':            {bg:'0a1626',bg2:'0a1e36',card:'122640',card2:'163155',br:'274c74',fg:'e8f4ff',mut:'96b3cf',acc:'0ea5e9',acc2:'22d3ee'},
+  'Светлая':          {bg:'eef1f9',bg2:'e2e8f5',card:'ffffff',card2:'f3f5ff',br:'c5cbe0',fg:'1b2132',mut:'6b7385',acc:'6d5df6',acc2:'0ea5e9'},
+  'Неон':             {bg:'070919',bg2:'0a0e2a',card:'0f1430',card2:'141a44',br:'2b386f',fg:'eef2ff',mut:'8899c7',acc:'22d3ee',acc2:'f472b6'},
+  'Хакер':           {bg:'050805',bg2:'08120b',card:'0b150d',card2:'10200f',br:'1f4d2e',fg:'c8ffd8',mut:'68b07f',acc:'00ff88',acc2:'00d4ff'},
+  'Киберпанк':       {bg:'0d0a1a',bg2:'14102a',card:'1a1433',card2:'22184a',br:'463a7a',fg:'f2eaff',mut:'a99acb',acc:'ff2ec4',acc2:'00e5ff'},
+  'Happ Plus Style':  {bg:'0d0d0d',bg2:'141414',card:'1a1a1a',card2:'222222',br:'3a3a3a',fg:'ffffff',mut:'888888',acc:'00d4aa',acc2:'00a8ff'},
+  'Incy Style':       {bg:'0f0f1a',bg2:'161625',card:'18182a',card2:'21213a',br:'3a3a58',fg:'f0f0f0',mut:'8a8aa0',acc:'ff6b9d',acc2:'7c6bff'},
+  'Shadowrocket Style':{bg:'0a0a0a',bg2:'131313',card:'151515',card2:'1c1c1c',br:'3a3a3a',fg:'ffffff',mut:'8e8e93',acc:'007aff',acc2:'5ac8fa'},
+  'Windows 95':       {bg:'008080',bg2:'007575',card:'c0c0c0',card2:'d4d0c8',br:'808080',fg:'000000',mut:'404040',acc:'0000ff',acc2:'8000ff'},
+  'Windows XP':       {bg:'0078d7',bg2:'2b7fde',card:'eef5fd',card2:'e6f1fb',br:'9cc3e8',fg:'1a1a2e',mut:'5a6b80',acc:'0078d7',acc2:'2fbf8f'},
+  'Windows Vista':    {bg:'1e3a5f',bg2:'173049',card:'d6e8f7',card2:'e3f0fa',br:'8eb8d8',fg:'1a3a5c',mut:'4a6a80',acc:'0078d7',acc2:'6eb43a'},
+  'Windows 11':       {bg:'111111',bg2:'1a1a1a',card:'1e1e1e',card2:'272727',br:'484848',fg:'ffffff',mut:'8a8a8a',acc:'0067c0',acc2:'60b9f5'},
+};
+function applyThemePreset(name){
+  const p=TH_PRESETS[name];
+  if(!p)return;
+  const map={'th-bg':'bg','th-bg2':'bg2','th-card':'card','th-card2':'card2','th-br':'br','th-fg':'fg','th-mut':'mut','th-acc':'acc','th-acc2':'acc2'};
+  Object.keys(map).forEach(id=>{
+    const v=p[map[id]];
+    if(v)$(id).value='#'+v;
+  });
+  saveTheme();
+  toast(name+'-тема применена','ok');
+}
+async function makeBackup(){
+  const btn=$('backupBtn');if(btn)btn.disabled=true;
+  $('backupMsg').textContent='Собираю бэкап...';$('backupMsg').className='msg';
+  try{
+    const d=await api('/api/backup');
+    const blob=new Blob([JSON.stringify(d,null,1)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download='vpnpanel-backup-'+new Date().toISOString().slice(0,10)+'.json';
+    document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);document.body.removeChild(a);
+    $('backupMsg').textContent='Бэкап сохранён в файл';$('backupMsg').className='msg ok';
+    toast('Бэкап скачан','ok');
+  }catch(e){
+    $('backupMsg').textContent=e.message;$('backupMsg').className='msg err';
+  }finally{if(btn)btn.disabled=false;}
+}
+function restorePick(){
+  $('fold-backup').click();
+}
+async function restoreFile(file){
+  const f=file.files&&file.files[0];if(!f)return;
+  $('backupMsg').textContent='Восстанавливаю...';$('backupMsg').className='msg';
+  const btn=$('restoreBtn');if(btn)btn.disabled=true;
+  try{
+    const txt=await f.text();
+    await api('/api/backup',{method:'POST',body:txt,headers:{'Content-Type':'application/json'}});
+    $('backupMsg').textContent='Панель восстановлена';$('backupMsg').className='msg ok';
+    toast('Бэкап применён','ok');
+    await refresh();
+  }catch(e){
+    $('backupMsg').textContent=e.message;$('backupMsg').className='msg err';
+  }finally{if(btn)btn.disabled=false;file.value='';}
+}
+async function autoCheckForUpdate(){
+  try{
+    const u=await api('/api/update');
+    if(u.update_available){
+      toast('Доступна версия v'+u.latest,'ok');
+      const _in=$('installBtn');
+      if(_in){_in.textContent='Установить v'+u.latest;_in.classList.remove('hidden');}
+    }
+  }catch(e){ /* тихо — панель не должна капризничать без сети */ }
+}
+
+const $=id=>document.getElementById(id);
+let clients=[];
+let protoLabels={};
+let protoGroups={};
+let protoUILabels={};
+let webStatus=null;
+const groupColors={reality:'var(--g-reality)',vless:'var(--g-vless)',vmess:'var(--g-vmess)',trojan:'var(--g-trojan)',ss:'var(--g-ss)',hy2:'var(--g-hy2)',wg:'var(--g-wg)'};
+const groupColor=g=>groupColors[g]||'var(--g-vless)';
+
+async function api(p,o){
+  const h={'Content-Type':'application/json'};
+  if(!document.cookie.match(/(^|;)\s*sid=/)){const x=localStorage.getItem('veil_sid');if(x)h['X-Sid']=x;}
+  const r=await fetch(p,Object.assign({credentials:'same-origin',headers:h},o||{}));
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+  return d;
+}
+
+async function doLogin(){
+  $('loginMsg').textContent='';
+  try{
+    const d=await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value,remember:$('remMe').checked})});
+    if(d.sid){
+      if(d.remember)localStorage.setItem('veil_sid',d.sid);
+      else localStorage.removeItem('veil_sid');
+    }
+    await refresh();
+  }catch(e){$('loginMsg').textContent=e.message;}
+}
+async function doLogout(){
+  try{await api('/api/logout',{method:'POST'});}catch(e){}
+  localStorage.removeItem('veil_sid');
+  location.reload();
+}
+
+function applyState(s){
+  $('ver').textContent='v'+s.version;
+  $('stDot').className='dot '+(s.running?'on':'off');
+  $('stTxt').textContent=s.running?'Xray работает':'Xray остановлен';
+  if(s.login)$('curLogin').textContent=s.login;
+  $('curVer').textContent='v'+s.version;
+  favList=s.favorites||[];
+  $('xrayStart').hidden=s.running;
+  $('xrayStop').hidden=!s.running;
+  $('xrayRestart').hidden=!s.running;
+}
+
+function fmtBytes(n){
+  n=Number(n)||0;
+  if(n<1024)return Math.round(n)+' Б';
+  const u=['КБ','МБ','ГБ','ТБ','ПБ'];
+  let i=-1;
+  do{n/=1024;i++;}while(n>=1024&&i<u.length-1);
+  return (n>=100?Math.round(n):n.toFixed(1))+' '+u[i];
+}
+
+function clientCard(c){
+  const div=document.createElement('div');div.className='client';
+  const isWG=c.proto==='wireguard';
+  div.style.setProperty('--gc', groupColor(protoGroups[c.proto]));
+  div.dataset.uuid=c.uuid;
+  div.innerHTML=`
+    <div class=top>
+      <div style="flex:1;min-width:0">
+        <div class=name></div>
+        <div class=proto-tag></div>
+        <div class=uuid></div>
+      </div>
+      <div class=actions>
+        <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
+        <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
+        ${isWG?'':'<button class="tiny sec" data-act=qr>QR</button>'}
+        ${isWG?'<button class="tiny sec" data-act=conf title="Скачать .conf">⬇</button>':''}
+        <button class="tiny sec" data-act=copy>Копировать</button>
+        <button class="tiny danger" data-act=del>Удалить</button>
+      </div>
+    </div>
+    <div class="link-row">
+      <code></code>
+    </div>
+    <div class=traffic>
+    </div>`;
+  div.querySelector('.name').textContent=c.name;
+  div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
+  div.querySelector('.uuid').textContent=isWG?('IP: '+(c.address||c.uuid)):c.uuid;
+  const _code=div.querySelector('code');
+  _code.textContent=c.link;
+  if(isWG)_code.style.maxHeight='150px';
+  const _qrBtn = div.querySelector('[data-act=qr]');
+  if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
+  div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
+  if(c.link6&&!isWG){div.querySelector('[data-act=v6]').classList.remove('hidden');}
+  const _conf=div.querySelector('[data-act=conf]');
+  if(_conf)_conf.onclick=()=>downloadConf(c.link,c.name);
+  div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
+  div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,isWG?'Конфиг скопирован':'Ссылка скопирована');
+  div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
+  div.querySelector('.traffic').innerHTML=`
+    <span class="t-up" title="Принято клиентом"><span class=t-ico>⬇</span><b></b></span>
+    <span class="t-down" title="Отправлено клиенту"><span class=t-ico>⬆</span><b></b></span>
+    <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
+  `;
+  const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
+  if(_up)_up.textContent=fmtBytes(c.up||0);
+  if(_down)_down.textContent=fmtBytes(c.down||0);
+  const _dot=div.querySelector('.t-online .dot');
+  if(_dot&&c.online){_dot.classList.add('on');div.querySelector('.t-online .t-otxt').textContent='онлайн';}
+  return div;
+}
+
+function downloadConf(text,name){
+  try{
+    const blob=new Blob([text],{type:'text/plain'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=(name||'client').replace(/[^\wа-яёА-ЯЁ -]+/g,'').trim().replace(/\s+/g,'_')+'.conf';
+    document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);document.body.removeChild(a);
+  }catch(e){copyText(text,'Не удалось скачать — конфиг скопирован');}
+}
+
+function renderClients(){
+  const map={};
+  clients.forEach(c=>{(map[c.proto]=map[c.proto]||[]).push(c);});
+  $('emptyState').classList.toggle('hidden',clients.length>0);
+  $('protoCards').querySelectorAll('.pcard').forEach(card=>{
+    const proto=card.dataset.proto;
+    const list=map[proto]||[];
+    card.querySelector('.pbadge').textContent=list.length;
+    const shelf=card.querySelector('.p-shelf');
+    shelf.innerHTML='';
+    list.forEach(c=>shelf.appendChild(clientCard(c)));
+    card.querySelector('.empty-p').classList.toggle('hidden',list.length>0);
+  });
+}
+
+async function loadClients(){
+  try{
+    const d=await api('/api/clients');
+    clients=d.clients||[];
+    renderClients();
+  }catch(e){
+    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
+  }
+}
+
+async function refreshOnline(){
+  if($('panel').style.display==='none')return;
+  try{
+    const d=await api('/api/clients');
+    const list=d.clients||[];
+    const map={};list.forEach(c=>map[c.uuid]=c);
+    document.querySelectorAll('#protoCards .client').forEach(card=>{
+      const c=map[card.dataset.uuid];
+      if(!c)return;
+      const _dot=card.querySelector('.t-online .dot');
+      if(_dot){
+        if(c.online){_dot.classList.add('on');card.querySelector('.t-online .t-otxt').textContent='онлайн';}
+        else{_dot.classList.remove('on');card.querySelector('.t-online .t-otxt').textContent='офлайн';}
+      }
+      const _up=card.querySelector('.t-up b');const _down=card.querySelector('.t-down b');
+      if(_up)_up.textContent=fmtBytes(c.up||0);
+      if(_down)_down.textContent=fmtBytes(c.down||0);
+    });
+  }catch(e){}
+}
+
+let protoCur=null;
+let protoList=[];
+let autoExpand=null;
+let favList=[];
+
+function closeMenus(){document.querySelectorAll('.pmenu.open').forEach(m=>m.remove());}
+
+function renderProtoCards(){
+  const box=$('protoCards');box.innerHTML='';
+  const groups=[];const byGroup={};
+  protoList.forEach(p=>{
+    const ug=p.ui_group||p.group||'Прочее';
+    if(!byGroup[ug]){byGroup[ug]={label:p.ui_group_label||p.group_label||p.group||'Прочее',items:[]};groups.push(byGroup[ug]);}
+    byGroup[ug].items.push(p);
+  });
+  const favItems=favList.length?protoList.filter(p=>favList.includes(p.id)):[];
+  const renderGroups=[];
+  if(favItems.length)renderGroups.push({label:'⭐ Избранное', items:favItems});
+  groups.forEach(g=>{
+    const rest=g.items.filter(p=>!favList.includes(p.id));
+    if(rest.length)renderGroups.push({label:g.label, items:rest});
+  });
+  renderGroups.forEach(g=>{
+    const gh=document.createElement('div');gh.className='pgroup';gh.textContent=g.label;box.appendChild(gh);
+    g.items.forEach(p=>{
+      const card=document.createElement('div');card.className='pcard collapsed';
+      card.style.setProperty('--gc',groupColor(p.group));
+      card.dataset.proto=p.id;
+      const isFav=favList.includes(p.id);
+      card.innerHTML=
+        '<div class=prow>'+
+        '<button class=pacc title="Раскрыть клиентов">+</button>'+
+        '<div class=ptitle><div class=pname></div><span class=pbadge>0</span></div>'+
+        '<button class=pstar '+(isFav?'style="color:var(--warn)"':'')+' title="'+(isFav?'Убрать из избранного':'Добавить в избранное')+'">★</button>'+
+        '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
+        '</div>'+
+        '<div class=pbody>'+
+        '<div class="clients p-shelf"></div>'+
+        '<p class="mut empty-p" hidden>Нет клиентов этого протокола.</p>'+
+        '<button class="sec ok btn-add-client">＋ Добавить клиента</button>'+
+        '</div>';
+      card.querySelector('.pname').textContent=p.label;
+      const acc=card.querySelector('.pacc');
+      acc.onclick=()=>{
+        card.classList.toggle('collapsed');
+        acc.textContent=card.classList.contains('collapsed')?'+':'−';
+      };
+      const star=card.querySelector('.pstar');
+      star.onclick=async(e)=>{
+        e.stopPropagation();
+        try{
+          const r=await api('/api/favorite',{method:'POST',body:JSON.stringify({proto:p.id})});
+          if(r.ok){
+            favList=r.favorites||[];
+            const isNowFav=favList.includes(p.id);
+            star.style.color=isNowFav?'var(--warn)':'';
+            star.title=isNowFav?'Убрать из избранного':'Добавить в избранное';
+            renderProtoCards();
+            renderClients();
+          }
+        }catch(err){toast('Ошибка: '+err,'err');}
+      };
+      const check=card.querySelector('.pcheck');
+      check.onclick=(e)=>{
+        e.stopPropagation();
+        closeMenus();
+        const m=document.createElement('div');m.className='pmenu open';
+        const b=document.createElement('button');
+        b.innerHTML='➕&nbsp;&nbsp; Добавить клиента';
+        b.onclick=()=>{showAdd(p.id);closeMenus();};
+        m.appendChild(b);
+        const s=document.createElement('button');
+        s.innerHTML='⚙&nbsp;&nbsp; Настройки inbound';
+        s.onclick=()=>{showInb(p.id);closeMenus();};
+        m.appendChild(s);
+        check.appendChild(m);
+      };
+      card.querySelector('.btn-add-client').onclick=()=>showAdd(p.id);
+      box.appendChild(card);
+    });
+  });
+  const target=autoExpand||(protoCur==='shadowsocks-2022'?null:protoCur);
+  if(target){
+    box.querySelectorAll('.pcard').forEach(c=>{
+      if(c.dataset.proto===target){
+        c.classList.remove('collapsed');
+        c.querySelector('.pacc').textContent='−';
+      }
+    });
+  }
+  autoExpand=null;
+  closeMenus();
+}
+document.addEventListener('click',()=>closeMenus());
+
+async function loadProtocols(){
+  try{
+    const d=await api('/api/vpn/protocols');
+    protoCur=d.current||'reality';
+    protoList=d.protocols||[];
+    protoLabels={}; protoGroups={}; protoUILabels={};
+    protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group; if(p.ui_group_label)protoUILabels[p.id]=p.ui_group_label;});
+    renderProtoCards();
+  }catch(e){}
+}
+
+async function toast(html, cls){
+  const c=document.createElement('div'); c.className='toast '+(cls||'');
+  c.innerHTML=html;
+  $('toasts').appendChild(c);
+  c.onclick=()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);};
+  setTimeout(()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);},3600);
+}
+function setMsg(id,msg,cls,stick){
+  const el=$(id);
+  if(!el)return;
+  el.innerHTML=msg||'';
+  el.className='msg'+(cls?' '+cls:'');
+  const t=parseInt(el.dataset.msgT||0,10)||0;
+  if(t)clearTimeout(t);
+  if(stick!==false){
+    el.dataset.msgT=setTimeout(()=>{el.innerHTML='';el.className='msg';delete el.dataset.msgT;},5000);
+  }
+}
+async function loadSettings(){
+  try{const s=await api('/api/settings');
+    $('setDomain').value=s.domain||'';
+    let h='';
+    if(s.ipv4)h+='\uD83C\uDF10 IPv4: '+s.ipv4;
+    if(s.ipv6)h+='<br>\uD83C\uDF10 IPv6: '+s.ipv6;
+    if(s.a&&s.a.length)h+='<br>\u2699 A домена: '+s.a.join(', ');
+    if(s.aaaa&&s.aaaa.length)h+='<br>\u2699 AAAA домена: '+s.aaaa.join(', ');
+    if(h)setMsg('setMsg2',h,'ok',false);
+    else setMsg('setMsg2','','',false);
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+  try{const st=await api('/api/state');
+    $('pnlPortCur').textContent=': '+st.panel_port;
+    $('pnlPortNew').textContent=st.panel_port;
+    $('pnlPortHost').textContent=location.hostname;
+    $('pnlPortInp').value=st.panel_port;
+  }catch(e){}
+}
+async function savePanelPort(){
+  const p=+($('pnlPortInp').value||'');
+  if(!(p>0&&p<65536)){setMsg('pnlPortMsg','Введи порт от 1 до 65535','err');return;}
+  setMsg('pnlPortMsg','Проверяю порт...','');
+  try{
+    const r=await api('/api/panel/port',{method:'POST',body:JSON.stringify({port:p})});
+    if(r.restarting)setMsg('pnlPortMsg','Порт изменён, панель перезапускается. Открой <b>'+location.protocol+'//'+location.hostname+':'+p+'</b> через несколько секунд.','ok');
+    else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
+  }catch(e){setMsg('pnlPortMsg',e.message,'err');}
+}
+async function checkDns(){
+  const d=$('setDomain').value.trim();
+  if(!d){setMsg('setMsg2','Введи домен','err');return;}
+  $('dnsRes').textContent='\u23F3 Проверяю A/AAAA...';
+  try{
+    const s=await api('/api/settings?dns='+encodeURIComponent(d));
+    let h='\u2699 A: '+(s.a&&s.a.length?s.a.join(', '):'\u2014');
+    h+=' &nbsp; AAAA: '+(s.aaaa&&s.aaaa.length?s.aaaa.join(', '):'\u2014');
+    if(s.match4===true)h+='<br>\u2705 IPv4 \u2014 ваша A-запись указывает на этот сервер';
+    else if(s.match4===false)h+='<br>\u26D4 IPv4 \u2014 A-запись НЕ указывает на сервер';
+    if(s.match6===true)h+='<br>\u2705 IPv6 \u2014 ваша AAAA-запись указывает на этот сервер';
+    else if(s.match6===false)h+='<br>\u26D4 IPv6 \u2014 AAAA-запись НЕ указывает на сервер';
+    $('dnsRes').innerHTML=h;
+  }catch(e){setMsg('setMsg2',e.message,'err');}
+}
+async function refresh(){
+  try{
+    const s=await api('/api/state');
+    $('loginCard').classList.add('hidden');
+    $('panel').style.display='';
+    applyState(s);
+    await loadProtocols();
+    await loadClients();
+    await loadTg();
+    await loadFix();
+    await loadTgVerInfo();
+    await loadStats();
+    await loadSettings();
+    await loadDynv6();
+    await loadCert();
+    await loadXrayInfo();
+    await loadVersions();
+    await loadTheme();
+  }catch(e){
+    if(/unauthorized/i.test(e.message)){
+      $('loginCard').classList.remove('hidden');
+      $('panel').style.display='none';
+    }
+  }
+}
+
+let addProto=null;
+function showAdd(proto){
+  addProto=proto||null;
+  $('addTitle').textContent='Новый клиент — '+(protoLabels[addProto]||addProto||'');
+  showModal('addBox');
+}
+function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';}
+
+async function doAdd(){
+  const name=$('newName').value.trim();
+  if(!name){$('addMsg').textContent='Введи имя';$('addMsg').className='msg err';return;}
+  $('addMsg').textContent='Создаю...';$('addMsg').className='msg';
+  try{
+    const body={name};
+    if(addProto)body.proto=addProto;
+    autoExpand=addProto;
+    await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
+    hideAdd();
+    await refresh();
+    $('vpnMsg').textContent='Клиент «'+name+'» создан';$('vpnMsg').className='msg ok';
+  }catch(e){
+    $('addMsg').textContent=e.message;$('addMsg').className='msg err';
+  }
+}
+
+let inbProto=null;
+function showInb(proto){
+  inbProto=proto;
+  $('inbTitle').textContent='Настройки — '+(protoLabels[proto]||proto||'');
+  $('inbMsg').textContent='';$('inbMsg').className='msg';
+  const meta=protoGroups[proto]==='reality';
+  $('inbSniBlock').style.display=meta?'':'none';
+  $('inbSaveBtn').disabled=true;
+  $('inbBox').classList.remove('hidden');
+  api('/api/settings').then(s=>{
+    const pmap={};(s.ports||[]).forEach(r=>pmap[r.proto]=r);
+    const smap={};(s.sni_list||[]).forEach(r=>smap[r.proto]=r);
+    const cur=pmap[proto];
+    if(cur)$('inbPort').value=cur.port;
+    else $('inbPort').value='';
+    if(meta)$('inbSni').value=(smap[proto]||{}).sni||'';
+    if(s.fp)$('inbFp').value=s.fp;
+    $('inbSaveBtn').disabled=false;
+  }).catch(e=>{$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';});
+  showModal('inbBox');
+}
+function hideInb(){inbProto=null;hideModal();$('inbPort').value='';$('inbSni').value='';$('inbMsg').textContent='';$('inbMsg').className='msg';}
+async function saveInb(){
+  if(!inbProto)return;
+  const port=parseInt($('inbPort').value,10);
+  if(!(port>0&&port<65536)){$('inbMsg').textContent='Порт: 1-65535';$('inbMsg').className='msg err';return;}
+  $('inbMsg').textContent='Применяю...';$('inbMsg').className='msg';
+  try{
+    const body={proto:inbProto,port};
+    const fp=$('inbFp').value;
+    if(fp)body.fp=fp;
+    const isReality=protoGroups[inbProto]==='reality';
+    if(isReality){
+      const sni=$('inbSni').value.trim().toLowerCase();
+      if(!sni){$('inbMsg').textContent='SNI обязателен для Reality';$('inbMsg').className='msg err';return;}
+      body.sni=sni;
+    }
+    await api('/api/settings',{method:'POST',body:JSON.stringify(body)});
+    hideInb();
+    toast('Порт/SNI/отпечаток сохранены'+(body.sni?' (XRay перезапущен)':''),'ok');
+    await loadSettings();
+  }catch(e){$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';}
+}
+
+function showModal(id){
+  const el=$(id); if(!el)return;
+  hideModal();
+  el.classList.remove('hidden');
+  el.classList.add('open');
+  const firstInp=el.querySelector('input,textarea');
+  if(firstInp)setTimeout(()=>{try{firstInp.focus();}catch(e){}},150);
+}
+function hideModal(){
+  document.querySelectorAll('.dialog.open').forEach(d=>{
+    d.classList.remove('open');d.classList.add('hidden');
+  });
+}
+function closeModal(){
+  const o=document.querySelector('.dialog.open');
+  if(o){
+    const id=o.id;
+    hideModal();
+    if(id==='addBox')hideAdd();
+    if(id==='inbBox')hideInb();
+    if(id==='renameBox')hideRename();
+    if(id==='tgAddBox')hideTgAdd();
+  }
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+document.addEventListener('click',e=>{
+  if(e.target.classList&&e.target.classList.contains('dialog')&&e.target.classList.contains('open'))closeModal();
+});
+
+let renameUuid=null;
+function showRename(c){renameUuid=c.uuid;$('renameName').value=c.name;$('renameMsg').textContent='';$('renameMsg').className='msg';showModal('renameBox');$('renameName').select();}
+function hideRename(){renameUuid=null;hideModal();$('renameName').value='';$('renameMsg').textContent='';}
+async function doRename(){
+  const name=$('renameName').value.trim();
+  if(!name){$('renameMsg').textContent='Введи имя';$('renameMsg').className='msg err';return;}
+  $('renameMsg').textContent='Сохраняю...';$('renameMsg').className='msg';
+  try{
+    await api('/api/clients/rename',{method:'POST',body:JSON.stringify({uuid:renameUuid,name})});
+    hideRename();
+    await loadClients();
+    $('vpnMsg').textContent='Клиент «'+name+'» переименован';$('vpnMsg').className='msg ok';
+  }catch(e){
+    $('renameMsg').textContent=e.message;$('renameMsg').className='msg err';
+  }
+}
+
+async function doDelete(c){
+  if(!confirm('Удалить клиента «'+c.name+'»?\nЕго ссылка перестанет работать.')) return;
+  try{
+    await api('/api/clients/delete',{method:'POST',body:JSON.stringify({uuid:c.uuid})});
+    await loadClients();
+    $('vpnMsg').textContent='Клиент «'+c.name+'» удалён';$('vpnMsg').className='msg';
+  }catch(e){
+    $('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';
+  }
+}
+
+function copyText(text,okMsg){
+  const done=()=>{$('vpnMsg').textContent=okMsg;$('vpnMsg').className='msg ok';};
+  const fail=()=>{$('vpnMsg').textContent='Не скопировалось — выдели вручную';$('vpnMsg').className='msg err';};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(fail);
+  }else{
+    const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);
+    t.select();try{document.execCommand('copy');done();}catch(e){fail();}
+    document.body.removeChild(t);
+  }
+}
+
+async function checkUpdate(){
+  $('setMsg').textContent='Проверяю GitHub...';$('setMsg').className='msg';
+  $('installBtn').classList.add('hidden');
+  try{
+    const u=await api('/api/update');
+    if(u.update_available){
+      $('setMsg').innerHTML='Доступна <b>v'+u.latest+'</b> (у тебя v'+u.current+')';
+      $('setMsg').className='msg';
+      $('installBtn').textContent='Установить v'+u.latest;
+      $('installBtn').classList.remove('hidden');
+    }else{
+      $('setMsg').textContent='У тебя последняя версия (v'+u.current+')';
+      $('setMsg').className='msg ok';
+    }
+  }catch(e){
+    $('setMsg').textContent=e.message;$('setMsg').className='msg err';
+  }finally{b.disabled=false;}
+}
+
+
+let xrayVersions=[];
+
+async function loadDynv6(){
+  try{
+    const d=await api('/api/dynv6/status');
+    $('dvHost').value=d.host||'';
+    if(!d.configured){setMsg('dvMsg','не настроен','');$('dvMsg').textContent='dynv6 пока не настроен.';return;}
+    let h='Статус: '+($('dvHost').value||'-');
+    if(d.updated)h+='<br>Обновлено: '+new Date(d.updated*1000).toLocaleString();
+    if(d.ipv4||d.ipv6)h+='<br>IPv4: '+(d.ipv4||'—')+' · IPv6: '+(d.ipv6||'—');
+    if(d.response)h+='<br>Ответ dynv6: '+d.response;
+    if(d.error)h+='<br>Ошибка: '+d.error;
+    setMsg('dvMsg',h,d.error?'err':'ok');
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function saveDynv6(){
+  const host=$('dvHost').value.trim(),token=$('dvToken').value.trim();
+  if(!host||!token){setMsg('dvMsg','заполни host и token','err');return;}
+  setMsg('dvMsg','Сохраняю и обновляю DNS...','');
+  try{
+    const d=await api('/api/dynv6/save',{method:'POST',body:JSON.stringify({host,token})});
+    if(d.ok)setMsg('dvMsg','Готово: '+d.host+' → IPv4 '+(d.ipv4||'—')+' · IPv6 '+(d.ipv6||'—')+'. Домен: '+d.host,'ok');
+    else setMsg('dvMsg','Сохранено, но обновление: '+(d.error||'ошибка')+(d.saved?' (попробую ещё раз сам)':''),'err');
+    loadDynv6();
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function toggleZoneForm(){const f=$('zoneForm');f.style.display=f.style.display==='none'?'block':'none';}
+async function createDynv6Zone(){
+  const acct=($('ztAccount').value||'').trim(), nm=($('ztName').value||'').trim();
+  setMsg('ztMsg','Создаю зону...');
+  try{
+    const r=await api('api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
+    if(!r.ok)throw new Error(r.error||'ошибка dynv6');
+    setMsg('ztMsg','Зона создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok');
+    $('dvHost').value=$h(r.host); $('dvToken').value=r.token||'';
+    loadDynv6(); triggerDynv6();
+  }catch(e){setMsg('ztMsg','Ошибка: '+$h(e.message||e),'err');}
+}
+async function triggerDynv6(){
+  setMsg('dvMsg','Обновляю...','');
+  try{
+    const d=await api('/api/dynv6/update',{method:'POST',body:'{}'});
+    setMsg('dvMsg','Готово: '+d.host+' → IPv4 '+(d.ipv4||'—')+' · IPv6 '+(d.ipv6||'—'),'ok');
+    loadDynv6();
+  }catch(e){setMsg('dvMsg',e.message,'err');}
+}
+async function loadCert(cfg){
+  try{
+    if(!cfg)cfg=await api('/api/cert/status');
+    const el=$('certStatus');
+    if(cfg.cert){el.textContent=cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():'')+(cfg.auto?' · автопродление вкл':' · автопродление выкл');el.className='';}
+    else{el.textContent='нет сертификата'+(cfg.auto?' · автопродление вкл':' · автопродление выкл');}
+    $('certEmail').value=cfg.email||'';
+    $('certAuto').checked=!!cfg.auto;
+  }catch(e){$('certStatus').textContent='—';}
+}
+async function saveCertCfg(){
+  try{
+    const cfg=await api('/api/cert/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim(),auto:$('certAuto').checked})});
+    setMsg('certMsg','Настройки сохранены','ok');
+    loadCert(cfg);
+  }catch(e){setMsg('certMsg',e.message,'err');}
+}
+async function renewCert(){
+  if(!confirm('Продлить Let\'s Encrypt сертификат сейчас? (нужен свободный порт 80)'))return;
+  const s=$('certMsg');s.textContent='Продлеваю... До минуты, порт 80 временно занят.';s.className='msg';
+  $('renBtn').disabled=true;
+  try{
+    const cfg=await api('/api/cert/renew',{method:'POST',body:'{}'});
+    setMsg('certMsg','Сертификат продлён: '+cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():''),'ok');
+    loadCert(cfg);
+  }catch(e){setMsg('certMsg',e.message,'err');}finally{$('renBtn').disabled=false;}
+}
+async function issueCert(){
+  if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? (нужен свободный порт 80)'))return;
+  const s=$('certMsg');s.textContent='Выпускаю... Может занять до минуты. Порт 80 временно занят сертификатом.';s.className='msg';
+  $('certBtn').disabled=true;
+  try{
+    const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim()})});
+    setMsg('certMsg','Сертификат выпущен: '+d.domain,'ok');
+    loadCert();
+  }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
+}
+async function loadXrayInfo(){
+  setMsg('xvMsg','Загружаю список версий...','');
+  try{
+    const d=await api('/api/xray/info');
+    $('xvCur').textContent=d.current;
+    xrayVersions=d.versions||[];
+    const preSet=new Set(d.pre||[]);
+    const sel=$('xvSel');sel.innerHTML='';
+    const cur=document.createElement('option');cur.value='';cur.textContent=d.current+(preSet.has(d.current)?' (preview)':'')+' (текущая)';sel.appendChild(cur);
+    for(const v of xrayVersions){if(v===d.current)continue;const o=document.createElement('option');o.value=v;o.textContent='v'+v+(preSet.has(v)?' (preview)':'');sel.appendChild(o);}
+    if(sel.options.length>1)sel.selectedIndex=1;
+    $('xvMsg').textContent='';$('xvMsg').className='msg';
+  }catch(e){setMsg('xvMsg',e.message,'err');}
+}
+async function switchXray(){
+  const vers=$('xvSel').value;
+  if(!vers){setMsg('xvMsg','выбери версию','err');return;}
+  if(!confirm('Сменить ядро Xray на v'+vers+'?'))return;
+  const s=$('xvMsg');s.textContent='Скачиваю и проверяю v'+vers+'... Может занять пару минут.';s.className='msg';
+  $('xvBtn').disabled=true;
+  try{
+    const r=await api('/api/xray/switch',{method:'POST',body:JSON.stringify({version:vers})});
+    setMsg('xvMsg','Готово: '+r.from+' → '+r.to,'ok');
+    loadXrayInfo();loadVersions();
+  }catch(e){setMsg('xvMsg',e.message,'err');}finally{$('xvBtn').disabled=false;}
+}
+async function loadVersions(){
+  try{
+    const d=await api('/api/versions');
+    const p=$('verPanelList');p.innerHTML='';
+    if(!d.panel||!d.panel.length){p.innerHTML='<span class=mut style="font-size:12px">нет бэкапов панели</span>';}
+    else for(const b of d.panel){
+      const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+      const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+b.version;
+      const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';bt.onclick=()=>restoreVer('panel',b.version);
+      row.appendChild(sp);row.appendChild(bt);p.appendChild(row);
+    }
+    const x=$('verXrayList');x.innerHTML='';
+    if(!d.xray||!d.xray.length){x.innerHTML='<span class=mut style="font-size:12px">нет бэкапов xray</span>';}
+    else for(const b of d.xray){
+      const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+      const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+b.version;
+      const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';bt.onclick=()=>restoreVer('xray',b.version);
+      row.appendChild(sp);row.appendChild(bt);x.appendChild(row);
+    }
+  }catch(e){setMsg('verMsg',e.message,'err');}
+}
+async function restoreVer(type,version){
+  if(!confirm('Откатить '+(type==='panel'?'панель':'ядро Xray')+' к v'+version+'?'))return;
+  setMsg('verMsg','Откатываю...','');
+  try{
+    const r=await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type,version})});
+    if(type==='panel'){setMsg('verMsg','Бэкап применён, панель перезапускается...','ok');setTimeout(()=>{location.reload();},1500);}
+    else{setMsg('verMsg','Готово: ядро v'+r.version,'ok');loadVersions();loadXrayInfo();}
+  }catch(e){setMsg('verMsg',e.message,'err');}
+}
+async function installUpdate(){
+  const b=$('installBtn');b.disabled=true;
+  $('setMsg').textContent='Скачиваю, проверяю sha256, ставлю...';$('setMsg').className='msg';
+  try{
+    const r=await api('/api/update/install',{method:'POST'});
+    $('setMsg').textContent='Обновлено до v'+r.to+'. Перезагрузка через 3 секунды...';
+    $('setMsg').className='msg ok';
+    setTimeout(()=>location.reload(),3500);
+  }catch(e){
+    $('setMsg').textContent=e.message;$('setMsg').className='msg err';
+    b.disabled=false;
+  }
+}
+
+async function doSaveSecurity(){
+  $('secMsg').textContent='';$('secMsg').className='msg';
+  const cur=$('curPass').value;
+  const nl=$('nLogin').value.trim();
+  const np=$('nPass').value;
+  const np2=$('nPass2').value;
+  if(!cur){$('secMsg').textContent='Введи текущий пароль';$('secMsg').className='msg err';return;}
+  if(!nl && !np){$('secMsg').textContent='Нечего менять';$('secMsg').className='msg err';return;}
+  if(np && np!==np2){$('secMsg').textContent='Новые пароли не совпадают';$('secMsg').className='msg err';return;}
+  $('secMsg').textContent='Сохраняю...';
+  try{
+    await api('/api/security',{method:'POST',body:JSON.stringify({current_password:cur,login:nl,password:np})});
+    $('secMsg').textContent='Сохранено. Перезагрузка...';$('secMsg').className='msg ok';
+    setTimeout(()=>location.reload(),1200);
+  }catch(e){
+    $('secMsg').textContent=e.message;$('secMsg').className='msg err';
+  }
+}
+
+// ----- Telegram proxy (telemt) -----
+let tgUsers = [];
+
+async function loadTg(){
+  try{
+    const d = await api('/api/tg/status');
+    if (!d.installed){
+      document.getElementById('tgList').innerHTML='';
+      setMsg('tgMsg','MTProto-прокси не установлен. Установи пакет <b>telemt</b> и перезапусти панель.','');
+      return;
+    }
+    tgUsers = d.users || [];
+    document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
+    renderTg();
+    renderWeb(d.web);
+    loadWp();
+  }catch(e){
+    setMsg('tgMsg',e.message,'err');
+  }
+}
+
+async function loadWp(){
+  try{
+    const s = await api('/api/webproxy/status');
+    const st = document.getElementById('wpStatus');
+    const hint = document.getElementById('wpHint');
+    const btn = document.getElementById('wpInstallBtn');
+    if(s.installed){
+      st.textContent = 'установлен · nginx активен';
+      st.style.color = 'var(--ok)';
+      hint.textContent = 'nginx слушает :443 и проксирует на telemt web (:18080).';
+      btn.classList.add('hidden');
+      return;
+    }
+    st.style.color = 'var(--mut)';
+    if(s.busy && s.busy.length){
+      st.textContent = 'порт ' + s.busy.join(', ') + ' занят';
+      hint.textContent = 'Установка Web Proxy станет доступна после освобождения порта ' + s.busy.join(', ') + '.';
+      btn.classList.add('hidden');
+    } else if(!s.domain_set){
+      st.textContent = 'нет домена/DDNS';
+      hint.textContent = 'Нет домена или DDNS — внеси его во вкладке «Сайт» (раздел DDNS/dynv6), после этого появится кнопка установки.';
+      btn.classList.add('hidden');
+    } else {
+      st.textContent = 'готов к установке';
+      hint.textContent = 'Порты 80/443 свободны, домен ' + (s.domain||'') + ' задан.';
+      btn.classList.remove('hidden');
+    }
+  }catch(e){ /* ignore */ }
+}
+
+async function installWebproxy(){
+  const btn = document.getElementById('wpInstallBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = 'Устанавливаю nginx…';
+  try{
+    const r = await api('/api/webproxy/install', {method:'POST'});
+    await loadWp();
+    setMsg('wpMsg', r.message || 'Web Proxy установлен', 'ok');
+  }catch(e){
+    setMsg('wpMsg', e.message, 'err');
+    btn.textContent = old;
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function loadTgVerInfo(){
+  const cur=$('tvCur'), sel=$('tvSel'), btn=$('tvBtn');
+  cur.textContent='…'; btn.disabled=true;
+  try{
+    const d=await api('/api/tg/versions');
+    cur.textContent='v'+d.current;
+    sel.innerHTML='';
+    for(const v of d.versions){
+      const o=document.createElement('option');
+      o.value=v; o.textContent='v'+v+(d.pre.includes(v)?' (pre)':'')+(v===d.current?' — текущая':'');
+      if(v===d.current) o.selected=true;
+      sel.appendChild(o);
+    }
+    btn.disabled=true;
+    sel.onchange=()=>{btn.disabled=(sel.value===d.current);};
+    const list=$('tvBackList');
+    list.innerHTML='';
+    try{
+      const b=await api('/api/versions');
+      const tb=b.telemt||[];
+      if(!tb.length){list.innerHTML='<span class=mut style="font-size:12px">бэкапы ещё не созданы (появятся после первой смены версии)</span>';}
+      else for(const bk of tb){
+        const row=document.createElement('div');row.className='row';row.style.gap='8px';row.style.marginBottom='6px';
+        const sp=document.createElement('span');sp.style.flex='1';sp.textContent='v'+bk.version;
+        const bt=document.createElement('button');bt.className='tiny sec';bt.textContent='Откатить';
+        bt.disabled=(bk.version===d.current);
+        bt.onclick=()=>restoreTgVer(bk.version);
+        row.appendChild(sp);row.appendChild(bt);list.appendChild(row);
+      }
+    }catch(e){/* бэкапы не критичны */}
+    btn.disabled=true; // sel.onchange перекликается вручную
+    sel.onchange=()=>{btn.disabled=(sel.value===d.current);};
+  }catch(e){setMsg('tvMsg',e.message,'err');}
+}
+
+async function switchTgVer(){
+  const version=$('tvSel').value;
+  if(!version){setMsg('tvMsg','выбери версию','err');return;}
+  if(!confirm('Сменить telemt на v'+version+'? Текущий бинарь сохранится для отката.'))return;
+  $('tvBtn').disabled=true;
+  setMsg('tvMsg','Скачиваю и ставлю v'+version+'…','');
+  try{
+    const r=await api('/api/tg/switch',{method:'POST',body:JSON.stringify({version})});
+    setMsg('tvMsg','Готово: '+r.from+' → '+r.to,'ok');
+    loadTgVerInfo(); loadTg();
+  }catch(e){setMsg('tvMsg',e.message,'err');}
+  finally{ $('tvBtn').disabled=false; loadTgVerInfo(); }
+}
+
+async function restoreTgVer(version){
+  if(!confirm('Откатить telemt к v'+version+'?'))return;
+  setMsg('tvMsg','Откатываю на v'+version+'…','');
+  try{
+    await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type:'telemt',version})});
+    setMsg('tvMsg','Готово, telemt v'+version+' восстановлен. Перезапускаю…','ok');
+    setTimeout(()=>{loadTgVerInfo();loadTg();},400);
+  }catch(e){setMsg('tvMsg',e.message,'err');}
+}
+
+function renderWeb(web){
+  const box = document.getElementById('webBox');
+  webStatus = document.getElementById('webStatus');
+  box.innerHTML = '';
+  if (!web || !web.enabled){
+    webStatus.textContent = 'выключен';
+    box.innerHTML = '<code style="color:var(--mut)">Веб-прокси не настроен</code>';
+    return;
+  }
+  webStatus.textContent = 'включён · ' + (web.host || '') + ' · ' + (web.carrier || '');
+  const c = document.createElement('div');
+  c.className = 'client';
+  c.innerHTML = '<div class=top>' +
+    '<div style="flex:1;min-width:0">' +
+      '<div class=name>Транспорт (carrier)</div>' +
+      '<div class=uuid>для всех пользователей веб-профиля</div>' +
+    '</div>' +
+    '<div class=actions><select id=webCarrier style="max-width:200px"></select></div>' +
+  '</div>' +
+  '<div class="link-row"><code style="color:var(--mut)">https · https-lanes · websocket · websocket-lanes</code></div>';
+  c.querySelector('.actions').style.alignItems = 'flex-start';
+  const sel = c.querySelector('select');
+  sel.size = 4;
+  ['https','https-lanes','websocket','websocket-lanes'].forEach(function(k){
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k;
+    if (k === web.carrier) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = function(){ doWebSetCarrier(sel.value); };
+  box.appendChild(c);
+  const users = web.profiles || [];
+  if (!users.length){
+    const nd = document.createElement('code');
+    nd.style.color = 'var(--mut)'; nd.textContent = 'Нет пользователей в веб-профиле';
+    box.appendChild(nd);
+    return;
+  }
+  users.forEach(function(u){
+    const uu = tgUsers.find(function(x){ return x.username === u; }) || {username:u};
+    const link = uu.web_link || '';
+    const div = document.createElement('div');
+    div.className = 'client';
+    div.innerHTML = '<div class=top>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class=name></div>' +
+        '<div class=uuid>web</div>' +
+      '</div>' +
+      '<div class=actions>' +
+        (link ? '<button class="tiny sec" data-act=open title="Открыть в Telegram">Открыть</button>' + '<button class="tiny sec" data-act=qr>QR</button>' +
+                '<button class="tiny sec" data-act=copy>Копировать</button>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="link-row"><code></code></div>';
+    div.querySelector('.name').textContent = uu.username;
+    div.querySelector('code').textContent = link || '⚠ нет ссылки';
+    if (link){
+      div.querySelector('[data-act=qr]').onclick = function(){ showQR(link, 'Web: ' + uu.username); };
+      div.querySelector('[data-act=copy]').onclick = function(){ copyText(link, 'Web-ссылка скопирована'); };
+    }
+    box.appendChild(div);
+  });
+}
+
+async function doWebSetCarrier(k){
+  try{
+    setMsg('tgMsg','Смена транспорта на ' + k + '…','');
+    const d = await api('/api/tg/web/set', {method:'POST', body:JSON.stringify({carrier: k})});
+    const w = d.web || {};
+    if(webStatus) webStatus.textContent = 'включён · ' + (w.host || '') + ' · ' + (w.carrier || '');
+    setMsg('tgMsg','Carrier установлен: ' + (w.carrier || ''),'ok');
+  }catch(e){
+    setMsg('tgMsg','Смена транспорта: ' + e.message,'err');
+  }
+}
+
+function renderTg(){
+  const box = document.getElementById('tgList');
+  box.innerHTML = '';
+  tgUsers.forEach(function(u){
+    const div = document.createElement('div');
+    div.className = 'client';
+    div.innerHTML = '<div class=top>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div class=name></div>' +
+        '<div class=uuid></div>' +
+      '</div>' +
+      '<div class=actions>' +
+        '<button class="tiny sec" data-act=qr>QR</button>' +
+        '<button class="tiny sec" data-act=copy>Копировать</button>' +
+        '<button class="tiny danger" data-act=del>Удалить</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="link-row"><code></code></div>';
+    div.querySelector('.name').textContent = u.username;
+    const conns = u.connections || 0;
+    div.querySelector('.uuid').textContent = conns > 0 ? ('онлайн: ' + conns) : 'офлайн';
+    div.querySelector('code').textContent = u.link;
+    div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'Tg: ' + u.username); };
+    div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка Tg скопирована'); };
+    div.querySelector('[data-act=del]').onclick = function(){ doTgDelete(u); };
+    box.appendChild(div);
+  });
+}
+
+function showTgAdd(){
+  showModal('tgAddBox');
+}
+function hideTgAdd(){
+  hideModal();
+  document.getElementById('tgNewName').value = '';
+  document.getElementById('tgAddMsg').textContent = '';
+}
+
+async function doTgAdd(){
+  const name = document.getElementById('tgNewName').value.trim();
+  if (!name){ document.getElementById('tgAddMsg').textContent = 'Введи имя'; return; }
+  document.getElementById('tgAddMsg').textContent = 'Создаю...';
+  try{
+    const r = await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name})});
+    hideTgAdd();
+    await loadTg();
+    if (r && r.user && r.user.web_link){
+      document.getElementById('tgMsg').innerHTML = 'Пользователь «' + name + '» создан. <b>Веб-прокси:</b> <code style="word-break:break-all">' + r.user.web_link + '</code>';
+    } else {
+      document.getElementById('tgMsg').textContent = 'Пользователь «' + name + '» создан';
+    }
+    document.getElementById('tgMsg').className = 'msg ok';
+  }catch(e){
+    document.getElementById('tgAddMsg').textContent = e.message;
+    document.getElementById('tgAddMsg').className = 'msg err';
+  }
+}
+
+async function doTgDelete(u){
+  if (!confirm('Удалить пользователя «' + u.username + '»? Его ссылка перестанет работать.')) return;
+  try{
+    await api('/api/tg/user/remove', {method:'POST', body: JSON.stringify({username: u.username})});
+    await loadTg();
+    document.getElementById('tgMsg').textContent = 'Пользователь «' + u.username + '» удалён';
+    document.getElementById('tgMsg').className = 'msg';
+  }catch(e){
+    document.getElementById('tgMsg').textContent = e.message;
+    document.getElementById('tgMsg').className = 'msg err';
+  }
+}
+
+let fixActive = false;
+
+async function loadFix(){
+  try{
+    const d = await api('/api/fix/status');
+    fixActive = !!d.active;
+    const el = document.getElementById('fixStatus');
+    const btn = document.getElementById('fixBtn');
+    if (!d.installed){
+      el.textContent = 'не установлен';
+      el.style.color = 'var(--mut)';
+      btn.textContent = 'Fix не собран';
+      btn.disabled = true;
+      return;
+    }
+    el.textContent = d.active ? 'активен' : 'не активен';
+    el.style.color = d.active ? 'var(--ok)' : 'var(--err)';
+    btn.textContent = d.active ? 'Отключить fix' : 'Включить fix';
+    btn.disabled = false;
+  }catch(e){ /* ignore */ }
+}
+
+async function toggleFix(){
+  const btn = document.getElementById('fixBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = fixActive ? 'Отключаю...' : 'Включаю...';
+  try{
+    const url = fixActive ? '/api/fix/disable' : '/api/fix/enable';
+    await api(url, {method:'POST'});
+    await loadFix();
+    document.getElementById('tgMsg').textContent = fixActive ? 'Fix включён' : 'Fix отключён';
+    document.getElementById('tgMsg').className = 'msg ok';
+  }catch(e){
+    document.getElementById('tgMsg').textContent = e.message;
+    document.getElementById('tgMsg').className = 'msg err';
+    btn.textContent = old;
+    btn.disabled = false;
+  }
+}
+
+// ---- Статистика (мини-полоса на главной) ----
+let _prevStats={};
+function animateCount(el,target,opts){
+  opts=opts||{};
+  const suffix=opts.suffix||'',decimals=opts.decimals||0,dur=opts.dur||700;
+  if(!el)return;
+  const prev=_prevStats[el.id];
+  _prevStats[el.id]=target;
+  const from=typeof prev==='number'?prev:0;
+  if(target===from){el.textContent=target.toFixed(decimals)+suffix;return;}
+  const t0=performance.now();
+  const step=t=>{
+    const p=Math.min(1,(t-t0)/dur);
+    const e=1-Math.pow(1-p,3);
+    el.textContent=(from+(target-from)*e).toFixed(decimals)+suffix;
+    if(p<1)requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+async function loadStats(){
+  if($('panel').style.display==='none')return;
+  try{
+    const s=await api('/api/stats');
+    $('stXrayUp').textContent=s.uptime_xray||'не запущен';
+    animateCount($('stClients2'),s.clients_count||0,{suffix:' шт.'});
+    const disk=s.disk_usage;
+    if(disk){
+      const pct=Math.min(100,disk.percent||0);
+      const g=$('stDiskGauge');
+      if(g)g.style.strokeDashoffset=100-pct;
+      animateCount($('stDiskV'),pct,{suffix:'%'});
+      $('stDiskT').textContent=disk.used+' / '+disk.total;
+    }
+    const mem=s.memory_usage;
+    if(mem){
+      const pct=Math.min(100,mem.percent||0);
+      const g=$('stMemGauge');
+      if(g)g.style.strokeDashoffset=100-pct;
+      animateCount($('stMemV'),pct,{suffix:'%'});
+      $('stMemT').textContent=mem.used_mb+' из '+mem.total_mb+' МБ';
+    }
+  }catch(e){}
+}
+setInterval(loadStats,30000);
+setInterval(refreshOnline,10000);
+
+document.querySelectorAll('.tabs button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    $('tab-'+b.dataset.tab).classList.add('active');
+    if(b.dataset.tab==='settings')autoCheckForUpdate();
+  });
+});
+
+function showQR(text, title){
+  document.getElementById('qrTitle').textContent = title || 'QR-код';
+  document.getElementById('qrErr').textContent = '';
+  const box = document.getElementById('qrBox');
+  box.innerHTML = '';
+  document.getElementById('qrModal').style.display = 'flex';
+  if (typeof QRCode === 'undefined'){
+    document.getElementById('qrErr').textContent = 'QR-библиотека не загрузилась. Проверь интернет или скопируй ссылку.';
+    return;
+  }
+  try{
+    new QRCode(box, {text: text, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M});
+  }catch(e){
+    document.getElementById('qrErr').textContent = 'Ошибка QR: ' + e.message;
+  }
+}
+function hideQR(){
+  document.getElementById('qrModal').style.display = 'none';
+}
+document.addEventListener('click', function(e){
+  if (e.target && e.target.id === 'qrModal') hideQR();
+});
+
+refresh();
+autoCheckForUpdate();
+
+// ---- Тема / оформление ----
+function applyTheme(t){
+  const r = document.documentElement.style;
+  if (t.bg) r.setProperty('--bg', t.bg);
+  if (t.bg2) r.setProperty('--bg2', t.bg2);
+  if (t.card) r.setProperty('--card', t.card);
+  if (t.card2) r.setProperty('--card2', t.card2);
+  if (t.fg) r.setProperty('--fg', t.fg);
+  if (t.mut) r.setProperty('--mut', t.mut);
+  if (t.br) r.setProperty('--br', t.br);
+  if (t.acc) r.setProperty('--acc', t.acc);
+  if (t.acc2) r.setProperty('--acc2', t.acc2);
+  const acc = t.acc || '#6d5df6';
+  const acc2 = t.acc2 || '#22d3ee';
+  r.setProperty('--grad', 'linear-gradient(135deg,' + acc + ',' + acc + ' 45%,' + acc2 + ')');
+  r.setProperty('--grad2', 'linear-gradient(135deg,' + acc2 + ',' + acc + ')');
+  if (t.font) r.setProperty('--font', t.font);
+  if (t.wall_mime){
+    document.body.style.setProperty('--wall', 'url(/wallpaper?t='+Date.now()+')');
+    document.body.classList.add('has-wall');
+  } else {
+    document.body.classList.remove('has-wall');
+  }
+  if (!window._defLogo){
+    const d0 = document.getElementById('loginLogo');
+    if (d0) window._defLogo = d0.getAttribute('src');
+  }
+  const logo = document.getElementById('headerLogo');
+  if (t.logo_mime){
+    logo.src = '/logo?t=' + Date.now();
+    logo.hidden = false;
+  } else {
+    logo.src = window._defLogo || '';
+    logo.hidden = false;
+  }
+  const preview = document.getElementById('logoPreview');
+  const previewImg = document.getElementById('logoPreviewImg');
+  if (t.logo_mime){
+    previewImg.src = '/logo?t=' + Date.now();
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
+  ['bg','bg2','card','card2','fg','mut','br','acc','acc2'].forEach(k=>{
+    const el = document.getElementById('th-'+k); if (el && t[k]) el.value = t[k];
+  });
+  const fs = document.getElementById('th-font'); if (fs && t.font) fs.value = t.font;
+  curLayout = t.layout || 'auto';
+  applyLayout(curLayout);
+  const lm=document.getElementById('lyMob'), la=document.getElementById('lyAuto'), ld=document.getElementById('lyDesk');
+  if(lm)lm.classList.toggle('sel', curLayout==='mob');
+  if(la)la.classList.toggle('sel', curLayout==='auto');
+  if(ld)ld.classList.toggle('sel', curLayout==='desk');
+  const ll=document.getElementById('loginLogo');
+  if(ll){ ll.style.display='';
+    if(t.logo_mime){ ll.setAttribute('src','/logo?t='+Date.now()); }
+    else if(window._defLogo){ ll.setAttribute('src', window._defLogo); }
+  }
+}
+let curLayout='auto';
+function applyLayout(layout){
+  const desk = layout==='desk' || (layout!=='mob' && window.matchMedia('(min-width:900px)').matches);
+  document.body.classList.toggle('layout-desk', desk);
+}
+if (window.matchMedia) window.matchMedia('(min-width:900px)').addEventListener('change', function(){
+  if (curLayout==='auto') applyLayout('auto');
+});
+async function loadTheme(){
+  try { const r = await fetch('/api/theme',{cache:'no-store'}); applyTheme(await r.json()); } catch(e){}
+}
+async function saveTheme(){
+  const b = {
+    bg:   document.getElementById('th-bg').value,
+    bg2:  document.getElementById('th-bg2').value,
+    card: document.getElementById('th-card').value,
+    card2:document.getElementById('th-card2').value,
+    fg:   document.getElementById('th-fg').value,
+    mut:  document.getElementById('th-mut').value,
+    br:   document.getElementById('th-br').value,
+    acc:  document.getElementById('th-acc').value,
+    acc2: document.getElementById('th-acc2').value,
+    font: document.getElementById('th-font').value,
+  };
+  await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  await loadTheme();
+  alert('Сохранено');
+}
+async function resetTheme(){
+  await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bg:'#0b1023',bg2:'#0d1230',card:'#151c3d',card2:'#1a2350',br:'#333d72',
+      fg:'#eef2ff',mut:'#a3aede',acc:'#6d5df6',acc2:'#22d3ee',
+      font:'system-ui,-apple-system,Segoe UI,Roboto,sans-serif'})});
+  await loadTheme();
+}
+async function setLayout(v){
+  await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout:v})});
+  await loadTheme();
+  toast(v==='desk'?'Десктопная раскладка':(v==='mob'?'Мобильная раскладка':'Авто-режим (по ширине экрана)'),'ok');
+}
+async function uploadWall(){
+  const f = document.getElementById('th-wall').files[0]; if (!f) return;
+  if (f.size > 8*1024*1024){ alert('Максимум 8 МБ'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(',')[1];
+    const r = await fetch('/api/wallpaper',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({data: b64, mime: f.type || 'image/jpeg'})});
+    if (!r.ok){ alert('Ошибка загрузки'); return; }
+    await loadTheme();
+    alert('Обои установлены');
+  };
+  rd.readAsDataURL(f);
+}
+async function deleteWall(){
+  await fetch('/api/wallpaper/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  document.body.classList.remove('has-wall');
+  await loadTheme();
+}
+async function uploadLogo(){
+  const f = document.getElementById('th-logo').files[0]; if (!f) return;
+  if (f.size > 2*1024*1024){ alert('Максимум 2 МБ'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(',')[1];
+    const r = await fetch('/api/logo',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({data: b64, mime: f.type || 'image/png'})});
+    if (!r.ok){ alert('Ошибка загрузки'); return; }
+    await loadTheme();
+    toast('Логотип установлен','ok');
+  };
+  rd.readAsDataURL(f);
+}
+async function deleteLogo(){
+  await fetch('/api/logo/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  await loadTheme();
+  toast('Логотип удалён','ok');
+}
+async function loadNetworkSettings(){
+  try{
+    const r=await api('/api/network/settings');
+    if(r.ru_bypass!==undefined)$('ruBypass').checked=r.ru_bypass;
+    if(r.bind!==undefined)$('panelBind').value=r.bind;
+    if(r.cert_path!==undefined)$('panelCertPath').value=r.cert_path;
+    if(r.key_path!==undefined)$('panelKeyPath').value=r.key_path;
+  }catch(e){}
+}
+async function saveNetworkSettings(){
+  const btn=event.target; btn.disabled=true;
+  $('netMsg').textContent='Сохраняю...'; $('netMsg').className='msg';
+  try{
+    const body={
+      ru_bypass: $('ruBypass').checked,
+      bind: $('panelBind').value.trim(),
+      cert_path: $('panelCertPath').value.trim(),
+      key_path: $('panelKeyPath').value.trim()
+    };
+    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
+    if(r.ok){
+      $('netMsg').textContent='Сохранено. Перезапуск панели...'; $('netMsg').className='msg ok';
+      toast('Настройки сохранены','ok');
+      setTimeout(()=>location.reload(),1500);
+    }else{
+      throw new Error(r.error||'Ошибка');
+    }
+  }catch(e){
+    $('netMsg').textContent=e.message; $('netMsg').className='msg err';
+  }finally{btn.disabled=false;}
+}
+async function applyRuBypass(){
+  $('ruMsg').textContent='Применяю...'; $('ruMsg').className='msg';
+  try{
+    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify({ru_bypass:$('ruBypass').checked})});
+    if(r.xray_restarted){
+      $('ruMsg').textContent='Готово: Xray перезапущен'; $('ruMsg').className='msg ok';
+      toast('RU-обход применён','ok');
+      await refresh();
+    }else{
+      $('ruMsg').textContent=r.error||'Ошибка'; $('ruMsg').className='msg err';
+    }
+  }catch(e){
+    $('ruMsg').textContent=e.message; $('ruMsg').className='msg err';
+  }
+}
+async function searchCerts(){
+  const box=$('certSearchList');
+  box.textContent='Ищу сертификаты...';
+  try{
+    const r=await api('/api/cert/search');
+    const f=r.found||[];
+    box.innerHTML='';
+    if(!f.length){box.innerHTML='<span class=mut style="font-size:12px">Сертификаты не найдены</span>';return;}
+    f.forEach(c=>{
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:8px;margin:4px 0';
+      const sp=document.createElement('span');
+      sp.style.cssText='flex:1;font-size:13px';
+      sp.textContent=c.domain+' · '+((c.days===null)?'—':(c.days+' дн.'))+(c.current?' · сейчас используется':'');
+      const bt=document.createElement('button');
+      bt.className='tiny sec';bt.textContent='Использовать';
+      bt.onclick=()=>{
+        $('panelCertPath').value=c.cert;
+        $('panelKeyPath').value=c.key;
+        toast('Пути подставлены — нажми «Сохранить сетевые настройки»','ok');
+      };
+      row.appendChild(sp);row.appendChild(bt);box.appendChild(row);
+    });
+  }catch(e){
+    box.innerHTML='<span class=mut style="font-size:12px">Ошибка: '+e.message+'</span>';
+  }
+}
+async function startXray(){
+  const btn=$('xrayStart'); btn.disabled=true;
+  try{
+    await api('/api/xray/start',{method:'POST'});
+    toast('Xray запущен','ok');
+    await refresh();
+  }catch(e){
+    toast('Ошибка: '+e.message,'err');
+  }finally{btn.disabled=false;}
+}
+async function stopXray(){
+  const btn=$('xrayStop'); btn.disabled=true;
+  try{
+    await api('/api/xray/stop',{method:'POST'});
+    toast('Xray остановлен','ok');
+    await refresh();
+  }catch(e){
+    toast('Ошибка: '+e.message,'err');
+  }finally{btn.disabled=false;}
+}
+async function restartXray(){
+  const btn=$('xrayRestart'); btn.disabled=true;
+  try{
+    await api('/api/xray/restart',{method:'POST'});
+    toast('Xray перезагружен','ok');
+    await refresh();
+  }catch(e){
+    toast('Ошибка: '+e.message,'err');
+  }finally{btn.disabled=false;}
+}
+loadNetworkSettings();
+loadTheme();
+</script>
+<div id=qrModal style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:20px;z-index:9999">
+  <div style="background:linear-gradient(180deg,color-mix(in srgb,var(--card) 82%,transparent),color-mix(in srgb,var(--card) 55%,transparent));border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-radius:18px;padding:22px;max-width:420px;width:100%;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.5);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b id=qrTitle style="font-size:16px"></b>
+      <button class=tiny onclick=hideQR()>Закрыть</button>
+    </div>
+    <div id=qrBox style="background:#fff;padding:16px;border-radius:8px;display:inline-block;min-width:240px;min-height:240px"></div>
+    <p class=mut style="margin-top:12px">Отсканируй камерой или в Telegram</p>
+    <div id=qrErr class="msg err"></div>
+  </div>
+</div>
+<div id=toasts></div>
+</body></html>
