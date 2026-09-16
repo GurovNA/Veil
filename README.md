@@ -1,13 +1,13 @@
 <div align="center">
   <img src="icon-veil.png" width="128" height="128" alt="Veil Logo">
   <h1>Veil Panel</h1>
-  <p><strong>Next-generation secure VPN & Telegram MTProto proxy management panel with DPI bypass capabilities.</strong></p>
+  <p><strong>Универсальная панель управления VPN: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) + Telegram MTProto Proxy. Обход DPI, REALITY SNI-валидация, встроенный веб-прокси.</strong></p>
   <p>
-    <a href="README.ru.md">🇷🇺 Русский</a> | 
-    <a href="README.md">🇬🇧 English</a>
+    <a href="README.ru.md">🇷🇺 Русский</a> •
+    <a href="README.en.md">🇬🇧 English</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.0.5-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-2.1.0-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
     <img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu">
   </p>
@@ -15,25 +15,41 @@
 
 ---
 
-## Features
+## Возможности
 
-- **Blazing Fast Installation**: One-line installer for Ubuntu.
-- **Multiple Protocols**: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) & Telegram MTProto Proxy (Telemt).
-- **Built-in Web Proxy & Nginx Integration**: Secure TLS reverse proxy setup right from the dashboard.
-- **Advanced DPI Bypass**: Optimized TLS fingerprints (Firefox, Chrome, Safari, iOS, Android) and REALITY SNI validation.
-- **Modern Web UI**: Clean, responsive, mobile-friendly interface with dark theme support and QR-code generation.
+- **Быстрая установка**: развёртывание одной командой на Ubuntu.
+- **Несколько протоколов из коробки**: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) и Telegram MTProto Proxy.
+- **Обход DPI**: тонкая настройка TLS-отпечатков (Firefox, Chrome, Safari, iOS, Android) и проверка доступности SNI.
+- **Универсальная подписка**: единый URL, который отдаёт клиентам base64-список ссылок всех протоколов — работает с v2rayNG / Hiddify / Streisand / NekoBox.
+- **REALITY**: всё настроено под обход блокировок и недетектируемый TLS-хендшейк (SNI-валидация перед применением).
+- **Встроенный веб-прокси**: автоматическая настройка Nginx HTTPS reverse proxy прямо из панели.
+- **Современный интерфейс**: адаптивная тёмная тема, QR-коды, метрики сервера в реальном времени, зелёный селф-тест в один клик.
 
-## Quick Installation
+## Быстрая установка
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)
+bash <(curl -fsSL <ваш raw-URL>/install.sh)
 ```
 
-## Documentation & Changelog
+> Панель запускается как `vpnpanel.service` (управляется через `systemctl`),
+> веб-интерфейс доступен по HTTPS: `https://<IP-сервера>:<порт панели>`.
 
-- Check [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
-- Read the [Russian README](README.ru.md).
+## Документация и история версий
 
-## License
+- Полная история версий — в [`CHANGELOG.md`](CHANGELOG.md).
+- Русская версия — [`README.ru.md`](README.ru.md).
+- Английская версия — [`README.en.md`](README.en.md).
 
-MIT License. See [LICENSE](LICENSE) for details.
+## Лицензия
+
+Распространяется по лицензии MIT. Подробности — в файле [`LICENSE`](LICENSE).
+
+---
+
+## Дорожная карта
+
+- [ ] Мультисерверность (одна панель → несколько нод).
+- [ ] Роли пользователей панели (админ / наблюдатель).
+- [ ] API-токены для автоматизации.
+- [ ] 2FA (TOTP) для входа в панель.
+- [ ] Живые графики нагрузки в реальном времени.
