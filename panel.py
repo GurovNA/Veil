@@ -2382,12 +2382,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st is None:
                     st = _new_state(want or "reality")
                 _migrate_state(st)
-                 proto = want or _proto_of(st)
-                 inb = (st.get("inbounds") or {}).get(proto)
-                 if not inb:
-                     inb = _alloc_inbound(st, proto)
-                     st.setdefault("inbounds", {})[proto] = inb
-                 name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
+                proto = want or _proto_of(st)
+                inb = (st.get("inbounds") or {}).get(proto)
+                if not inb:
+                    inb = _alloc_inbound(st, proto)
+                    st.setdefault("inbounds", {})[proto] = inb
+                name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
                 c = _new_client(name, proto, inb)
                 inb["clients"].append(c)
                 st["active"] = proto
@@ -2441,17 +2441,17 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st is None:
                     st = _new_state(want_proto or "reality")
                 _migrate_state(st)
-                 if want_proto:
-                     if want_proto not in _VALID_PROTOCOLS:
-                         return self._send(400, {"error": "неизвестный протокол"})
-                     proto = want_proto
-                 else:
-                     proto = _proto_of(st)
-                 inb = (st.get("inbounds") or {}).get(proto)
-                 if not inb:
-                     inb = _alloc_inbound(st, proto)
-                     st.setdefault("inbounds", {})[proto] = inb
-                 c = _new_client(name, proto, inb,
+                if want_proto:
+                    if want_proto not in _VALID_PROTOCOLS:
+                        return self._send(400, {"error": "неизвестный протокол"})
+                    proto = want_proto
+                else:
+                    proto = _proto_of(st)
+                inb = (st.get("inbounds") or {}).get(proto)
+                if not inb:
+                    inb = _alloc_inbound(st, proto)
+                    st.setdefault("inbounds", {})[proto] = inb
+                c = _new_client(name, proto, inb,
                           limit_gb=(float(b.get("limit_gb") or 0) or None),
                           expiry=(int(b.get("expiry_days") or 0) or None))
                 inb["clients"].append(c)
