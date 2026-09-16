@@ -723,6 +723,7 @@ def _link(inb, host, client, proto):
 def _new_client(name, proto=None, inb=None, **kw):
     c = {"uuid": str(uuidlib.uuid4()),
          "name": (name or "").strip() or "Кент",
+         "sub_token": secrets.token_urlsafe(16),
          "created": int(time.time())}
     # Лимиты трафика/срок (0 = без ограничений)
     c["limit_gb"] = float(kw.get("limit_gb") or 0)
@@ -2005,24 +2006,46 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
         
-        if p in ("/sub", "/sub/"):
-            # Универсальная подписка: base64-список всех client-ссылок (v2rayNG/Hiddify/NekoBox).
-            # Ссылки строятся на лету через _link() — в state.json поле "link" не хранится.
+        if p.startswith("/sub/") or p in ("/sub", "/sub/"):
+            # Универсальная подписка (/sub) или личная подписка клиента (/sub/<token>): base64-список ссылок.
             try:
                 import base64
+                sub_path = p[5:].strip("/") if p.startswith("/sub/") else ""
                 links = []
                 st = _load(STATE) or {}
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+                
+                found_client = False
+                state_changed = False
+                
                 for proto, inb in (st.get("inbounds") or {}).items():
-                    psk_int = inb.get("psk")
                     for c in inb.get("clients", []):
-                        try:
-                            links.append(_link(inb, host, c, proto))
-                        except Exception:
-                            continue
+                        if not c.get("sub_token"):
+                            c["sub_token"] = secrets.token_urlsafe(16)
+                            state_changed = True
+                        
+                        if sub_path:
+                            if c.get("sub_token") == sub_path:
+                                try:
+                                    links.append(_link(inb, host, c, proto))
+                                    found_client = True
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                links.append(_link(inb, host, c, proto))
+                            except Exception:
+                                continue
+                                
+                if state_changed:
+                    _save(STATE, st)
+                    
+                if sub_path and not found_client:
+                    return self._send(404, {"error": "клиент не найден"})
                 if not links:
                     return self._send(404, {"error": "нет клиентов"})
+                    
                 payload = base64.b64encode("\n".join(links).encode()).decode()
                 b = payload.encode()
                 self.send_response(200)
@@ -2067,14 +2090,24 @@ class H(http.server.BaseHTTPRequestHandler):
             if not st: return self._send(200, {"clients": [], "configured": False})
             if _migrate_state(st): _save(STATE, st)
             host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            panel_port = CFG_CACHE.get("panel_port", 8444)
             ipv6 = _my_ipv6()
             tr = _statsquery()
             out = []
+            state_changed = False
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
+                    if not c.get("sub_token"):
+                        c["sub_token"] = secrets.token_urlsafe(16)
+                        state_changed = True
+                    sub_token = c["sub_token"]
+                    sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
                     t = tr.get(c["uuid"], {})
                     item = {"uuid": c["uuid"], "name": c["name"],
                             "link": _link(inb, host, c, proto),
+                            "sub_token": sub_token,
+                            "sub_url": sub_url,
                             "up": t.get("uplink", 0), "down": t.get("downlink", 0),
                             "limit_gb": float(c.get("limit_gb") or 0),
                             "expiry": int(c.get("expiry") or 0),
@@ -2091,6 +2124,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     if len(out) < 16:
                         item["online"] = _online_count(c["uuid"])
                     out.append(item)
+            if state_changed:
+                _save(STATE, st)
             return self._send(200, {"clients": out,
                                     "configured": bool(out),
                                     "active": _proto_of(st),
