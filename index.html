@@ -600,13 +600,25 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
    <!-- Вкладка Подписка -->
    <div id=tab-subscription class="tab-pane">
      <div class=card>
-       <h3>Универсальная подписка (Subscription URL)</h3>
+       <div class=row style="margin-bottom:10px">
+         <h3>Универсальная подписка (Subscription URL)</h3>
+         <button class="sec" onclick="showAdd()">+ Добавить пользователя</button>
+       </div>
        <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список всех активных протоколов и нод.</p>
        <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
          <input type=text id=subUrlInput readonly style="flex:1;min-width:260px;background:var(--bg2);border:1px solid var(--brd);padding:10px;border-radius:6px;font-family:monospace">
          <button class="sec" onclick="copyText($('subUrlInput').value, 'Ссылка подписки скопирована')">📋 Копировать</button>
          <button class="sec" onclick="showQR($('subUrlInput').value, 'QR-код универсальной подписки')">📷 QR-код</button>
          <a id="subOpenLink" href="#" target="_blank" class="btn sec" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:inherit;font-size:14px">🌐 Открыть сырую подписку</a>
+       </div>
+
+       <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
+         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+           <h4 style="margin:0">👥 Пользователи и персональные подписки</h4>
+         </div>
+         <div id="subUsersList">
+           <p class=mut>Загрузка списка пользователей...</p>
+         </div>
        </div>
        
        <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
@@ -722,6 +734,32 @@ async function loadSub(){
   }catch(e){}
   inp.value = url;
   if(lnk) lnk.href = url;
+
+  const userListEl = $('subUsersList');
+  if(userListEl){
+    try{
+      const d = await api('/api/clients');
+      const list = d.clients || [];
+      if(list.length === 0){
+        userListEl.innerHTML = '<p class=mut>Пользователей пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
+      } else {
+        userListEl.innerHTML = list.map(c => `
+          <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="min-width:0;flex:1">
+              <b>${escapeHtml(c.name)}</b>
+              <div style="font-family:monospace;font-size:12px;color:var(--mut);word-break:break-all;margin-top:2px">${c.sub_url || (location.origin + '/sub/' + c.sub_token)}</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="tiny sec" onclick="copyText('${c.sub_url || (location.origin + '/sub/' + c.sub_token)}', 'Ссылка подписки скопирована')">📋 Копировать</button>
+              <button class="tiny sec" onclick="showQR('${c.sub_url || (location.origin + '/sub/' + c.sub_token)}', 'Подписка: ${escapeHtml(c.name)}')">📷 QR</button>
+            </div>
+          </div>
+        `).join('');
+      }
+    }catch(e){
+      userListEl.innerHTML = '<p class=mut>Не удалось загрузить список пользователей.</p>';
+    }
+  }
 }
 
 
