@@ -230,8 +230,18 @@ def _gen_keys():
     out = subprocess.run(["xray", "x25519"], capture_output=True, text=True).stdout
     priv = _last_line(out, "private")
     pub = _last_line(out, "public", "password")
-    if priv and pub: return _wg_key_std(priv), _wg_key_std(pub)
+    if priv and pub: return priv.strip(), pub.strip()
     raise RuntimeError("не разобрал xray x25519: " + out)
+
+def _reality_key_std(k):
+    if not k: return k
+    k = str(k).strip()
+    pad = "=" * ((4 - len(k) % 4) % 4)
+    try:
+        raw = base64.b64decode(k + pad, altchars=b"-_")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    except Exception:
+        return k
 
 def _wg_key_std(k):
     if not k: return k
@@ -317,11 +327,22 @@ def _find_client(st, uuid_):
 
 def _migrate_state(st):
     if st is None: return False
-    if isinstance(st.get("inbounds"), dict):
+    changed = False
+    inbs = st.get("inbounds") or {}
+    if isinstance(inbs, dict):
+        for proto, inb in inbs.items():
+            if proto in ("reality", "vless-xhttp-reality"):
+                for k in ("private_key", "public_key"):
+                    if inb.get(k):
+                        fixed = _reality_key_std(inb[k])
+                        if fixed != inb[k]:
+                            inb[k] = fixed
+                            changed = True
         for k in ("clients", "uuid", "proto", "port", "private_key",
                   "public_key", "sid", "sni", "dest", "password"):
-            st.pop(k, None)
-        return False
+            if st.pop(k, None) is not None:
+                changed = True
+        return changed
     clients = st.pop("clients", None) or []
     old = st.pop("uuid", None)
     if old and not any(c.get("uuid") == old for c in clients):
