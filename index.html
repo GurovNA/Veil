@@ -949,6 +949,7 @@ function clientCard(c){
       </div>
       <div class=actions>
         <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
+        <button class="tiny sec" data-act=sub title="Личная ссылка подписки клиента">🔗 Подписка</button>
         <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
         ${isWG?'':'<button class="tiny sec" data-act=qr>QR</button>'}
         ${isWG?'<button class="tiny sec" data-act=conf title="Скачать .conf">⬇</button>':''}
@@ -973,6 +974,7 @@ function clientCard(c){
   if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
   div.querySelector('[data-act=v6]').onclick=()=>copyText(c.link6||c.link,'Ссылка IPv6 скопирована');
   if(c.link6&&!isWG){div.querySelector('[data-act=v6]').classList.remove('hidden');}
+  div.querySelector('[data-act=sub]').onclick=()=>copyText(c.sub_url||(location.origin+'/sub/'+c.sub_token),'Личная ссылка подписки скопирована');
   const _conf=div.querySelector('[data-act=conf]');
   if(_conf)_conf.onclick=()=>downloadConf(c.link,c.name);
   div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
