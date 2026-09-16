@@ -1,0 +1,28 @@
+# === СЕКРЕТЫ И ЛОКАЛЬНОЕ (НЕ КОММИТИТЬ!) ===
+github.token
+config.json
+certs/
+FIRST-LOGIN.txt
+*.token
+*.key
+secrets/
+# === локальные данные / мусор ===
+backups/
+*.bak-*
+*.bak*
+dist/
+__pycache__/
+*.pyc
+.release-tmp/
+.release-tmp*
+.release-tmp/**/*
+*.tar.gz
+state.json
+theme.json
+wallpaper.bin
+nodes.json
+sessions.bin
+sessions.json
+manual-backup-*/
+restore-backup-*/
+.release-tmp/

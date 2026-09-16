@@ -2,6 +2,7 @@
   <img src="icon-veil.png" width="128" height="128" alt="Veil Logo">
   <h1>Veil Panel</h1>
   <p><strong>Универсальная панель управления VPN: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) + Telegram MTProto Proxy. Обход DPI, REALITY SNI-валидация, встроенный веб-прокси.</strong></p>
+  <p><em>Основано на разработке <a href="https://github.com/Mekotofeuka/MTPROTO_FIX_By_MEKO">MEKO (MTPROTO_FIX)</a> · Лицензия MEKO: <a href="LICENSE-MEKO">LICENSE-MEKO</a></em></p>
   <p>
     <a href="README.ru.md">🇷🇺 Русский</a> •
     <a href="README.en.md">🇬🇧 English</a>
@@ -42,7 +43,9 @@ bash <(curl -fsSL <ваш raw-URL>/install.sh)
 
 ## Лицензия
 
-Распространяется по лицензии MIT. Подробности — в файле [`LICENSE`](LICENSE).
+Распространяется по лицензии MIT ([`LICENSE`](LICENSE)).
+
+Проект создан на основе разработки **[MEKO](https://github.com/Mekotofeuka/MTPROTO_FIX_By_MEKO)** и лицензируется по Публичной лицензии MEKO v3 — см. [`LICENSE-MEKO`](LICENSE-MEKO).
 
 ---
 
