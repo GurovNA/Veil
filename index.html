@@ -597,17 +597,37 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
   </div></div>
   
-  <!-- Вкладка Подписка -->
-  <div id=tab-subscription class="tab-pane">
-    <div class=card>
-      <h3>Универсальная подписка (Subscription URL)</h3>
-      <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список протоколов.</p>
-      <div style="display:flex;gap:10px;margin-top:10px">
-        <input type=text id=subUrlInput readonly style="flex:1;background:var(--bg2);border:1px solid var(--brd);padding:8px;border-radius:6px">
-        <button class="sec" onclick="copyText($('subUrlInput').value, 'Ссылка подписки скопирована')">Копировать</button>
-      </div>
-    </div>
-  </div>
+   <!-- Вкладка Подписка -->
+   <div id=tab-subscription class="tab-pane">
+     <div class=card>
+       <h3>Универсальная подписка (Subscription URL)</h3>
+       <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список всех активных протоколов и нод.</p>
+       <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+         <input type=text id=subUrlInput readonly style="flex:1;min-width:260px;background:var(--bg2);border:1px solid var(--brd);padding:10px;border-radius:6px;font-family:monospace">
+         <button class="sec" onclick="copyText($('subUrlInput').value, 'Ссылка подписки скопирована')">📋 Копировать</button>
+         <button class="sec" onclick="showQR($('subUrlInput').value, 'QR-код универсальной подписки')">📷 QR-код</button>
+         <a id="subOpenLink" href="#" target="_blank" class="btn sec" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:inherit;font-size:14px">🌐 Открыть сырую подписку</a>
+       </div>
+       
+       <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
+         <h4 style="margin-bottom:8px">📲 Поддерживаемые клиенты и импорт</h4>
+         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:10px">
+           <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd)">
+             <b>Android</b>
+             <p class=mut style="margin:4px 0 0;font-size:12px">v2rayNG, Hiddify, NekoBox. Нажмите «Добавить конфигурацию» → «Импорт из буфера обмена» или сканируйте QR-код.</p>
+           </div>
+           <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd)">
+             <b>iOS (iPhone / iPad)</b>
+             <p class=mut style="margin:4px 0 0;font-size:12px">FoXray, Hiddify, Streisand, v2Box. Скопируйте ссылку подписки и добавьте в приложение.</p>
+           </div>
+           <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd)">
+             <b>Windows / macOS</b>
+             <p class=mut style="margin:4px 0 0;font-size:12px">Hiddify, v2rayN, Clash Verge Rev. Поддерживают прямую вставку ссылки подписки.</p>
+           </div>
+         </div>
+       </div>
+     </div>
+   </div>
 
   <!-- Вкладка Ноды -->
   <div id=tab-nodes class="tab-pane">
@@ -689,16 +709,19 @@ async function updateMetrics(){
 
 async function loadSub(){
   const inp = $('subUrlInput');
+  const lnk = $('subOpenLink');
   if(!inp) return;
+  let url = location.origin + '/sub/';
   try{
     const resp = await fetch('/api/state');
-    if(!resp.ok) throw 0;
-    const st = await resp.json();
-    const base = (st.base_domain || location.hostname);
-    inp.value = (st.sub_url || ('https://' + base + '/sub/' + (st.sub_token || '')));
-  }catch(e){
-    inp.value = location.origin + '/sub/';
-  }
+    if(resp.ok){
+      const st = await resp.json();
+      const base = (st.base_domain || location.hostname + (location.port ? ':' + location.port : ''));
+      url = (st.sub_url || ('https://' + base + '/sub/'));
+    }
+  }catch(e){}
+  inp.value = url;
+  if(lnk) lnk.href = url;
 }
 
 
