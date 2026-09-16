@@ -521,6 +521,31 @@ def _inbound(proto, inb):
 
 _STATS_PORT = 10088
 
+def _autoblock_limits(st, force=False):
+    """Автоблокировка: лимит ГБ или истёк срок -> клиент убирается из конфига.
+    Возвращает список {uuid, name, reason} только что заблокированных (пусто = без изменений)."""
+    import urllib.parse as _up_  # не нужно — urllib уже в коде
+    if not st: return []
+    t = not force
+    out = []
+    now = time.time()
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c.get("blocked"): continue
+            why = None
+            up = float(c.get("up") or 0); down = float(c.get("down") or 0)
+            lim = float(c.get("limit_gb") or 0)
+            if lim > 0 and (up + down) >= lim * 1024 ** 3 * 0.95:
+                why = "limit"
+            ex = int(c.get("expiry") or 0)
+            if ex and now > ex:
+                why = why or "expired"
+            if not why: continue
+            c["blocked"] = int(now)
+            c["blocked_reason"] = why
+            out.append({"uuid": c["uuid"], "name": c["name"], "reason": why})
+    return out
+
 def _write_xray(st):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
@@ -695,10 +720,13 @@ def _link(inb, host, client, proto):
     q = urllib.parse.urlencode(qparts)
     return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
 
-def _new_client(name, proto=None, inb=None):
+def _new_client(name, proto=None, inb=None, **kw):
     c = {"uuid": str(uuidlib.uuid4()),
-         "name": (name or "").strip() or "Клиент",
+         "name": (name or "").strip() or "Кент",
          "created": int(time.time())}
+    # Лимиты трафика/срок (0 = без ограничений)
+    c["limit_gb"] = float(kw.get("limit_gb") or 0)
+    c["expiry"] = int(kw.get("expiry") or 0)
     if proto and proto.startswith("trojan"):
         c["password"] = secrets.token_urlsafe(12)
     if proto == "hysteria2":
@@ -1827,7 +1855,27 @@ def _ddns_loop():
             except Exception as e:
                 _CERT_STATE["error"] = str(e)
 
+
+def _limits_loop():
+    while True:
+        try:
+            st = _load(STATE)
+            if st:
+                bl = _autoblock_limits(st)
+                if bl:
+                    _save(STATE, st)
+                    try:
+                        _write_xray(st); _restart_xray()
+                    except Exception:
+                        pass
+                    print("[limits] автоблок: " +
+                          ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
+        except Exception as e:
+            print("[limits] " + str(e), flush=True)
+        time.sleep(60)
+
 threading.Thread(target=_ddns_loop, daemon=True).start()
+threading.Thread(target=_limits_loop, daemon=True).start()
 
 def _stats():
     st = _load(STATE) or {}
@@ -1956,12 +2004,37 @@ class H(http.server.BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
-        if p == "/sub":
-            # Подписка v2rayNG / Hiddify
-            users = _xray_users_get()
-            links = [u.get("link") for u in users if u.get("link")]
-            encoded = base64.b64encode("\n".join(links).encode()).decode()
-            return self._send(200, encoded.encode(), "text/plain; charset=utf-8")
+        
+        if p in ("/sub", "/sub/"):
+            # Универсальная подписка: base64-список всех client-ссылок (v2rayNG/Hiddify/NekoBox).
+            # Ссылки строятся на лету через _link() — в state.json поле "link" не хранится.
+            try:
+                import base64
+                links = []
+                st = _load(STATE) or {}
+                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+                for proto, inb in (st.get("inbounds") or {}).items():
+                    psk_int = inb.get("psk")
+                    for c in inb.get("clients", []):
+                        try:
+                            links.append(_link(inb, host, c, proto))
+                        except Exception:
+                            continue
+                if not links:
+                    return self._send(404, {"error": "нет клиентов"})
+                payload = base64.b64encode("\n".join(links).encode()).decode()
+                b = payload.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers(); self.wfile.write(b)
+                return None
+            except Exception as e:
+                return self._send(500, {"error": str(e)})
+
+
         if p == "/api/metrics":
             return self._send(200, get_system_metrics())
         if p == "/api/selftest":
@@ -2003,6 +2076,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     item = {"uuid": c["uuid"], "name": c["name"],
                             "link": _link(inb, host, c, proto),
                             "up": t.get("uplink", 0), "down": t.get("downlink", 0),
+                            "limit_gb": float(c.get("limit_gb") or 0),
+                            "expiry": int(c.get("expiry") or 0),
+                            "used_gb": round((t.get("uplink", 0) + t.get("downlink", 0)) / (1024**3), 3),
                             "ipv6": ipv6,
                             "proto": proto, "port": inb["port"],
                             "proto_label": _proto_meta(proto)["label"],
@@ -2281,7 +2357,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     proto = _proto_of(st)
                 inb = _alloc_inbound(st, proto)
                 st["inbounds"][proto] = inb
-                c = _new_client(name, proto, inb)
+                c = _new_client(name, proto, inb,
+                          limit_gb=(float(b.get("limit_gb") or 0) or None),
+                          expiry=(int(b.get("expiry_days") or 0) or None))
                 inb["clients"].append(c)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
