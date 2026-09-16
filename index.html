@@ -205,6 +205,22 @@ body.layout-desk .tabs button{font-size:14px}
 body.layout-desk .mini-stats .mstat{min-width:150px}
 .tiny.sel{outline:2px solid color-mix(in srgb,var(--acc) 65%,transparent);outline-offset:1px;color:var(--fg)}
 @supports not (color: color-mix(in srgb, red, transparent)){body{background:var(--bg)}.card,.tabs,.dialog{background:var(--card)}button{background:var(--acc)}button.danger{background:#dc3545;}button:hover{box-shadow:none}}
+.limitrow{margin:5px 8px 3px;padding:4px 6px;background:#ffffff0d;border-radius:7px;font-size:11px;color:#aab;display:block}
+.limitrow.blk{background:#5a1f22}
+.limbar{position:relative;height:8px;border-radius:4px;background:#ffffff14;overflow:hidden;margin-bottom:3px}
+.limfill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#2a7,#2c9);border-radius:4px}
+.limtxt{display:block}
+.limdate{color:#8ac}
+.limdate.bad{color:#f66}
+.limflag{color:#f88;margin-right:6px}
+.lim-bar{position:relative;height:22px;border-radius:6px;background:#ffffff14;overflow:hidden;margin:6px 8px;font-size:11px;color:#cfe}
+.lim-bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#2a7,#3c8);width:0}
+.lim-bar span{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;height:100%;width:100%}
+.lim-bar.no i{display:none}
+.lim-date{font-size:11px;color:#cfe;margin:2px 8px;opacity:.85}
+.lim-date.bad{color:#f77;font-weight:bold}
+.lim-block{font-size:12px;color:#f77;margin:4px 8px;font-weight:bold}
+.limit-row{padding:2px 0 4px}
 </style></head><body><div class=wrap>
 <div id=bgFx aria-hidden=true><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 
@@ -290,6 +306,8 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
         <div class=dcard>
         <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
         <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
+        <input id=newLimit type=number min=0 step=0.5 placeholder="Лимит, ГБ (0=без)" value="0">
+        <input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
         <button onclick=doAdd()>Создать</button>
         <div class=msg id=addMsg></div>
         </div>
@@ -615,6 +633,57 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
 </div>
 
 </div><script>
+async function updateMetrics(){
+  const c=$('cpuUsage'), r=$('ramUsage'), p=$('portsStatus');
+  if(!c||!r||!p) return;
+  try{
+    const resp = await fetch('/api/metrics');
+    if(!resp.ok) return;
+    const m = await resp.json();
+    c.textContent = (m.cpu_percent ?? '—') + '%';
+    r.textContent = (m.ram_percent ?? '—') + '%';
+    const ps = m.ports_status || {};
+    p.textContent = Object.keys(ps).length ? Object.keys(ps).filter(k=>ps[k]).length + '/' + Object.keys(ps).length : '—';
+  }catch(e){}
+}
+
+async function loadSub(){
+  const inp = $('subUrlInput');
+  if(!inp) return;
+  try{
+    const resp = await fetch('/api/state');
+    if(!resp.ok) throw 0;
+    const st = await resp.json();
+    const base = (st.base_domain || location.hostname);
+    inp.value = (st.sub_url || ('https://' + base + '/sub/' + (st.sub_token || '')));
+  }catch(e){
+    inp.value = location.origin + '/sub/';
+  }
+}
+
+async function renderNodes(){
+  const box = document.getElementById('nodeList') || document.querySelector('#tab-nodes .card');
+  if(!box) return;
+  try{
+    const resp = await fetch('/api/nodes');
+    if(!resp.ok) throw 0;
+    const nodes = await resp.json();
+    if(!nodes || !nodes.length){
+      box.innerHTML = '<p class=mut>Ноды не добавлены — пока сервер работает в одностерверном режиме.</p>';
+      return;
+    }
+    box.innerHTML = nodes.map(n=>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
+      '<div><strong>' + (n.name||'Нода') + '</strong>' +
+      '<div class=mut>' + (n.host||'') + ':' + (n.port||'') + '</div></div>' +
+      '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span></div>'
+    ).join('');
+  }catch(e){
+    box.innerHTML = '<p class=mut>Ноды не добавлены — пока сервер работает в одностерверном режиме.</p>';
+  }
+}
+
+
 
 const TH_PRESETS={
   'Тёмная':           {bg:'0b1023',bg2:'0d1230',card:'151c3d',card2:'1a2350',br:'333d72',fg:'eef2ff',mut:'a3aede',acc:'6d5df6',acc2:'22d3ee'},
@@ -768,6 +837,8 @@ function clientCard(c){
       <code></code>
     </div>
     <div class=traffic>
+    </div>
+    <div class=limit-row>
     </div>`;
   div.querySelector('.name').textContent=c.name;
   div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
@@ -790,6 +861,37 @@ function clientCard(c){
     <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
   `;
   const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
+  if(c.limit_gb>0||c.expiry||c.blocked){
+    const _lr=document.createElement('div');_lr.className='limitrow';
+    if(c.blocked)_lr.classList.add('blk');
+    if(c.limit_gb>0){
+      const _used=+(c.used_gb||0),_lim=+c.limit_gb;
+      const _pct=Math.min(100,Math.round(_used/_lim*100));
+      const _fill=document.createElement('div');_fill.className='limfill';_fill.style.width=_pct+'%';
+      const _bar=document.createElement('div');_bar.className='limbar';
+      _bar.appendChild(_fill);
+      const _txt=document.createElement('span');_txt.className='limtxt';
+      _txt.textContent=fmtBytes(_used*1e9)+' / '+fmtBytes(_lim*1e9)+' — '+_pct+'%';
+      _lr.appendChild(_bar);_lr.appendChild(_txt);
+    }
+    if(c.expiry){
+      const _left=c.expiry*1000-Date.now();
+      const _d=Math.ceil(_left/86400000);
+      const _dt=document.createElement('span');_dt.className='limdate'+( _left<=0?' bad':'');
+      _dt.textContent=_left<=0?'⛔ срок истёк':'📅 осталось '+_d+' дн.';
+      _lr.appendChild(_dt);
+    }
+    if(c.blocked){
+      const _fl=document.createElement('span');_fl.className='limflag';
+      _fl.textContent='🚫 Заблокирован'+(c.blocked_reason?(' ('+c.blocked_reason+')'):'');
+      _lr.appendChild(_fl);
+      const _ub=document.createElement('button');_ub.className='tiny sec';_ub.textContent='Разблокировать';
+      _ub.onclick=async()=>{try{await api('/api/clients/unblock',{method:'POST',body:JSON.stringify({uuid:c.uuid})});await refresh();}catch(e){$('vpnMsg').textContent=e.message;$('vpnMsg').className='msg err';}};
+      _lr.appendChild(_ub);
+    }
+    div.querySelector('.traffic').insertAdjacentElement('afterend',_lr);
+  }
+  
   if(_up)_up.textContent=fmtBytes(c.up||0);
   if(_down)_down.textContent=fmtBytes(c.down||0);
   const _dot=div.querySelector('.t-online .dot');
@@ -1060,6 +1162,10 @@ async function doAdd(){
   try{
     const body={name};
     if(addProto)body.proto=addProto;
+    const _lg=parseFloat($('newLimit').value);
+    if(_lg>0)body.limit_gb=_lg;
+    const _ed=parseInt($('newExpiry').value,10);
+    if(_ed>0)body.expiry_days=_ed;
     autoExpand=addProto;
     await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
@@ -1764,7 +1870,11 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     $('tab-'+b.dataset.tab).classList.add('active');
-    if(b.dataset.tab==='settings')autoCheckForUpdate();
+    if(b.dataset.tab==='settings')autoCheckForUpdate()
+      if(b.dataset.tab==='subscription')loadSub();
+      if(b.dataset.tab==='nodes')renderNodes();
+      if(b.dataset.tab==='vpn')loadStats();
+
   });
 });
 
