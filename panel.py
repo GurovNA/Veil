@@ -2383,20 +2383,38 @@ class H(http.server.BaseHTTPRequestHandler):
                     st = _new_state(want or "reality")
                 _migrate_state(st)
                 proto = want or _proto_of(st)
+                
                 inb = (st.get("inbounds") or {}).get(proto)
                 if not inb:
                     inb = _alloc_inbound(st, proto)
                     st.setdefault("inbounds", {})[proto] = inb
+                    
                 name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
-                c = _new_client(name, proto, inb)
-                inb["clients"].append(c)
+                sub_token = secrets.token_urlsafe(16)
+                client_uuid = str(uuidlib.uuid4())
+                
+                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+                panel_port = CFG_CACHE.get("panel_port", 8444)
+                
+                added_links = []
+                for p_proto, p_inb in (st.get("inbounds") or {}).items():
+                    c = _new_client(name, p_proto, p_inb)
+                    c["uuid"] = client_uuid
+                    c["sub_token"] = sub_token
+                    p_inb.setdefault("clients", []).append(c)
+                    added_links.append(_link(p_inb, host, c, p_proto))
+                    
                 st["active"] = proto
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
-                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
-                return self._send(200, {"ok": True, "link": _link(inb, host, c, proto),
+                
+                sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+                first_link = added_links[0] if added_links else ""
+                return self._send(200, {"ok": True, "link": first_link,
                                         "port": inb["port"], "proto": proto,
-                                        "name": c["name"], "uuid": c["uuid"]})
+                                        "name": name, "uuid": client_uuid,
+                                        "sub_token": sub_token, "sub_url": sub_url})
 
             # ---- clients ----
             if p == "/api/nodes/add":
@@ -2441,26 +2459,39 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st is None:
                     st = _new_state(want_proto or "reality")
                 _migrate_state(st)
-                if want_proto:
-                    if want_proto not in _VALID_PROTOCOLS:
-                        return self._send(400, {"error": "неизвестный протокол"})
-                    proto = want_proto
-                else:
-                    proto = _proto_of(st)
-                inb = (st.get("inbounds") or {}).get(proto)
-                if not inb:
-                    inb = _alloc_inbound(st, proto)
-                    st.setdefault("inbounds", {})[proto] = inb
-                c = _new_client(name, proto, inb,
-                          limit_gb=(float(b.get("limit_gb") or 0) or None),
-                          expiry=(int(b.get("expiry_days") or 0) or None))
-                inb["clients"].append(c)
+                
+                sub_token = secrets.token_urlsafe(16)
+                client_uuid = str(uuidlib.uuid4())
+                limit_gb = float(b.get("limit_gb") or 0) or None
+                expiry = int(b.get("expiry_days") or 0) or None
+                
+                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+                panel_port = CFG_CACHE.get("panel_port", 8444)
+                
+                if not st.get("inbounds"):
+                    p_proto = want_proto or "reality"
+                    st["inbounds"] = {p_proto: _alloc_inbound(st, p_proto)}
+                    
+                added_links = []
+                first_link = ""
+                for proto, inb in (st.get("inbounds") or {}).items():
+                    c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry)
+                    c["uuid"] = client_uuid
+                    c["sub_token"] = sub_token
+                    inb.setdefault("clients", []).append(c)
+                    lnk = _link(inb, host, c, proto)
+                    added_links.append({"proto": proto, "link": lnk})
+                    if not first_link: first_link = lnk
+                    
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
-                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                
+                sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
                 return self._send(200, {"ok": True, "client": {
-                    "uuid": c["uuid"], "name": c["name"],
-                    "link": _link(inb, host, c, proto), "proto": proto}})
+                    "uuid": client_uuid, "name": name,
+                    "sub_token": sub_token, "sub_url": sub_url,
+                    "link": first_link, "links": added_links}})
 
             if p == "/api/clients/delete":
                 b = self._body()
@@ -2470,14 +2501,30 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "нет клиентов"})
                 if _client_count(st) <= 1:
                     return self._send(400, {"error": "нельзя удалить последнего клиента"})
-                proto, inb, _ = _find_client(st, u)
-                if not inb:
+                    
+                target_sub_token = None
+                for proto, inb in (st.get("inbounds") or {}).items():
+                    for c in inb.get("clients", []):
+                        if c["uuid"] == u or c.get("sub_token") == u:
+                            target_sub_token = c.get("sub_token")
+                            break
+                    if target_sub_token: break
+                    
+                removed = False
+                for proto, inb in list((st.get("inbounds") or {}).items()):
+                    orig_len = len(inb.get("clients", []))
+                    inb["clients"] = [c for c in inb["clients"] if c["uuid"] != u and c.get("sub_token") != (target_sub_token or u)]
+                    if len(inb["clients"]) < orig_len:
+                        removed = True
+                    if not inb["clients"]:
+                        del st["inbounds"][proto]
+                        
+                if not removed:
                     return self._send(404, {"error": "клиент не найден"})
-                inb["clients"] = [c for c in inb["clients"] if c["uuid"] != u]
-                if not inb["clients"]:
-                    del st["inbounds"][proto]
-                    if st.get("active") == proto:
-                        st["active"] = _proto_of(st)
+                    
+                if st.get("active") not in st.get("inbounds", {}):
+                    st["active"] = _proto_of(st)
+                    
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 return self._send(200, {"ok": True})
