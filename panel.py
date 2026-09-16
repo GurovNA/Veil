@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -2341,6 +2341,40 @@ class H(http.server.BaseHTTPRequestHandler):
                                         "name": c["name"], "uuid": c["uuid"]})
 
             # ---- clients ----
+            if p == "/api/nodes/add":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                name = (b.get("name") or "").strip() or "Нода"
+                host = (b.get("host") or "").strip()
+                port = int((b.get("port") or 0) or 0)
+                token = (b.get("token") or "").strip()
+                if not host:
+                    return self._send(400, {"error": "укажи адрес ноды"})
+                if host in ("0.0.0.0", "::", "localhost"):
+                    return self._send(400, {"error": "этот адрес — не внешняя нода"})
+                if not (1 <= port <= 65535):
+                    return self._send(400, {"error": "порт должен быть от 1 до 65535"})
+                nodes = get_nodes()
+                for n in nodes:
+                    if (n.get("host") or "").strip().lower() == host.lower():
+                        return self._send(400, {"error": "такая нода уже добавлена"})
+                nodes.append({"name": name, "host": host, "port": port,
+                              "token": token, "online": False, "added": int(time.time())})
+                save_nodes(nodes)
+                return self._send(200, {"ok": True, "nodes": get_nodes()})
+            if p == "/api/nodes/delete":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                host = (b.get("host") or "").strip()
+                nodes = get_nodes()
+                out = [n for n in nodes
+                       if (n.get("host") or "").strip().lower() != host.lower()]
+                if len(out) == len(nodes):
+                    return self._send(404, {"error": "нода не найдена"})
+                save_nodes(out)
+                return self._send(200, {"ok": True, "nodes": get_nodes()})
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"

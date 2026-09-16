@@ -306,8 +306,10 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
         <div class=dcard>
         <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
         <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
-        <input id=newLimit type=number min=0 step=0.5 placeholder="Лимит, ГБ (0=без)" value="0">
-        <input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
+        <label class="fldlbl" for="newLimit">Лимит, ГБ (0=безлимит)</label>
+        <input id="newLimit" type=number min=0 step=0.5 placeholder="Лимит, ГБ (пусто = безлимит)" value="">
+        <label for="newExpiry">Срок, дней (0=бессрочно)</label>
+<input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
         <button onclick=doAdd()>Создать</button>
         <div class=msg id=addMsg></div>
         </div>
@@ -611,13 +613,51 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
   <div id=tab-nodes class="tab-pane">
     <div class=card>
       <h3>Мультисерверность (Управление нодами)</h3>
-      <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.</p>
+      <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.<p>&nbsp;</p>
+      <div class="nodehelp">
+        <b>📘 Как добавить ноду (пошагово)</b>
+        <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
+          <li><b>Подготовь второй сервер.</b> Это должен быть отдельный VPS с этой же панелью (Veil Panel) и включённым HTTPS.</li>
+          <li><b>Узнай его адрес и порт панели.</b> Например: IP <span class="fldlbl">5.23.45.67</span> и порт <span class="fldlbl">8444</span>. Токен — общий секрет, который ты задашь на обеих панелях.</li>
+          <li><b>Заполни форму ниже:</b> имя (как подписать ноду), адрес без порта, порт панели ноды, токен.</li>
+          <li><b>Нажми «Создать».</b> Нода появится в списке; статус «онлайн/офлайн» обновится автоматически.</li>
+          <li><b>Проверка:</b> если у ноды открыта панель и указаны верные порт и токен — она станет «онлайн». Удаляется кнопкой «Удалить» в карточке.</li>
+        </ol>
+      </div>
+<div class=card style="margin-top:12px;border:1px dashed var(--brd)">
+      <h3>🛠️ Как добавить ноду (инструкция)</h3>
+      <ol style="padding-left:20px;line-height:1.8;margin:8px 0">
+        <li><b>Подготовь сервер-ноду.</b> Это должен быть отдельный VPS (не этот). На нём тоже должна стоять эта же панель (Veil Panel v2.x) — так нода понимает команды и обменивается данными.</li>
+        <li><b>Получи токен ноды.</b> Зайди на панель будущей ноды → вкладка «Ноды» → нажми «+ Добавить ноду» и создай запись с тем же адресом этого сервера. Панель покажет токен — скопируй его. <span class=mut>(Либо по договорённости придумайте общий секрет.)</span></li>
+        <li><b>Здесь заполни форму:</b> Имя — как подписать ноду у тебя (напр. «Москва-2»); Адрес — IP или домен ноды; Порт — на котором у ноды открыта панель (обычно 8444); Токен — тот самый секрет.</li>
+        <li><b>Нажми «Добавить».</b> Нода появится в списке ниже. Панель будет держать её на связи: статус «онлайн/офлайн» обновляется автоматически.</li>
+        <li><b>Проверь.</b> Когда нода онлайн — у тебя единая сеть: клиенты ноды и этого сервера работают как одна подписка. Любую ноду можно удалить кнопкой «Удалить».</li>
+      </ol>
+      <p class=mut>Подсказка: одна панель = одна нода. Чтобы держать много серверов, добавь в этот список каждую из них.</p>
+    </div>
+</p>
       <div style="margin-top:10px">
-        <button class="sec" onclick="alert('Добавление нод доступно в версии Enterprise')">+ Добавить ноду</button>
+        <button class="sec" onclick="showAddNode()">+ Добавить ноду</button>
+<div id="nodeList"></div>
       </div>
     </div>
   </div>
 
+
+      <div id=nodeAddBox class="dialog hidden">
+        <div class=dcard>
+          <div class=row><b id=nodeAddTitle>Добавить ноду</b><button class=tiny onclick=hideAddNode()>Отмена</button></div>
+          <input id=nodeName placeholder="Имя (например: Москва-2)" maxlength=32>
+          <label class=fldlbl for=nodeHost>Адрес ноды (IP или домен, без порта)</label>
+          <input id=nodeHost placeholder="Например: 5.23.45.67" maxlength=200>
+          <label class=fldlbl for=nodePort>Порт, на котором у ноды открыта панель</label>
+          <input id=nodePort type=number min=1 max=65535 step=1 placeholder="Например: 8444" value="8444">
+          <label class=fldlbl for=nodeToken>Токен соединения (секрет, общий с нодой)</label>
+          <input id=nodeToken placeholder="Скопируй из панели ноды" maxlength=200>
+          <button onclick=doAddNode()>Создать</button>
+          <div class=msg id=nodeAddMsg></div>
+        </div>
+      </div>
 <div id=tab-security class="tab-pane"><div class=card>
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
@@ -661,6 +701,66 @@ async function loadSub(){
   }
 }
 
+
+function showAddNode(){
+  $('nodeAddMsg').textContent='';$('nodeAddMsg').className='msg';
+  showModal('nodeAddBox');
+}
+function hideAddNode(){hideModal();}
+async function doAddNode(){
+  b={
+    name: $('nodeName').value.trim(),
+    host: $('nodeHost').value.trim(),
+    port: parseInt($('nodePort').value,10),
+    token: $('nodeToken').value.trim()
+  };
+  if(!b.host){$('nodeAddMsg').textContent='Введи адрес ноды';$('nodeAddMsg').className='msg err';return;}
+  if(!(b.port>=1&&b.port<=65535)){$('nodeAddMsg').textContent='Порт от 1 до 65535';$('nodeAddMsg').className='msg err';return;}
+  if(!b.token){$('nodeAddMsg').textContent='Введи токен ноды';$('nodeAddMsg').className='msg err';return;}
+  $('nodeAddMsg').textContent='Добавляю...';$('nodeAddMsg').className='msg';
+  try{
+    await api('/api/nodes/add',{method:'POST',body:JSON.stringify(b)});
+    hideAddNode();
+    await renderNodes();
+  }catch(e){
+    $('nodeAddMsg').textContent=(e&&e.message)||'Ошибка добавления';
+    $('nodeAddMsg').className='msg err';
+  }
+}
+async function delNode(host){
+  if(!confirm('Удалить ноду '+host+'?'))return;
+  try{
+    await api('/api/nodes/delete',{method:'POST',body:JSON.stringify({host})});
+    await renderNodes();
+  }catch(e){
+    alert((e&&e.message)||'Ошибка удаления');
+  }
+}
+
+function showAddNode(){ setMsg('nodeAddMsg',''); showModal('nodeAddBox'); }
+function hideAddNode(){ hideModal(); }
+async function doAddNode(){
+  const name=$('nodeName').value.trim();
+  const host=$('nodeHost').value.trim().replace(/^https?:\/\//,'').replace(/\/.*$/,'');
+  const port=parseInt($('nodePort').value,10);
+  const token=$('nodeToken').value.trim();
+  const msg=$('nodeAddMsg');
+  if(!host){ msg.textContent='введи адрес ноды'; msg.className='msg err'; return; }
+  if(!(port>=1&&port<=65535)){ msg.textContent='порт от 1 до 65535'; msg.className='msg err'; return; }
+  msg.textContent='добавляю...'; msg.className='msg';
+  try{
+    await api('/api/nodes/add',{method:'POST',body:JSON.stringify({name,host,port,token})});
+    hideAddNode();
+    await renderNodes();
+  }catch(e){ msg.textContent=(e&&e.message)||'ошибка'; msg.className='msg err'; }
+}
+async function delNode(host){
+  if(!confirm('Удалить ноду '+host+'?')) return;
+  try{
+    await api('/api/nodes/delete',{method:'POST',body:JSON.stringify({host})});
+    await renderNodes();
+  }catch(e){ alert((e&&e.message)||'ошибка'); }
+}
 async function renderNodes(){
   const box = document.getElementById('nodeList') || document.querySelector('#tab-nodes .card');
   if(!box) return;
@@ -676,7 +776,7 @@ async function renderNodes(){
       '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
       '<div><strong>' + (n.name||'Нода') + '</strong>' +
       '<div class=mut>' + (n.host||'') + ':' + (n.port||'') + '</div></div>' +
-      '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span></div>'
+      '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span>' + '<button class=tiny onclick="delNode(\'' + (n.host||'') + '\')">Удалить</button></div>'
     ).join('');
   }catch(e){
     box.innerHTML = '<p class=mut>Ноды не добавлены — пока сервер работает в одностерверном режиме.</p>';
@@ -871,14 +971,14 @@ function clientCard(c){
       const _bar=document.createElement('div');_bar.className='limbar';
       _bar.appendChild(_fill);
       const _txt=document.createElement('span');_txt.className='limtxt';
-      _txt.textContent=fmtBytes(_used*1e9)+' / '+fmtBytes(_lim*1e9)+' — '+_pct+'%';
+      _txt.textContent='Лимит: '+( _lim>0? (fmtBytes(_lim*1e9)+' — израсходовано '+fmtBytes(_used*1e9)+' ('+_pct+'%)') : 'безлимит');
       _lr.appendChild(_bar);_lr.appendChild(_txt);
     }
     if(c.expiry){
       const _left=c.expiry*1000-Date.now();
       const _d=Math.ceil(_left/86400000);
       const _dt=document.createElement('span');_dt.className='limdate'+( _left<=0?' bad':'');
-      _dt.textContent=_left<=0?'⛔ срок истёк':'📅 осталось '+_d+' дн.';
+      _dt.textContent='Срок: '+( (c.expiry&&c.expiry>0)? ((_left<=0)?'⛔ истёк':'осталось '+_d+' дн.') : 'бессрочно');
       _lr.appendChild(_dt);
     }
     if(c.blocked){
