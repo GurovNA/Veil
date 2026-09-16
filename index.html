@@ -1325,17 +1325,15 @@ async function doAdd(){
   $('addMsg').textContent='Создаю...';$('addMsg').className='msg';
   try{
     const body={name};
-    if(addProto)body.proto=addProto;
     const _lg=parseFloat($('newLimit').value);
     if(_lg>0)body.limit_gb=_lg;
     const _ed=parseInt($('newExpiry').value,10);
     if(_ed>0)body.expiry_days=_ed;
-    autoExpand=addProto;
     await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
     await refresh();
     await loadSub();
-    $('vpnMsg').textContent='Клиент «'+name+'» создан';$('vpnMsg').className='msg ok';
+    toast('Пользователь «'+name+'» создан со всеми протоколами','ok');
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
   }
