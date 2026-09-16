@@ -2469,13 +2469,27 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
                 
-                if not st.get("inbounds"):
+                # Убедимся, что основные протоколы (Reality, Shadowsocks, Hysteria2, WireGuard) созданы, 
+                # чтобы подписка была действительно универсальной и охватывала все протоколы на сервере.
+                core_protos = ["reality", "shadowsocks", "hysteria2", "wireguard"]
+                if want_proto and want_proto not in core_protos:
+                    core_protos.append(want_proto)
+                    
+                inbounds = st.setdefault("inbounds", {})
+                for cp in core_protos:
+                    if cp not in inbounds and cp in _VALID_PROTOCOLS:
+                        try:
+                            inbounds[cp] = _alloc_inbound(st, cp)
+                        except Exception:
+                            pass
+                            
+                if not inbounds:
                     p_proto = want_proto or "reality"
-                    st["inbounds"] = {p_proto: _alloc_inbound(st, p_proto)}
+                    inbounds[p_proto] = _alloc_inbound(st, p_proto)
                     
                 added_links = []
                 first_link = ""
-                for proto, inb in (st.get("inbounds") or {}).items():
+                for proto, inb in inbounds.items():
                     c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry)
                     c["uuid"] = client_uuid
                     c["sub_token"] = sub_token
