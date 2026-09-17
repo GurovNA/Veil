@@ -718,6 +718,56 @@ async function updateMetrics(){
   }catch(e){}
 }
 
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function subCard(c){
+  const _su = c.sub_url || (location.origin + '/sub/' + c.sub_token);
+  const _prots = (c.protos||[]).map(p=>protoLabels[p.proto]||p.label||p.proto).join(', ') || '—';
+  let lim = '';
+  if(c.limit_gb>0 || c.expiry){
+    lim += '<div class="limitrow" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    if(c.limit_gb>0){
+      const _pct=Math.min(100,Math.round((c.used_gb||0)/c.limit_gb*100));
+      lim += '<div class="limbar" style="flex:1;min-width:90px"><div class="limfill" style="width:'+_pct+'%"></div></div>';
+      lim += '<span class="limtxt" style="font-size:12px">Лимит: '+fmtBytes(c.limit_gb*1e9)+' — израсходовано '+fmtBytes((c.used_gb||0)*1e9)+' ('+_pct+'%)</span>';
+    }
+    if(c.expiry){
+      const _left=c.expiry*1000-Date.now();
+      const _d=Math.ceil(_left/86400000);
+      lim += '<span class="limdate'+( _left<=0?' bad':'')+'" style="font-size:12px">'+( _left<=0?'⛔ истёк':'осталось '+_d+' дн.')+'</span>';
+    }
+    lim += '</div>';
+  }
+  const _blk = c.blocked ? '<span style="color:var(--err);font-size:11px">🚫 Заблокирован</span>' : '';
+  const _links = (c.links && typeof c.links==='object' && Object.keys(c.links).length)
+    ? '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'
+      + Object.entries(c.links).map(([proto, link])=>
+          `<button class="tiny sec" onclick="copyText('${escapeHtml(link)}','Ссылка ${escapeHtml(protoLabels[proto]||proto)} скопирована')">${escapeHtml(protoLabels[proto]||proto)}</button>`).join('')
+      + '</div>'
+    : '';
+  return `
+    <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd);margin-bottom:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div style="min-width:0;flex:1">
+          <b>${escapeHtml(c.name)}</b> <span class=mut style="font-size:11px">(${(c.protos||[]).length} протокола: ${escapeHtml(_prots)})</span>
+          <div style="font-size:12px;color:var(--mut)">${c.online>0?'<span class="dot on" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:middle"></span>онлайн':'<span style="color:var(--mut)">офлайн</span>'}</div>
+          ${_blk}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="tiny sec" onclick="copyText('${escapeHtml(_su)}', 'Ссылка подписки скопирована')">📋 Копировать</button>
+          <button class="tiny sec" onclick="showQR('${escapeHtml(_su)}', 'Подписка: ${escapeHtml(c.name)}')">📷 QR</button>
+          <button class="tiny sec" onclick="window.open('${escapeHtml(_su)}')" title="Открыть сырую подписку">🌐</button>
+          <button class="tiny danger" onclick="doSubDelete('${escapeHtml(c.sub_token)}')" title="Удалить подписчика">🗑</button>
+        </div>
+      </div>
+      <div style="font-family:monospace;font-size:12px;color:var(--mut);word-break:break-all;margin-top:6px">${escapeHtml(_su)}</div>
+      ${lim}
+      ${_links}
+    </div>`;
+}
+
 async function loadSub(){
   const inp = $('subUrlInput');
   const lnk = $('subOpenLink');
@@ -737,37 +787,27 @@ async function loadSub(){
   const userListEl = $('subUsersList');
   if(userListEl){
     try{
-      const d = await api('/api/clients');
-      const rawList = d.clients || [];
-      const seen = new Set();
-      const list = [];
-      rawList.forEach(c => {
-        const key = c.sub_token || c.uuid;
-        if (!seen.has(key)) {
-          seen.add(key);
-          list.push(c);
-        }
-      });
+      const d = await api('/api/subs');
+      const list = d.subs || [];
       if(list.length === 0){
-        userListEl.innerHTML = '<p class=mut>Пользователей пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
+        userListEl.innerHTML = '<p class=mut>Подписчиков пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
       } else {
-        userListEl.innerHTML = list.map(c => `
-          <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-            <div style="min-width:0;flex:1">
-              <b>${escapeHtml(c.name)}</b>
-              <div style="font-family:monospace;font-size:12px;color:var(--mut);word-break:break-all;margin-top:2px">${c.sub_url || (location.origin + '/sub/' + c.sub_token)}</div>
-            </div>
-            <div style="display:flex;gap:6px">
-              <button class="tiny sec" onclick="copyText('${c.sub_url || (location.origin + '/sub/' + c.sub_token)}', 'Ссылка подписки скопирована')">📋 Копировать</button>
-              <button class="tiny sec" onclick="showQR('${c.sub_url || (location.origin + '/sub/' + c.sub_token)}', 'Подписка: ${escapeHtml(c.name)}')">📷 QR</button>
-            </div>
-          </div>
-        `).join('');
+        userListEl.innerHTML = list.map(c => subCard(c)).join('');
       }
     }catch(e){
-      userListEl.innerHTML = '<p class=mut>Не удалось загрузить список пользователей.</p>';
+      userListEl.innerHTML = '<p class=mut>Не удалось загрузить список подписчиков.</p>';
     }
   }
+}
+
+async function doSubDelete(sub_token){
+  if(!confirm('Удалить этого подписчика из всех протоколов?'))return;
+  try{
+    await api('/api/clients/delete',{method:'POST',body:JSON.stringify({uuid:sub_token})});
+    await refresh();
+    await loadSub();
+    toast('Подписчик удалён','ok');
+  }catch(e){toast(e.message,'err');}
 }
 
 
@@ -1322,7 +1362,9 @@ async function refresh(){
 let addProto=null;
 function showAdd(proto){
   addProto=proto||null;
-  $('addTitle').textContent='Новый клиент — '+(protoLabels[addProto]||addProto||'');
+  $('addTitle').textContent=addProto
+    ? ('Новый клиент — '+(protoLabels[addProto]||addProto||''))
+    : 'Новый подписчик (все протоколы)';
   showModal('addBox');
 }
 function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';}

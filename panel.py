@@ -655,6 +655,53 @@ def _online_count(email):
         _ONLINE_CACHE.clear()
     return v
 
+def _subs_summary(st, for_display=False):
+    """Агрегированный список подписчиков (как в 3x-ui): по одному на sub_token/uuid,
+    со ссылками на ВСЕ протоколы и суммарным трафиком."""
+    if not st: return []
+    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    panel_port = CFG_CACHE.get("panel_port", 8444)
+    ipv6 = _my_ipv6()
+    tr = _statsquery()
+    users = {}
+    state_changed = False
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if not c.get("sub_token"):
+                c["sub_token"] = secrets.token_urlsafe(16)
+                state_changed = True
+            key = c["sub_token"]
+            u = users.get(key)
+            if u is None:
+                u = {"uuid": c["uuid"], "name": c["name"], "sub_token": key,
+                     "created": c.get("created", 0),
+                     "limit_gb": float(c.get("limit_gb") or 0),
+                     "expiry": int(c.get("expiry") or 0),
+                     "blocked": bool(c.get("blocked")),
+                     "blocked_reason": c.get("blocked_reason", "") or "",
+                     "links": {}, "protos": [], "up": 0, "down": 0}
+                users[key] = u
+            try:
+                u["links"][proto] = _link(inb, host, c, proto)
+            except Exception:
+                pass
+            if proto not in [x["proto"] for x in u["protos"]]:
+                u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
+                                    "port": inb.get("port", 0)})
+            t = tr.get(c["uuid"], {})
+            u["up"] += int(t.get("uplink", 0) or 0)
+            u["down"] += int(t.get("downlink", 0) or 0)
+    if state_changed:
+        _save(STATE, st)
+    out = []
+    for u in users.values():
+        u["used_gb"] = round((u["up"] + u["down"]) / (1024 ** 3), 3)
+        u["sub_url"] = f"https://{host}:{panel_port}/sub/{u['sub_token']}"
+        u["online"] = int(_online_count(u["uuid"]) or 0)
+        out.append(u)
+    return out
+
 def _start_xray():
     subprocess.run(["systemctl", "start", "xray"], check=True, capture_output=True)
 
@@ -2028,51 +2075,78 @@ class H(http.server.BaseHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path).path
         
         if p.startswith("/sub/") or p in ("/sub", "/sub/"):
-            # Универсальная подписка (/sub) или личная подписка клиента (/sub/<token>): base64-список ссылок.
+            # Универсальная подписка (/sub) или личная подписка клиента (/sub/<subId>).
+            # Как в 3x-ui: возвращается base64-список ссылок на ВСЕ протоколы, где есть клиент,
+            # плюс заголовок subscription-userinfo (upload/download/total/expire) для v2rayNG и др.
             try:
                 import base64
                 sub_path = p[5:].strip("/") if p.startswith("/sub/") else ""
-                links = []
                 st = _load(STATE) or {}
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-                
+
+                tr = _statsquery()
+                links = []
+                seen_uuids = set()
                 found_client = False
                 state_changed = False
-                
+                up = down = total = 0
+                expiry = 0
+                sub_name = ""
+
+                # Все вхождения клиента по ключу могут быть в нескольких инбаундах —
+                # соберём их в один список ссылок (по одному на протокол).
+                inb_links = {}
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
                         if not c.get("sub_token"):
                             c["sub_token"] = secrets.token_urlsafe(16)
                             state_changed = True
-                        
-                        if sub_path:
-                            if c.get("sub_token") == sub_path:
-                                try:
-                                    links.append(_link(inb, host, c, proto))
-                                    found_client = True
-                                except Exception:
-                                    pass
-                        else:
-                            try:
-                                links.append(_link(inb, host, c, proto))
-                            except Exception:
-                                continue
-                                
+                        match = (not sub_path) or (c.get("sub_token") == sub_path) or (c["uuid"] == sub_path)
+                        if not match:
+                            continue
+                        found_client = True
+                        sub_name = c.get("name") or sub_name
+                        key = c["uuid"]
+                        if key not in seen_uuids:
+                            seen_uuids.add(key)
+                            t = tr.get(key, {})
+                            up += int(t.get("uplink", 0) or 0)
+                            down += int(t.get("downlink", 0) or 0)
+                            lim = float(c.get("limit_gb") or 0)
+                            if lim > 0:
+                                total = max(total, int(lim * 1024 ** 3))
+                            ex = int(c.get("expiry") or 0)
+                            if ex:
+                                expiry = max(expiry, ex)
+                        try:
+                            if proto not in inb_links:
+                                inb_links[proto] = _link(inb, host, c, proto)
+                        except Exception:
+                            continue
+
                 if state_changed:
                     _save(STATE, st)
-                    
+
                 if sub_path and not found_client:
                     return self._send(404, {"error": "клиент не найден"})
-                if not links:
+                if not inb_links:
                     return self._send(404, {"error": "нет клиентов"})
-                    
+
+                links = list(inb_links.values())
                 payload = base64.b64encode("\n".join(links).encode()).decode()
                 b = payload.encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(b)))
                 self.send_header("Cache-Control", "no-store")
+                # subscription-userinfo — клиенты (v2rayNG, Hiddify, NekoBox) показывают трафик и срок
+                ui = f"upload={up}; download={down}; total={total}; expire={int(expiry) * 1000}"
+                self.send_header("subscription-userinfo", ui)
+                if sub_name:
+                    self.send_header("profile-title", sub_name.encode("utf-8"))
+                self.send_header("profile-update-interval", "24")
+                self.send_header("profile-web-page-url", host)
                 self.end_headers(); self.wfile.write(b)
                 return None
             except Exception as e:
@@ -2151,6 +2225,15 @@ class H(http.server.BaseHTTPRequestHandler):
                                     "configured": bool(out),
                                     "active": _proto_of(st),
                                     "ipv6": ipv6})
+        if p == "/api/subs":
+            # Агрегированный список подписчиков для вкладки «Подписка» (как в 3x-ui).
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            st = _load(STATE)
+            if not st: return self._send(200, {"subs": [], "configured": False})
+            if _migrate_state(st): _save(STATE, st)
+            subs = _subs_summary(st)
+            return self._send(200, {"subs": subs, "configured": bool(subs),
+                                    "active": _proto_of(st)})
         if p == "/api/update":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -2463,7 +2546,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 sub_token = secrets.token_urlsafe(16)
                 client_uuid = str(uuidlib.uuid4())
                 limit_gb = float(b.get("limit_gb") or 0) or None
-                expiry = int(b.get("expiry_days") or 0) or None
+                _edays = int(b.get("expiry_days") or 0) or 0
+                expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
                 
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
