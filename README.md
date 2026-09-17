@@ -2,15 +2,14 @@
   <img src="icon-veil.png" width="128" height="128" alt="Veil Logo">
   <h1>Veil Panel</h1>
   <p><strong>Универсальная панель управления VPN: Xray (VLESS-Reality, Shadowsocks, Trojan, VMess, gRPC/XHTTP) + Telegram MTProto Proxy. Обход DPI, REALITY SNI-валидация, встроенный веб-прокси.</strong></p>
-  <p><em>Основано на разработке <a href="https://github.com/Mekotofeuka/MTPROTO_FIX_By_MEKO">MEKO (MTPROTO_FIX)</a> · Лицензия MEKO: <a href="LICENSE-MEKO">LICENSE-MEKO</a></em></p>
   <p>
     <a href="README.ru.md">🇷🇺 Русский</a> •
     <a href="README.en.md">🇬🇧 English</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.2.0-blue.svg" alt="Version">
-    <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
-    <img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu">
+    <a href="https://github.com/GurovNA/Veil/releases/tag/v2.2.1"><img src="https://img.shields.io/badge/version-2.2.1-blue.svg" alt="Version"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
+    <a href="https://ubuntu.com/download/server"><img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu"></a>
   </p>
 </div>
 
@@ -43,8 +42,6 @@ bash <(curl -fsSL <ваш raw-URL>/install.sh)
 
 ## Лицензия
 
-Распространяется по лицензии MIT ([`LICENSE`](LICENSE)).
-
-Проект создан на основе разработки **[MEKO](https://github.com/Mekotofeuka/MTPROTO_FIX_By_MEKO)** и лицензируется по Публичной лицензии MEKO v3 — см. [`LICENSE-MEKO`](LICENSE-MEKO).
+Распространяется по лицензии MIT ([`LICENSE`](LICENSE)). Некоторые сетевые фиксы заимствованы из открытых наработок MEKO.
 
 ---
