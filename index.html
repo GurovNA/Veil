@@ -1246,7 +1246,7 @@ function renderProtoCards(){
       box.appendChild(card);
     });
   });
-  const target=autoExpand||(protoCur==='shadowsocks-2022'?null:protoCur);
+  const target=autoExpand||protoCur;
   if(target){
     box.querySelectorAll('.pcard').forEach(c=>{
       if(c.dataset.proto===target){

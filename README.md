@@ -1,14 +1,14 @@
 <div align="center">
   <img src="icon-veil.png" width="128" height="128" alt="Veil Logo">
   <h1>Veil Panel</h1>
-  <p><strong>Универсальная панель управления VPN: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) + Telegram MTProto Proxy. Обход DPI, REALITY SNI-валидация, встроенный веб-прокси.</strong></p>
+  <p><strong>Универсальная панель управления VPN: Xray (VLESS-Reality, Shadowsocks, Trojan, VMess, gRPC/XHTTP) + Telegram MTProto Proxy. Обход DPI, REALITY SNI-валидация, встроенный веб-прокси.</strong></p>
   <p><em>Основано на разработке <a href="https://github.com/Mekotofeuka/MTPROTO_FIX_By_MEKO">MEKO (MTPROTO_FIX)</a> · Лицензия MEKO: <a href="LICENSE-MEKO">LICENSE-MEKO</a></em></p>
   <p>
     <a href="README.ru.md">🇷🇺 Русский</a> •
     <a href="README.en.md">🇬🇧 English</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.1.0-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-2.2.0-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
     <img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu">
   </p>
@@ -19,7 +19,7 @@
 ## Возможности
 
 - **Быстрая установка**: развёртывание одной командой на Ubuntu.
-- **Несколько протоколов из коробки**: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) и Telegram MTProto Proxy.
+- **Несколько протоколов из коробки**: Xray (VLESS-Reality, Shadowsocks, Trojan, VMess, gRPC/XHTTP) и Telegram MTProto Proxy.
 - **Обход DPI**: тонкая настройка TLS-отпечатков (Firefox, Chrome, Safari, iOS, Android) и проверка доступности SNI.
 - **Универсальная подписка**: единый URL, который отдаёт клиентам base64-список ссылок всех протоколов — работает с v2rayNG / Hiddify / Streisand / NekoBox.
 - **REALITY**: всё настроено под обход блокировок и недетектируемый TLS-хендшейк (SNI-валидация перед применением).

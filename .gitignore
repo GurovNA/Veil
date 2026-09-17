@@ -17,6 +17,7 @@ __pycache__/
 .release-tmp*
 .release-tmp/**/*
 *.tar.gz
+*.tar.gz.sha256
 state.json
 theme.json
 wallpaper.bin
