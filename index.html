@@ -155,6 +155,7 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 .gauge .gval{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100;transition:stroke-dashoffset 1s cubic-bezier(.4,0,.2,1)}
 .gauge .gval.g-disk{stroke:var(--g-vmess)}
 .gauge .gval.g-mem{stroke:var(--ok)}
+.gauge .gval.g-cpu{stroke:var(--acc2)}
 .gauge .gv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
 @keyframes pulseUptime{0%{opacity:1}50%{opacity:.45}100%{opacity:1}}
 #stXrayUp{animation:pulseUptime 2.2s ease-in-out infinite}
@@ -253,11 +254,6 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       </div>
       <p class=subtitle>VPN · Telegram · анти-DPI</p>
       <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span>
-      <div style="margin-top:12px;padding:10px;background:rgba(255,255,255,0.05);border-radius:8px;font-size:13px;display:flex;gap:15px">
-        <div><strong>CPU:</strong> <span id=cpuUsage>...</span></div>
-        <div><strong>RAM:</strong> <span id=ramUsage>...</span></div>
-        <div><strong>Порты:</strong> <span id=portsStatus>OK</span></div>
-      </div>
         <span class=xrbtns>
           <button id=xrayStart class="tiny" onclick=startXray() hidden>▶ Запустить</button>
           <button id=xrayStop class="tiny" onclick=stopXray() hidden>⏹ Остановить</button>
@@ -275,6 +271,13 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
         <div class="m-ico">👥</div>
         <div style="min-width:0"><b id=stClients2>0</b><div class=cap>Клиенты</div></div>
       </div>
+      <div class="mstat m-cpu">
+        <div class=gauge>
+          <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-cpu" id=stCpuGauge cx=18 cy=18 r=15.9></circle></svg>
+          <div class=gv id=stCpuV>0%</div>
+        </div>
+        <div style="min-width:0"><b id=stCpuT>—</b><div class=cap>Процессор</div></div>
+      </div>
       <div class="mstat m-disk">
         <div class=gauge>
           <svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-disk" id=stDiskGauge cx=18 cy=18 r=15.9></circle></svg>
@@ -288,6 +291,10 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
           <div class=gv id=stMemV>0%</div>
         </div>
         <div style="min-width:0"><b id=stMemT>—</b><div class=cap>Память</div></div>
+      </div>
+      <div class="mstat m-ports">
+        <div class="m-ico">🔌</div>
+        <div style="min-width:0"><b id=stPorts>—</b><div class=cap>Порты открыто</div></div>
       </div>
     </div>
 
@@ -350,6 +357,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <div class=msg id=inbMsg></div>
       </div>
     </div>
+  </div>
 
   <div id=tab-proxy class="tab-pane"><div class=card>
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
@@ -464,7 +472,6 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <hr>
     <h3 style="margin:0 0 8px">Сетевые настройки</h3>
     <p class=mut style="margin:4px 0 0;font-size:12px">RU-обход убран из панели: сервер в Финляндии, гео-исключения не дают российский IP.</p>
-    </div>
     <div style="margin:12px 0">
       <label>Адрес прослушивания панели<input id=panelBind type=text placeholder="0.0.0.0 (пусто — все интерфейсы)" style="width:100%;margin-top:4px"></label>
       <p class=mut style="margin:4px 0 0;font-size:12px">Оставьте пустым, чтобы прослушивать все домены и IP-адреса. Пример: 127.0.0.1 для только локального доступа.</p>
@@ -537,21 +544,12 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <p class=mut style="margin:8px 0 0">«Авто» сам определяет по ширине экрана: телефон — одна колонка, широкий экран — две колонки.</p>
     </div>
     <div style="margin:16px 0 4px">
-      <span class=mut style="display:block;margin-bottom:6px">Стили приложений:</span>
-      <div id=thPresetsApps style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
-        <button type=button class="tiny sec" onclick="applyThemePreset('Happ Plus Style')">📱 Happ Plus</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Incy Style')">🔷 Incy</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Shadowrocket Style')">🚀 Shadowrocket</button>
-      </div>
-    </div>
-
-    <div style="margin:16px 0 4px">
-      <span class=mut style="display:block;margin-bottom:6px">Ретро ОС:</span>
-      <div id=thPresetsOS style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
-        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 95')">🪟 Windows 95</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Windows XP')">🌄 Windows XP</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Windows Vista')">💎 Windows Vista</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Windows 11')">✨ Windows 11</button>
+      <span class=mut style="display:block;margin-bottom:6px">Элегантные темы:</span>
+      <div id=thPresetsNew style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+        <button type=button class="tiny sec" onclick="applyThemePreset('Сакура')">🌸 Сакура</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Матча')">🍃 Матча</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Закат')">🌅 Закат</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Космос')">🌌 Космос</button>
       </div>
     </div>
 
@@ -705,16 +703,18 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
 
 </div><script>
 async function updateMetrics(){
-  const c=$('cpuUsage'), r=$('ramUsage'), p=$('portsStatus');
-  if(!c||!r||!p) return;
   try{
     const resp = await fetch('/api/metrics');
     if(!resp.ok) return;
     const m = await resp.json();
-    c.textContent = (m.cpu_percent ?? '—') + '%';
-    r.textContent = (m.ram_percent ?? '—') + '%';
-    const ps = m.ports_status || {};
-    p.textContent = Object.keys(ps).length ? Object.keys(ps).filter(k=>ps[k]).length + '/' + Object.keys(ps).length : '—';
+    const cpu = Math.max(0, Math.min(100, m.cpu_percent || 0));
+    const cg = document.getElementById('stCpuGauge');
+    if(cg) cg.style.strokeDashoffset = 100 - cpu;
+    const cv = document.getElementById('stCpuV'); if(cv) cv.textContent = cpu.toFixed(0) + '%';
+    const ct = document.getElementById('stCpuT'); if(ct) ct.textContent = (m.load1 != null ? 'load ' + m.load1 : 'нагрузка');
+    const ps = m.ports_status || {}, keys = Object.keys(ps);
+    const sp = document.getElementById('stPorts');
+    if(sp) sp.textContent = keys.length ? (keys.filter(k=>ps[k]).length + ' / ' + keys.length) : '—';
   }catch(e){}
 }
 
@@ -903,13 +903,10 @@ const TH_PRESETS={
   'Неон':             {bg:'070919',bg2:'0a0e2a',card:'0f1430',card2:'141a44',br:'2b386f',fg:'eef2ff',mut:'8899c7',acc:'22d3ee',acc2:'f472b6'},
   'Хакер':           {bg:'050805',bg2:'08120b',card:'0b150d',card2:'10200f',br:'1f4d2e',fg:'c8ffd8',mut:'68b07f',acc:'00ff88',acc2:'00d4ff'},
   'Киберпанк':       {bg:'0d0a1a',bg2:'14102a',card:'1a1433',card2:'22184a',br:'463a7a',fg:'f2eaff',mut:'a99acb',acc:'ff2ec4',acc2:'00e5ff'},
-  'Happ Plus Style':  {bg:'0d0d0d',bg2:'141414',card:'1a1a1a',card2:'222222',br:'3a3a3a',fg:'ffffff',mut:'888888',acc:'00d4aa',acc2:'00a8ff'},
-  'Incy Style':       {bg:'0f0f1a',bg2:'161625',card:'18182a',card2:'21213a',br:'3a3a58',fg:'f0f0f0',mut:'8a8aa0',acc:'ff6b9d',acc2:'7c6bff'},
-  'Shadowrocket Style':{bg:'0a0a0a',bg2:'131313',card:'151515',card2:'1c1c1c',br:'3a3a3a',fg:'ffffff',mut:'8e8e93',acc:'007aff',acc2:'5ac8fa'},
-  'Windows 95':       {bg:'008080',bg2:'007575',card:'c0c0c0',card2:'d4d0c8',br:'808080',fg:'000000',mut:'404040',acc:'0000ff',acc2:'8000ff'},
-  'Windows XP':       {bg:'0078d7',bg2:'2b7fde',card:'eef5fd',card2:'e6f1fb',br:'9cc3e8',fg:'1a1a2e',mut:'5a6b80',acc:'0078d7',acc2:'2fbf8f'},
-  'Windows Vista':    {bg:'1e3a5f',bg2:'173049',card:'d6e8f7',card2:'e3f0fa',br:'8eb8d8',fg:'1a3a5c',mut:'4a6a80',acc:'0078d7',acc2:'6eb43a'},
-  'Windows 11':       {bg:'111111',bg2:'1a1a1a',card:'1e1e1e',card2:'272727',br:'484848',fg:'ffffff',mut:'8a8a8a',acc:'0067c0',acc2:'60b9f5'},
+  'Сакура':          {bg:'1a0f18',bg2:'251424',card:'331c31',card2:'422540',br:'663a63',fg:'ffeefb',mut:'d0a6cc',acc:'ec4899',acc2:'f43f5e'},
+  'Матча':           {bg:'0e1612',bg2:'132119',card:'1a2e23',card2:'223d2f',br:'3a664f',fg:'eafff2',mut:'a2d0b8',acc:'059669',acc2:'10b981'},
+  'Закат':           {bg:'180f1e',bg2:'24162e',card:'321d40',card2:'422654',br:'643b80',fg:'faeeff',mut:'ccb2e0',acc:'a855f7',acc2:'ec4899'},
+  'Космос':          {bg:'080c14',bg2:'0d1424',card:'131f36',card2:'192a4a',br:'2b4371',fg:'eef4ff',mut:'9db6e8',acc:'3b82f6',acc2:'8b5cf6'},
 };
 function applyThemePreset(name){
   const p=TH_PRESETS[name];
@@ -1435,6 +1432,7 @@ async function saveInb(){
 
 function showModal(id){
   const el=$(id); if(!el)return;
+  if(el.parentElement!==document.body)document.body.appendChild(el);
   hideModal();
   el.classList.remove('hidden');
   el.classList.add('open');
@@ -2072,6 +2070,7 @@ async function loadStats(){
       animateCount($('stMemV'),pct,{suffix:'%'});
       $('stMemT').textContent=mem.used_mb+' из '+mem.total_mb+' МБ';
     }
+    await updateMetrics();
   }catch(e){}
 }
 setInterval(loadStats,30000);

@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -81,6 +81,20 @@ def get_system_metrics():
         metrics["ram_percent"] = round(100.0 * (1.0 - avail_mem / max(1, total_mem)), 1)
     except Exception:
         pass
+    try:
+        metrics["load1"] = round(os.getloadavg()[0], 2)
+    except Exception:
+        pass
+    try:
+        st = _load(STATE, {}) or {}
+        ps = {}
+        for proto, inb in (st.get("inbounds") or {}).items():
+            port = inb.get("port")
+            if isinstance(port, int):
+                ps[str(port)] = not _port_free(port)
+        metrics["ports_status"] = ps
+    except Exception:
+        metrics["ports_status"] = {}
     return metrics
 
 def run_protocol_self_test():
