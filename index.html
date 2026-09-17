@@ -302,54 +302,53 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
 
       <div id=protoCards></div>
 
-      <div id=addBox class="dialog hidden">
-        <div class=dcard>
-        <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
-        <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
-        <label class="fldlbl" for="newLimit">Лимит, ГБ (0=безлимит)</label>
-        <input id="newLimit" type=number min=0 step=0.5 placeholder="Лимит, ГБ (пусто = безлимит)" value="">
-        <label for="newExpiry">Срок, дней (0=бессрочно)</label>
-<input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
-        <button onclick=doAdd()>Создать</button>
-        <div class=msg id=addMsg></div>
-        </div>
-      </div>
-      <div id=renameBox class="dialog hidden">
-        <div class=dcard>
-        <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
-        <input id=renameName placeholder="Новое имя" maxlength=32>
-        <button onclick=doRename()>Сохранить</button>
-        <div class=msg id=renameMsg></div>
-        </div>
-      </div>
-      <div id=inbBox class="dialog hidden">
-        <div class=dcard>
-        <div class=row><b id=inbTitle>Настройки inbound</b><button class=tiny onclick=hideInb()>Отмена</button></div>
-        <label class=mut style="display:block">Порт:
-          <input id=inbPort type=number min=1 max=65535 style="margin-top:4px">
-        </label>
-        <label class=mut id=inbSniBlock style="display:none;margin-top:8px">SNI (маскировка):
-          <input id=inbSni maxlength=64 placeholder="www.samsung.com" style="margin-top:4px;text-transform:lowercase">
-        </label>
-        <label class=mut style="display:block;margin-top:8px">Отпечаток TLS (fingerprint):
-          <select id=inbFp style="width:100%;margin-top:4px">
-            <option value=firefox>firefox (рекомендуется)</option>
-            <option value=chrome>chrome</option>
-            <option value=safari>safari</option>
-            <option value=ios>ios</option>
-            <option value=android>android</option>
-            <option value=edge>edge</option>
-            <option value=randomized>randomized</option>
-            <option value=random>random</option>
-          </select>
-        </label>
-        <button onclick=saveInb() id=inbSaveBtn style="margin-top:10px">Сохранить</button>
-        <div class=msg id=inbMsg></div>
-        </div>
-      </div>
-      </div>
-
       <div class=msg id=vpnMsg></div>
+    </div>
+
+    <div id=addBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b id=addTitle>Новый клиент</b><button class=tiny onclick=hideAdd()>Отмена</button></div>
+      <input id=newName placeholder="Имя (например: Мама)" maxlength=32>
+      <label class="fldlbl" for="newLimit">Лимит, ГБ (0=безлимит)</label>
+      <input id="newLimit" type=number min=0 step=0.5 placeholder="Лимит, ГБ (пусто = безлимит)" value="">
+      <label for="newExpiry">Срок, дней (0=бессрочно)</label>
+<input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
+      <button onclick=doAdd()>Создать</button>
+      <div class=msg id=addMsg></div>
+      </div>
+    </div>
+    <div id=renameBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Переименовать клиента</b><button class=tiny onclick=hideRename()>Отмена</button></div>
+      <input id=renameName placeholder="Новое имя" maxlength=32>
+      <button onclick=doRename()>Сохранить</button>
+      <div class=msg id=renameMsg></div>
+      </div>
+    </div>
+    <div id=inbBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b id=inbTitle>Настройки inbound</b><button class=tiny onclick=hideInb()>Отмена</button></div>
+      <label class=mut style="display:block">Порт:
+        <input id=inbPort type=number min=1 max=65535 style="margin-top:4px">
+      </label>
+      <label class=mut id=inbSniBlock style="display:none;margin-top:8px">SNI (маскировка):
+        <input id=inbSni maxlength=64 placeholder="www.samsung.com" style="margin-top:4px;text-transform:lowercase">
+      </label>
+      <label class=mut style="display:block;margin-top:8px">Отпечаток TLS (fingerprint):
+        <select id=inbFp style="width:100%;margin-top:4px">
+          <option value=firefox>firefox (рекомендуется)</option>
+          <option value=chrome>chrome</option>
+          <option value=safari>safari</option>
+          <option value=ios>ios</option>
+          <option value=android>android</option>
+          <option value=edge>edge</option>
+          <option value=randomized>randomized</option>
+          <option value=random>random</option>
+        </select>
+      </label>
+      <button onclick=saveInb() id=inbSaveBtn style="margin-top:10px">Сохранить</button>
+      <div class=msg id=inbMsg></div>
+      </div>
     </div>
 
   <div id=tab-proxy class="tab-pane"><div class=card>
@@ -739,7 +738,16 @@ async function loadSub(){
   if(userListEl){
     try{
       const d = await api('/api/clients');
-      const list = d.clients || [];
+      const rawList = d.clients || [];
+      const seen = new Set();
+      const list = [];
+      rawList.forEach(c => {
+        const key = c.sub_token || c.uuid;
+        if (!seen.has(key)) {
+          seen.add(key);
+          list.push(c);
+        }
+      });
       if(list.length === 0){
         userListEl.innerHTML = '<p class=mut>Пользователей пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
       } else {
