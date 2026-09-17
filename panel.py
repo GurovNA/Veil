@@ -17,7 +17,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -108,20 +108,18 @@ PROTOCOLS = [
     {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "ui_group": "vless", "net": "tcp",       "tls": False},
     {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "ui_group": "vless", "net": "xhttp",     "tls": False},
     {"id": "vless-ws",            "label": "VLESS + WebSocket",                       "group": "vless",   "ui_group": "vless", "net": "ws",       "tls": False},
-    {"id": "vless-ws-tls",        "label": "VLESS + WebSocket + TLS (self-signed)",   "group": "vless",   "ui_group": "vless", "net": "ws",       "tls": True},
-    {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS (self-signed)",         "group": "vless",   "ui_group": "vless", "net": "tcp",      "tls": True},
-    {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS (self-signed)",        "group": "vless",   "ui_group": "vless", "net": "grpc",     "tls": True},
-    {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS (self-signed)",       "group": "vless",   "ui_group": "vless", "net": "xhttp",    "tls": True},
+    {"id": "vless-ws-tls",        "label": "VLESS + WebSocket + TLS",   "group": "vless",   "ui_group": "vless", "net": "ws",       "tls": True},
+    {"id": "vless-tcp-tls",       "label": "VLESS + TCP + TLS",         "group": "vless",   "ui_group": "vless", "net": "tcp",      "tls": True},
+    {"id": "vless-grpc-tls",      "label": "VLESS + gRPC + TLS",        "group": "vless",   "ui_group": "vless", "net": "grpc",     "tls": True},
+    {"id": "vless-xhttp-tls",     "label": "VLESS + XHTTP + TLS",       "group": "vless",   "ui_group": "vless", "net": "xhttp",    "tls": True},
     {"id": "vmess-ws",            "label": "VMess + WebSocket",                       "group": "vmess",   "net": "ws",       "tls": False},
-    {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS (self-signed)",   "group": "vmess",   "net": "ws",       "tls": True},
-    {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS (self-signed)",         "group": "vmess",   "net": "tcp",      "tls": True},
-    {"id": "vmess-grpc-tls",      "label": "VMess + gRPC + TLS (self-signed)",        "group": "vmess",   "net": "grpc",     "tls": True},
-    {"id": "trojan-ws",           "label": "Trojan + WebSocket",                      "group": "trojan",  "net": "ws",       "tls": False},
-    {"id": "trojan-ws-tls",       "label": "Trojan + WebSocket + TLS (self-signed)",  "group": "trojan",  "net": "ws",       "tls": True},
-    {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS (self-signed)",        "group": "trojan",  "net": "tcp",      "tls": True},
-    {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS (self-signed)",       "group": "trojan",  "net": "grpc",     "tls": True},
+    {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS",   "group": "vmess",   "net": "ws",       "tls": True},
+    {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS",         "group": "vmess",   "net": "tcp",      "tls": True},
+    {"id": "vmess-grpc-tls",      "label": "VMess + gRPC + TLS",        "group": "vmess",   "net": "grpc",     "tls": True},
+    {"id": "trojan-ws-tls",       "label": "Trojan + WebSocket + TLS",             "group": "trojan",  "net": "ws",       "tls": True},
+    {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS",        "group": "trojan",  "net": "tcp",      "tls": True},
+    {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS",       "group": "trojan",  "net": "grpc",     "tls": True},
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
-    {"id": "shadowsocks-2022",    "label": "Shadowsocks 2022 (aes-128-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
     {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
     {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
 ]
@@ -137,7 +135,6 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
-           "shadowsocks-2022": 26443,
            "hysteria2": 27443, "wireguard": 28443}
 # Порт 443/80 заняты nginx (webproxy/decoy и Let's Encrypt), 18080 — telemt web,
 # 9091 — telemt API, 7443 — telemt MTProto. Панель не должна их занимать.
@@ -289,6 +286,51 @@ def _ensure_wg_std(st):
                     if nv != v: c[f] = nv; changed = True
     return changed
 
+def _ensure_all_protos(st):
+    """Гарантирует, что в state созданы ВСЕ поддерживаемые inbounds и каждый
+    подписчик присутствует во всех протоколах (по одному клиенту на inbound).
+    Требуется для универсальной подписки со всеми протоколами/транспортами."""
+    if not st:
+        return False
+    changed = False
+    inbounds = st.setdefault("inbounds", {})
+    for proto in _VALID_PROTOCOLS:
+        if proto not in inbounds:
+            try:
+                inbounds[proto] = _alloc_inbound(st, proto)
+                changed = True
+            except Exception as e:
+                print(f"ensure_all: {proto} -> {e}", flush=True)
+    # Сгруппируем подписчиков по sub_token (эталонные атрибуты берём из первого вхождения)
+    refs = {}
+    for inb in inbounds.values():
+        for c in inb.get("clients", []):
+            key = c.get("sub_token") or c["uuid"]
+            if key not in refs:
+                refs[key] = {"uuid": c["uuid"], "name": c.get("name") or "Клиент",
+                             "sub_token": c.get("sub_token"),
+                             "limit_gb": c.get("limit_gb", 0),
+                             "expiry": c.get("expiry", 0),
+                             "created": c.get("created", 0)}
+    # Раскидаем каждого подписчика по всем inbounds (без потери уже существующих клиентов)
+    for ref in refs.values():
+        for proto, inb in inbounds.items():
+            if not inb.get("clients"):
+                inb["clients"] = []
+            if any(c.get("sub_token") == ref["sub_token"] or c["uuid"] == ref["uuid"]
+                   for c in inb["clients"]):
+                continue
+            c = _new_client(ref["name"], proto, inb)
+            c["uuid"] = ref["uuid"]
+            if ref["sub_token"]:
+                c["sub_token"] = ref["sub_token"]
+            for k in ("limit_gb", "expiry", "created"):
+                if ref.get(k):
+                    c[k] = ref[k]
+            inb["clients"].append(c)
+            changed = True
+    return changed
+
 def _ensure_xray_keys_urlsafe(st):
     changed = False
     for inb in (st or {}).get("inbounds", {}).values():
@@ -300,7 +342,7 @@ def _ensure_xray_keys_urlsafe(st):
                 continue
             pad = "=" * ((4 - len(v) % 4) % 4)
             try:
-                raw = base64.b64decode(v + pad)
+                raw = base64.b64decode(v + pad, altchars=b"-_")
                 nv = base64.urlsafe_b64encode(raw).decode().rstrip("=")
                 if nv != v: inb[f] = nv; changed = True
             except Exception:
@@ -399,11 +441,10 @@ def _new_inbound(proto):
                     "dest": "www.samsung.com:443"})
     if proto == "shadowsocks":
         inb["password"] = secrets.token_urlsafe(12)
-    if proto == "shadowsocks-2022":
-        inb["password"] = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode()
-        inb["method"] = "2022-blake3-aes-128-gcm"
     if proto == "hysteria2":
-        pass
+        cp = _cert_pathes()
+        if cp["cert"] and cp["key"]:
+            inb["cert"], inb["key"] = cp["cert"], cp["key"]
     if proto == "wireguard":
         priv, pub = _gen_keys()
         inb.update({"private_key": priv, "public_key": pub,
@@ -450,13 +491,16 @@ def _stream_settings(proto, inb):
     meta = _proto_meta(proto)
     if proto == "hysteria2":
         dom = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
-        _ensure_hy2_cert(dom)
+        cert, key = inb.get("cert"), inb.get("key")
+        if not (cert and os.path.exists(cert) and key and os.path.exists(key)):
+            _ensure_hy2_cert(dom)
+            cert, key = HY2_CERT, HY2_KEY
         masq = {"type": "proxy", "url": "https://" + dom} if dom else {"type": "404"}
         return {"network": "hysteria",
                 "security": "tls",
                 "tlsSettings": {"serverName": dom, "alpn": ["h3"],
-                                "certificates": [{"certificateFile": "/usr/local/etc/xray/hy2_cert.pem",
-                                                   "keyFile": "/usr/local/etc/xray/hy2_key.pem"}]},
+                                "certificates": [{"certificateFile": cert,
+                                                  "keyFile": key}]},
                 "hysteriaSettings": {
                     "version": 2,
                     "udpIdleTimeout": 60,
@@ -724,12 +768,12 @@ def _fp():
 def _link(inb, host, client, proto):
     meta = _proto_meta(proto)
     fp = _fp()
-    name = client.get("name") or "Veil"
+    _base = client.get("name") or "Veil"
+    name = f"{_base} · {meta['label']}"
     if proto == "hysteria2":
         dom = (CFG_CACHE.get("panel_domain") or "").strip() or host
         auth = client.get("auth") or client["uuid"]
-        q = urllib.parse.urlencode({"sni": dom,
-                                    "insecure": 1})
+        q = urllib.parse.urlencode({"sni": dom})
         return f"hy2://{auth}@{host}:{inb['port']}/?{q}#{urllib.parse.quote(name)}"
     if proto == "wireguard":
         psk = inb.get("psk") or ""
@@ -753,7 +797,7 @@ def _link(inb, host, client, proto):
         add = host.strip("[]")
         p = {"v": "2", "ps": name, "add": add, "port": inb["port"],
              "id": client["uuid"], "aid": "0", "scy": "auto",
-             "net": meta["net"], "type": "none", "host": "",
+             "net": meta["net"], "type": "gun" if meta["net"] == "grpc" else "none", "host": "",
              "path": "/veil" if meta["net"] == "ws" else "veil",
              "tls": "tls" if meta["tls"] else ""}
         if meta["tls"]:
@@ -2084,6 +2128,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 st = _load(STATE) or {}
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+                panel_port = CFG_CACHE.get("panel_port", 8444)
 
                 tr = _statsquery()
                 links = []
@@ -2144,9 +2189,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 ui = f"upload={up}; download={down}; total={total}; expire={int(expiry) * 1000}"
                 self.send_header("subscription-userinfo", ui)
                 if sub_name:
-                    self.send_header("profile-title", sub_name.encode("utf-8"))
+                    pt = "base64:" + base64.b64encode(sub_name.encode("utf-8")).decode()
+                    self.send_header("profile-title", pt)
                 self.send_header("profile-update-interval", "24")
-                self.send_header("profile-web-page-url", host)
+                self.send_header("profile-web-page-url", f"https://{host}:{panel_port}/")
                 self.end_headers(); self.wfile.write(b)
                 return None
             except Exception as e:
@@ -2553,20 +2599,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
                 
-                # Убедимся, что основные протоколы (Reality, Shadowsocks, Hysteria2, WireGuard) созданы, 
-                # чтобы подписка была действительно универсальной и охватывала все протоколы на сервере.
-                core_protos = ["reality", "shadowsocks", "hysteria2", "wireguard"]
-                if want_proto and want_proto not in core_protos:
-                    core_protos.append(want_proto)
-                    
+                # Убедимся, что созданы ВСЕ поддерживаемые протоколы и подписчик
+                # присутствует в каждом из них, чтобы подписка была универсальной
+                # и охватывала все протоколы/транспорты на сервере одновременно.
+                _ensure_all_protos(st)
                 inbounds = st.setdefault("inbounds", {})
-                for cp in core_protos:
-                    if cp not in inbounds and cp in _VALID_PROTOCOLS:
-                        try:
-                            inbounds[cp] = _alloc_inbound(st, cp)
-                        except Exception:
-                            pass
-                            
                 if not inbounds:
                     p_proto = want_proto or "reality"
                     inbounds[p_proto] = _alloc_inbound(st, p_proto)
@@ -3129,6 +3166,7 @@ if __name__ == "__main__":
         xc = _load(XRAY)
         chg = _ensure_wg_psk(st) or _ensure_wg_std(st)
         chg = _ensure_xray_keys_urlsafe(st) or chg
+        chg = _ensure_all_protos(st) or chg
         if chg:
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(

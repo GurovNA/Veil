@@ -7,7 +7,7 @@
     <a href="README.md">🇬🇧 English</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.0.5-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-2.2.0-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
     <img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu">
   </p>
@@ -18,7 +18,7 @@
 ## Возможности
 
 - **Быстрая установка**: Развертывание одной командой на Ubuntu.
-- **Множество протоколов**: Xray (VLESS-Reality, Shadowsocks-2022, Trojan, VMess, gRPC/XHTTP) и Telegram MTProto Proxy (Telemt).
+- **Множество протоколов**: Xray (VLESS-Reality, Shadowsocks, Trojan, VMess, gRPC/XHTTP) и Telegram MTProto Proxy (Telemt).
 - **Встроенный Web Proxy**: Автоматическая настройка Nginx HTTPS-реверс-прокси прямо из панели.
 - **Обход DPI**: Тонкая настройка TLS fingerprints (Firefox, Chrome, Safari и др.) и проверка доступности SNI.
 - **Современный интерфейс**: Адаптивная темная тема, мгновенная генерация QR-кодов и управление клиентами в один клик.
