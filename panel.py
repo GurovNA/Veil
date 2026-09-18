@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -768,6 +768,8 @@ def _subs_summary(st, for_display=False):
                 u["links"][proto] = _link(inb, host, c, proto)
             except Exception:
                 pass
+            if proto == "wireguard":
+                u["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{key}"
             if proto not in [x["proto"] for x in u["protos"]]:
                 u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
                                     "port": inb.get("port", 0)})
@@ -997,11 +999,94 @@ def _main_menu_keyboard():
     return {"inline_keyboard": [
         [{"text": "📊 Статус", "callback_data": "cmd_status"},
          {"text": "👥 Клиенты", "callback_data": "cmd_clients"}],
-        [{"text": "🔄 Перезапустить Xray", "callback_data": "cmd_restart"}],
-        [{"text": "📈 Статистика", "callback_data": "cmd_stats"},
-         {"text": "🔐 2FA", "callback_data": "cmd_2fa"}],
-        [{"text": "❓ Помощь", "callback_data": "cmd_help"}],
+        [{"text": "➕ Добавить подписку", "callback_data": "cmd_addsub"},
+         {"text": "🔄 Перезапустить Xray", "callback_data": "cmd_restart"}],
+        [{"text": "🔐 2FA", "callback_data": "cmd_2fa"},
+         {"text": "❓ Помощь", "callback_data": "cmd_help"}],
     ]}
+
+# Многошаговое добавление подписки: chat_id -> {"step": "name"|"limit"|"days", ...}
+BOT_NEW_SUB = {}
+# Флаг активного «низкого» статуса доступности из РФ (для дедупликации оповещений)
+_GP_LOW_ALERT_ACTIVE = False
+
+def _gp_maybe_alert(entry):
+    global _GP_LOW_ALERT_ACTIVE
+    try:
+        total = int(entry.get("total_count") or 0)
+        ok = int(entry.get("success_count") or 0)
+        if total <= 0:
+            return
+        pct = ok * 100.0 / total
+        ids = (CFG_CACHE.get("bot_chat_ids") or [])
+        if not ids:
+            return
+        if pct <= 50.0 and not _GP_LOW_ALERT_ACTIVE:
+            _GP_LOW_ALERT_ACTIVE = True
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+            _bot_send_message(ids[0],
+                f"🚨 <b>Доступность из РФ упала ниже 50%!</b>\n"
+                f"Зонды: {ok}/{total} ({pct:.0f}%)\n"
+                f"Время: {ts} UTC\n"
+                f"Подробности проведи проверку в панели или нажми 📊 Статус",
+                "HTML")
+        elif pct > 50.0 and _GP_LOW_ALERT_ACTIVE:
+            _GP_LOW_ALERT_ACTIVE = False
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+            _bot_send_message(ids[0],
+                f"✅ Доступность из РФ восстановилась: {ok}/{total} ({pct:.0f}%) · {ts} UTC",
+                "HTML")
+    except Exception:
+        pass
+
+def _gp_last_history():
+    try:
+        with open(f"{BASE}/globalping_history.json", "r") as f:
+            h = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(h, list) or not h:
+        return None
+    last = h[-1]
+    total = int(last.get("total_count") or 0)
+    ok = int(last.get("success_count") or 0)
+    if total <= 0:
+        return None
+    pct = ok * 100.0 / total
+    ts = str(last.get("created_at") or "")[:16].replace("T", " ")
+    return ok, total, pct, ts
+
+def _create_subscription(name, limit_gb=0, expiry_days=0):
+    st = _load(STATE)
+    if st is None:
+        st = _new_state("reality")
+    _migrate_state(st)
+    sub_token = secrets.token_urlsafe(16)
+    client_uuid = str(uuidlib.uuid4())
+    expiry = (int(time.time()) + int(expiry_days) * 86400) if int(expiry_days) > 0 else 0
+    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    panel_port = CFG_CACHE.get("panel_port", 8444)
+    _ensure_all_protos(st)
+    inbounds = st.setdefault("inbounds", {})
+    if not inbounds:
+        inbounds["reality"] = _alloc_inbound(st, "reality")
+    first_link = None
+    for proto, inb in inbounds.items():
+        c = _new_client(name, proto, inb, limit_gb=float(limit_gb) or 0, expiry=expiry)
+        c["uuid"] = client_uuid
+        c["sub_token"] = sub_token
+        inb.setdefault("clients", []).append(c)
+        lnk = _link(inb, host, c, proto)
+        if not first_link:
+            first_link = lnk
+    _write_xray(st)
+    _save(STATE, st)
+    _restart_xray()
+    sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+    return {"name": name, "sub_token": sub_token, "sub_url": sub_url,
+            "link": first_link or "", "limit_gb": float(limit_gb) or 0,
+            "expiry_days": int(expiry_days)}
 
 def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
     token = CFG_CACHE.get("bot_token", "")
@@ -1075,6 +1160,8 @@ def _process_bot_update(update):
             cmd = "/clients"
         elif data == "cmd_restart":
             cmd = "/restart"
+        elif data == "cmd_addsub":
+            cmd = "/addsub"
         elif data == "cmd_help":
             cmd = "/help"
         elif data == "cmd_stats":
@@ -1093,6 +1180,59 @@ def _process_bot_update(update):
         from_id = message.get("from", {}).get("id")
         text = message.get("text", "").strip()
         if not text.startswith("/"):
+            stp = BOT_NEW_SUB.get(chat_id)
+            if stp and stp.get("step") and _is_admin(from_id):
+                step = stp["step"]
+                if step == "name":
+                    name = text.strip()
+                    if not name:
+                        _bot_send_message(chat_id, "Имя не может быть пустым. Напиши имя ещё раз или /cancel", "HTML")
+                        return
+                    stp["name"] = name[:40]
+                    stp["step"] = "limit"
+                    BOT_NEW_SUB[chat_id] = stp
+                    _bot_send_message(chat_id,
+                        "👤 Имя: <b>" + _html.escape(stp["name"]) + "</b>\n"
+                        "Теперь <b>лимит</b> трафика в ГБ (число, <code>0</code> = безлимит, можно дробное: 12.5):\n"
+                        "Отмена: /cancel", "HTML")
+                elif step == "limit":
+                    try:
+                        limit_gb = float(text.replace(",", ".").strip())
+                        if limit_gb < 0:
+                            raise ValueError
+                    except ValueError:
+                        _bot_send_message(chat_id, "Нужно число. Повтори лимит (0 = безлимит) или /cancel", "HTML")
+                        return
+                    stp["limit_gb"] = limit_gb
+                    stp["step"] = "days"
+                    BOT_NEW_SUB[chat_id] = stp
+                    _bot_send_message(chat_id,
+                        "Лимит: <b>" + str(limit_gb) + "</b> ГБ\nТеперь <b>срок</b> в днях (число, <code>0</code> = бессрочно):\n"
+                        "Отмена: /cancel", "HTML")
+                elif step == "days":
+                    try:
+                        days = int(text.strip())
+                        if days < 0:
+                            raise ValueError
+                    except ValueError:
+                        _bot_send_message(chat_id, "Нужно целое число дней. Повтори (0 = бессрочно) или /cancel", "HTML")
+                        return
+                    stp["days"] = days
+                    BOT_NEW_SUB.pop(chat_id, None)
+                    name = stp.get("name") or "Клиент"
+                    try:
+                        r = _create_subscription(name, limit_gb=stp.get("limit_gb", 0), expiry_days=days)
+                    except Exception as e:
+                        _bot_send_message(chat_id, f"❌ Ошибка создания: {e}")
+                        return
+                    lim = "безлимит" if r["limit_gb"] <= 0 else (str(r["limit_gb"]) + " ГБ")
+                    day = "бессрочно" if r["expiry_days"] <= 0 else (str(r["expiry_days"]) + " дн.")
+                    _bot_send_message(chat_id,
+                        f"✅ <b>Подписка создана</b>\nИмя: <code>{_html.escape(name)}</code>\n"
+                        f"Лимит: {lim} · Срок: {day}\n"
+                        f"Подписка: <code>{r['sub_url']}</code>\n"
+                        f"Скопируй ссылку в приложение (v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket).",
+                        "HTML", _main_menu_keyboard())
             return
     
     if not _is_admin(from_id):
@@ -1107,13 +1247,6 @@ def _process_bot_update(update):
             _bot_send_message(chat_id, 
                 f"🤖 <b>Veil Panel Bot</b>\nВаш Chat ID: <code>{chat_id}</code>\n\nВыберите действие:",
                 "HTML", _main_menu_keyboard())
-        elif cmd == "/status":
-            st = _load(STATE, {}) or {}
-            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
-            clients = _client_count(st)
-            _bot_send_message(chat_id, 
-                f"📊 <b>Статус сервера</b>\nXray: {'🟢 работает' if running else '🔴 остановлен'}\nКлиентов: {clients}\nНод: {len(_load_nodes())}",
-                "HTML", _main_menu_keyboard())
         elif cmd == "/clients":
             st = _load(STATE, {}) or {}
             lines = ["👥 <b>Клиенты:</b>"]
@@ -1126,16 +1259,40 @@ def _process_bot_update(update):
         elif cmd == "/restart":
             _restart_xray()
             _bot_send_message(chat_id, "🔄 Xray перезапущен", reply_markup=_main_menu_keyboard())
+        elif cmd == "/addsub":
+            BOT_NEW_SUB[chat_id] = {"step": "name", "name": ""}
+            _bot_send_message(chat_id,
+                "➕ <b>Новая подписка</b>\nШаг 1 из 3. Отправь <b>имя</b> клиента (например: <b>Мама</b>).\nОтмена: /cancel",
+                "HTML")
+        elif cmd == "/cancel":
+            BOT_NEW_SUB.pop(chat_id, None)
+            _bot_send_message(chat_id, "Отменено.", reply_markup=_main_menu_keyboard())
         elif cmd == "/help":
-            _bot_send_message(chat_id, "<b>Команды:</b>\n/start — меню\n/status — статус сервера\n/clients — список клиентов\n/restart — перезагрузить Xray\n/stats — статистика\n/2fa — настройка 2FA", "HTML", _main_menu_keyboard())
-        elif cmd == "/stats":
+            _bot_send_message(chat_id, "<b>Команды:</b>\n/start — меню\n/status — статус и статистика\n/clients — список клиентов\n/restart — перезагрузить Xray\n/addsub — создать новую подписку (имя → лимит → срок)\n/2fa — настройка 2FA", "HTML", _main_menu_keyboard())
+        elif cmd in ("/status", "/stats"):
             st = _load(STATE, {}) or {}
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             clients = _client_count(st)
             uptime = _service_active_since("xray")
+            gp = _gp_last_history()
+            if gp:
+                ok, total, pct, ts = gp
+                gp_txt = f"🇷🇺 Доступность из РФ: {'🟢' if pct > 50 else '🔴'} {ok}/{total} ({pct:.0f}%) · {ts} UTC"
+            else:
+                gp_txt = "🇷🇺 Доступность из РФ: — (проверок ещё не было, открой панель)"
+            cpu = mem = None
+            try:
+                m = get_system_metrics()
+                cpu = m.get("cpu_usage"); mem = m.get("mem_usage")
+            except Exception:
+                pass
             disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=3).stdout
-            _bot_send_message(chat_id, 
-                f"📊 <b>Статистика</b>\nXray: {'🟢' if running else '🔴'}\nАптайм: {uptime or '—'}\nКлиентов: {clients}\nДиск: {disk.splitlines()[1] if len(disk.splitlines())>1 else '—'}",
+            _bot_send_message(chat_id,
+                f"📊 <b>Статус и статистика</b>\nXray: {'🟢 работает' if running else '🔴 остановлен'}\n"
+                f"Аптайм: {uptime or '—'}\nКлиентов: {clients}\nНод: {len(_load_nodes())}\n"
+                f"{gp_txt}\n"
+                f"CPU: {cpu if cpu is not None else '—'} · RAM: {mem if mem is not None else '—'}\n"
+                f"Диск: {disk.splitlines()[1] if len(disk.splitlines())>1 else '—'}",
                 "HTML", _main_menu_keyboard())
         elif cmd == "/2fa":
             _bot_send_message(chat_id, 
@@ -1568,6 +1725,36 @@ def _my_ip():
         pass
     _IPV4_CACHE["t"] = time.time(); _IPV4_CACHE["v"] = v
     return v
+
+
+def _all_iface_ips():
+    """Все адреса всех интерфейсов VPS (lo и внешние), IPv4 и IPv6."""
+    out = []
+    try:
+        r = subprocess.run(["ip", "-o", "addr", "show"],
+                           capture_output=True, text=True, timeout=5).stdout
+        iface_map = {}
+        for line in r.splitlines():
+            toks = line.split()
+            if len(toks) < 4:
+                continue
+            ifname = toks[1]
+            fam = toks[2]
+            if fam not in ("inet", "inet6"):
+                continue
+            addr = toks[3].split("/")[0]
+            iface_map.setdefault(ifname, {"ipv4": [], "ipv6": []})
+            if fam == "inet":
+                iface_map[ifname]["ipv4"].append(addr)
+            else:
+                iface_map[ifname]["ipv6"].append(addr)
+        for ifname, ips in iface_map.items():
+            out.append({"iface": ifname, "ipv4": ips["ipv4"], "ipv6": ips["ipv6"]})
+    except Exception:
+        pass
+    if not out:
+        out = [{"iface": "?", "ipv4": [_my_ip() or ""], "ipv6": [_my_ipv6() or ""]}]
+    return out
 
 
 def _my_ipv6():
@@ -2463,6 +2650,38 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(500, {"error": str(e)})
 
 
+        if p.startswith("/api/wgconf/"):
+            tok = p[len("/api/wgconf/"):].strip("/")
+            st = _load(STATE, {}) or {}
+            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            conf = ""
+            name = "client"
+            for proto, inb in (st.get("inbounds") or {}).items():
+                if proto != "wireguard":
+                    continue
+                for c in inb.get("clients", []):
+                    if c.get("sub_token") == tok or c["uuid"] == tok:
+                        conf = _link(inb, host, c, proto)
+                        name = c.get("name") or "client"
+                        break
+                if conf:
+                    break
+            if not conf:
+                return self._send(404, {"error": "конфиг не найден"})
+            src_name = (re.sub(r"[^\wа-яёА-ЯЁ -]+", "", name).strip().replace(" ", "_") or "client")
+            ascii_name = re.sub(r"[^\x00-\x7f]+", "", src_name) or "client"
+            b = conf.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="' + ascii_name + '.conf"; filename*=UTF-8\'\'' + urllib.parse.quote(src_name + ".conf"))
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+            return None
+
         if p == "/api/metrics":
             return self._send(200, get_system_metrics())
         if p == "/api/selftest":
@@ -2526,6 +2745,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if proto == "wireguard" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
+                        item["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{sub_token}"
                     if len(out) < 16:
                         item["online"] = _online_count(c["uuid"])
                     out.append(item)
@@ -2647,7 +2867,7 @@ class H(http.server.BaseHTTPRequestHandler):
             domain = (CFG_CACHE.get("panel_domain") or "").strip()
             out = {"sni": sni, "sni_list": sni_list, "ports": ports, "domain": domain,
                    "fp": _fp(), "fp_values": sorted(_FP_VALUES),
-                   "ipv4": _my_ip(), "ipv6": _my_ipv6(),
+                   "ipv4": _my_ip(), "ipv6": _my_ipv6(), "addrs": _all_iface_ips(),
                    "a": [], "aaaa": [], "match4": None, "match6": None}
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2819,6 +3039,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
 
+            if p == "/api/restart":
+                subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"])
+                return self._send(200, {"ok": True, "restarting": True})
+
             if p == "/api/globalping/history":
                 b = self._body() or {}
                 history_file = f"{BASE}/globalping_history.json"
@@ -2845,6 +3069,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     os.replace(tmp, history_file)
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
+                _gp_maybe_alert(entry)
                 return self._send(200, {"ok": True, "count": len(history)})
 
             # ---- vpn setup / новый клиент (старые ссылки никогда не трогаются) ----
