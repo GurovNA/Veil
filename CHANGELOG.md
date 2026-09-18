@@ -2,6 +2,12 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.2.4] - 2026-09-18
+- **AmneziaWG: full server-side protocol** — the panel now manages a native `amneziawg` kernel interface (`awg0`, UDP 28444, 10.20.0.0/24) built from source: clients get their own `/32` address and keypair, configs include the AmneziaWG obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`), and peers are synced to `awg0` on start, on subscription create, on unblock/block and after every boot (peers are written straight into `/etc/amnezia/amneziawg/awg0.conf` so the interface survives reboot without a gap).
+- **AmneziaWG `.conf` for the Amnezia app** — public endpoint `GET /api/awgconf/<sub_token>` serves a ready-to-import AmneziaWG configuration for the AmneziaVPN client (attachment with RFC 5987 `filename*`); `conf_url` is exposed in `/api/subs`, `/api/clients` and as a «⬇ AmneziaWG» button on the subscription card and in the client card. Keys are generated in standard base64 (Xray's URL-safe X25519 keys are converted with `_wg_key_std`, otherwise the `awg` tools reject them with `Key is not the correct length or format`).
+- **Subscription UX fixes** — the client card button row now wraps (`flex-wrap`) instead of overflowing the screen on every inbound; the «⬇» download button is also available for `amneziawg` inbounds and downloads the `.conf` through the server (correct filename).
+- **Note for AmneziaVPN users**: the app has no v2ray-style base64 subscription support — it imports a single `.conf`/`.json`/`.vpn` file (or a `vpn://` key / QR). To get the AmneziaWG protocol in the app, use the direct «⬇ AmneziaWG» `.conf` download instead of the `/sub/<token>` link.
+
 ## [2.2.3] - 2026-09-18
 - **Bot: multi-step subscription creation** — `/addsub` now walks through 3 steps in chat: client name → traffic limit in GB (`0` = unlimited, decimals allowed) → expiry in days (`0` = no expiry). The flow validates input, supports `/cancel` at any step, and calls `_create_subscription(name, limit_gb, expiry_days)`, which persists the limit/expiry on the client.
 - **Bot: Status and Statistics merged** — `/status` now shows Xray state + uptime, client count, node count, RU availability from Globalping, CPU/RAM and disk. `/stats` is kept as a synonym; the «📈 Статистика» menu button was removed.

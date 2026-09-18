@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.3"
+VERSION = "2.2.4"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -115,10 +115,10 @@ def run_protocol_self_test():
 # ==================================================
 
 LOGO_FILE = f"{BASE}/logo.bin"
-_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg")
+_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg", "awg")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
                  "trojan": "Trojan", "ss": "Shadowsocks",
-                 "hy2": "Hysteria2", "wg": "WireGuard"}
+                 "hy2": "Hysteria2", "wg": "WireGuard", "awg": "AmneziaWG"}
 PROTOCOLS = [
     {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "ui_group": "vless", "net": "tcp",       "tls": False},
     {"id": "vless-xhttp-reality", "label": "VLESS + XHTTP + Reality",                 "group": "reality", "ui_group": "vless", "net": "xhttp",     "tls": False},
@@ -137,6 +137,7 @@ PROTOCOLS = [
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
     {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
     {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
+    {"id": "amneziawg",           "label": "AmneziaWG",                               "group": "awg",     "net": "udp",      "tls": False},
 ]
 for _p in PROTOCOLS:
     _p["group_label"] = _GROUP_LABELS.get(_p["group"], _p["group"])
@@ -153,7 +154,7 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
-           "hysteria2": 27443, "wireguard": 28443}
+           "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
 # Порт 443/80 заняты nginx (webproxy/decoy и Let's Encrypt), 18080 — telemt web,
 # 9091 — telemt API, 7443 — telemt MTProto. Панель не должна их занимать.
 _RESERVED_PORTS = {80, 443, 8080, 18080, 9091, 7443}
@@ -267,6 +268,154 @@ def _gen_keys():
     pub = _last_line(out, "public", "password")
     if priv and pub: return priv.strip(), pub.strip()
     raise RuntimeError("не разобрал xray x25519: " + out)
+
+# ---------- AmneziaWG (системный kernel-интерфейс awg0) ----------
+AWG_IFACE = "awg0"
+AWG_CONF = "/etc/amnezia/amneziawg/awg0.conf"
+AWG_ADDR = "10.20.0.1/24"
+AWG_POOL = "10.20.0."
+# Параметры обфускации AmneziaWG. S1-S4 — размеры padding (числа 15-150), H1-H4 — уникальные
+# номера типов пакетов. ВАЖНО: S1/S2/H1-H4 должны совпадать на сервере и клиенте (server-side).
+AWG_JUNK = {
+    "Jc": 6, "Jmin": 50, "Jmax": 500,
+    "S1": 40, "S2": 90, "S3": 0, "S4": 0,
+    "H1": 1, "H2": 2, "H3": 3, "H4": 4
+}
+
+def _awg_pubof(priv):
+    try:
+        r = subprocess.run(["/usr/bin/awg", "pubkey"], input=str(priv).strip(),
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception as e:
+        print("awg pubkey err: " + str(e), flush=True)
+    return ""
+
+def _awg_read_conf():
+    try:
+        with open(AWG_CONF) as f:
+            text = f.read()
+    except Exception:
+        return {}
+    m = re.search(r"^\s*PrivateKey\s*=\s*(\S+)", text, re.M)
+    p = re.search(r"^\s*ListenPort\s*=\s*(\d+)", text, re.M)
+    a = re.search(r"^\s*Address\s*=\s*(\S+)", text, re.M)
+    mt = re.search(r"^\s*MTU\s*=\s*(\d+)", text, re.M)
+    return {"private_key": m.group(1) if m else None,
+            "port": int(p.group(1)) if p else None,
+            "address": a.group(1) if a else None,
+            "mtu": int(mt.group(1)) if mt else 1420}
+
+def _awg_write_conf(inb):
+    os.makedirs(os.path.dirname(AWG_CONF), exist_ok=True)
+    jk = AWG_JUNK
+    with open(AWG_CONF, "w") as f:
+        f.write("[Interface]\n"
+                f"Address = {inb.get('address') or AWG_ADDR}\n"
+                f"ListenPort = {inb['port']}\n"
+                f"PrivateKey = {inb['private_key']}\n"
+                f"MTU = {inb.get('mtu', 1420)}\n"
+                f"Jc = {jk['Jc']}\n"
+                f"Jmin = {jk['Jmin']}\n"
+                f"Jmax = {jk['Jmax']}\n"
+                f"S1 = {jk['S1']}\n"
+                f"S2 = {jk['S2']}\n"
+                f"H1 = {jk['H1']}\n"
+                f"H2 = {jk['H2']}\n"
+                f"H3 = {jk['H3']}\n"
+                f"H4 = {jk['H4']}\n")
+        for c in inb.get("clients", []):
+            if c.get("blocked"):
+                continue
+            if not (c.get("client_public_key") and c.get("address")):
+                continue
+            f.write("\n[Peer]\n"
+                    f"PublicKey = {c['client_public_key']}\n"
+                    f"AllowedIPs = {c['address']}\n"
+                    "PersistentKeepalive = 25\n")
+    os.chmod(AWG_CONF, 0o600)
+
+def _awg_iface_synced(inb):
+    try:
+        cur = _awg_read_conf()
+        if not cur.get("private_key"):
+            return False
+        if cur.get("private_key") != inb.get("private_key"):
+            return False
+        if cur.get("port") != inb.get("port"):
+            return False
+        r = subprocess.run(["ip", "link", "show", AWG_IFACE], capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        return True
+    except Exception:
+        return False
+
+def _awg_restart_iface(st):
+    try:
+        _awg_write_conf(st["inbounds"]["amneziawg"])
+        r = subprocess.run(["systemctl", "restart", "awg-quick@" + AWG_IFACE],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            print("awg restart err: " + (r.stderr or r.stdout), flush=True)
+        return r.returncode == 0
+    except Exception as e:
+        print("awg restart exc: " + str(e), flush=True)
+        return False
+
+def _awg_sync(st, force=False):
+    """Синхронизирует панель с системой: ключи интерфейса awg0 и список peers."""
+    if not st:
+        return False
+    inbounds = st.setdefault("inbounds", {})
+    inb = inbounds.get("amneziawg")
+    if inb is None:
+        inb = _alloc_inbound(st, "amneziawg")
+        inbounds["amneziawg"] = inb
+    if not inb.get("private_key"):
+        conf = _awg_read_conf()
+        if conf.get("private_key") and conf.get("port"):
+            inb["private_key"] = conf["private_key"]
+            inb["public_key"] = _awg_pubof(conf["private_key"])
+            inb["port"] = conf["port"]
+            inb.setdefault("address", conf.get("address") or AWG_ADDR)
+            inb.setdefault("mtu", int(conf.get("mtu") or 1420))
+            inb.setdefault("next_address", 2)
+    if not inb.get("public_key"):
+        inb["public_key"] = _awg_pubof(inb.get("private_key", ""))
+    if not _awg_iface_synced(inb) or force:
+        if not inb.get("public_key"):
+            inb["public_key"] = _awg_pubof(inb.get("private_key", ""))
+        _awg_restart_iface(st)
+    # Применяем peers
+    try:
+        cur = subprocess.run(["/usr/bin/awg", "show", AWG_IFACE, "peers"],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+    except Exception:
+        cur = []
+    want = {}
+    for c in inb.get("clients", []):
+        if c.get("blocked"):
+            continue
+        if c.get("client_public_key") and c.get("address"):
+            want[c["client_public_key"]] = c["address"]
+    for pub in cur:
+        if pub not in want:
+            try:
+                subprocess.run(["/usr/bin/awg", "set", AWG_IFACE, "peer", pub, "remove"],
+                               capture_output=True, text=True, timeout=10)
+            except Exception:
+                pass
+    for pub, addr in want.items():
+        if pub not in cur:
+            try:
+                subprocess.run(["/usr/bin/awg", "set", AWG_IFACE, "peer", pub,
+                                "allowed-ips", addr, "persistent-keepalive", "25"],
+                               capture_output=True, text=True, timeout=10)
+            except Exception as e:
+                print("awg set peer err: " + str(e), flush=True)
+    return True
 
 def _reality_key_std(k):
     if not k: return k
@@ -488,6 +637,10 @@ def _new_inbound(proto):
         inb.update({"private_key": priv, "public_key": pub,
                     "address": "10.10.0.1/32", "mtu": 1420, "next_address": 2,
                     "psk": _gen_wg_psk()})
+    if proto == "amneziawg":
+        priv, pub = _gen_keys()
+        inb.update({"private_key": _wg_key_std(priv), "public_key": _wg_key_std(pub),
+                    "address": AWG_ADDR, "mtu": 1420, "next_address": 2})
     if _proto_meta(proto)["tls"]:
         cp = _cert_pathes()
         if cp["cert"] and cp["key"]:
@@ -652,6 +805,8 @@ def _autoblock_limits(st, force=False):
 def _write_xray(st):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
+        if proto == "amneziawg":
+            continue
         if inb.get("clients"):
             inbounds.append(_inbound(proto, inb))
     inbounds.append({
@@ -770,6 +925,8 @@ def _subs_summary(st, for_display=False):
                 pass
             if proto == "wireguard":
                 u["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{key}"
+            if proto == "amneziawg":
+                u["conf_url"] = f"https://{host}:{panel_port}/api/awgconf/{key}"
             if proto not in [x["proto"] for x in u["protos"]]:
                 u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
                                     "port": inb.get("port", 0)})
@@ -815,6 +972,30 @@ def _link(inb, host, client, proto):
         auth = client.get("auth") or client["uuid"]
         q = urllib.parse.urlencode({"sni": dom})
         return f"hy2://{auth}@{host}:{inb['port']}/?{q}#{urllib.parse.quote(name)}"
+    if proto == "amneziawg":
+        jk = AWG_JUNK
+        cli_junk = ("\n"
+                    f"Jc = {jk['Jc']}\n"
+                    f"Jmin = {jk['Jmin']}\n"
+                    f"Jmax = {jk['Jmax']}\n"
+                    f"S1 = {jk['S1']}\n"
+                    f"S2 = {jk['S2']}\n"
+                    f"H1 = {jk['H1']}\n"
+                    f"H2 = {jk['H2']}\n"
+                    f"H3 = {jk['H3']}\n"
+                    f"H4 = {jk['H4']}\n")
+        return ("[Interface]\n"
+                f"PrivateKey = {client['client_private_key']}\n"
+                f"Address = {client['address']}\n"
+                f"DNS = 1.1.1.1, 8.8.8.8\n"
+                f"MTU = {inb.get('mtu', 1420)}\n"
+                + cli_junk
+                + "[Peer]\n"
+                f"PublicKey = {inb['public_key']}\n"
+                f"Endpoint = {host}:{inb['port']}\n"
+                "AllowedIPs = 0.0.0.0/0, ::/0\n"
+                "PersistentKeepalive = 25\n"
+                "")
     if proto == "wireguard":
         psk = inb.get("psk") or ""
         return ("[Interface]\n"
@@ -891,6 +1072,13 @@ def _new_client(name, proto=None, inb=None, **kw):
         c["client_private_key"] = priv
         c["client_public_key"] = pub
         c["address"] = f"10.10.0.{addr}/32"
+    if proto == "amneziawg" and inb is not None:
+        priv, pub = _gen_keys()
+        addr = inb.get("next_address", 2)
+        inb["next_address"] = addr + 1
+        c["client_private_key"] = _wg_key_std(priv)
+        c["client_public_key"] = _wg_key_std(pub)
+        c["address"] = f"{AWG_POOL}{addr}/32"
     return c
 
 # ---------- github / update ----------
@@ -1080,6 +1268,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
         lnk = _link(inb, host, c, proto)
         if not first_link:
             first_link = lnk
+    _awg_sync(st)
     _write_xray(st)
     _save(STATE, st)
     _restart_xray()
@@ -2392,6 +2581,7 @@ def _limits_loop():
                 if bl:
                     _save(STATE, st)
                     try:
+                        _awg_sync(st)
                         _write_xray(st); _restart_xray()
                     except Exception as e:
                         print("[limits] " + str(e), flush=True)
@@ -2650,15 +2840,16 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(500, {"error": str(e)})
 
 
-        if p.startswith("/api/wgconf/"):
-            tok = p[len("/api/wgconf/"):].strip("/")
+        if p.startswith("/api/wgconf/") or p.startswith("/api/awgconf/"):
+            only_proto = "wireguard" if p.startswith("/api/wgconf/") else "amneziawg"
+            tok = p[len("/api/wgconf/"):].strip("/") or p[len("/api/awgconf/"):].strip("/")
             st = _load(STATE, {}) or {}
             host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             conf = ""
             name = "client"
             for proto, inb in (st.get("inbounds") or {}).items():
-                if proto != "wireguard":
+                if proto != only_proto:
                     continue
                 for c in inb.get("clients", []):
                     if c.get("sub_token") == tok or c["uuid"] == tok:
@@ -2746,6 +2937,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         item["address"] = c["address"]
                         item["link6"] = ""
                         item["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{sub_token}"
+                    if proto == "amneziawg" and c.get("address"):
+                        item["address"] = c["address"]
+                        item["link6"] = ""
+                        item["conf_url"] = f"https://{host}:{panel_port}/api/awgconf/{sub_token}"
                     if len(out) < 16:
                         item["online"] = _online_count(c["uuid"])
                     out.append(item)
@@ -3222,7 +3417,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     inb["clients"] = [c for c in inb["clients"] if c["uuid"] != u and c.get("sub_token") != (target_sub_token or u)]
                     if len(inb["clients"]) < orig_len:
                         removed = True
-                    if not inb["clients"]:
+                    if not inb["clients"] and proto != "amneziawg":
                         del st["inbounds"][proto]
                         
                 if not removed:
@@ -3231,6 +3426,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st.get("active") not in st.get("inbounds", {}):
                     st["active"] = _proto_of(st)
                     
+                _ensure_all_protos(st)
+                _awg_sync(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 return self._send(200, {"ok": True})
@@ -3853,6 +4050,11 @@ if __name__ == "__main__":
         chg = _ensure_wg_psk(st) or _ensure_wg_std(st)
         chg = _ensure_xray_keys_urlsafe(st) or chg
         chg = _ensure_all_protos(st) or chg
+        # AmneziaWG: импорт/синхронизация системного awg0 (ключи и peers) после возможного рестарта ОС
+        try:
+            _awg_sync(st)
+        except Exception as e:
+            print("awg sync init: " + str(e), flush=True)
         if chg:
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
