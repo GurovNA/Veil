@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket
+import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket, hmac, struct
 import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime
+import html as _html
 import zipfile
 
 BASE = "/opt/vpnpanel"
@@ -17,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.1"
+VERSION = "2.2.2"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -143,6 +144,9 @@ for _p in PROTOCOLS:
     _p["ui_group_label"] = _GROUP_LABELS.get(_p["ui_group"], _p["ui_group"])
 _VALID_PROTOCOLS = tuple(p["id"] for p in PROTOCOLS)
 _PROTO_MAP = {p["id"]: p for p in PROTOCOLS}
+
+# Proto labels for bot messages
+PROTO_LABELS = {p["id"]: p["label"] for p in PROTOCOLS}
 _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
@@ -186,6 +190,26 @@ def _save(p, o, mode=0o600):
 
 def _hash(salt, pw):
     return hashlib.sha256((salt + pw).encode()).hexdigest()
+
+def _totp_verify(secret_base32, code, window=1):
+    try:
+        secret = base64.b32decode(secret_base32.upper().replace(" ", "") + '=' * (-len(secret_base32) % 8))
+        counter = int(time.time() // 30)
+        for i in range(-window, window + 1):
+            c = counter + i
+            msg = struct.pack(">Q", c)
+            digest = hmac.new(secret, msg, hashlib.sha1).digest()
+            o = digest[19] & 15
+            token = (struct.unpack(">I", digest[o:o+4])[0] & 0x7fffffff) % 1000000
+            if f"{token:06d}" == str(code).strip().zfill(6):
+                return True
+    except Exception:
+        pass
+    return False
+
+def _totp_generate_secret():
+    import secrets
+    return base64.b32encode(secrets.token_bytes(10)).decode('utf-8').rstrip('=')
 
 def _free_port(pref=443):
     import socket
@@ -963,6 +987,178 @@ def _install_update():
                      start_new_session=True)
     return {"ok": True, "from": VERSION, "to": tag, "restarting": True}
 
+# ---------- Telegram Bot Processing ----------
+
+def _is_admin(chat_id):
+    admin_ids = CFG_CACHE.get("bot_chat_ids", [])
+    return str(chat_id) in [str(x) for x in admin_ids]
+
+def _main_menu_keyboard():
+    return {"inline_keyboard": [
+        [{"text": "📊 Статус", "callback_data": "cmd_status"},
+         {"text": "👥 Клиенты", "callback_data": "cmd_clients"}],
+        [{"text": "🔄 Перезапустить Xray", "callback_data": "cmd_restart"}],
+        [{"text": "📈 Статистика", "callback_data": "cmd_stats"},
+         {"text": "🔐 2FA", "callback_data": "cmd_2fa"}],
+        [{"text": "❓ Помощь", "callback_data": "cmd_help"}],
+    ]}
+
+def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
+    token = CFG_CACHE.get("bot_token", "")
+    if not token:
+        return
+    if len(text) > 4000:
+        text = text[:4000] + "\n… (обрезано)"
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        data = json.dumps(data).encode()
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        print(f"[bot] sendMessage HTTP {e.code}: {body}", flush=True)
+    except Exception as e:
+        print("[bot] sendMessage error: " + str(e), flush=True)
+
+def _bot_answer_callback(callback_query_id, text=None, show_alert=False):
+    token = CFG_CACHE.get("bot_token", "")
+    if not token:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+        data = {"callback_query_id": callback_query_id}
+        if text:
+            data["text"] = text
+        if show_alert:
+            data["show_alert"] = True
+        data = json.dumps(data).encode()
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception as e:
+        print("[bot] answerCallbackQuery error: " + str(e), flush=True)
+
+def _process_bot_update(update):
+    message = update.get("message") or update.get("edited_message")
+    callback_query = update.get("callback_query")
+    
+    if callback_query:
+        callback_query_id = callback_query["id"]
+        message = callback_query.get("message")
+        if not message:
+            # Answer callback query even if no message (shouldn't happen but safety)
+            _bot_answer_callback(callback_query_id, "Ошибка: нет сообщения", show_alert=True)
+            return
+        chat_id = message["chat"]["id"]
+        from_id = callback_query["from"]["id"]
+        data = callback_query["data"]
+        if not _is_admin(from_id):
+            _bot_send_message(chat_id, f"⛔ Нет прав доступа. Ваш ID: {from_id}. Админ ID: {CFG_CACHE.get('bot_chat_ids', [])}")
+            _bot_answer_callback(callback_query_id, "⛔ Нет прав доступа", show_alert=True)
+            return
+        # Answer callback query first (required by Telegram)
+        _bot_answer_callback(callback_query_id)
+        if data == "cmd_status":
+            cmd = "/status"
+        elif data == "cmd_clients":
+            cmd = "/clients"
+        elif data == "cmd_restart":
+            cmd = "/restart"
+        elif data == "cmd_help":
+            cmd = "/help"
+        elif data == "cmd_stats":
+            cmd = "/stats"
+        elif data == "cmd_2fa":
+            cmd = "/2fa"
+        else:
+            return
+        # Simulate command processing
+        text = cmd
+    else:
+        message = update.get("message") or update.get("edited_message")
+        if not message:
+            return
+        chat_id = message.get("chat", {}).get("id")
+        from_id = message.get("from", {}).get("id")
+        text = message.get("text", "").strip()
+        if not text.startswith("/"):
+            return
+    
+    if not _is_admin(from_id):
+        _bot_send_message(chat_id, "⛔ Нет прав доступа")
+        return
+    
+    parts = text.split()
+    cmd = parts[0].lower().split("@", 1)[0]
+    args = parts[1:]
+    try:
+        if cmd == "/start":
+            _bot_send_message(chat_id, 
+                f"🤖 <b>Veil Panel Bot</b>\nВаш Chat ID: <code>{chat_id}</code>\n\nВыберите действие:",
+                "HTML", _main_menu_keyboard())
+        elif cmd == "/status":
+            st = _load(STATE, {}) or {}
+            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+            clients = _client_count(st)
+            _bot_send_message(chat_id, 
+                f"📊 <b>Статус сервера</b>\nXray: {'🟢 работает' if running else '🔴 остановлен'}\nКлиентов: {clients}\nНод: {len(_load_nodes())}",
+                "HTML", _main_menu_keyboard())
+        elif cmd == "/clients":
+            st = _load(STATE, {}) or {}
+            lines = ["👥 <b>Клиенты:</b>"]
+            for proto, inb in (st.get("inbounds") or {}).items():
+                for c in inb.get("clients", []):
+                    online = "🟢" if c.get("online") else "⚪"
+                    limit = f" ({c.get('limit_gb', 0)} ГБ)" if c.get("limit_gb", 0) > 0 else ""
+                    lines.append(f"{online} {_html.escape(str(c.get('name', '?')))} — {_html.escape(str(PROTO_LABELS.get(proto, proto)))}{limit}")
+            _bot_send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "Клиентов нет", "HTML", _main_menu_keyboard())
+        elif cmd == "/restart":
+            _restart_xray()
+            _bot_send_message(chat_id, "🔄 Xray перезапущен", reply_markup=_main_menu_keyboard())
+        elif cmd == "/help":
+            _bot_send_message(chat_id, "<b>Команды:</b>\n/start — меню\n/status — статус сервера\n/clients — список клиентов\n/restart — перезагрузить Xray\n/stats — статистика\n/2fa — настройка 2FA", "HTML", _main_menu_keyboard())
+        elif cmd == "/stats":
+            st = _load(STATE, {}) or {}
+            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+            clients = _client_count(st)
+            uptime = _service_active_since("xray")
+            disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=3).stdout
+            _bot_send_message(chat_id, 
+                f"📊 <b>Статистика</b>\nXray: {'🟢' if running else '🔴'}\nАптайм: {uptime or '—'}\nКлиентов: {clients}\nДиск: {disk.splitlines()[1] if len(disk.splitlines())>1 else '—'}",
+                "HTML", _main_menu_keyboard())
+        elif cmd == "/2fa":
+            _bot_send_message(chat_id, 
+                "🔐 <b>2FA настройка</b>\nНастройте 2FA в панели: вкладка <b>Безопасность</b> → <b>Двухфакторная аутентификация</b>",
+                "HTML", _main_menu_keyboard())
+        else:
+            _bot_send_message(chat_id, "Неизвестная команда. /help", reply_markup=_main_menu_keyboard())
+    except Exception as e:
+        import traceback
+        print("[bot] ошибка обработки " + str(text) + ": " + str(e), flush=True)
+        traceback.print_exc()
+        try:
+            _bot_send_message(chat_id, "⚠️ Ошибка: " + str(e))
+        except Exception:
+            pass
+
+def _load_nodes():
+    try:
+        st = _load(STATE, {}) or {}
+        return [n for n in (st.get("nodes") or {})]
+    except Exception:
+        return []
+
 # ---------- HTTP ----------
 
 CFG_CACHE = _load(CFG, {}) or {}
@@ -1449,12 +1645,29 @@ def _service_active_since(unit):
         out = subprocess.run(
             ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp"],
             capture_output=True, text=True, timeout=5).stdout.strip()
+        if "=" in out:
+            val = out.split("=", 1)[1].strip()
+            if not val or val == "n/a":
+                return "не запущен"
+            parts = val.split(" ", 1)
+            if len(parts) == 2:
+                dt_str = parts[1].replace(" UTC", "").strip()
+                dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+                diff = int(time.time() - dt.replace(tzinfo=datetime.timezone.utc).timestamp())
+                if diff < 0:
+                    diff = 0
+                if diff < 60:
+                    return f"{diff} сек."
+                elif diff < 3600:
+                    return f"{diff // 60} мин."
+                elif diff < 86400:
+                    return f"{diff // 3600} ч. {(diff % 3600) // 60} мин."
+                else:
+                    return f"{diff // 86400} д. {(diff % 86400) // 3600} ч."
+            return val
     except Exception:
-        return None
-    if "=" not in out:
-        return None
-    v = out.split("=", 1)[1].strip()
-    return v or None
+        pass
+    return "не запущен"
 
 def _xray_current_version():
     try:
@@ -1993,16 +2206,45 @@ def _limits_loop():
                     _save(STATE, st)
                     try:
                         _write_xray(st); _restart_xray()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print("[limits] " + str(e), flush=True)
                     print("[limits] автоблок: " +
                           ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
         except Exception as e:
             print("[limits] " + str(e), flush=True)
         time.sleep(60)
 
+def _bot_poll_loop():
+    time.sleep(10)
+    last_update_id = 0
+    while True:
+        try:
+            token = CFG_CACHE.get("bot_token", "")
+            if token:
+                url = f"https://api.telegram.org/bot{token}/getUpdates?offset={last_update_id + 1}&timeout=25"
+                with urllib.request.urlopen(url, timeout=40) as resp:
+                    data = json.load(resp)
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        last_update_id = max(last_update_id, update["update_id"])
+                        try:
+                            _process_bot_update(update)
+                        except Exception as e:
+                            print("[bot] poll update error: " + str(e), flush=True)
+                elif data.get("description"):
+                    print("[bot] getUpdates: " + str(data.get("description")), flush=True)
+        except (socket.timeout, TimeoutError):
+            pass
+        except urllib.error.URLError as e:
+            if not isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
+                print("[bot] poll loop error: " + str(e), flush=True)
+        except Exception as e:
+            print("[bot] poll loop error: " + str(e), flush=True)
+        time.sleep(2)
+
 threading.Thread(target=_ddns_loop, daemon=True).start()
 threading.Thread(target=_limits_loop, daemon=True).start()
+threading.Thread(target=_bot_poll_loop, daemon=True).start()
 
 def _stats():
     st = _load(STATE) or {}
@@ -2110,6 +2352,14 @@ def _restore(data):
 
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+
+    def handle_error(self, request, client_address):
+        import sys as _sys
+        et = _sys.exc_info()[0]
+        if et and issubclass(et, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                  socket.timeout, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
     def _send(self, code, obj, ctype="application/json"):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
@@ -2373,6 +2623,15 @@ class H(http.server.BaseHTTPRequestHandler):
                             "current": (os.path.realpath(cert) == os.path.realpath((CFG_CACHE.get("panel_cert_path") or CFG_CACHE.get("cert") or "").strip())
                                         and os.path.realpath(key) == os.path.realpath((CFG_CACHE.get("panel_key_path") or CFG_CACHE.get("cert_key") or "").strip()))})
             return self._send(200, {"found": found})
+        if p == "/api/globalping/history":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            history_file=f"{BASE}/globalping_history.json"
+            try:
+                with open(history_file,'r') as f:
+                    history=json.load(f)
+            except Exception:
+                history=[]
+            return self._send(200, {"history": history[-20:]})
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
@@ -2458,6 +2717,23 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/backup":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _backup())
+        if p == "/api/2fa/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            enabled = bool(CFG_CACHE.get("totp_enabled"))
+            secret = CFG_CACHE.get("totp_secret", "")
+            if not secret:
+                secret = _totp_generate_secret()
+                CFG_CACHE["totp_pending_secret"] = secret
+                _save(CFG, CFG_CACHE)
+            elif not enabled:
+                secret = CFG_CACHE.get("totp_pending_secret") or secret
+            return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
+        if p == "/api/bot/config":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {
+                "token": CFG_CACHE.get("bot_token", ""),
+                "chat_ids": CFG_CACHE.get("bot_chat_ids", [])
+            })
         if p in ("/icon-1024.png", "/icon-512.png", "/icon-192.png", "/icon-veil.png",
                  "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
                  "/apple-touch-icon-180x180.png", "/apple-touch-icon-167x167.png",
@@ -2482,6 +2758,17 @@ class H(http.server.BaseHTTPRequestHandler):
                 return
             except FileNotFoundError:
                 return self._send(404, {"error": "not found"}, "application/json")
+        if p == "/api/2fa/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            enabled = bool(CFG_CACHE.get("totp_enabled"))
+            secret = CFG_CACHE.get("totp_secret", "")
+            if not secret:
+                secret = _totp_generate_secret()
+                CFG_CACHE["totp_pending_secret"] = secret
+                _save(CFG, CFG_CACHE)
+            elif not enabled:
+                secret = CFG_CACHE.get("totp_pending_secret") or secret
+            return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
@@ -2497,6 +2784,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         self._is_cur_pw(b.get("password", ""))):
                     _login_fail(cip)
                     return self._send(401, {"error": "неверный логин или пароль"})
+                if CFG_CACHE.get("totp_enabled"):
+                    totp_code = (b.get("totp_code") or "").strip()
+                    if not totp_code or not _totp_verify(CFG_CACHE.get("totp_secret", ""), totp_code):
+                        _login_fail(cip)
+                        return self._send(401, {"error": "требуется код Google/Yandex Authenticator", "totp_required": True})
                 _login_ok(cip)
                 t = secrets.token_hex(32)
                 rem = bool(b.get("remember"))
@@ -2505,7 +2797,19 @@ class H(http.server.BaseHTTPRequestHandler):
                 ma = 2592000 if rem else 259200
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
-            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            if not _authed(self) and p != "/api/bot/webhook": return self._send(401, {"error": "unauthorized"})
+            if p == "/api/bot/webhook":
+                # Telegram webhook endpoint (no auth needed - called by Telegram)
+                if self.command != "POST":
+                    return self._send(405, {"error": "Method not allowed"})
+                try:
+                    b = self._body()
+                    if not b:
+                        return self._send(400, {"error": "empty body"})
+                    _process_bot_update(b)
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             if p == "/api/logout":
                 t = _cookie(self)
                 if t is None:
@@ -2514,6 +2818,34 @@ class H(http.server.BaseHTTPRequestHandler):
                     SESSIONS.pop(t, None); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True})
+
+            if p == "/api/globalping/history":
+                b = self._body() or {}
+                history_file = f"{BASE}/globalping_history.json"
+                try:
+                    with open(history_file, "r") as f:
+                        history = json.load(f)
+                    if not isinstance(history, list):
+                        history = []
+                except Exception:
+                    history = []
+                entry = {
+                    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "success": bool(b.get("success")),
+                    "success_count": int(b.get("success_count") or 0),
+                    "total_count": int(b.get("total_count") or 0),
+                    "details": b.get("details") or [],
+                }
+                history.append(entry)
+                history = history[-50:]
+                try:
+                    tmp = history_file + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(history, f, ensure_ascii=False)
+                    os.replace(tmp, history_file)
+                except Exception as e:
+                    return self._send(500, {"error": str(e)})
+                return self._send(200, {"ok": True, "count": len(history)})
 
             # ---- vpn setup / новый клиент (старые ссылки никогда не трогаются) ----
             if p == "/api/vpn":
@@ -2798,6 +3130,121 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _cert_renew_now())
                 except urllib.error.HTTPError as e:
                     return self._send(502, {"error": f"HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+
+            # ---- 2fa ----
+            if p == "/api/2fa/status":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                enabled = bool(CFG_CACHE.get("totp_enabled"))
+                secret = CFG_CACHE.get("totp_secret", "")
+                if not secret:
+                    secret = _totp_generate_secret()
+                    CFG_CACHE["totp_pending_secret"] = secret
+                    _save(CFG, CFG_CACHE)
+                elif not enabled:
+                    secret = CFG_CACHE.get("totp_pending_secret") or secret
+                return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
+
+            if p == "/api/2fa/setup":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                b = self._body() or {}
+                code = (b.get("code") or "").strip()
+                secret = (b.get("secret") or CFG_CACHE.get("totp_pending_secret") or "").strip()
+                if not secret or not code:
+                    return self._send(400, {"error": "укажи секрет и код подтверждения"})
+                if not _totp_verify(secret, code):
+                    return self._send(400, {"error": "неверный код подтверждения"})
+                CFG_CACHE["totp_secret"] = secret
+                CFG_CACHE["totp_enabled"] = True
+                CFG_CACHE.pop("totp_pending_secret", None)
+                _save(CFG, CFG_CACHE)
+                return self._send(200, {"ok": True})
+
+            if p == "/api/2fa/disable":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                b = self._body() or {}
+                code = (b.get("code") or "").strip()
+                secret = CFG_CACHE.get("totp_secret", "")
+                if secret and code and not _totp_verify(secret, code):
+                    return self._send(400, {"error": "неверный код 2FA"})
+                CFG_CACHE["totp_enabled"] = False
+                CFG_CACHE.pop("totp_secret", None)
+                _save(CFG, CFG_CACHE)
+                return self._send(200, {"ok": True})
+
+            # ---- telegram bot ----
+            if p == "/api/bot/config":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                if self.command == "GET":
+                    return self._send(200, {
+                        "token": CFG_CACHE.get("bot_token", ""),
+                        "chat_ids": CFG_CACHE.get("bot_chat_ids", [])
+                    })
+                if self.command == "POST":
+                    b = self._body() or {}
+                    token = (b.get("token") or "").strip()
+                    chat_ids_raw = b.get("chat_ids")
+                    if isinstance(chat_ids_raw, str):
+                        chat_ids = [x.strip() for x in chat_ids_raw.split(",") if x.strip()]
+                    elif isinstance(chat_ids_raw, list):
+                        chat_ids = [str(x).strip() for x in chat_ids_raw if str(x).strip()]
+                    else:
+                        chat_ids = []
+                    if token:
+                        CFG_CACHE["bot_token"] = token
+                    CFG_CACHE["bot_chat_ids"] = chat_ids
+                    _save(CFG, CFG_CACHE)
+                    return self._send(200, {"ok": True})
+
+            if p == "/api/bot/test":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                token = CFG_CACHE.get("bot_token", "")
+                if not token:
+                    return self._send(400, {"error": "бот не настроен"})
+                try:
+                    url = f"https://api.telegram.org/bot{token}/getMe"
+                    with urllib.request.urlopen(url, timeout=10) as resp:
+                        data = json.load(resp)
+                    if data.get("ok"):
+                        return self._send(200, {"info": data["result"]})
+                    return self._send(400, {"error": "бот не ответил"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+
+            if p == "/api/bot/set_webhook":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                b = self._body() or {}
+                token = CFG_CACHE.get("bot_token", "")
+                if not token:
+                    return self._send(400, {"error": "бот не настроен"})
+                url = b.get("url") or (f"https://{CFG_CACHE.get('panel_domain', '').strip()}:{CFG_CACHE.get('panel_port', 8444)}/api/bot/webhook")
+                try:
+                    url = f"https://api.telegram.org/bot{token}/setWebhook?url={urllib.parse.quote(url)}"
+                    with urllib.request.urlopen(url, timeout=10) as resp:
+                        data = json.load(resp)
+                    if data.get("ok"):
+                        CFG_CACHE["bot_webhook_url"] = url
+                        _save(CFG, CFG_CACHE)
+                        return self._send(200, {"ok": True, "url": url})
+                    return self._send(400, {"error": data.get("description", "failed")})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+
+            if p == "/api/bot/delete_webhook":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                token = CFG_CACHE.get("bot_token", "")
+                if not token:
+                    return self._send(400, {"error": "бот не настроен"})
+                try:
+                    url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+                    with urllib.request.urlopen(url, timeout=10) as resp:
+                        data = json.load(resp)
+                    if data.get("ok"):
+                        CFG_CACHE.pop("bot_webhook_url", None)
+                        _save(CFG, CFG_CACHE)
+                        return self._send(200, {"ok": True})
+                    return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
 
