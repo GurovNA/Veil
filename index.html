@@ -92,8 +92,8 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .ptitle{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:10px}
 .pname{min-width:0;font-size:14px;font-weight:700;color:var(--gc,var(--g-vless));text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
 .pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
-.pcheck{position:relative;width:36px;height:36px;flex:none;border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--mut);border-radius:10px}
-.pcheck:hover{background:color-mix(in srgb,var(--acc) 20%,transparent)}
+.pcheck{position:relative;width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--mut);border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:color .18s,background .18s,border-color .18s}
+.pcheck:hover{color:var(--acc);background:color-mix(in srgb,var(--acc) 15%,transparent);border-color:var(--acc)}
 .pstar{width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--mut);border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer;transition:color .18s,background .18s,border-color .18s}
 .pstar:hover{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);border-color:var(--warn)}
 .pbody{display:flex;flex-direction:column;gap:10px;padding:2px 12px 12px}
@@ -229,8 +229,9 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
   <div class="login-logo-wrap"><img class=login-logo id=loginLogo alt="logo" src="data:image/jpeg;base64,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RRQAoopKKAFooop3AKSjNFIBaKSloAKKKKLgFFFFACY5paKKEAUUUUxC0UlLQAhooNFABS0lLQAZooooAWiiimAvagdKbmjtQApopKKACiiikAUtJRTAKKM0UgFHFFFFMAopO9FABRRSUgCiiigYUUUUIAooooAKKKKQBRRQKAA0lKaSgAooooAKKKKACiiigAooooAKKKKACloooASlzRRigAo6UUUAFFJRQAtFFFABRRRTELSUZooAKKKWgAooooAKWkpaAENFLRQAlFFFABRRRQAUlLSUAApaSigB1IaKKAEpaTNFAxaSiigAooopAFFFFABRRRQAUGkzS0AJRRRQAUUUUAFFFFABRRRQAUUUUAFFFFABRRRQAUZoooAWkoooAWikooAKKMUuKACiikoAWikpaACl7UlLTQhKM0UUDDNFFFFwFpabSjpQIWgikzRmgAoooNABRSUUAFFFFAwooooAKOtFFABRRRQAUUUUAJS0UUgCiiigAoopDQAUUUUAFFFFABRRRQAUUUmaAFopKKAFooooAKKKKACiiigAooooAKKKKACiiigApaSigAooooAKWkooAWiiigAooopgFFFFIApaSimgFopKMUCFzRSUUDCiiikAUUUUAFIM0tJQAtFFFABRRRQAUUUUAFFFIaAFpKWkNABmiiigAooooAKKKKACiiigApKWkoAKKKKACjNLRQAUUUUAFFJ3paACiiigAooooAKKKKACiiigAooooAKKKKAClpKWgAoopDQAtGaSgUALRSd6WmAtJQOlFAgooooGFFFFIApKDRQAUUUCgBaKKSgBaKSlFABRmkNFAC0lFFABRRRQAUUUUAFFFFABRRRQAUUneloAQ0UGikB//9k="></div>
   <h1>Вход в Veil</h1>
   <p class=mut>Логин и пароль выданы при установке</p>
-  <input id=l placeholder=логин autocomplete=username>
-  <input id=p type=password placeholder=пароль autocomplete=current-password>
+   <input id=l placeholder=логин autocomplete=username>
+   <input id=p type=password placeholder=пароль autocomplete=current-password>
+   <input id=totpCode placeholder="Код 2FA (Google/Yandex Auth)" maxlength=6 style="display:none">
   <label class=mut style="display:flex;align-items:center;gap:7px;font-size:13px;line-height:1.3;margin:4px 0 10px;white-space:nowrap"><input type=checkbox id=remMe> Запомнить меня (30 дней)</label>
   <button onclick=doLogin()>Войти</button>
   <div class="msg err" id=loginMsg></div>
@@ -242,7 +243,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
-    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button><button data-tab=telegrambot>🤖 Telegram Bot</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active">
@@ -403,10 +404,82 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <div class=mut style="font-size:12px;margin:10px 0 6px">Откат на прошлую версию:</div>
     <div id=tvBackList></div>
     <div class=msg id=tvMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">🇷🇺 Доступность из России (Globalping)</h3>
+    <p class=mut style="margin:0 0 10px">Проверка доступности веб-прокси (ссылки подписки) из России через 20 зондов Globalping. Проверка каждые 15 минут.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <button class="sec ok" id=gpRunBtn onclick=runGlobalpingCheck()>▶ Запустить проверку сейчас</button>
+      <span class=mut id=gpStatus style="flex:1">—</span>
+      <span id=gpLastRun class=mut style="font-size:12px;color:var(--mut)"></span>
+    </div>
+    <div id=gpResults style="display:none;margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;max-height:400px;overflow:auto"></div>
+    <div id=gpHistory style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px;max-height:300px;overflow:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b>История проверок (последние 20)</b>
+        <button class="tiny sec" onclick=loadGlobalpingHistory()>🔄 Обновить</button>
+      </div>
+      <div id=gpHistoryList></div>
+    </div>
   </div></div>
 
   <div id=tab-site class="tab-pane"><div class=card>
     <h2>Сайт, домен и HTTPS</h2>
+    <details class=guide style="margin-bottom:16px;padding:12px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:10px">
+      <summary style="cursor:pointer;font-weight:700;font-size:15px;color:var(--acc)">📖 Полная инструкция: как настроить домен (нажмите, чтобы свернуть/развернуть)</summary>
+      <div style="margin-top:12px;line-height:1.7;font-size:13.5px">
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Зачем нужен домен?</h4>
+        <p style="margin:0 0 8px">Панель генерирует ссылки для клиентов (VLESS, VMess, Trojan и др.). Если указать домен — ссылки будут красивыми (<code>vless://...@ваш-домен:443</code>), работать через CDN и не сгорать при смене IP сервера.</p>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Шаг 1. Купите (или получите бесплатно) домен</h4>
+        <p style="margin:0 0 8px">Зарегистрируйте домен у любого регистратора (<code>.ru</code>, <code>.com</code>, <code>.xyz</code> и др.). Цены — от ~150₽/год. Бесплатные варианты (<code>eu.org</code>, <code>.tk/.ml/.ga/.cf</code>) часто нестабильны — лучше использовать платный.</p>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Шаг 2. Настройте DNS (A/AAAA записи)</h4>
+        <p style="margin:0 0 8px">В панели регистратора домена (или в Cloudflare, если используете их NS) создайте две записи:</p>
+        <table style="width:100%;border-collapse:collapse;margin:8px 0;font-size:13px">
+          <tr style="background:var(--card2)"><th style="padding:6px;border:1px solid var(--br);text-align:left">Тип</th><th style="padding:6px;border:1px solid var(--br);text-align:left">Имя (Host)</th><th style="padding:6px;border:1px solid var(--br);text-align:left">Значение (Value)</th><th style="padding:6px;border:1px solid var(--br);text-align:left">TTL</th></tr>
+          <tr><td style="padding:6px;border:1px solid var(--br)">A</td><td style="padding:6px;border:1px solid var(--br)">@ (или пусто)</td><td style="padding:6px;border:1px solid var(--br);font-family:monospace"><b>IPv4 вашего сервера</b></td><td style="padding:6px;border:1px solid var(--br)">300 (или Auto)</td></tr>
+          <tr><td style="padding:6px;border:1px solid var(--br)">AAAA</td><td style="padding:6px;border:1px solid var(--br)">@ (или пусто)</td><td style="padding:6px;border:1px solid var(--br);font-family:monospace"><b>IPv6 вашего сервера</b></td><td style="padding:6px;border:1px solid var(--br)">300 (или Auto)</td></tr>
+        </table>
+        <p style="margin:6px 0 8px"><b>IPv4:</b> <code id=myIp4>—</code> &nbsp; <b>IPv6:</b> <code id=myIp6>—</code> <button class="tiny sec" onclick="loadMyIps()" style="margin-left:8px">🔄 Обновить IP</button></p>
+        <p style="margin:0 0 8px;color:var(--mut);font-size:12px">Если используете <b>Cloudflare</b> (проксирование — «оранжевое облако»): включите «DNS only» (серое облако) для этой записи, иначе TLS-протоколы (Reality, gRPC, XHTTP) не заработают.</p>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Шаг 3. Впишите домен в поле ниже</h4>
+        <p style="margin:0 0 8px">В поле «Домен для ссылок» введите ваш домен (например: <code>vpn.example.com</code> или <code>example.com</code>). Нажмите «Проверить A-запись» — панель сама резолвит домен и покажет, совпадает ли IP.</p>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Шаг 4. Если у вас динамический IP — используйте dynv6 (DDNS)</h4>
+        <p style="margin:0 0 8px">Если IP сервера меняется (домашний сервер, 4G-модем), настройте <a href="https://dynv6.com" target="_blank">dynv6.com</a>:</p>
+        <ol style="margin:0 0 8px;padding-left:18px">
+          <li>Зарегистрируйтесь на <a href="https://dynv6.com" target="_blank">dynv6.com</a> → создайте зону (например: <code>myvpn.dynv6.net</code>)</li>
+          <li>В настройках зоны получите <b>Token</b> (раздел Keys → Zone Token)</li>
+          <li>Ниже в блоке «Домен и DDNS (dynv6)» впишите <b>Host</b> (например <code>myvpn.dynv6.net</code>) и <b>Token</b> → «Сохранить»</li>
+          <li>Панель сама будет обновлять IP каждые 5 минут</li>
+        </ol>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">Шаг 5. Получите настоящий сертификат Let's Encrypt</h4>
+        <p style="margin:0 0 8px">Для работы TLS-протоколов (VLESS-Reality, VMess-gRPC, XHTTP) нужен валидный сертификат. Панель умеет выпускать его автоматически через Let's Encrypt (порт 80 должен быть свободен):</p>
+        <ol style="margin:0 0 8px;padding-left:18px">
+          <li>Убедитесь, что порт <b>80</b> открыт в фаерволе и не занят nginx/apache</li>
+          <li>В блоке «Let's Encrypt» впишите email (для уведомлений) → «Выпустить сертификат»</li>
+          <li>Включите «Автопродление» — панель продлевает сертификат за 30 дней до истечения</li>
+        </ol>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">🔧 Частые проблемы</h4>
+        <ul style="margin:0 0 8px;padding-left:18px;font-size:13px">
+          <li><b>«A-запись не совпадает»</b> — проверьте, что в DNS указан именно IPv4 сервера, а не Cloudflare IP. Отключите проксирование (серое облако).</li>
+          <li><b>Сертификат не выдаётся</b> — порт 80 занят или закрыт. Проверьте: <code>ss -ltnp | grep :80</code> — должен быть пусто. Временно остановите nginx: <code>systemctl stop nginx</code>.</li>
+          <li><b>Ссылки не работают</b> — проверьте, что домен в поле «Домен для ссылок» написан без <code>https://</code> и без слеша в конце.</li>
+          <li><b>IPv6 не работает</b> — у провайдера/хостера может не быть IPv6. Оставьте только A-запись, AAAA не обязательна.</li>
+        </ul>
+        
+        <h4 style="margin:12px 0 6px;color:var(--fg)">🔗 Полезные ссылки</h4>
+        <ul style="margin:0;padding-left:18px;font-size:13px">
+          <li><a href="https://www.cloudflare.com" target="_blank">Cloudflare DNS</a> — бесплатный DNS с защитой от DDoS (не забудьте выключить прокси для VPN-записей)</li>
+          <li><a href="https://dynv6.com" target="_blank">dynv6.com</a> — бесплатный DDNS с поддержкой IPv6</li>
+          <li><a href="https://letsencrypt.org/ru/" target="_blank">Let's Encrypt</a> — бесплатные TLS-сертификаты</li>
+          <li><a href="https://dnschecker.org" target="_blank">DNS Checker</a> — проверка распространения DNS по всему миру</li>
+        </ul>
+      </div>
+    </details>
     <label class=mut style="display:block;margin-top:10px">Домен для ссылок (A-запись, IPv4+IPv6):
       <input id=setDomain maxlength=255 style="margin-top:4px"></label>
     <div class=mut id=dnsRes style="font-size:12px;margin-top:8px"></div>
@@ -471,7 +544,6 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <div class=msg id=pnlPortMsg></div>
     <hr>
     <h3 style="margin:0 0 8px">Сетевые настройки</h3>
-    <p class=mut style="margin:4px 0 0;font-size:12px">RU-обход убран из панели: сервер в Финляндии, гео-исключения не дают российский IP.</p>
     <div style="margin:12px 0">
       <label>Адрес прослушивания панели<input id=panelBind type=text placeholder="0.0.0.0 (пусто — все интерфейсы)" style="width:100%;margin-top:4px"></label>
       <p class=mut style="margin:4px 0 0;font-size:12px">Оставьте пустым, чтобы прослушивать все домены и IP-адреса. Пример: 127.0.0.1 для только локального доступа.</p>
@@ -592,9 +664,69 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
     <input type=file id=th-wall accept=image/* onchange=uploadWall()>
     <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
+</div></div>
+
+  <!-- Вкладка Telegram Bot -->
+  <div id=tab-telegrambot class="tab-pane"><div class=card>
+    <h2>Telegram Bot</h2>
+    <p class=mut>Управление Telegram-ботом для уведомлений и управления VPN.</p>
+    
+    <details style="margin-bottom:16px">
+      <summary style="cursor:pointer;font-weight:600;padding:10px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;color:var(--acc)">📖 Инструкция: как настроить бота (нажмите, чтобы развернуть)</summary>
+      <div style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px;line-height:1.8">
+        <h4 style="margin:0 0 8px;color:var(--fg)">🤖 Как создать и подключить бота</h4>
+        <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
+          <li>Напишите <a href="https://t.me/BotFather" target="_blank">@BotFather</a> в Telegram</li>
+          <li>Отправьте команду <code>/newbot</code> и следуйте инструкциям</li>
+          <li>Скопируйте полученный <b>Token</b> (формат: <code>123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>)</li>
+          <li>В поле ниже вставьте Token и нажмите «Сохранить»</li>
+          <li>Напишите боту <code>/start</code> — бот пришлёт ваш <b>Chat ID</b></li>
+          <li>Впишите Chat ID в поле ниже (или несколько через запятую для нескольких админов)</li>
+        </ol>
+        
+        <hr style="margin:16px 0;border-color:var(--br)">
+        
+        <h4 style="margin:0 0 8px;color:var(--fg)">🔔 Что умеет бот</h4>
+        <ul style="padding-left:18px;line-height:1.8;margin:8px 0">
+          <li>Уведомления о новых клиентах</li>
+          <li>Уведомления об истечении подписок/лимитов</li>
+          <li>Уведомления об ошибках/перезагрузках Xray</li>
+          <li>Команда <code>/status</code> — статус сервера</li>
+          <li>Команда <code>/clients</code> — список клиентов</li>
+          <li>Команда <code>/restart</code> — перезагрузка Xray (только админы)</li>
+        </ul>
+        
+        <hr style="margin:16px 0;border-color:var(--br)">
+        
+        <h4 style="margin:0 0 8px;color:var(--fg)">🔐 Получение Chat ID</h4>
+        <p style="margin:0 0 8px">После сохранения токена напишите боту <code>/start</code>. Бот ответит вашим Chat ID. Скопируйте его и вставьте ниже.</p>
+      </div>
+    </details>
+    
+    <div style="margin-bottom:16px">
+      <label class=mut style="display:block">Bot Token:
+        <input id=botToken type=password maxlength=120 placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ" style="width:100%;margin-top:4px">
+      </label>
+      <label class=mut style="display:block;margin-top:10px">Admin Chat IDs (через запятую):
+        <input id=botChatIds type=text maxlength=500 placeholder="123456789, 987654321" style="width:100%;margin-top:4px">
+      </label>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="sec ok" onclick="saveBotConfig()">💾 Сохранить настройки</button>
+        <button class="sec" onclick="testBotConnection()">🔍 Проверить подключение</button>
+      </div>
+      <div class=msg id=botMsg style="margin-top:8px"></div>
+    </div>
+    
+    <hr style="margin:20px 0;border-color:var(--br)">
+    
+    <h3 style="margin:0 0 8px">📋 Команды бота</h3>
+    <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--br);font-family:monospace;font-size:13px;white-space:pre-wrap">
+/start — начать работу, получить Chat ID
+/status — статус сервера (Xray, ноды, клиенты)
+/clients — список клиентов с лимитами
+/restart — перезагрузить Xray
+/help — справка по командам</div>
   </div></div>
-  
-   <!-- Вкладка Подписка -->
    <div id=tab-subscription class="tab-pane">
      <div class=card>
        <div class=row style="margin-bottom:10px">
@@ -609,13 +741,16 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
          <a id="subOpenLink" href="#" target="_blank" class="btn sec" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:inherit;font-size:14px">🌐 Открыть сырую подписку</a>
        </div>
 
-       <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
-         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-           <h4 style="margin:0">👥 Пользователи и персональные подписки</h4>
-         </div>
-         <div id="subUsersList">
-           <p class=mut>Загрузка списка пользователей...</p>
-         </div>
+<div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
+        <details style="width:100%">
+          <summary style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:8px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;font-weight:600">
+            <span>👥 Пользователи и персональные подписки</span>
+            <span id="subUsersCount" class=mut style="font-size:12px;font-weight:normal">—</span>
+          </summary>
+          <div id="subUsersList" style="margin-top:12px">
+            <p class=mut>Загрузка списка пользователей...</p>
+          </div>
+        </details>
        </div>
        
        <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
@@ -642,32 +777,47 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
   <div id=tab-nodes class="tab-pane">
     <div class=card>
       <h3>Мультисерверность (Управление нодами)</h3>
-      <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.<p>&nbsp;</p>
-      <div class="nodehelp">
-        <b>📘 Как добавить ноду (пошагово)</b>
-        <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
-          <li><b>Подготовь второй сервер.</b> Это должен быть отдельный VPS с этой же панелью (Veil Panel) и включённым HTTPS.</li>
-          <li><b>Узнай его адрес и порт панели.</b> Например: IP <span class="fldlbl">5.23.45.67</span> и порт <span class="fldlbl">8444</span>. Токен — общий секрет, который ты задашь на обеих панелях.</li>
-          <li><b>Заполни форму ниже:</b> имя (как подписать ноду), адрес без порта, порт панели ноды, токен.</li>
-          <li><b>Нажми «Создать».</b> Нода появится в списке; статус «онлайн/офлайн» обновится автоматически.</li>
-          <li><b>Проверка:</b> если у ноды открыта панель и указаны верные порт и токен — она станет «онлайн». Удаляется кнопкой «Удалить» в карточке.</li>
-        </ol>
-      </div>
-<div class=card style="margin-top:12px;border:1px dashed var(--brd)">
-      <h3>🛠️ Как добавить ноду (инструкция)</h3>
-      <ol style="padding-left:20px;line-height:1.8;margin:8px 0">
-        <li><b>Подготовь сервер-ноду.</b> Это должен быть отдельный VPS (не этот). На нём тоже должна стоять эта же панель (Veil Panel v2.x) — так нода понимает команды и обменивается данными.</li>
-        <li><b>Получи токен ноды.</b> Зайди на панель будущей ноды → вкладка «Ноды» → нажми «+ Добавить ноду» и создай запись с тем же адресом этого сервера. Панель покажет токен — скопируй его. <span class=mut>(Либо по договорённости придумайте общий секрет.)</span></li>
-        <li><b>Здесь заполни форму:</b> Имя — как подписать ноду у тебя (напр. «Москва-2»); Адрес — IP или домен ноды; Порт — на котором у ноды открыта панель (обычно 8444); Токен — тот самый секрет.</li>
-        <li><b>Нажми «Добавить».</b> Нода появится в списке ниже. Панель будет держать её на связи: статус «онлайн/офлайн» обновляется автоматически.</li>
-        <li><b>Проверь.</b> Когда нода онлайн — у тебя единая сеть: клиенты ноды и этого сервера работают как одна подписка. Любую ноду можно удалить кнопкой «Удалить».</li>
-      </ol>
-      <p class=mut>Подсказка: одна панель = одна нода. Чтобы держать много серверов, добавь в этот список каждую из них.</p>
-    </div>
-</p>
+      <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.</p><p>&nbsp;</p>
+      <details style="margin-bottom:16px">
+        <summary style="cursor:pointer;font-weight:600;padding:10px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;color:var(--acc)">📘 Инструкция: как добавить ноду (нажмите, чтобы развернуть)</summary>
+        <div style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px;line-height:1.8">
+          <h4 style="margin:0 0 8px;color:var(--fg)">📋 Как добавить ноду (пошагово)</h4>
+          <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
+            <li><b>Подготовь второй сервер.</b> Это должен быть отдельный VPS с этой же панелью (Veil Panel) и включённым HTTPS.</li>
+            <li><b>Узнай его адрес и порт панели.</b> Например: IP <span class="fldlbl">5.23.45.67</span> и порт <span class="fldlbl">8444</span>. Токен — общий секрет, который ты задашь на обеих панелях.</li>
+            <li><b>Заполни форму ниже:</b> имя (как подписать ноду), адрес без порта, порт панели ноды, токен.</li>
+            <li><b>Нажми «Создать».</b> Нода появится в списке; статус «онлайн/офлайн» обновится автоматически.</li>
+            <li><b>Проверка:</b> если у ноды открыта панель и указаны верные порт и токен — она станет «онлайн». Удаляется кнопкой «Удалить» в карточке.</li>
+          </ol>
+          
+          <hr style="margin:16px 0;border-color:var(--br)">
+          
+          <h4 style="margin:0 0 8px;color:var(--fg)">🔐 Генерация токена (секрета)</h4>
+          <p style="margin:0 0 8px">Токен — это общий секрет для связи двух панелей. Его можно сгенерировать автоматически:</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+            <button class="sec" onclick="generateNodeToken()">🔐 Сгенерировать секрет</button>
+            <button class="sec" onclick="copyNodeToken()" style="display:none" id="copyNodeTokenBtn">📋 Скопировать</button>
+          </div>
+          <input id="nodeTokenDisplay" type="text" readonly style="width:100%;font-family:monospace;font-size:13px;padding:8px;background:var(--bg2);border:1px solid var(--br);border-radius:6px;margin-bottom:8px" placeholder="Нажмите «Сгенерировать секрет»">
+          
+          <hr style="margin:16px 0;border-color:var(--br)">
+          
+          <h4 style="margin:0 0 8px;color:var(--fg)">📖 Как пользоваться после добавления ноды</h4>
+          <p style="margin:0 0 8px">После того как нода добавлена и статус «🟢 онлайн»:</p>
+          <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
+            <li>На ноде автоматически создадутся те же входящие соединения (протоколы), что и на главном сервере.</li>
+            <li>Клиенты, добавленные на главном сервере, автоматически получат доступ к новой ноде через единую подписку.</li>
+            <li>В подписке пользователя появятся ссылки на обе ноды — клиент сам выберет лучшую.</li>
+            <li>Статус ноды обновляется каждые 30 секунд. Если нода «🔴 офлайн» — проверьте, что на ней запущена панель и открыт порт.</li>
+            <li>Управление клиентами (добавление/удаление/лимиты) делается только на главном сервере — изменения синхронизируются автоматически.</li>
+          </ol>
+          
+          <p style="margin:8px 0 0;font-size:12px;color:var(--mut)">💡 Подсказка: одна панель = одна нода. Для нескольких серверов добавьте каждую в список.</p>
+        </div>
+</details>
       <div style="margin-top:10px">
         <button class="sec" onclick="showAddNode()">+ Добавить ноду</button>
-<div id="nodeList"></div>
+        <div id="nodeList"></div>
       </div>
     </div>
   </div>
@@ -697,6 +847,23 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <input id=nPass2 type=password placeholder="повтори новый пароль" autocomplete=new-password>
     <button onclick=doSaveSecurity()>Сохранить</button>
     <div class=msg id=secMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">Двухфакторная аутентификация (2FA)</h3>
+    <p class=mut style="margin:0 0 10px">Защита входа через Google Authenticator, Яндекс Ключ или Authy.</p>
+    <div id=faStatusBlock class=mut style="margin-bottom:10px">Статус: <b id=faStatusTxt>—</b></div>
+    <div id=faSetupZone style="display:none;margin-top:10px;padding:14px;border:1px solid var(--br);border-radius:12px;background:color-mix(in srgb,var(--card2) 50%,transparent)">
+      <p class=mut style="margin:0 0 8px">1. Отсканируй QR-код или введи секрет в приложении:</p>
+      <div style="text-align:center"><div id=faQrBox style="margin:8px auto;display:inline-block;background:#fff;padding:12px;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.3)"></div></div>
+      <div id=faSecretTxt style="font-family:monospace;font-size:13px;word-break:break-all;background:var(--bg2);padding:8px;border-radius:6px;margin:6px 0"></div>
+      <p class=mut style="margin:10px 0 6px">2. Введи 6-значный код из приложения для подтверждения:</p>
+      <input id=faCodeInput placeholder="000000" maxlength=6 style="width:100%;font-size:22px;letter-spacing:8px;text-align:center;padding:14px;margin-bottom:10px;box-sizing:border-box">
+      <button class="sec ok" onclick="enable2fa()" style="width:100%;padding:14px;font-size:16px">Включить 2FA</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class=sec id=faToggleBtn onclick="toggle2faSetup()">Настроить 2FA</button>
+      <button class="danger hidden" id=faDisableBtn onclick="disable2fa()">Отключить 2FA</button>
+    </div>
+    <div class=msg id=faMsg></div>
   </div></div>
 
 </div>
@@ -789,6 +956,8 @@ async function loadSub(){
     try{
       const d = await api('/api/subs');
       const list = d.subs || [];
+      const cntEl = $('subUsersCount');
+      if(cntEl) cntEl.textContent = list.length + ' чел.';
       if(list.length === 0){
         userListEl.innerHTML = '<p class=mut>Подписчиков пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
       } else {
@@ -870,6 +1039,24 @@ async function delNode(host){
     await renderNodes();
   }catch(e){ alert((e&&e.message)||'ошибка'); }
 }
+async function generateNodeToken(){
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  const token = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+  document.getElementById('nodeTokenDisplay').value = token;
+  document.getElementById('nodeToken').value = token;
+  document.getElementById('copyNodeTokenBtn').style.display = 'inline-block';
+  toast('Секрет сгенерирован','ok');
+}
+
+function copyNodeToken(){
+  const input = document.getElementById('nodeTokenDisplay');
+  if(!input.value) return;
+  navigator.clipboard.writeText(input.value).then(()=>{
+    toast('Секрет скопирован в буфер обмена','ok');
+  });
+}
+
 async function renderNodes(){
   const box = document.getElementById('nodeList') || document.querySelector('#tab-nodes .card');
   if(!box) return;
@@ -983,13 +1170,26 @@ async function api(p,o){
 async function doLogin(){
   $('loginMsg').textContent='';
   try{
-    const d=await api('/api/login',{method:'POST',body:JSON.stringify({login:$('l').value,password:$('p').value,remember:$('remMe').checked})});
+    const body={login:$('l').value,password:$('p').value,remember:$('remMe').checked};
+    const tc=$('totpCode');
+    if(tc && tc.style.display!=='none' && tc.value.trim()){
+      body.totp_code=tc.value.trim();
+    }
+    const d=await api('/api/login',{method:'POST',body:JSON.stringify(body)});
     if(d.sid){
       if(d.remember)localStorage.setItem('veil_sid',d.sid);
       else localStorage.removeItem('veil_sid');
     }
     await refresh();
-  }catch(e){$('loginMsg').textContent=e.message;}
+  }catch(e){
+    if(e.message && (e.message.includes('2FA') || e.message.includes('требуется'))){
+      const tc=$('totpCode');
+      if(tc) tc.style.display='block';
+      $('loginMsg').textContent='Требуется код 2FA (Google/Yandex Authenticator)';
+    }else{
+      $('loginMsg').textContent=e.message;
+    }
+  }
 }
 async function doLogout(){
   try{await api('/api/logout',{method:'POST'});}catch(e){}
@@ -1255,17 +1455,293 @@ function renderProtoCards(){
   autoExpand=null;
   closeMenus();
 }
+
+function gpProbeOk(r){
+  const res=r&&r.result;
+  if(!res) return false;
+  if(res.status&&res.status!=='finished') return false;
+  // Доступность = сервер ответил по HTTP (даже 401/404): он не заблокирован.
+  if(typeof res.statusCode==='number') return res.statusCode>0&&res.statusCode<500;
+  return false;
+}
+function gpRtt(r){
+  const res=r&&r.result;
+  if(!res) return null;
+  if(res.timings&&typeof res.timings.total==='number') return Math.round(res.timings.total);
+  if(typeof res.rtt==='number') return Math.round(res.rtt);
+  return null;
+}
+
+async function runGlobalpingCheck(){
+  const btn=$('gpRunBtn'), status=$('gpStatus'), results=$('gpResults'), lastRun=$('gpLastRun');
+  if(!btn) return;
+  if(btn.disabled) return;
+  btn.disabled=true;
+  status.textContent='🔄 Запускаю проверку...';
+  results.style.display='none';
+  try{
+    // Globalping принимает только hostname; протокол/порт/путь передаются отдельно
+    const raw=getWebProxyUrl();
+    let target='', protocol='HTTPS', port=443, path='/';
+    try{
+      const u=new URL(raw);
+      target=u.hostname;
+      protocol=(u.protocol==='http:')?'HTTP':'HTTPS';
+      port=u.port?parseInt(u.port,10):(protocol==='HTTP'?80:443);
+      path=(u.pathname||'/')+(u.search||'');
+    }catch(e){ target=(raw||'').trim(); }
+    if(!target) throw new Error('не удалось определить хост');
+    const resp=await fetch('https://api.globalping.io/v1/measurements',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        type:'http',
+        target:target,
+        locations:[{country:'RU',limit:20}],
+        measurementOptions:{protocol:protocol,port:port,request:{method:'GET',path:path}}
+      })
+    });
+    if(resp.status===429){
+      const ra=resp.headers.get('retry-after');
+      throw new Error('лимит запросов Globalping'+(ra?(', повторите через '+ra+' с'):'')+'. Попробуйте позже.');
+    }
+    if(!resp.ok){
+      let d='';try{d=(await resp.json()).error||'';}catch(e){}
+      throw new Error('API error '+resp.status+(d?': '+d:''));
+    }
+    const data=await resp.json();
+    status.textContent='⏳ Ожидание результатов (до ~3 мин)...';
+    const resultsData=await pollGlobalpingResults(data.id);
+    displayGlobalpingResults(resultsData);
+    results.style.display='block';
+    lastRun.textContent='Последнее обновление: '+new Date().toLocaleString();
+    status.textContent='✅ Готово';
+    // Save to history
+    try{
+      const arr=resultsData.results||[];
+      const successCount=arr.filter(gpProbeOk).length;
+      const totalCount=arr.length;
+      const details=arr.map(r=>({
+        country:(r.probe&&r.probe.country)||'—',
+        city:(r.probe&&r.probe.city)||'—',
+        success:gpProbeOk(r),
+        rtt:gpRtt(r)
+      }));
+      await api('/api/globalping/history',{
+        method:'POST',
+        body:JSON.stringify({
+          success:totalCount>0&&successCount===totalCount,
+          success_count:successCount,
+          total_count:totalCount,
+          details:details
+        })
+      });
+    }catch(e){console.error('Save history error:',e);}
+  }catch(e){
+    status.textContent='❌ Ошибка: '+e.message;
+  }finally{
+    btn.disabled=false;
+    loadGlobalpingHistory();
+  }
+}
+
+async function pollGlobalpingResults(measurementId){
+  for(let i=0;i<80;i++){
+    await new Promise(r=>setTimeout(r,3000));
+    const resp=await fetch('https://api.globalping.io/v1/measurements/'+measurementId);
+    if(!resp.ok) continue;
+    const data=await resp.json();
+    if(data.status==='finished') return data;
+    if(data.status==='failed') throw new Error('Globalping: измерение не удалось');
+  }
+  throw new Error('Таймаут ожидания результатов');
+}
+
+function displayGlobalpingResults(data){
+  const box=$('gpResults');
+  if(!data.results||!data.results.length){
+    box.innerHTML='<p class=mut>Нет результатов</p>';
+    return;
+  }
+  let success=0, failed=0;
+  const rows=data.results.map(r=>{
+    const ok=gpProbeOk(r);
+    if(ok) success++; else failed++;
+    const probe=r.probe||{};
+    const code=(r.result&&r.result.statusCode)?r.result.statusCode:'—';
+    const rtt=gpRtt(r);
+    const net=probe.network||probe.asn||'—';
+    return `<tr><td>${ok?'✅':'❌'}</td><td>${probe.country||'—'}</td><td>${probe.city||'—'}</td><td>${net}</td><td>${code}</td><td>${rtt!=null?rtt+'ms':'—'}</td></tr>`;
+  }).join('');
+  const total=data.results.length;
+  const icon=success===total?'✅':(success>0?'🟡':'❌');
+  const summary=`<div style="margin-bottom:8px"><b>${icon} Доступно из РФ: ${success} из ${total}</b> | ❌ ${failed}</div>`;
+  box.innerHTML=summary+
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+    '<thead><tr style="background:var(--card2)"><th style="padding:4px;text-align:left"> </th><th style="padding:4px;text-align:left">Страна</th><th style="padding:4px;text-align:left">Город</th><th style="padding:4px;text-align:left">Сеть</th><th style="padding:4px;text-align:left">Код</th><th style="padding:4px;text-align:left">RTT</th></tr></thead>'+
+    '<tbody>'+rows+'</tbody></table>';
+}
+
+async function loadGlobalpingHistory(){
+  try{
+    const resp=await api('/api/globalping/history');
+    if(!resp.history||!resp.history.length){
+      $('gpHistoryList').innerHTML='<p class=mut>История пуста</p>';
+      return;
+    }
+    $('gpHistoryList').innerHTML=resp.history.map(h=>{
+      const total=h.total_count||0, ok=h.success_count||0;
+      const icon=total?(ok===total?'✅':(ok>0?'🟡':'❌')):'❌';
+      return `
+      <div style="padding:8px;border-bottom:1px solid var(--br);font-size:12px">
+        <div style="display:flex;justify-content:space-between;gap:8px">
+          <span>${new Date(h.created_at).toLocaleString()}</span>
+          <span>${icon} ${ok}/${total} зондов</span>
+        </div>
+        <div style="font-size:11px;color:var(--mut);margin-top:4px">
+          ${(h.details||[]).map(d=>`${d.country} ${d.city}: ${d.success?'✅':'❌'} ${d.rtt||'—'}`).join(' | ')}
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+
+function getWebProxyUrl(){
+  const el=$('subUrlInput');
+  if(el&&el.value) return el.value;
+  const base=location.origin;
+  return base+'/';
+}
+
+// Auto-check every 15 minutes (robust: no overlap, works regardless of tab focus)
+let gpRunning=false;
+async function gpAutoCheck(){
+  if(gpRunning) return;
+  gpRunning=true;
+  try{
+    await runGlobalpingCheck();
+  }catch(e){
+    console.error('gp auto-check error:',e);
+  }finally{
+    gpRunning=false;
+  }
+}
+setInterval(()=>{ gpAutoCheck(); },15*60*1000);
+
+// Initial load
+document.addEventListener('DOMContentLoaded',()=>{
+  loadGlobalpingHistory();
+});
 document.addEventListener('click',()=>closeMenus());
+
+async function loadMyIps(){
+  try{
+    const r=await fetch('https://api.ipify.org?format=json');
+    const d=await r.json();
+    $('myIp4').textContent=d.ip;
+  }catch(e){$('myIp4').textContent='—';}
+  try{
+    const r=await fetch('https://api6.ipify.org?format=json');
+    const d=await r.json();
+    $('myIp6').textContent=d.ip;
+  }catch(e){$('myIp6').textContent='нет IPv6';}
+}
 
 async function loadProtocols(){
   try{
     const d=await api('/api/vpn/protocols');
-    protoCur=d.current||'reality';
+    protoCur=null;
     protoList=d.protocols||[];
     protoLabels={}; protoGroups={}; protoUILabels={};
     protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group; if(p.ui_group_label)protoUILabels[p.id]=p.ui_group_label;});
     renderProtoCards();
   }catch(e){}
+}
+
+async function load2faStatus(){
+  try{
+    const d=await api('/api/2fa/status');
+    const st=$('faStatusTxt'), btn=$('faToggleBtn'), dis=$('faDisableBtn');
+    if(d.enabled){
+      st.textContent='Включена ✅'; st.style.color='var(--ok)';
+      if(btn) btn.classList.add('hidden');
+      if(dis) dis.classList.remove('hidden');
+    } else {
+      st.textContent='Отключена ❌'; st.style.color='var(--err)';
+      if(btn) btn.classList.remove('hidden');
+      if(dis) dis.classList.add('hidden');
+      const secEl = $('faSecretTxt');
+      if(secEl) secEl.textContent = d.secret || '';
+      window._faUri = d.uri || '';
+    }
+  }catch(e){}
+}
+function toggle2faSetup(){
+  const z = $('faSetupZone');
+  if(z){
+    const isHidden = (z.style.display==='none');
+    z.style.display = isHidden ? 'block' : 'none';
+    if(isHidden && window._faUri){
+      const qrEl = $('faQrBox');
+      if(qrEl){
+        qrEl.innerHTML = '';
+        if(typeof QRCode !== 'undefined'){
+          new QRCode(qrEl, {text: window._faUri, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.M});
+        } else {
+          qrEl.textContent = window._faUri;
+        }
+      }
+    }
+  }
+}
+async function enable2fa(){
+  const code = $('faCodeInput').value.trim();
+  if(!code || code.length!==6){$('faMsg').textContent='Введи 6-значный код';$('faMsg').className='msg err';return;}
+  $('faMsg').textContent='Включаю 2FA...';$('faMsg').className='msg';
+  try{
+    await api('/api/2fa/setup',{method:'POST',body:JSON.stringify({code})});
+    $('faMsg').textContent='2FA успешно включена!';$('faMsg').className='msg ok';
+    $('faSetupZone').style.display='none';
+    load2faStatus();
+    toast('2FA включена','ok');
+  }catch(e){$('faMsg').textContent=e.message;$('faMsg').className='msg err';}
+}
+async function disable2fa(){
+  const code = prompt('Для отключения 2FA введи текущий 6-значный код аутентификатора:');
+  if(!code) return;
+  try{
+    await api('/api/2fa/disable',{method:'POST',body:JSON.stringify({code})});
+    load2faStatus();
+    toast('2FA отключена','ok');
+  }catch(e){alert('Ошибка: '+e.message);}
+}
+async function loadBotConfig(){
+  try{
+    const d=await api('/api/bot/config');
+    if(d.token) $('botToken').value=d.token;
+    if(d.chat_ids) $('botChatIds').value=d.chat_ids.join(', ');
+  }catch(e){}
+}
+async function saveBotConfig(){
+  const token=$('botToken').value.trim();
+  const chat_ids=$('botChatIds').value.split(',').map(x=>x.trim()).filter(x=>x);
+  if(!token){ setMsg('botMsg','Введите Bot Token','err'); return; }
+  setMsg('botMsg','Сохраняю...','');
+  try{
+    await api('/api/bot/config',{method:'POST',body:JSON.stringify({token,chat_ids})});
+    setMsg('botMsg','Настройки бота сохранены','ok');
+    toast('Настройки бота сохранены','ok');
+  }catch(e){ setMsg('botMsg',e.message,'err'); }
+}
+async function testBotConnection(){
+  const token=$('botToken').value.trim();
+  if(!token){ setMsg('botMsg','Сначала сохраните токен','err'); return; }
+  setMsg('botMsg','Проверяю подключение...','');
+  try{
+    const r=await api('/api/bot/test',{method:'POST',body:JSON.stringify({})});
+    setMsg('botMsg','✅ Бот отвечает: '+ (r.info?.first_name||'OK'),'ok');
+    toast('Подключение к боту успешно','ok');
+  }catch(e){ setMsg('botMsg','Ошибка: '+e.message,'err'); }
 }
 
 async function toast(html, cls){
@@ -1887,8 +2363,8 @@ function renderWeb(web){
         '<div class=uuid>web</div>' +
       '</div>' +
       '<div class=actions>' +
-        (link ? '<button class="tiny sec" data-act=open title="Открыть в Telegram">Открыть</button>' + '<button class="tiny sec" data-act=qr>QR</button>' +
-                '<button class="tiny sec" data-act=copy>Копировать</button>' : '') +
+        (link ? '<button class="tiny sec" data-act=open title="Открыть в Telegram">📱 Открыть</button>' + '<button class="tiny sec" data-act=qr>📷 QR</button>' +
+                '<button class="tiny sec" data-act=copy>📋 Копировать</button>' : '') +
       '</div>' +
     '</div>' +
     '<div class="link-row"><code></code></div>';
@@ -1927,10 +2403,10 @@ function renderTg(){
         '<div class=uuid></div>' +
       '</div>' +
       '<div class=actions>' +
-        '<button class="tiny sec" data-act=open title="Открыть этот прокси в приложении Telegram">Открыть в Telegram</button>' +
-        '<button class="tiny sec" data-act=qr>QR</button>' +
-        '<button class="tiny sec" data-act=copy>Копировать</button>' +
-        '<button class="tiny danger" data-act=del>Удалить</button>' +
+        '<button class="tiny sec" data-act=open title="Открыть этот прокси в приложении Telegram">📱 Открыть</button>' +
+        '<button class="tiny sec" data-act=qr title="Показать QR-код">📷 QR</button>' +
+        '<button class="tiny sec" data-act=copy title="Скопировать ссылку">📋 Копировать</button>' +
+        '<button class="tiny sec" data-act=del title="Удалить пользователя">🗑 Удалить</button>' +
       '</div>' +
     '</div>' +
     '<div class="link-row"><code></code></div>';
@@ -2085,7 +2561,11 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     if(b.dataset.tab==='settings')autoCheckForUpdate()
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes')renderNodes();
-      if(b.dataset.tab==='vpn')loadStats();
+       if(b.dataset.tab==='vpn')loadStats();
+       if(b.dataset.tab==='proxy')loadTgVerInfo();
+       if(b.dataset.tab==='security')load2faStatus();
+       if(b.dataset.tab==='site')loadMyIps();
+       if(b.dataset.tab==='telegrambot')loadBotConfig();
 
   });
 });
@@ -2114,7 +2594,7 @@ document.addEventListener('click', function(e){
 });
 
 refresh();
-autoCheckForUpdate();
+// autoCheckForUpdate(); // disabled for debugging
 
 // ---- Тема / оформление ----
 function applyTheme(t){
@@ -2371,4 +2851,47 @@ loadTheme();
   </div>
 </div>
 <div id=toasts></div>
-</body></html>
+  <script>
+document.addEventListener('DOMContentLoaded',()=>{
+  const panel=document.getElementById('panel');
+  if(!panel) return;
+  const tabsNav=document.querySelector('.tabs');
+  if(!tabsNav) return;
+  const buttons=tabsNav.querySelectorAll('button');
+  const getActiveIndex=()=>{
+    const activePane=document.querySelector('.tab-pane.active');
+    if(!activePane) return -1;
+    const activeId=activePane.id;
+    for(let i=0;i<buttons.length;i++){
+      if(buttons[i].dataset.tab && 'tab-'+buttons[i].dataset.tab===activeId) return i;
+    }
+    return -1;
+  };
+  let startX=0, startY=0;
+  const isPointer='pointerdown' in document;
+  const startEv=isPointer?'pointerdown':'touchstart';
+  const endEv=isPointer?'pointerup':'touchend';
+  document.querySelectorAll('.tab-pane').forEach(pane=>{
+    pane.addEventListener(startEv,e=>{
+      if(e.target.closest&&e.target.closest('button,a,input,select,textarea,.sec,.tiny,.pcheck,.pstar,.pcard,.limbar')) return;
+      startX=e.clientX!==undefined?e.clientX:(e.changedTouches?e.changedTouches[0].screenX:0);
+      startY=e.clientY!==undefined?e.clientY:(e.changedTouches?e.changedTouches[0].screenY:0);
+    });
+    pane.addEventListener(endEv,e=>{
+      let endX=e.clientX!==undefined?e.clientX:(e.changedTouches?e.changedTouches[0].screenX:0);
+      let endY=e.clientY!==undefined?e.clientY:(e.changedTouches?e.changedTouches[0].screenY:0);
+      const dx=endX-startX;
+      const dy=endY-startY;
+      if(Math.abs(dx)<50||Math.abs(dx)<=Math.abs(dy)) return;
+      let idx=getActiveIndex();
+      if(idx<0) return;
+      if(dx>0){
+        idx=(idx-1+buttons.length)%buttons.length;
+      } else {
+        idx=(idx+1)%buttons.length;
+      }
+      if(buttons[idx]) buttons[idx].click();
+    });
+  });
+});
+</script></html>
