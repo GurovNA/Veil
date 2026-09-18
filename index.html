@@ -251,7 +251,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <div class=row>
         <img id=headerLogo class=header-logo hidden>
         <h1 class=brand>Veil</h1>
-        <span class=ver-pill id=ver></span>
+        <span class=ver-pill id=ver></span><button class="tiny sec" onclick=restartPanel() style="vertical-align:middle">⟳ Панель</button>
       </div>
       <p class=subtitle>VPN · Telegram · анти-DPI</p>
       <p class="mut status-line"><span class=dot id=stDot></span><span id=stTxt>проверяю</span>
@@ -296,6 +296,10 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <div class="mstat m-ports">
         <div class="m-ico">🔌</div>
         <div style="min-width:0"><b id=stPorts>—</b><div class=cap>Порты открыто</div></div>
+      </div>
+      <div class="mstat m-gp">
+        <div class="m-ico">🇷🇺</div>
+        <div style="min-width:0"><b id=stGp>—</b><div class=cap>Доступность из РФ (зонды)</div><div class=cap id=stGpAt style="font-size:10px;line-height:1.2">проверок ещё не было</div></div>
       </div>
     </div>
 
@@ -560,6 +564,10 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     </div>
     <button class=sec onclick=saveNetworkSettings()>Сохранить сетевые настройки</button>
     <div class=msg id=netMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">IP-адреса VPS</h3>
+    <p class=mut style="margin:0 0 10px">Все адреса, привязанные к интерфейсам сервера (включая локальные), и публичные адреса, которые отдают панель и подписки.</p>
+    <div id=vpsIps class=mut style="font-size:12px;line-height:1.7">—</div>
     <hr>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
     <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
@@ -910,8 +918,12 @@ function subCard(c){
   const _blk = c.blocked ? '<span style="color:var(--err);font-size:11px">🚫 Заблокирован</span>' : '';
   const _links = (c.links && typeof c.links==='object' && Object.keys(c.links).length)
     ? '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'
-      + Object.entries(c.links).map(([proto, link])=>
-          `<button class="tiny sec" onclick="copyText('${escapeHtml(link)}','Ссылка ${escapeHtml(protoLabels[proto]||proto)} скопирована')">${escapeHtml(protoLabels[proto]||proto)}</button>`).join('')
+      + Object.entries(c.links).map(([proto, link])=>{
+          if(proto==='wireguard'&&c.conf_url){
+            return '<a class="tiny sec" href="'+escapeHtml(c.conf_url)+'" download style="text-decoration:none;display:inline-block">⬇ '+escapeHtml(protoLabels[proto]||proto)+'</a>';
+          }
+          return '<button class="tiny sec" onclick="copyText(\''+escapeHtml(link)+'\',\'Ссылка '+escapeHtml(protoLabels[proto]||proto)+' скопирована\')">'+escapeHtml(protoLabels[proto]||proto)+'</button>';
+        }).join('')
       + '</div>'
     : '';
   return `
@@ -1516,6 +1528,8 @@ async function runGlobalpingCheck(){
     results.style.display='block';
     lastRun.textContent='Последнее обновление: '+new Date().toLocaleString();
     status.textContent='✅ Готово';
+    gpLastStats={ok:(resultsData.results||[]).filter(gpProbeOk).length,total:(resultsData.results||[]).length,at:Date.now()};
+    updateGpStat();
     // Save to history
     try{
       const arr=resultsData.results||[];
@@ -1585,6 +1599,14 @@ function displayGlobalpingResults(data){
 async function loadGlobalpingHistory(){
   try{
     const resp=await api('/api/globalping/history');
+    const hist=(resp.history||[]).slice().sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    const h0=hist[0];
+    if(h0){
+      const t=new Date(h0.created_at).getTime();
+      gpLastStats={ok:h0.success_count||0,total:h0.total_count||0,at:isNaN(t)?null:t};
+    }
+    else{ gpLastStats=null; }
+    updateGpStat();
     if(!resp.history||!resp.history.length){
       $('gpHistoryList').innerHTML='<p class=mut>История пуста</p>';
       return;
@@ -1615,6 +1637,24 @@ function getWebProxyUrl(){
 
 // Auto-check every 15 minutes (robust: no overlap, works regardless of tab focus)
 let gpRunning=false;
+let gpLastStats=null;
+function updateGpStat(){
+  const el=$('stGp');
+  const at=$('stGpAt');
+  if(!el) return;
+  if(gpLastStats&&gpLastStats.total>0){
+    const pct=Math.round(gpLastStats.ok/gpLastStats.total*100);
+    el.innerHTML=gpLastStats.ok+'/'+gpLastStats.total+' · <b>'+pct+'%</b>';
+    el.style.color=pct>=90?'var(--ok)':(pct>=60?'var(--warn)':'var(--err)');
+    if(at){
+      at.textContent=gpLastStats.at?('проверка: '+new Date(gpLastStats.at).toLocaleString()):'проверок ещё не было';
+    }
+  }else{
+    el.innerHTML='—';
+    el.style.color='';
+    if(at) at.textContent='проверок ещё не было';
+  }
+}
 async function gpAutoCheck(){
   if(gpRunning) return;
   gpRunning=true;
@@ -1772,6 +1812,19 @@ async function loadSettings(){
     if(s.aaaa&&s.aaaa.length)h+='<br>\u2699 AAAA домена: '+s.aaaa.join(', ');
     if(h)setMsg('setMsg2',h,'ok',false);
     else setMsg('setMsg2','','',false);
+    const ai=$('vpsIps');
+    if(ai){
+      if(s.addrs&&s.addrs.length){
+        ai.innerHTML=s.addrs.map(i=>{
+          const v4=(i.ipv4||[]).join(', ');
+          const v6=(i.ipv6||[]).join(', ');
+          let h='<b>'+i.iface+'</b>';
+          if(v4) h+=' &nbsp; IPv4: '+v4;
+          if(v6) h+='<br>&nbsp;&nbsp;IPv6: '+v6;
+          return h;
+        }).join('<br>');
+      }else ai.textContent='—';
+    }
   }catch(e){setMsg('setMsg2',e.message,'err');}
   try{const st=await api('/api/state');
     $('pnlPortCur').textContent=': '+st.panel_port;
@@ -2835,6 +2888,14 @@ async function restartXray(){
   }catch(e){
     toast('Ошибка: '+e.message,'err');
   }finally{btn.disabled=false;}
+}
+function restartPanel(){
+  if(!confirm('Перезапустить панель Veil? Текущая сессия оборвётся — после перезапуска нужно будет войти заново.')) return;
+  api('/api/restart',{method:'POST'})
+    .then(r=>{
+      if(r.ok) alert('Панель перезапускается. Обновите страницу через ~30 секунд.');
+    })
+    .catch(()=>setTimeout(()=>location.reload(),3000));
 }
 loadNetworkSettings();
 loadTheme();
