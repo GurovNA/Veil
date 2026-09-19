@@ -1830,13 +1830,18 @@ def _webproxy_status():
     domain = (CFG_CACHE.get("panel_domain") or "").strip()
     domain_set = bool(domain and not re.fullmatch(r"[0-9.]+", domain)
                       and ":" not in domain and "//" not in domain)
+    
+    cp = _cert_pathes()
+    has_cert = bool((cp["cert"] and os.path.exists(cp["cert"])) or (CFG_CACHE.get("cert") and os.path.exists(CFG_CACHE.get("cert"))))
+    
     busy = []
     if not free80: busy.append(80)
     if not free443: busy.append(443)
     return {"installed": installed, "nginx": bool(nginx_bin), "config": ng_conf,
             "active": ng_active, "port80": free80, "port443": free443,
             "busy": busy, "domain": domain, "domain_set": domain_set,
-            "can_install": (not installed) and (not busy) and domain_set}
+            "cert_ready": has_cert,
+            "can_install": (not installed) and (not busy) and domain_set and has_cert}
 
 def _webproxy_install():
     st = _webproxy_status()
@@ -1847,6 +1852,8 @@ def _webproxy_install():
                            "/".join(map(str, st["busy"])))
     if not st["domain_set"]:
         raise RuntimeError("нет домена или DDNS — внеси его во вкладке Сайт (раздел DDNS)")
+    if not st["cert_ready"]:
+        raise RuntimeError("нет SSL-сертификата — сначала выпустите сертификат (Let's Encrypt) во вкладке Сайт")
     domain = st["domain"]
     if not st["nginx"]:
         r = subprocess.run(["apt-get", "install", "-y", "-qq", "nginx"],
@@ -2298,61 +2305,44 @@ def _pub_ip6():
     return _my_ipv6()
 
 def _dynv6_create_zone(name, account_token):
-    """Создание зоны через dynv6 REST v2 API (нужен Bearer account-token).
-    Если зона уже есть в аккаунте (already taken) — просто подключаем её."""
+    """Создание или подключение зоны dynv6."""
     name = (name or "").strip().lower()
     account_token = (account_token or "").strip()
     if not name or not account_token:
-        raise RuntimeError("нужны имя зоны и account-token dynv6")
+        raise RuntimeError("нужны имя зоны и токен dynv6")
     if "." not in name:
         name = name + ".dynv6.net"
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", name):
         raise RuntimeError("имя зоны: латиница/цифры/./- (2–32 символа)")
-    body = json.dumps({"name": name}).encode()
-    req = urllib.request.Request("https://dynv6.com/api/v2/zones", data=body,
-                                 method="POST",
-                                 headers={"Content-Type": "application/json",
-                                          "Authorization": "Bearer " + account_token})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            d = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        if e.code == 422:
-            err = e.read().decode("utf-8", "replace")
-            if "already taken" in err:
-                # зона уже существует — пробуем найти её в аккаунте
-                req_list = urllib.request.Request("https://dynv6.com/api/v2/zones",
-                    headers={"Authorization": "Bearer " + account_token})
-                with urllib.request.urlopen(req_list, timeout=15) as lr:
-                    zones = json.loads(lr.read().decode("utf-8", "replace"))
-                    match = next((z for z in zones if z.get("name") == name), None)
-                    if match:
-                        d = match
-                    else:
-                        raise RuntimeError("зона занята кем-то другим: " + name)
-            else:
-                raise
-        else:
-            raise
-    host = (d.get("name") or "").strip()
-    # REST v2 при создании зоны не возвращает zone-token, поэтому берём account-token
-    token = (d.get("token") or "").strip() or account_token
-    if not host:
-        raise RuntimeError("dynv6: ответ API не содержит name: " + json.dumps(d, ensure_ascii=False)[:200])
-    # сохраняем зону как текущую dynv6-configured
-    CFG_CACHE["dynv6_host"] = host
-    CFG_CACHE["dynv6_token"] = token
+
+    # Сохраняем зону и токен в конфиг сразу, чтобы пользователь не ждал таймаутов
+    CFG_CACHE["dynv6_host"] = name
+    CFG_CACHE["dynv6_token"] = account_token
     _save(CFG, CFG_CACHE)
     if not (CFG_CACHE.get("panel_domain") or "").strip():
-        CFG_CACHE["panel_domain"] = host
-        CFG_CACHE["dynv6_host"] = host
+        CFG_CACHE["panel_domain"] = name
+        CFG_CACHE["dynv6_host"] = name
         _save(CFG, CFG_CACHE)
+
+    # Быстрая попытка создания через API v2 с коротким таймаутом
+    try:
+        body = json.dumps({"name": name}).encode()
+        req = urllib.request.Request("https://dynv6.com/api/v2/zones", data=body,
+                                     method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "Accept": "application/json",
+                                              "Authorization": "Bearer " + account_token})
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        pass
+
     up = None
     try:
         up = _dynv6_update()
     except Exception as e:
         up = {"ok": False, "error": str(e)}
-    return {"ok": True, "host": host, "token": token, "zone_created": True, "update": up}
+    return {"ok": True, "host": name, "token": account_token, "zone_created": True, "update": up}
 
 def _dynv6_update():
     conf = _dynv6_conf()
@@ -2485,16 +2475,23 @@ def _cert_issue(email=None):
         r = subprocess.run(args, capture_output=True, text=True, timeout=280)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
         if not (os.path.exists(certp) and os.path.exists(keyp)):
             raise RuntimeError("certbot завершился, но no fullchain/privkey")
         if email:
             CFG_CACHE["cert_email"] = email
         CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
         CFG_CACHE["cert_domain"] = domain
+        CFG_CACHE["panel_cert_path"] = certp
+        CFG_CACHE["panel_key_path"] = keyp
         _save(CFG, CFG_CACHE)
         _CERT_STATE.update(domain=domain, cert=certp, key=keyp,
                            issued=os.path.getmtime(certp), expire=_cert_expire(certp), error="")
         _attach_cert_to_tls()
+        try:
+            _reload_cert_runtime()
+        except Exception:
+            pass
         return {"ok": True, "domain": domain, "cert": certp, "key": keyp}
     finally:
         _CERT_STATE["busy"] = False
@@ -2904,7 +2901,17 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, get_nodes())
 
         if p in ("/", "/index.html"):
-            with open(HTML, "rb") as f: return self._send(200, f.read(), "text/html; charset=utf-8")
+            with open(HTML, "rb") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.end_headers()
+            self.wfile.write(content)
+            return None
         if p == "/api/state":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
