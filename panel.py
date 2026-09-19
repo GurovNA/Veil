@@ -1762,21 +1762,14 @@ server {
 
     client_max_body_size 2m;
 
-    location = /manifest.json {
-        proxy_pass http://telemt_web;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $telemt_connection_upgrade;
-
-        proxy_hide_header Content-Type;
-        proxy_hide_header Cache-Control;
-        add_header Content-Type "application/manifest+json; charset=utf-8" always;
-        add_header Cache-Control "no-store, no-cache" always;
-    }
+    root /opt/vpnpanel/decoy;
+    index index.html;
 
     location / {
+        try_files $uri $uri/ @telemt_proxy;
+    }
+
+    location @telemt_proxy {
         proxy_pass http://telemt_web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro NES Arcade - Online Emulator</title>
+    <style>
+        body {
+            background-color: #12151c;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        .arcade-container {
+            text-align: center;
+            background: #1e222a;
+            padding: 20px;
+            border-radius: 14px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            border: 1px solid #3a3f4b;
+        }
+        h1 {
+            margin: 0 0 10px;
+            font-size: 24px;
+            color: #4CAF50;
+            letter-spacing: 1px;
+        }
+        p {
+            margin: 0 0 15px;
+            color: #8b949e;
+            font-size: 14px;
+        }
+        canvas {
+            background: #000;
+            border: 4px solid #282c34;
+            border-radius: 6px;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+            image-rendering: pixelated;
+            width: 512px;
+            height: 480px;
+            max-width: 100%;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        button {
+            background: #238636;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #2ea043;
+        }
+        .status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+    </style>
+</head>
+<body>
+    <div class="arcade-container">
+        <h1>🕹️ Retro NES Arcade</h1>
+        <p>Classic 8-bit NES Emulator in your browser</p>
+        <canvas id="nes-canvas" width="256" height="240"></canvas>
+        <div class="controls">
+            <button onclick="loadDemoGame()">Загрузить Demo</button>
+            <button onclick="toggleFullscreen()">На весь экран</button>
+        </div>
+        <div class="status" id="status">Нажмите «Загрузить Demo» для старта</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('nes-canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.fillStyle = '#4CAF50';
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('NES Emulator Ready', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.fillStyle = '#8b949e';
+        ctx.font = '10px monospace';
+        ctx.fillText('Insert ROM or Load Demo', canvas.width / 2, canvas.height / 2 + 15);
+
+        function loadDemoGame() {
+            document.getElementById('status').textContent = 'Демонстрационный режим запущен (Canvas Active)';
+            let x = 128, y = 120, dx = 2, dy = 2;
+            function animate() {
+                ctx.fillStyle = '#111';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw retro bouncing pixel box
+                ctx.fillStyle = '#ff5722';
+                ctx.fillRect(x, y, 16, 16);
+                
+                ctx.fillStyle = '#4CAF50';
+                ctx.font = '12px monospace';
+                ctx.fillText('RETRO DEMO 8-BIT', 128, 30);
+
+                x += dx; y += dy;
+                if(x <= 0 || x >= 240) dx = -dx;
+                if(y <= 20 || y >= 224) dy = -dy;
+                requestAnimationFrame(animate);
+            }
+            animate();
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                canvas.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+    </script>
+</body>
+</html>
