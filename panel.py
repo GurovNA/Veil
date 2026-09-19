@@ -4089,7 +4089,7 @@ if __name__ == "__main__":
         xc = _load(XRAY)
         chg = _ensure_wg_psk(st) or _ensure_wg_std(st)
         chg = _ensure_xray_keys_urlsafe(st) or chg
-        chg = _ensure_all_protos(st) or chg
+        # chg = _ensure_all_protos(st) or chg
         # AmneziaWG: импорт/синхронизация системного awg0 (ключи и peers) после возможного рестарта ОС
         try:
             _awg_sync(st)
