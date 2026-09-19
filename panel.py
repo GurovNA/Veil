@@ -1861,6 +1861,8 @@ def _webproxy_install():
                            capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError("apt nginx: " + (r.stderr or r.stdout)[-300:])
+    
+    subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True)
     cert, key = _ng_certs(domain)
     conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
     os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
