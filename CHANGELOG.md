@@ -2,6 +2,14 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.2.7] - 2026-09-19
+
+- **Update check fix** — исправлена проверка обновлений (GitHub API: HTTP 401 → теперь работает с токеном из github.token)
+- **Swipe checkbox persistence** — состояние чекбокса «Свайп между вкладками» в вкладке Оформление теперь корректно сохраняется и восстанавливается при загрузке
+- **dynv6 zone creation fix** — кнопка «Создать зону через API» в вкладке Сайт: автодополнение `.dynv6.net` (или выбранный домен: dynv6.net, v6.navy, v6.army, dns.navy, dns.army, v6.rocks), обработка `already taken` (подключает существующую зону), account-token используется для DDNS.
+- **Quick install link restored** — `install.sh` возвращён в `main`, работает `bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)`.
+- **README: quick install at the top** — команда быстрой установки вынесена в самый верх README.md и README.ru.md.
+
 ## [2.2.6] - 2026-09-19
 
 - **Swipe navigation toggle** — в вкладке Оформление добавлен чекбокс «Свайп между вкладками» для включения/выключения навигации смахиванием пальцем (вкл/выкл). По умолчанию выключено, не мешает прокрутке и жестам браузера. Сохраняется в theme.json.
