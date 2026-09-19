@@ -186,6 +186,7 @@ def _load(p, d=None):
     except Exception: return d
 
 def _save(p, o, mode=0o600):
+    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
     with open(p, "w") as f: json.dump(o, f, indent=2, ensure_ascii=False)
     os.chmod(p, mode)
 
