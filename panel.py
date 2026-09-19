@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.8"
+VERSION = "2.2.9"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -356,7 +356,7 @@ def _awg_restart_iface(st):
     try:
         _awg_write_conf(st["inbounds"]["amneziawg"])
         r = subprocess.run(["systemctl", "restart", "awg-quick@" + AWG_IFACE],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             print("awg restart err: " + (r.stderr or r.stdout), flush=True)
         return r.returncode == 0
@@ -668,7 +668,7 @@ def _ensure_hy2_cert(dom):
             ["openssl", "req", "-x509", "-nodes", "-days", "3650", "-newkey", "rsa:2048",
              "-keyout", HY2_KEY, "-out", HY2_CERT, "-subj", "/CN=" + dom,
              "-addext", "subjectAltName=DNS:" + dom],
-            capture_output=True, timeout=30)
+            capture_output=True, timeout=60)
         os.chmod(HY2_CERT, 0o644)
         os.chmod(HY2_KEY, 0o600)
         try: shutil.chown(HY2_CERT, user="nobody", group="nogroup")
@@ -2314,7 +2314,7 @@ def _dynv6_create_zone(name, account_token):
                                  headers={"Content-Type": "application/json",
                                           "Authorization": "Bearer " + account_token})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             d = json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         if e.code == 422:

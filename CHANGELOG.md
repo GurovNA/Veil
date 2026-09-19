@@ -2,6 +2,13 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.2.9] - 2026-09-19
+
+- **Critical JS fix** — restored missing `$` helper function (`const $ = (id) => document.getElementById(id)`) that was accidentally removed when fixing a duplicate declaration bug. This caused all UI interactions (login, buttons, tabs) to fail silently with "ReferenceError: $ is not defined".
+- **dynv6 auth fix** — authentication checks on `/api/dynv6/create-zone`, `/api/dynv6/save`, `/api/dynv6/update`
+- **Swipe removed** — removed swipe navigation toggle per user request
+- **Timeout increased** — dynv6 API timeout 60s
+
 ## [2.2.8] - 2026-09-19
 
 - **Swipe removed** — полностью убран свайп-навигация между вкладками (был источник багов на мобильных)

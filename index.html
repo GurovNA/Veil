@@ -2664,6 +2664,9 @@ document.addEventListener('click', function(e){
   if (e.target && e.target.id === 'qrModal') hideQR();
 });
 
+// $ helper
+const $ = (id) => document.getElementById(id);
+
 refresh();
 // autoCheckForUpdate(); // disabled for debugging
 
