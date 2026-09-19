@@ -244,9 +244,12 @@ step_5_panel() {
   fi
   local TARBALL_URL="https://github.com/${REPO}/releases/download/v${VERSION}/veil.tar.gz"
   run "mkdir -p /opt/vpnpanel"
-  run "curl -fsSL -o /tmp/veil.tar.gz '$TARBALL_URL'"
-  tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
-  rm -f /tmp/veil.tar.gz
+  if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
+    tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
+    rm -f /tmp/veil.tar.gz
+  else
+    warn "Не удалось скачать релиз с GitHub, используем локальные файлы"
+  fi
   if [ ! -f /opt/vpnpanel/config.json ]; then
     python3 - "$PANEL_PORT" <<'PYCFG'
 import json, hashlib, os, secrets, sys
@@ -357,23 +360,35 @@ uninstall_completely() {
 
 reinstall_keeping_data() {
   msg "Переустановка с сохранением данных..."
-  mkdir -p /tmp/veil_backup
-  [ -f /opt/vpnpanel/config.json ] && cp /opt/vpnpanel/config.json /tmp/veil_backup/
-  [ -f /opt/vpnpanel/state.json ] && cp /opt/vpnpanel/state.json /tmp/veil_backup/
-  [ -d /opt/vpnpanel/certs ] && cp -r /opt/vpnpanel/certs /tmp/veil_backup/
-  [ -f /opt/vpnpanel/sessions.json ] && cp /opt/vpnpanel/sessions.json /tmp/veil_backup/
+  local TARBALL_URL="https://github.com/${REPO}/releases/download/v${VERSION}/veil.tar.gz"
+  mkdir -p /opt/vpnpanel
+  if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
+    tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
+    rm -f /tmp/veil.tar.gz
+    ok "Панель обновлена из релиза v$VERSION"
+  else
+    warn "Не удалось скачать релиз с GitHub, используем текущие файлы"
+  fi
 
-  systemctl stop vpnpanel xray telemt veil-zapret2 2>/dev/null || true
-  rm -rf /opt/vpnpanel/*
-
-  run_install_steps
-
-  [ -f /tmp/veil_backup/config.json ] && cp /tmp/veil_backup/config.json /opt/vpnpanel/
-  [ -f /tmp/veil_backup/state.json ] && cp /tmp/veil_backup/state.json /opt/vpnpanel/
-  [ -d /tmp/veil_backup/certs ] && cp -r /tmp/veil_backup/certs /opt/vpnpanel/
-  [ -f /tmp/veil_backup/sessions.json ] && cp /tmp/veil_backup/sessions.json /opt/vpnpanel/
-  rm -rf /tmp/veil_backup
+  # Восстанавливаем/проверяем systemd-юнит панели
+  cat <<'UNITEOF' > /etc/systemd/system/vpnpanel.service
+[Unit]
+Description=VPN Panel
+After=network-online.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/vpnpanel/panel.py
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+  systemctl daemon-reload
+  systemctl enable --now vpnpanel
+  systemctl restart vpnpanel
   ok "Переустановка с сохранением данных завершена."
+  show_panel_info_internal
   exit 0
 }
 
