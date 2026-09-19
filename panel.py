@@ -2485,6 +2485,7 @@ def _cert_issue(email=None):
         CFG_CACHE["cert_domain"] = domain
         CFG_CACHE["panel_cert_path"] = certp
         CFG_CACHE["panel_key_path"] = keyp
+        CFG_CACHE["panel_domain"] = domain
         _save(CFG, CFG_CACHE)
         _CERT_STATE.update(domain=domain, cert=certp, key=keyp,
                            issued=os.path.getmtime(certp), expire=_cert_expire(certp), error="")
