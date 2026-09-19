@@ -2112,17 +2112,25 @@ async function saveDynv6(){
 }
 async function toggleZoneForm(){const f=$('zoneForm');f.style.display=f.style.display==='none'?'block':'none';}
 async function createDynv6Zone(){
+  const $h = escapeHtml;
   const acct=($('ztAccount').value||'').trim(), base=($('ztName').value||'').trim(), dom=$('ztDomain').value;
   if(!base){setMsg('ztMsg','введите имя зоны','err');return;}
+  if(!acct){setMsg('ztMsg','введите токен','err');return;}
   const nm=base+'.'+dom;
   setMsg('ztMsg','Создаю зону: '+$h(nm)+'...');
   try{
     const r=await api('/api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
-    if(!r.ok)throw new Error(r.error||'ошибка dynv6');
-    setMsg('ztMsg','Зона создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok');
-    $('dvHost').value=$h(r.host); $('dvToken').value=r.token||'';
+    setMsg('ztMsg','Зона успешно создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok',true);
+    toast('Зона успешно создана: ' + r.host, 'ok');
+    $('dvHost').value=r.host; $('dvToken').value=r.token||'';
+    if($('setDomain')){
+      $('setDomain').value=r.host;
+      api('/api/settings',{method:'POST',body:JSON.stringify({domain:r.host})}).catch(()=>{});
+    }
     loadDynv6(); triggerDynv6();
-  }catch(e){setMsg('ztMsg','Ошибка: '+$h(e.message||e),'err');}
+  }catch(e){
+    setMsg('ztMsg','Ошибка: '+$h(e.message||e),'err');
+  }
 }
 async function triggerDynv6(){
   setMsg('dvMsg','Обновляю...','');
@@ -2165,7 +2173,10 @@ async function issueCert(){
   $('certBtn').disabled=true;
   try{
     const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim()})});
-    setMsg('certMsg','Сертификат выпущен: '+d.domain,'ok');
+    setMsg('certMsg','Сертификат выпущен и автоматически применён: '+d.domain,'ok');
+    if($('panelCertPath')) $('panelCertPath').value = d.cert;
+    if($('panelKeyPath')) $('panelKeyPath').value = d.key;
+    toast('Сертификат успешно выпущен и применён', 'ok');
     loadCert();
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
 }
@@ -2299,11 +2310,15 @@ async function loadWp(){
       btn.classList.add('hidden');
     } else if(!s.domain_set){
       st.textContent = 'нет домена/DDNS';
-      hint.textContent = 'Нет домена или DDNS — внеси его во вкладке «Сайт» (раздел DDNS/dynv6), после этого появится кнопка установки.';
+      hint.textContent = 'Нет домена или DDNS — внеси его во вкладке «Сайт» (раздел DDNS/dynv6).';
+      btn.classList.add('hidden');
+    } else if(!s.cert_ready){
+      st.textContent = 'нет SSL-сертификата';
+      hint.textContent = 'Домен задан, но для Web Proxy нужен SSL-сертификат (выпустите Let’s Encrypt во вкладке «Сайт»).';
       btn.classList.add('hidden');
     } else {
       st.textContent = 'готов к установке';
-      hint.textContent = 'Порты 80/443 свободны, домен ' + (s.domain||'') + ' задан.';
+      hint.textContent = 'Порты 80/443 свободны, домен ' + (s.domain||'') + ' и SSL-сертификат готовы.';
       btn.classList.remove('hidden');
     }
   }catch(e){ /* ignore */ }
@@ -2665,7 +2680,6 @@ document.addEventListener('click', function(e){
 });
 
 // $ helper
-const $ = (id) => document.getElementById(id);
 
 refresh();
 // autoCheckForUpdate(); // disabled for debugging
@@ -2810,7 +2824,8 @@ async function deleteLogo(){
 async function loadNetworkSettings(){
   try{
     const r=await api('/api/network/settings');
-    if(r.ru_bypass!==undefined)$('ruBypass').checked=r.ru_bypass;
+    const rb=$('ruBypass');
+    if(rb && r.ru_bypass!==undefined) rb.checked=r.ru_bypass;
     if(r.bind!==undefined)$('panelBind').value=r.bind;
     if(r.cert_path!==undefined)$('panelCertPath').value=r.cert_path;
     if(r.key_path!==undefined)$('panelKeyPath').value=r.key_path;
@@ -2820,8 +2835,9 @@ async function saveNetworkSettings(){
   const btn=event.target; btn.disabled=true;
   $('netMsg').textContent='Сохраняю...'; $('netMsg').className='msg';
   try{
+    const rb=$('ruBypass');
     const body={
-      ru_bypass: $('ruBypass').checked,
+      ru_bypass: rb ? rb.checked : false,
       bind: $('panelBind').value.trim(),
       cert_path: $('panelCertPath').value.trim(),
       key_path: $('panelKeyPath').value.trim()
@@ -2839,9 +2855,10 @@ async function saveNetworkSettings(){
   }finally{btn.disabled=false;}
 }
 async function applyRuBypass(){
+  const rb=$('ruBypass');
   $('ruMsg').textContent='Применяю...'; $('ruMsg').className='msg';
   try{
-    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify({ru_bypass:$('ruBypass').checked})});
+    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify({ru_bypass: rb ? rb.checked : false})});
     if(r.xray_restarted){
       $('ruMsg').textContent='Готово: Xray перезапущен'; $('ruMsg').className='msg ok';
       toast('RU-обход применён','ok');
