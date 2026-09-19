@@ -536,6 +536,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <label class=mut style="display:block;margin-top:8px"><input id=certAuto type=checkbox> Автопродление за 30 дней до истечения</label>
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
       <button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button>
+      <button class="tiny sec" onclick=freePort80()>🔓 Освободить порт 80</button>
       <button class=tiny onclick=saveCertCfg()>&#x1F4CE; Сохранить email/авто</button>
       <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
     </div>
@@ -2179,6 +2180,14 @@ async function issueCert(){
     toast('Сертификат успешно выпущен и применён', 'ok');
     loadCert();
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
+}
+async function freePort80(){
+  if(!confirm('Освободить порт 80 (остановить мешающие службы)?')) return;
+  try{
+    const r=await api('/api/port80/free',{method:'POST'});
+    if(r.ok) toast('Порт 80 успешно освобожден','ok');
+    else throw new Error(r.error||'Ошибка');
+  }catch(e){toast('Ошибка: '+e.message,'err');}
 }
 async function loadXrayInfo(){
   setMsg('xvMsg','Загружаю список версий...','');
