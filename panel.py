@@ -3830,7 +3830,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 try: body = json.loads(raw.decode() or "{}")
                 except Exception: body = {}
                 t = _load(THEME, {}) or {}
-                for k in ("bg","bg2","card","card2","fg","mut","br","acc","acc2","font","layout"):
+                for k in ("bg","bg2","card","card2","fg","mut","br","acc","acc2","font","layout","swipe"):
                     if k in body: t[k] = body[k]
                 _save(THEME, t)
                 self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
