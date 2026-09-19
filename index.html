@@ -390,8 +390,10 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <hr>
     <div class=row style="margin-top:12px"><h3 style=margin:0>Web Proxy (nginx :443 → telemt)</h3><span class=mut id=wpStatus>—</span></div>
     <div class="mut" id=wpHint style="font-size:12px;margin:4px 0 0"></div>
-    <div style="margin-top:10px" id=wpInstallRow>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap" id=wpInstallRow>
       <button class="sec ok hidden" id=wpInstallBtn onclick=installWebproxy()>⚙ Установить Web Proxy (nginx)</button>
+      <button class="tiny sec" onclick=freePort80()>🔓 Освободить порт 80</button>
+      <button class="tiny sec" onclick=freePort443()>🔓 Освободить порт 443</button>
     </div>
     <div class=msg id=wpMsg></div>
     <hr>
@@ -2192,6 +2194,14 @@ async function freePort80(){
   try{
     const r=await api('/api/port80/free',{method:'POST'});
     if(r.ok) toast('Порт 80 успешно освобожден','ok');
+    else throw new Error(r.error||'Ошибка');
+  }catch(e){toast('Ошибка: '+e.message,'err');}
+}
+async function freePort443(){
+  if(!confirm('Освободить порт 443 (остановить мешающие службы)?')) return;
+  try{
+    const r=await api('/api/port443/free',{method:'POST'});
+    if(r.ok) toast('Порт 443 успешно освобожден','ok');
     else throw new Error(r.error||'Ошибка');
   }catch(e){toast('Ошибка: '+e.message,'err');}
 }
