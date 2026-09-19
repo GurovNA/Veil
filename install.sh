@@ -287,19 +287,31 @@ step_6_finish() {
   msg "Шаг 6: итог"
   local ip
   ip="${SERVER_IP:-$(curl -fsSL --max-time 5 "$IPIFY" 2>/dev/null || echo 'SERVER_IP')}"
+  
+  if [ -f /opt/vpnpanel/config.json ]; then
+    _p="$(python3 -c 'import json;print(json.load(open("/opt/vpnpanel/config.json")).get("panel_port",8443))' 2>/dev/null)"
+    [ -n "$_p" ] && PANEL_PORT="$_p"
+  fi
+
   echo
   echo -e "${C_B}================================================================${C_N}"
   echo -e "${C_B}          Veil v$VERSION - установка завершена                   ${C_N}"
   echo -e "${C_B}================================================================${C_N}"
-  echo -e "  URL:  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
+  echo -e "  Адрес панели (URL):  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
+  echo
   if [ -f /opt/vpnpanel/FIRST-LOGIN.txt ]; then
     local _L _P
     _L="$(awk '/^login:/    {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
     _P="$(awk '/^password:/ {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
-    echo -e "  Логин:  ${_L}"
-    echo -e "  Пароль: ${_P}"
+    echo -e "  Логин:  ${C_G}${_L}${C_N}"
+    echo -e "  Пароль: ${C_G}${_P}${C_N}"
+    echo -e "  (сохраните данные — при следующем входе будет использоваться ваш пароль)"
+  else
+    echo -e "  Логин:  ${C_G}admin${C_N}"
+    echo -e "  Пароль: (ваш существующий пароль от панели)"
   fi
   echo -e "${C_B}================================================================${C_N}"
+  echo
 }
 
 run_install_steps() {
