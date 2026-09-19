@@ -2,6 +2,12 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.2.5] - 2026-09-19 (pre-release)
+
+- **dynv6: zone creation fixed + domain selector** — the "Create zone via API" button in the Site tab now works: bare zone names are auto-suffixed with `.dynv6.net` (or selected domain), "already taken" is handled gracefully by adopting the existing zone, and the account token is reused for DDNS updates. UI split into name input + dropdown (dynv6.net, v6.navy, v6.army, dns.navy, dns.army, v6.rocks).
+- **Quick install link restored** — `install.sh` added back to `main` branch (was only in feature branches), so `bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)` works again.
+- **README: quick install at the top** — the one-line install command is now prominently displayed right under the header in both README.md and README.ru.md.
+
 ## [2.2.4] - 2026-09-18
 - **AmneziaWG: full server-side protocol** — the panel now manages a native `amneziawg` kernel interface (`awg0`, UDP 28444, 10.20.0.0/24) built from source: clients get their own `/32` address and keypair, configs include the AmneziaWG obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`), and peers are synced to `awg0` on start, on subscription create, on unblock/block and after every boot (peers are written straight into `/etc/amnezia/amneziawg/awg0.conf` so the interface survives reboot without a gap).
 - **AmneziaWG `.conf` for the Amnezia app** — public endpoint `GET /api/awgconf/<sub_token>` serves a ready-to-import AmneziaWG configuration for the AmneziaVPN client (attachment with RFC 5987 `filename*`); `conf_url` is exposed in `/api/subs`, `/api/clients` and as a «⬇ AmneziaWG» button on the subscription card and in the client card. Keys are generated in standard base64 (Xray's URL-safe X25519 keys are converted with `_wg_key_std`, otherwise the `awg` tools reject them with `Key is not the correct length or format`).
