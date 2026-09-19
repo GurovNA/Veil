@@ -506,11 +506,21 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <button class="tiny sec" onclick=toggleZoneForm() style="margin-left:4px">+ Создать зону через API</button>
     </div>
     <div id=zoneForm style="display:none;margin-top:10px;padding:10px;border:1px solid #3a3f4b;border-radius:8px">
-      <div class=mut style="margin:0 0 6px">Токен аккаунта dynv6 (Bearer, из раздела Keys на dynv6.com) + имя новой зоны. Зона создается, host и token зоны сохраняются автоматически, IP обновится сразу.</div>
+      <div class=mut style="margin:0 0 6px">Токен аккаунта dynv6 (Bearer, из раздела Keys на dynv6.com) + имя новой зоны. Зона создается, host и token сохраняются автоматически, IP обновится сразу.</div>
       <label class=mut style="display:block">Account token:
         <input id=ztAccount type=password maxlength=120 style="margin-top:4px"></label>
       <label class=mut style="display:block;margin-top:8px">Имя зоны (латиница/цифры/-, 2–32):
         <input id=ztName maxlength=32 style="margin-top:4px" placeholder="myzone"></label>
+      <label class=mut style="display:block;margin-top:8px">Домен dynv6:
+        <select id=ztDomain style="margin-top:4px;width:100%;padding:6px;border-radius:4px;border:1px solid #3a3f4b;background:#1e222a;color:#e0e0e0">
+          <option value="dynv6.net" selected>dynv6.net</option>
+          <option value="v6.navy">v6.navy</option>
+          <option value="v6.army">v6.army</option>
+          <option value="dns.navy">dns.navy</option>
+          <option value="dns.army">dns.army</option>
+          <option value="v6.rocks">v6.rocks</option>
+        </select>
+      </label>
       <button class=sec style="margin-top:10px" onclick=createDynv6Zone()>Создать зону</button>
       <div class=msg id=ztMsg></div>
     </div>
@@ -2101,10 +2111,12 @@ async function saveDynv6(){
 }
 async function toggleZoneForm(){const f=$('zoneForm');f.style.display=f.style.display==='none'?'block':'none';}
 async function createDynv6Zone(){
-  const acct=($('ztAccount').value||'').trim(), nm=($('ztName').value||'').trim();
-  setMsg('ztMsg','Создаю зону...');
+  const acct=($('ztAccount').value||'').trim(), base=($('ztName').value||'').trim(), dom=$('ztDomain').value;
+  if(!base){setMsg('ztMsg','введите имя зоны','err');return;}
+  const nm=base+'.'+dom;
+  setMsg('ztMsg','Создаю зону: '+$h(nm)+'...');
   try{
-    const r=await api('api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
+    const r=await api('/api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
     if(!r.ok)throw new Error(r.error||'ошибка dynv6');
     setMsg('ztMsg','Зона создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok');
     $('dvHost').value=$h(r.host); $('dvToken').value=r.token||'';

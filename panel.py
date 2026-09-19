@@ -2298,25 +2298,48 @@ def _pub_ip6():
     return _my_ipv6()
 
 def _dynv6_create_zone(name, account_token):
-    """Создание зоны через dynv6 REST v2 API (нужен Bearer account-token)."""
+    """Создание зоны через dynv6 REST v2 API (нужен Bearer account-token).
+    Если зона уже есть в аккаунте (already taken) — просто подключаем её."""
     name = (name or "").strip().lower()
     account_token = (account_token or "").strip()
     if not name or not account_token:
         raise RuntimeError("нужны имя зоны и account-token dynv6")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,31}", name):
-        raise RuntimeError("имя зоны: латиница/цифры/- (2–32 символа)")
+    if "." not in name:
+        name = name + ".dynv6.net"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", name):
+        raise RuntimeError("имя зоны: латиница/цифры/./- (2–32 символа)")
     body = json.dumps({"name": name}).encode()
     req = urllib.request.Request("https://dynv6.com/api/v2/zones", data=body,
                                  method="POST",
                                  headers={"Content-Type": "application/json",
                                           "Authorization": "Bearer " + account_token})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        d = json.loads(r.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code == 422:
+            err = e.read().decode("utf-8", "replace")
+            if "already taken" in err:
+                # зона уже существует — пробуем найти её в аккаунте
+                req_list = urllib.request.Request("https://dynv6.com/api/v2/zones",
+                    headers={"Authorization": "Bearer " + account_token})
+                with urllib.request.urlopen(req_list, timeout=15) as lr:
+                    zones = json.loads(lr.read().decode("utf-8", "replace"))
+                    match = next((z for z in zones if z.get("name") == name), None)
+                    if match:
+                        d = match
+                    else:
+                        raise RuntimeError("зона занята кем-то другим: " + name)
+            else:
+                raise
+        else:
+            raise
     host = (d.get("name") or "").strip()
-    token = (d.get("token") or "").strip()
-    if not host or not token:
-        raise RuntimeError("dynv6: ответ API не содержит name/token: " + json.dumps(d, ensure_ascii=False)[:200])
-    # сохраняем новую зону как текущую dynv6-configured
+    # REST v2 при создании зоны не возвращает zone-token, поэтому берём account-token
+    token = (d.get("token") or "").strip() or account_token
+    if not host:
+        raise RuntimeError("dynv6: ответ API не содержит name: " + json.dumps(d, ensure_ascii=False)[:200])
+    # сохраняем зону как текущую dynv6-configured
     CFG_CACHE["dynv6_host"] = host
     CFG_CACHE["dynv6_token"] = token
     _save(CFG, CFG_CACHE)
@@ -2329,7 +2352,7 @@ def _dynv6_create_zone(name, account_token):
         up = _dynv6_update()
     except Exception as e:
         up = {"ok": False, "error": str(e)}
-    return {"ok": True, "host": host, "zone_created": True, "update": up}
+    return {"ok": True, "host": host, "token": token, "zone_created": True, "update": up}
 
 def _dynv6_update():
     conf = _dynv6_conf()
