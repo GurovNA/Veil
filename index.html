@@ -2736,6 +2736,7 @@ function applyTheme(t){
   // Swipe navigation
   const swipeEnabled = t.swipe === true;
   document.body.classList.toggle('swipe-enabled', swipeEnabled);
+  const sw = document.getElementById('th-swipe'); if (sw) sw.checked = swipeEnabled;
 }
 let curLayout='auto';
 function applyLayout(layout){
