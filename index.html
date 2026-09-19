@@ -633,6 +633,15 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       </div>
       <p class=mut style="margin:8px 0 0">«Авто» сам определяет по ширине экрана: телефон — одна колонка, широкий экран — две колонки.</p>
     </div>
+
+    <div style="margin:16px 0 4px">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type=checkbox id=th-swipe>
+        <span class=mut>Свайп между вкладками (смахивание пальцем влево/вправо)</span>
+      </label>
+      <p class=mut style="margin:4px 0 0">На мобильных: отключите, если свайп мешает прокрутке или жестам браузера.</p>
+    </div>
+
     <div style="margin:16px 0 4px">
       <span class=mut style="display:block;margin-bottom:6px">Элегантные темы:</span>
       <div id=thPresetsNew style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
@@ -2724,6 +2733,9 @@ function applyTheme(t){
     if(t.logo_mime){ ll.setAttribute('src','/logo?t='+Date.now()); }
     else if(window._defLogo){ ll.setAttribute('src', window._defLogo); }
   }
+  // Swipe navigation
+  const swipeEnabled = t.swipe === true;
+  document.body.classList.toggle('swipe-enabled', swipeEnabled);
 }
 let curLayout='auto';
 function applyLayout(layout){
@@ -2748,6 +2760,7 @@ async function saveTheme(){
     acc:  document.getElementById('th-acc').value,
     acc2: document.getElementById('th-acc2').value,
     font: document.getElementById('th-font').value,
+    swipe: document.getElementById('th-swipe').checked,
   };
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
   await loadTheme();
