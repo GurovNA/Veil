@@ -2174,11 +2174,17 @@ async function issueCert(){
   $('certBtn').disabled=true;
   try{
     const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim()})});
-    setMsg('certMsg','Сертификат выпущен и автоматически применён: '+d.domain,'ok');
+    setMsg('certMsg','Сертификат успешно выпущен и применен для домена: '+d.domain,'ok');
     if($('panelCertPath')) $('panelCertPath').value = d.cert;
     if($('panelKeyPath')) $('panelKeyPath').value = d.key;
-    toast('Сертификат успешно выпущен и применён', 'ok');
+    if($('setDomain')) $('setDomain').value = d.domain;
+    toast('Сертификат успешно выпущен и применен!', 'ok');
     loadCert();
+    setTimeout(() => {
+      if(confirm('Перейти на защищенный адрес https://' + d.domain + ':' + location.port + '/?')) {
+        location.href = 'https://' + d.domain + ':' + location.port + '/';
+      }
+    }, 1500);
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
 }
 async function freePort80(){
@@ -2860,7 +2866,13 @@ async function saveNetworkSettings(){
       throw new Error(r.error||'Ошибка');
     }
   }catch(e){
-    $('netMsg').textContent=e.message; $('netMsg').className='msg err';
+    if(e.message && (e.message.includes('Load failed') || e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))){
+      $('netMsg').textContent='Сохранено (панель перезапускается)...'; $('netMsg').className='msg ok';
+      toast('Настройки сохранены','ok');
+      setTimeout(()=>location.reload(),1500);
+    } else {
+      $('netMsg').textContent=e.message; $('netMsg').className='msg err';
+    }
   }finally{btn.disabled=false;}
 }
 async function applyRuBypass(){
