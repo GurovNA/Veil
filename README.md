@@ -7,7 +7,7 @@
     <a href="README.en.md">🇬🇧 English</a>
   </p>
   <p>
-    <a href="https://github.com/GurovNA/Veil/releases/latest"><img src="https://img.shields.io/badge/version-2.2.4-blue.svg" alt="Version"></a>
+    <a href="https://github.com/GurovNA/Veil/releases/latest"><img src="https://img.shields.io/badge/version-2.2.5-blue.svg" alt="Version"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
     <a href="https://ubuntu.com/download/server"><img src="https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-orange.svg" alt="Ubuntu"></a>
   </p>
