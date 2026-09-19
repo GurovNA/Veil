@@ -93,13 +93,36 @@ step_2_xray() {
   msg "Шаг 2: Xray (VLESS + Reality)"
   if [ -x /usr/local/bin/xray ]; then
     ok "Xray уже установлен: $(/usr/local/bin/xray version 2>/dev/null | head -1)"
-    return 0
+  else
+    run "curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/xray-install.sh"
+    run "bash /tmp/xray-install.sh install"
   fi
-  run "curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/xray-install.sh"
-  run "bash /tmp/xray-install.sh install"
-  run "systemctl stop xray 2>/dev/null || true"
+
+  cat <<'UNITEOF' > /etc/systemd/system/xray.service
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartSec=3
+DynamicUser=false
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+  systemctl daemon-reload
+  systemctl enable xray
+  ok "Xray service настроен"
+
   [ -x /usr/local/bin/xray ] || die "Xray не установился"
-  ok "Xray готов"
   if [ ! -f /usr/local/etc/xray/config.json ]; then
     run "mkdir -p /usr/local/etc/xray"
     run "echo '{\"log\":{\"loglevel\":\"warning\"},\"inbounds\":[],\"outbounds\":[{\"protocol\":\"freedom\"}]}' > /usr/local/etc/xray/config.json"
