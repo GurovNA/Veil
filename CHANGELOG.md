@@ -2,6 +2,14 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.2.8] - 2026-09-19
+
+- **Swipe removed** — полностью убран свайп-навигация между вкладками (был источник багов на мобильных)
+- **dynv6 auth fix** — добавлена проверка авторизации (`_authed`) ко всем эндпоинтам dynv6: `/api/dynv6/create-zone`, `/api/dynv6/save`, `/api/dynv6/update` — теперь кнопка «Создать зону» работает корректно
+- **dynv6 zone creation fix** — автодополнение `.dynv6.net` (или выбранный домен), обработка `already taken`, account-token для DDNS
+- **Quick install link restored** — `install.sh` в `main`
+- **README: quick install at the top** — команда установки вверху
+
 ## [2.2.7] - 2026-09-19
 
 - **Update check fix** — исправлена проверка обновлений (GitHub API: HTTP 401 → теперь работает с токеном из github.token)

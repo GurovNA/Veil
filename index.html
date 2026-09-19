@@ -635,14 +635,6 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     </div>
 
     <div style="margin:16px 0 4px">
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-        <input type=checkbox id=th-swipe>
-        <span class=mut>Свайп между вкладками (смахивание пальцем влево/вправо)</span>
-      </label>
-      <p class=mut style="margin:4px 0 0">На мобильных: отключите, если свайп мешает прокрутке или жестам браузера.</p>
-    </div>
-
-    <div style="margin:16px 0 4px">
       <span class=mut style="display:block;margin-bottom:6px">Элегантные темы:</span>
       <div id=thPresetsNew style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
         <button type=button class="tiny sec" onclick="applyThemePreset('Сакура')">🌸 Сакура</button>
@@ -2733,11 +2725,7 @@ function applyTheme(t){
     if(t.logo_mime){ ll.setAttribute('src','/logo?t='+Date.now()); }
     else if(window._defLogo){ ll.setAttribute('src', window._defLogo); }
   }
-  // Swipe navigation
-  const swipeEnabled = t.swipe === true;
-  document.body.classList.toggle('swipe-enabled', swipeEnabled);
-  const sw = document.getElementById('th-swipe'); if (sw) sw.checked = swipeEnabled;
-}
+  }
 let curLayout='auto';
 function applyLayout(layout){
   const desk = layout==='desk' || (layout!=='mob' && window.matchMedia('(min-width:900px)').matches);
@@ -2761,7 +2749,6 @@ async function saveTheme(){
     acc:  document.getElementById('th-acc').value,
     acc2: document.getElementById('th-acc2').value,
     font: document.getElementById('th-font').value,
-    swipe: document.getElementById('th-swipe').checked,
   };
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
   await loadTheme();
@@ -2943,47 +2930,4 @@ loadTheme();
   </div>
 </div>
 <div id=toasts></div>
-  <script>
-document.addEventListener('DOMContentLoaded',()=>{
-  const panel=document.getElementById('panel');
-  if(!panel) return;
-  const tabsNav=document.querySelector('.tabs');
-  if(!tabsNav) return;
-  const buttons=tabsNav.querySelectorAll('button');
-  const getActiveIndex=()=>{
-    const activePane=document.querySelector('.tab-pane.active');
-    if(!activePane) return -1;
-    const activeId=activePane.id;
-    for(let i=0;i<buttons.length;i++){
-      if(buttons[i].dataset.tab && 'tab-'+buttons[i].dataset.tab===activeId) return i;
-    }
-    return -1;
-  };
-  let startX=0, startY=0;
-  const isPointer='pointerdown' in document;
-  const startEv=isPointer?'pointerdown':'touchstart';
-  const endEv=isPointer?'pointerup':'touchend';
-  document.querySelectorAll('.tab-pane').forEach(pane=>{
-    pane.addEventListener(startEv,e=>{
-      if(e.target.closest&&e.target.closest('button,a,input,select,textarea,.sec,.tiny,.pcheck,.pstar,.pcard,.limbar')) return;
-      startX=e.clientX!==undefined?e.clientX:(e.changedTouches?e.changedTouches[0].screenX:0);
-      startY=e.clientY!==undefined?e.clientY:(e.changedTouches?e.changedTouches[0].screenY:0);
-    });
-    pane.addEventListener(endEv,e=>{
-      let endX=e.clientX!==undefined?e.clientX:(e.changedTouches?e.changedTouches[0].screenX:0);
-      let endY=e.clientY!==undefined?e.clientY:(e.changedTouches?e.changedTouches[0].screenY:0);
-      const dx=endX-startX;
-      const dy=endY-startY;
-      if(Math.abs(dx)<50||Math.abs(dx)<=Math.abs(dy)) return;
-      let idx=getActiveIndex();
-      if(idx<0) return;
-      if(dx>0){
-        idx=(idx-1+buttons.length)%buttons.length;
-      } else {
-        idx=(idx+1)%buttons.length;
-      }
-      if(buttons[idx]) buttons[idx].click();
-    });
-  });
-});
-</script></html>
+</body></html>
