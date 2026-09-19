@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.2.7"
+VERSION = "2.2.8"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -3512,6 +3512,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/dynv6/save":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     b = self._body()
                     host = (b.get("host") or "").strip()
@@ -3530,6 +3531,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/dynv6/create-zone":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     b2 = self._body()
                     name = (b2.get("name") or "").strip()
@@ -3544,6 +3546,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/dynv6/update":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     return self._send(200, _dynv6_update())
                 except Exception as e:
