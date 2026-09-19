@@ -285,6 +285,10 @@ UNITEOF
 
 step_6_finish() {
   msg "Шаг 6: итог"
+  show_panel_info_internal
+}
+
+show_panel_info_internal() {
   local ip
   ip="${SERVER_IP:-$(curl -fsSL --max-time 5 "$IPIFY" 2>/dev/null || echo 'SERVER_IP')}"
   
@@ -295,7 +299,7 @@ step_6_finish() {
 
   echo
   echo -e "${C_B}================================================================${C_N}"
-  echo -e "${C_B}          Veil v$VERSION - установка завершена                   ${C_N}"
+  echo -e "${C_B}          Veil v$VERSION - информация о панели                   ${C_N}"
   echo -e "${C_B}================================================================${C_N}"
   echo -e "  Адрес панели (URL):  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
   echo
@@ -305,13 +309,18 @@ step_6_finish() {
     _P="$(awk '/^password:/ {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
     echo -e "  Логин:  ${C_G}${_L}${C_N}"
     echo -e "  Пароль: ${C_G}${_P}${C_N}"
-    echo -e "  (сохраните данные — при следующем входе будет использоваться ваш пароль)"
+    echo -e "  (первоначальный пароль из FIRST-LOGIN.txt)"
   else
     echo -e "  Логин:  ${C_G}admin${C_N}"
-    echo -e "  Пароль: (ваш существующий пароль от панели)"
+    echo -e "  Пароль: (используйте ваш текущий пароль от панели)"
   fi
   echo -e "${C_B}================================================================${C_N}"
   echo
+}
+
+show_panel_info() {
+  show_panel_info_internal
+  exit 0
 }
 
 run_install_steps() {
@@ -408,15 +417,17 @@ main() {
   echo -e "  2) Переустановить с сохранением данных"
   echo -e "  3) Переустановить с удалением данных"
   echo -e "  4) Удалить полностью панель"
+  echo -e "  5) Показать адрес панели"
   echo -e "  0) Выход"
   echo -e "${C_B}================================================================${C_N}"
-  read -rp "Выберите пункт [1-4]: " choice
+  read -rp "Выберите пункт [1-5]: " choice
 
   case "$choice" in
     1) run_install_steps ;;
     2) reinstall_keeping_data ;;
     3) reinstall_deleting_data ;;
     4) uninstall_completely ;;
+    5) show_panel_info ;;
     0) exit 0 ;;
     *) err "Неверный выбор"; exit 1 ;;
   esac
