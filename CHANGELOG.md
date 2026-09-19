@@ -2,11 +2,18 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
-## [2.2.5] - 2026-09-19 (pre-release)
+## [2.2.6] - 2026-09-19
 
-- **dynv6: zone creation fixed + domain selector** — the "Create zone via API" button in the Site tab now works: bare zone names are auto-suffixed with `.dynv6.net` (or selected domain), "already taken" is handled gracefully by adopting the existing zone, and the account token is reused for DDNS updates. UI split into name input + dropdown (dynv6.net, v6.navy, v6.army, dns.navy, dns.army, v6.rocks).
-- **Quick install link restored** — `install.sh` added back to `main` branch (was only in feature branches), so `bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)` works again.
-- **README: quick install at the top** — the one-line install command is now prominently displayed right under the header in both README.md and README.ru.md.
+- **Swipe navigation toggle** — в вкладке Оформление добавлен чекбокс «Свайп между вкладками» для включения/выключения навигации смахиванием пальцем (вкл/выкл). По умолчанию выключено, не мешает прокрутке и жестам браузера. Сохраняется в theme.json.
+- **dynv6 zone creation fix** — кнопка «Создать зону через API» в вкладке Сайт: автодополнение `.dynv6.net` (или выбранный домен: dynv6.net, v6.navy, v6.army, dns.navy, dns.army, v6.rocks), обработка `already taken` (подключает существующую зону), account-token используется для DDNS.
+- **Quick install link restored** — `install.sh` возвращён в `main`, работает `bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)`.
+- **README: quick install at the top** — команда быстрой установки вынесена в самый верх README.md и README.ru.md.
+
+## [2.2.5] - 2026-09-19
+
+- **dynv6: zone creation fixed + domain selector** — кнопка «Создать зону через API» в вкладке Сайт теперь работает: голые имена автодополняются `.dynv6.net` (или выбранный домен), ошибка \"already taken\" обрабатывается корректно (подключается существующая зона), account token используется для DDNS обновлений. UI разбит на поле имени + выпадающий список доменов (dynv6.net, v6.navy, v6.army, dns.navy, dns.army, v6.rocks).
+- **Quick install link restored** — `install.sh` возвращён в ветку `main` (был только в feature-ветках), поэтому `bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)` снова работает.
+- **README: quick install at the top** — команда быстрой установки вынесена в самый верх README.md и README.ru.md.
 
 ## [2.2.4] - 2026-09-18
 - **AmneziaWG: full server-side protocol** — the panel now manages a native `amneziawg` kernel interface (`awg0`, UDP 28444, 10.20.0.0/24) built from source: clients get their own `/32` address and keypair, configs include the AmneziaWG obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`), and peers are synced to `awg0` on start, on subscription create, on unblock/block and after every boot (peers are written straight into `/etc/amnezia/amneziawg/awg0.conf` so the interface survives reboot without a gap).
