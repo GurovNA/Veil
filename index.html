@@ -1689,7 +1689,11 @@ setInterval(()=>{ gpAutoCheck(); },15*60*1000);
 
 // Initial load
 document.addEventListener('DOMContentLoaded',()=>{
-  loadGlobalpingHistory();
+  loadGlobalpingHistory().then(()=>{
+    if(!gpLastStats || !gpLastStats.total){
+      gpAutoCheck();
+    }
+  });
 });
 document.addEventListener('click',()=>closeMenus());
 
