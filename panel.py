@@ -3396,25 +3396,20 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
                 
-                # Убедимся, что созданы ВСЕ поддерживаемые протоколы и подписчик
-                # присутствует в каждом из них, чтобы подписка была универсальной
-                # и охватывала все протоколы/транспорты на сервере одновременно.
-                _ensure_all_protos(st)
-                inbounds = st.setdefault("inbounds", {})
-                if not inbounds:
-                    p_proto = want_proto or "reality"
-                    inbounds[p_proto] = _alloc_inbound(st, p_proto)
+                target_proto = want_proto if (want_proto and want_proto in (st.get("inbounds") or {})) else (_proto_of(st) or "reality")
+                inb = (st.get("inbounds") or {}).get(target_proto)
+                if not inb:
+                    inb = _alloc_inbound(st, target_proto)
+                    st.setdefault("inbounds", {})[target_proto] = inb
                     
                 added_links = []
-                first_link = ""
-                for proto, inb in inbounds.items():
-                    c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry)
-                    c["uuid"] = client_uuid
-                    c["sub_token"] = sub_token
-                    inb.setdefault("clients", []).append(c)
-                    lnk = _link(inb, host, c, proto)
-                    added_links.append({"proto": proto, "link": lnk})
-                    if not first_link: first_link = lnk
+                c = _new_client(name, target_proto, inb, limit_gb=limit_gb, expiry=expiry)
+                c["uuid"] = client_uuid
+                c["sub_token"] = sub_token
+                inb.setdefault("clients", []).append(c)
+                lnk = _link(inb, host, c, target_proto)
+                added_links.append({"proto": target_proto, "link": lnk})
+                first_link = lnk
                     
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
