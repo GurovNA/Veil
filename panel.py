@@ -3324,12 +3324,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 panel_port = CFG_CACHE.get("panel_port", 8444)
                 
                 added_links = []
-                for p_proto, p_inb in (st.get("inbounds") or {}).items():
-                    c = _new_client(name, p_proto, p_inb)
-                    c["uuid"] = client_uuid
-                    c["sub_token"] = sub_token
-                    p_inb.setdefault("clients", []).append(c)
-                    added_links.append(_link(p_inb, host, c, p_proto))
+                c = _new_client(name, proto, inb)
+                c["uuid"] = client_uuid
+                c["sub_token"] = sub_token
+                inb.setdefault("clients", []).append(c)
+                added_links.append(_link(inb, host, c, proto))
                     
                 st["active"] = proto
                 _write_xray(st); _save(STATE, st)
