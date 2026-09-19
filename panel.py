@@ -4026,6 +4026,16 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, "message": "Порт 80 освобожден"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/port443/free":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                try:
+                    for srv in ("apache2", "apache", "httpd"):
+                        subprocess.run(["systemctl", "stop", srv], capture_output=True)
+                        subprocess.run(["systemctl", "disable", srv], capture_output=True)
+                    subprocess.run(["fuser", "-k", "443/tcp"], capture_output=True)
+                    return self._send(200, {"ok": True, "message": "Порт 443 освобожден"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
 
             if p == "/api/webproxy/install":
                 try:
