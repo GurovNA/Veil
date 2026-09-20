@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.5"
+VERSION = "2.3.6"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1086,10 +1086,12 @@ def _is_incy_client(ua="", xclient=""):
     return "incy" in (ua or "").lower() or (xclient or "").lower() == "incy"
 
 def _expire_seconds_client(ua="", xclient=""):
-    # subscription-userinfo.expire: по умолчанию миллисекунды (v2rayNG, NekoBox),
-    # но INCY (по докам — Unix-секунды) и Happ Plus (иначе дата искажается) ждут секунды.
+    # subscription-userinfo.expire: по умолчанию миллисекунды (v2rayNG, NekoBox,
+    # Hiddify, Clash-клиенты), но INCY (по докам — Unix-секунды), Happ Plus и
+    # Shadowrocket (иначе дата искажается) ждут секунды.
     u = (ua or "").lower()
-    return "incy" in u or "happ" in u or (xclient or "").lower() == "incy"
+    return ("shadowrocket" in u or "incy" in u or "happ" in u
+            or (xclient or "").lower() == "incy")
 
 def _incy_link(proto, inb, c, host):
     """Ссылка в формате INCY: по одной в строке, WG/AmneziaWG — однострочными схемами."""
@@ -1203,51 +1205,65 @@ def _singbox_subscription(st, sub_path, host, tr):
     return outbounds, up, down, total, expiry, sub_name
 
 # Каталог приложений для страницы подписки (/p/<token>).
-# "link" — deep-link шаблон для добавления подписки (может содержать {sub} и {b64});
-# пустой link — только кнопка «Скопировать/Поделиться».
+# "link" — deep-link шаблон; плейсхолдеры: {sub} (URL-энкод), {rawsub} (как есть),
+#   {b64} (base64 подписки), {wgconf} (base64 личного конфига WireGuard).
+# "pay": платное приложение — в списке помещается ниже бесплатных, помечается «платно».
+# "wg"/"awg": карточка показывается только если у подписчика есть этот протокол.
+# Для WireGuard/AmneziaWG — импорт личного конфига (wgconf:// или скачивание .conf),
+# а не подписки.
 _SUB_APP_CATALOG = {
     "ios": [
         {"name": "INCY", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}"},
-        {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}"},
-        {"name": "sing-box (SFI)", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
-        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": "streisand://add-profile?url={sub}"},
-        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
-        {"name": "Loon", "store": "https://apps.apple.com/app/loon/id1373567447", "link": ""},
-        {"name": "Foxray", "store": "https://apps.apple.com/app/foxray/id6448898396", "link": ""},
+        {"name": "Happ Plus", "store": "https://apps.apple.com/app/happ-plus/id6800274884", "link": ""},
+        {"name": "sing-box (SFI)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
+        {"name": "Foxray", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
+        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}", "pay": True},
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
+        {"name": "Loon", "store": "https://apps.apple.com/app/loon/id1373567447", "link": "", "pay": True},
     ],
     "android": [
-        {"name": "v2rayNG", "store": "https://play.google.com/store/apps/details?id=com.v2ray.ang", "link": "v2rayng://install-sub?url={sub}"},
+        {"name": "v2rayNG", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-config/?url={sub}"},
         {"name": "NekoBox", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "nekobox://install?url={sub}"},
-        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import?url={sub}"},
-        {"name": "sing-box (SFA)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sfa://add-profile?url={sub}"},
-        {"name": "v2rayM", "store": "https://github.com/2dust/v2rayM/releases", "link": ""},
+        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}"},
+        {"name": "sing-box (SFA)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "WireGuard", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "AmneziaWG", "store": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "awg": True},
     ],
     "windows": [
         {"name": "v2rayN", "store": "https://github.com/2dust/v2rayN/releases", "link": ""},
         {"name": "Nekoray", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
         {"name": "Clash Verge Rev", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}"},
         {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+        {"name": "WireGuard", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
+        {"name": "AmneziaWG", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "awg": True},
     ],
     "macos": [
-        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
-        {"name": "sing-box", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
-        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": "streisand://add-profile?url={sub}"},
+        {"name": "sing-box (SFM)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
     ],
     "apple_tv": [
-        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
-        {"name": "sing-box", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
+        {"name": "sing-box (SFT)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
     ],
     "android_tv": [
-        {"name": "v2rayNG", "store": "https://play.google.com/store/apps/details?id=com.v2ray.ang", "link": "v2rayng://install-sub?url={sub}"},
+        {"name": "v2rayNG", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-config/?url={sub}"},
         {"name": "NekoBox", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "nekobox://install?url={sub}"},
-        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import?url={sub}"},
+        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}"},
+        {"name": "WireGuard", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
     ],
     "linux": [
         {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "Clash Verge Rev", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}"},
         {"name": "Nekoray", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
-        {"name": "Hiddify", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import?url={sub}"},
+        {"name": "Hiddify", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import/{rawsub}"},
+        {"name": "WireGuard", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
+        {"name": "AmneziaWG", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "awg": True},
     ],
 }
 _SUB_PLATFORM_LABELS = {
@@ -1321,11 +1337,39 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     name_html = name_plain.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     onl = int(u.get("online") or 0)
     conns = len(u.get("protos") or [])
-    catalog_json = json.dumps(_SUB_APP_CATALOG, ensure_ascii=False)
-    page_url = f"https://{host}:{panel_port}/p/{u['sub_token']}"
+    tok = u["sub_token"]
+    page_url = f"https://{host}:{panel_port}/p/{tok}"
     cls = "ok" if status == "active" else "off"
     sub64 = base64.urlsafe_b64encode(sub_url.encode("utf-8")).decode().rstrip("=")
     avatar = (name_plain[:1] or "V").upper()
+    links = u.get("links") or {}
+    wg_conf = links.get("wireguard") or ""
+    awg_conf = links.get("amneziawg") or ""
+    def _b64(s):
+        return base64.urlsafe_b64encode(s.encode("utf-8")).decode().rstrip("=") if s else ""
+    wg_b64, awg_b64 = _b64(wg_conf), _b64(awg_conf)
+    wg_url = f"https://{host}:{panel_port}/api/wgconf/{tok}"
+    awg_url = f"https://{host}:{panel_port}/api/awgconf/{tok}"
+    conf_blocks = []
+    if wg_conf:
+        conf_blocks.append('<a class="btn-mini" href="' + wg_url + '" download>'
+                           '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
+                           'WireGuard · .conf</a>')
+    if awg_conf:
+        conf_blocks.append('<a class="btn-mini" href="' + awg_url + '" download>'
+                           '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
+                           'AmneziaWG · .conf</a>')
+    confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
+    cat = {k: [dict(a) for a in v
+               if not (a.get("wg") and not wg_conf)
+               and not (a.get("awg") and not awg_conf)]
+           for k, v in _SUB_APP_CATALOG.items()}
+    catalog_json = json.dumps(cat, ensure_ascii=False)
+    plat_default = _sub_ua_platform(ua)
+    plat_opts = "".join(
+        "<option value='%s'%s>%s</option>" % (k, " selected" if k == plat_default else "",
+                                             _SUB_PLATFORM_LABELS.get(k, k))
+        for k in cat)
     tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__NAMEHT__ · подписка</title><style>
@@ -1336,12 +1380,23 @@ body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Seg
   display:flex;justify-content:center;padding:36px 16px}
 .page{width:100%;max-width:440px}
 .card{background:linear-gradient(180deg,#161d33,#10162a);border:1px solid #263152;border-radius:22px;overflow:hidden;box-shadow:0 24px 70px -20px rgba(0,0,0,.7)}
-.cover{height:118px;background:linear-gradient(135deg,#3b82f6,#22d3ee 55%,#34d399);position:relative}
-.cover:after{content:'';position:absolute;inset:0;background:radial-gradient(320px 90px at 72% 18%,rgba(255,255,255,.28),transparent 70%)}
+.hero{display:flex;flex-direction:column;align-items:center;gap:4px;padding:24px 0 8px;
+  background:linear-gradient(180deg,rgba(59,130,246,.14),rgba(34,211,238,.05) 55%,transparent)}
+.logo{width:66px;height:66px;display:block}
+.lg-o{animation:lgspin 7s linear infinite;transform-origin:32px 32px}
+.lg-v{animation:lgpulse 2.6s ease-in-out infinite}
+.lg-w{animation:lgwave 3.4s ease-in-out infinite;transform-origin:32px 26px}
+@keyframes lgspin{to{transform:rotate(360deg)}}
+@keyframes lgpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.62;transform:scale(.97)}}
+@keyframes lgwave{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-3px);opacity:.85}}
+.logo-name{font-size:15px;font-weight:800;letter-spacing:7px;text-transform:uppercase;padding-left:7px;
+  background:linear-gradient(90deg,#3b82f6,#22d3ee,#34d399,#22d3ee,#3b82f6);background-size:300% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;animation:lgslide 5s linear infinite}
+@keyframes lgslide{to{background-position:300% 0}}
 .body{padding:0 20px 22px}
-.head{display:flex;align-items:center;gap:14px;margin-top:-36px;position:relative}
-.ava{width:68px;height:68px;border-radius:18px;background:linear-gradient(135deg,#3b82f6,#22d3ee);
-  display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;color:#04101f;
+.head{display:flex;align-items:center;gap:14px;margin-top:-20px;position:relative}
+.ava{width:62px;height:62px;border-radius:18px;background:linear-gradient(135deg,#3b82f6,#22d3ee);
+  display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#04101f;
   box-shadow:0 12px 26px rgba(34,211,238,.35);border:3px solid #10162a;flex:0 0 auto}
 .nm{min-width:0}
 .name{font-size:21px;font-weight:700;margin:0;color:#f2f5ff;word-break:break-word;line-height:1.15}
@@ -1349,7 +1404,7 @@ body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Seg
 .pill{margin-top:8px;display:inline-block;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600}
 .pill.ok{background:#0f2b1b;color:#4ade80;border:1px solid #1f6b3f}
 .pill.off{background:#33131a;color:#fb7185;border:1px solid #7f1d1d}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}
 .stat{background:#1a2240;border:1px solid #25304f;border-radius:14px;padding:11px 12px}
 .stat .lb{display:flex;align-items:center;gap:6px;font-size:10.5px;color:#8b94b5;text-transform:uppercase;letter-spacing:.5px}
 .stat svg{width:13px;height:13px;stroke:#60a5fa;flex:0 0 auto}
@@ -1360,6 +1415,13 @@ body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Seg
 .bar i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-radius:99px;transition:width .3s}
 .bar .tl{display:flex;justify-content:space-between;font-size:11px;color:#8b94b5;margin-top:7px}
 .bar .tl b{color:#cbd5f1;font-weight:600}
+.confs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.confs:empty{display:none}
+.btn-mini{flex:1;min-width:132px;text-align:center;padding:10px 8px;border-radius:12px;border:1px solid #2a3557;
+  background:#13213a;color:#a5c8ff;font-size:12.5px;font-weight:600;text-decoration:none;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.btn-mini:hover{border-color:#3b82f6}
+.btn-mini svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 h2{font-size:12px;color:#8b94b5;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 8px;font-weight:600}
 select{width:100%;padding:12px 14px;border-radius:14px;border:1px solid #2a3557;background:#1a2240;color:#e8ecf7;
   font-size:14px;appearance:none;-webkit-appearance:none;cursor:pointer}
@@ -1373,6 +1435,8 @@ select:focus{outline:none;border-color:#3b82f6}
 .app .ck{width:17px;height:17px;border-radius:50%;border:1px solid #3a466e;display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;color:#04101f;flex:0 0 auto;font-weight:700}
 .app.sel .ck{background:#22d3ee;border-color:#22d3ee}
+.app .pay{font-size:9.5px;color:#fbbf24;border:1px solid #7c5a12;background:#2b2408;border-radius:999px;padding:1px 7px;
+  font-weight:700;letter-spacing:.3px;margin-left:auto;white-space:nowrap}
 .app a.store{font-size:11px;color:#60a5fa;text-decoration:none}
 .btn{width:100%;padding:14px;border-radius:14px;border:0;cursor:pointer;font-size:15px;font-weight:700;transition:.15s;
   display:inline-flex;align-items:center;justify-content:center;gap:8px}
@@ -1385,7 +1449,17 @@ select:focus{outline:none;border-color:#3b82f6}
 .footer code{color:#7b85ab;font-size:10px}</style></head><body>
 <div class="page">
  <div class="card">
-  <div class="cover"></div>
+  <div class="hero">
+   <svg class="logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Veil">
+    <defs><linearGradient id="vg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/><stop offset=".55" stop-color="#22d3ee"/><stop offset="1" stop-color="#34d399"/>
+    </linearGradient></defs>
+    <circle class="lg-o" cx="32" cy="32" r="25" fill="none" stroke="url(#vg)" stroke-width="2.5" stroke-dasharray="62 95" stroke-linecap="round"/>
+    <path class="lg-w" d="M12 26 Q32 10 52 26" fill="none" stroke="url(#vg)" stroke-width="2.5" stroke-linecap="round" opacity=".55"/>
+    <path class="lg-v" d="M20 24 L32 44 L44 24" fill="none" stroke="url(#vg)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+   </svg>
+   <div class="logo-name">Veil</div>
+  </div>
   <div class="body">
    <div class="head">
     <div class="ava">__AVA__</div>
@@ -1400,12 +1474,13 @@ select:focus{outline:none;border-color:#3b82f6}
    </div>
    <div class="bar"><div class="track"><i style="width:__PCT__%"></i></div>
     <div class="tl"><span>использовано</span><b>__PCTLBL__</b></div></div>
-   <h2>Платформа</h2>
+   __CONFS__
+   <h2>Платформа <span style="text-transform:none;letter-spacing:0;font-weight:400">· платные внизу списка</span></h2>
    <select id="plat">__PLATOPTS__</select>
    <div id="apps" class="apps"></div>
-   <button class="btn btn-add" id="addBtn">+ Добавить подписку</button>
+   <button class="btn btn-add" id="addBtn">+ Добавить / Импортировать</button>
    <button class="btn btn-copy" id="copyBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Скопировать ссылку</button>
-   <div class="hint" id="hint">Выберите приложение и нажмите «+ Добавить подписку» — лучший способ добавить на это устройство.</div>
+   <div class="hint" id="hint">Выберите приложение и нажмите «+ Добавить» — откроется установленное приложение или скачается конфиг.</div>
   </div>
  </div>
  <div class="footer">Подписка: <code>__SUB__</code><br>Страница: <code>__PAGE__</code></div>
@@ -1415,23 +1490,41 @@ const CATALOG=__CAT__;
 const SUB=__SUBJS__;
 const B64=__B64JS__;
 const NAME=__NAMEJS__;
+const WGCONF=__WGCONF__;
+const AWGCONF=__AWGCONF__;
+const WGDOWN=__WGDOWN__;
+const AWGDOWN=__AWGDOWN__;
 let cur=null;
+function selHint(){
+  const hint=document.getElementById('hint');
+  if(!cur){hint.textContent='Сначала выберите приложение из списка.';return false;}
+  if(cur.wg||cur.awg){
+    hint.textContent=(cur.wg?'WireGuard':'AmneziaWG')+': откроется импорт конфига или скачается .conf.';
+  }else if(cur.link){
+    hint.textContent='Открываем «'+cur.name+'\u2026». Если не открылось — скопируйте ссылку кнопкой ниже.';
+  }else{
+    hint.textContent='«'+cur.name+'» \u2014 внешний клиент: установите из App Store / сайта (ссылка ниже) и импортируйте подписку через «Скопировать ссылку».';
+  }
+  return true;
+}
 function render(){
   const k=document.getElementById('plat').value;
   const box=document.getElementById('apps');box.innerHTML='';
+  let first=null;
   (CATALOG[k]||[]).forEach(function(a){
     const d=document.createElement('div');d.className='app';
     const r=document.createElement('div');r.className='nm';
     const ck=document.createElement('span');ck.className='ck';ck.textContent='\u2713';
     const t=document.createElement('span');t.textContent=a.name;
-    r.appendChild(ck);r.appendChild(t);d.appendChild(r);
+    r.appendChild(ck);r.appendChild(t);
+    if(a.pay){const p=document.createElement('span');p.className='pay';p.textContent='платно';r.appendChild(p);}
+    d.appendChild(r);
     if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent='Скачать \u2192';d.appendChild(x);}
-    d.addEventListener('click',function(){cur=a;document.querySelectorAll('.app').forEach(e=>e.classList.remove('sel'));d.classList.add('sel');
-      document.getElementById('hint').textContent='Выбрано: '+a.name+'. Нажмите «+ Добавить подписку».';});
+    d.addEventListener('click',function(){cur=a;document.querySelectorAll('.app').forEach(e=>e.classList.remove('sel'));d.classList.add('sel');selHint();});
     box.appendChild(d);
+    if(!first)first=d;
   });
-  const first=box.firstChild;
-  if(lastK!==k){cur=(CATALOG[k]||[])[0]||null;if(first)first.classList.add('sel');}
+  if(lastK!==k){cur=(CATALOG[k]||[])[0]||null;if(first)first.classList.add('sel');selHint();}
 }
 let lastK='';
 document.addEventListener('DOMContentLoaded',function(){
@@ -1440,11 +1533,22 @@ document.addEventListener('DOMContentLoaded',function(){
   document.getElementById('plat').addEventListener('change',function(){lastK=this.value;render();});
   document.getElementById('addBtn').addEventListener('click',function(){
     const hint=document.getElementById('hint');
-    if(!cur){hint.textContent='Сначала выберите приложение из списка.';return;}
+    if(!selHint())return;
+    if(cur.wg||cur.awg){
+      if(cur.link){
+        const lk=cur.link.replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
+                         .replace('{wgconf}',WGCONF).replace('{awgconf}',AWGCONF);
+        location.href=lk;
+      }else{
+        location.href=(cur.wg?WGDOWN:AWGDOWN);
+      }
+      return;
+    }
     if(cur.link){
-      const link=cur.link.replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB));
-      hint.textContent='Открываем «'+cur.name+'\u2026». Если не открылось — скопируйте ссылку кнопкой ниже и вставьте в приложение.';
-      location.href=link;return;
+      const lk=cur.link.replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
+                       .replace('{wgconf}',WGCONF).replace('{awgconf}',AWGCONF);
+      selHint();
+      location.href=lk;return;
     }
     if(navigator.share){navigator.share({title:NAME,url:SUB}).catch(function(){hint.textContent='Копируйте ссылку вручную.';});return;}
     if(navigator.clipboard){navigator.clipboard.writeText(SUB);}
@@ -1456,11 +1560,6 @@ document.addEventListener('DOMContentLoaded',function(){
   });
 });
 </script></body></html>"""
-    plat_default = _sub_ua_platform(ua)
-    plat_opts = "".join(
-        "<option value='%s'%s>%s</option>" % (k, " selected" if k == plat_default else "",
-                                             _SUB_PLATFORM_LABELS.get(k, k))
-        for k in _SUB_APP_CATALOG)
     return (tpl.replace("__AVA__", avatar)
                 .replace("__NAMEHT__", name_html)
                 .replace("__CLS__", cls).replace("__STATUS__", status_txt)
@@ -1469,9 +1568,14 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__PCTLBL__", pct_txt)
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
+                .replace("__CONFS__", confs_html)
                 .replace("__SUBJS__", json.dumps(sub_url))
                 .replace("__B64JS__", json.dumps(sub64))
                 .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
+                .replace("__WGCONF__", json.dumps(wg_b64))
+                .replace("__AWGCONF__", json.dumps(awg_b64))
+                .replace("__WGDOWN__", json.dumps(wg_url))
+                .replace("__AWGDOWN__", json.dumps(awg_url))
                 .replace("__CAT__", catalog_json)
                 .replace("__PLATOPTS__", plat_opts))
 
