@@ -2,6 +2,12 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.3.4] - 2026-09-20
+
+- **Fix: INCY — неверный формат JSON.** INCY — Xray-клиент, sing-box outbound-объекты ему не подходят. По документации INCY (incy.gitbook.io) подписка теперь отдаётся как **открытые ссылки, по одной в строке**, со всеми 18 протоколами, включая однострочные `wireguard://<key>@host:port?publickey=&address=#` и `amneziawg://<base64url-conf>#` (ключ WireGuard URL-энкодится — содержит `/`, `+`). Определяется по UA `INCY/<ver>/<platform>` или заголовку `x-client: INCY`.
+- sing-box JSON больше **не** отдаётся автоматически (только по явному `?format=sing-box`, отдаётся корректным массивом outbound'ов для настоящих sing-box клиентов). Остальные клиенты по умолчанию получают base64 v2ray-подписку; `?format=v2ray` форсирует её.
+- Страница подписки `/p/<token>`: в каталог iOS добавлено приложение **INCY** (App Store) с deep-link `incy://import/<url>` для кнопки «+ Добавить подписку».
+
 ## [2.3.3] - 2026-09-20
 
 - **Fix: INCY / Happ+ показывали только одно подключение (vless+reality).** Причина — многострочные WireGuard/AmneziaWG-блоки в base64-подписке не разбираются sing-box клиентами, импортировался только первый линк.
