@@ -2,6 +2,17 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.3.6] - 2026-09-20
+
+- **Fix: Shadowrocket — неверная дата окончания.** Shadowrocket, как и Happ Plus/INCY, ждёт `expire` в секундах — теперь получает секунды; остальные клиенты (v2rayNG, NekoBox, Hiddify, Clash) — миллисекунды.
+- **Проверен каталог приложений и ссылки магазинов:**
+  - битые ссылки исправлены: sing-box для iOS/macOS больше не в App Store — ведёт на официальные релизы SagerNet/sing-box; v2rayNG не в Google Play — ведёт на GitHub; Foxray → новый `id6770070697`; v2rayM убран (репозиторий недоступен);
+  - **платные** приложения (Shadowrocket, Stash, Loon) перенесены вниз списка и помечены тегом «платно»;
+  - deep-link схемы приведены к актуальным: `sing-box://import-remote-profile?url=`, `hiddify://import/<url>`, `v2rayng://install-config/?url=`;
+  - добавлены **Happ Plus**, **WireGuard** и **AmneziaWG** (официальные: Play `org.amnezia.awg`, iOS `id6478942365`, Windows GitHub `amneziawg-windows-client`).
+- **Личные конфигурации**: на странице `/p/<token>` появился блок «Личные конфигурации» с кнопками скачивания личных `WireGuard.conf` и `AmneziaWG.conf` (`/api/wgconf/<token>`, `/api/awgconf/<token>`), а WireGuard-приложения импортируются одним тапом по `wgconf://`.
+- **Анимационный логотип проекта Veil** (вращающееся кольцо, пульсирующая буква V, волна и анимированный градиентный wordmark) в шапке страницы подписки.
+
 ## [2.3.5] - 2026-09-20
 
 - **Fix: Happ Plus — неверная дата окончания подписки.** В `subscription-userinfo` заголовок `expire` отправлялся в миллисекундах, а Happ Plus (и INCY по документации) ожидают **Unix-секунды** — итогом была фантомная дата. Теперь единицы зависят от клиента: Happ Plus и INCY получают секунды, остальные (v2rayNG, NekoBox, Hiddify и т.п.) — как раньше, миллисекунды.
