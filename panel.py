@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.4"
+VERSION = "2.3.5"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1085,6 +1085,12 @@ def _is_incy_client(ua="", xclient=""):
     # Его подписка — открытые ссылки/база, НЕ sing-box outbound'ы.
     return "incy" in (ua or "").lower() or (xclient or "").lower() == "incy"
 
+def _expire_seconds_client(ua="", xclient=""):
+    # subscription-userinfo.expire: по умолчанию миллисекунды (v2rayNG, NekoBox),
+    # но INCY (по докам — Unix-секунды) и Happ Plus (иначе дата искажается) ждут секунды.
+    u = (ua or "").lower()
+    return "incy" in u or "happ" in u or (xclient or "").lower() == "incy"
+
 def _incy_link(proto, inb, c, host):
     """Ссылка в формате INCY: по одной в строке, WG/AmneziaWG — однострочными схемами."""
     meta = _proto_meta(proto)
@@ -1284,129 +1290,189 @@ def _sub_ua_platform(ua=""):
 
 def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     status, status_txt = _sub_status(u)
+    now = time.time()
     ex = int(u.get("expiry") or 0)
-    exp_txt = time.strftime("%d.%m.%Y %H:%M", time.localtime(ex)) if ex else "Без ограничения срока"
+    if ex:
+        exp_txt = time.strftime("%d.%m.%Y", time.localtime(ex))
+        dl = int(ex - now)
+        if dl < 0:
+            exp_sub = "срок истёк"
+        elif dl < 86400:
+            exp_sub = "осталось меньше суток"
+        else:
+            days = int(dl // 86400)
+            exp_sub = (f"остался 1 день" if days == 1
+                       else f"осталось {days} дня" if days < 5
+                       else f"осталось {days} дней")
+    else:
+        exp_txt = "Без ограничения"
+        exp_sub = "срок не задан"
     lim = float(u.get("limit_gb") or 0)
     used = float(u.get("used_gb") or 0)
     if lim > 0:
-        tr_txt = f"{used:.2f} GB / {lim:.1f} GB"
         pct = min(100.0, used / lim * 100)
+        trf_txt = f"{used:.2f} / {lim:.1f} GB"
+        pct_txt = "лимит исчерпан" if pct >= 100 else f"{pct:.1f}%"
     else:
-        tr_txt = f"{used:.2f} GB · безлимит"
-        pct = min(100.0, used * 100 / max(1.0, 1024 ** 3))
+        pct = 0.0
+        trf_txt = f"{used:.2f} GB · безлимит"
+        pct_txt = "безлимит"
     name_plain = str(u.get("name") or "Подписка")
     name_html = name_plain.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     onl = int(u.get("online") or 0)
     conns = len(u.get("protos") or [])
     catalog_json = json.dumps(_SUB_APP_CATALOG, ensure_ascii=False)
     page_url = f"https://{host}:{panel_port}/p/{u['sub_token']}"
-    cls = "badge-ok" if status == "active" else "badge-off"
+    cls = "ok" if status == "active" else "off"
     sub64 = base64.urlsafe_b64encode(sub_url.encode("utf-8")).decode().rstrip("=")
+    avatar = (name_plain[:1] or "V").upper()
     tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__NAMEHT__ · подписка</title><style>
-*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0c1020;color:#e6e9f2;display:flex;justify-content:center;padding:28px 14px;min-height:100vh}
-.card{width:100%;max-width:460px;background:#151b31;border:1px solid #243052;border-radius:18px;padding:22px;box-shadow:0 10px 40px #0006}
-h1{font-size:20px;margin:0;word-break:break-word}h2{font-size:13px;color:#8b93b0;margin:18px 0 8px;font-weight:600}
-.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;margin-top:8px}
-.badge-ok{background:#123524;color:#4ade80;border:1px solid #1f6b3f}.badge-off{background:#3b1518;color:#f87171;border:1px solid #7f1d1d}
-.meta{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin-top:14px;font-size:13px;color:#aab2cc}
-.meta b{color:#e6e9f2;font-weight:600;text-align:right}
-.bar{height:8px;background:#232b49;border-radius:99px;overflow:hidden;margin-top:6px}
-.bar i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-radius:99px}
-select{width:100%;padding:11px 12px;border-radius:12px;border:1px solid #2b3660;background:#1a2140;color:#e6e9f2;font-size:14px}
-.apps{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
-.app{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1px solid #2b3660;background:#1a2140;cursor:pointer;transition:border-color .15s}
-.app.sel{border-color:#22d3ee}
-.app b{font-size:13px}.app a{font-size:12px;color:#60a5fa;text-decoration:none}
-.btn{width:100%;padding:13px;border-radius:12px;border:0;cursor:pointer;font-size:15px;font-weight:600;margin-top:16px}
-.btn-add{background:linear-gradient(90deg,#3b82f6,#22d3ee);color:#04101f}
-.btn-copy{background:#1a2140;color:#cbd5f1;border:1px solid #2b3660;margin-top:8px}
-.hint{font-size:12px;color:#8b93b0;margin-top:10px;line-height:1.5}
-.footer{font-size:11px;color:#5a6287;margin-top:22px;text-align:center;border-top:1px solid #243052;padding-top:14px}
-.footer code{color:#8b93b0;word-break:break-all;font-size:10px}
-.online{display:inline-block;font-size:12px;color:#4ade80;margin-left:8px}</style></head><body>
-<div class="card">
-  <h1>__NAMEHT__ <span class="online">● онлайн: __ONL__</span></h1>
-  <span class="badge __CLS__">__STATUS__</span>
-  <div class="meta">
-    <b>Истекает</b><span>__EXP__</span>
-    <b>Трафик</b><span>__TRF__</span>
-    <b>Протоколов</b><span>__CONNS__</span>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e8ecf7;
+  background:radial-gradient(1100px 560px at 85% -10%,#1b2a5e 0,transparent 60%),
+  radial-gradient(900px 500px at -10% 110%,#131f42 0,transparent 55%),#0a0f1e;
+  display:flex;justify-content:center;padding:36px 16px}
+.page{width:100%;max-width:440px}
+.card{background:linear-gradient(180deg,#161d33,#10162a);border:1px solid #263152;border-radius:22px;overflow:hidden;box-shadow:0 24px 70px -20px rgba(0,0,0,.7)}
+.cover{height:118px;background:linear-gradient(135deg,#3b82f6,#22d3ee 55%,#34d399);position:relative}
+.cover:after{content:'';position:absolute;inset:0;background:radial-gradient(320px 90px at 72% 18%,rgba(255,255,255,.28),transparent 70%)}
+.body{padding:0 20px 22px}
+.head{display:flex;align-items:center;gap:14px;margin-top:-36px;position:relative}
+.ava{width:68px;height:68px;border-radius:18px;background:linear-gradient(135deg,#3b82f6,#22d3ee);
+  display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;color:#04101f;
+  box-shadow:0 12px 26px rgba(34,211,238,.35);border:3px solid #10162a;flex:0 0 auto}
+.nm{min-width:0}
+.name{font-size:21px;font-weight:700;margin:0;color:#f2f5ff;word-break:break-word;line-height:1.15}
+.name .dot{color:#34d399;font-size:13px}
+.pill{margin-top:8px;display:inline-block;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.ok{background:#0f2b1b;color:#4ade80;border:1px solid #1f6b3f}
+.pill.off{background:#33131a;color:#fb7185;border:1px solid #7f1d1d}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:18px}
+.stat{background:#1a2240;border:1px solid #25304f;border-radius:14px;padding:11px 12px}
+.stat .lb{display:flex;align-items:center;gap:6px;font-size:10.5px;color:#8b94b5;text-transform:uppercase;letter-spacing:.5px}
+.stat svg{width:13px;height:13px;stroke:#60a5fa;flex:0 0 auto}
+.stat b{display:block;font-size:13.5px;font-weight:600;color:#e8ecf7;margin-top:6px;line-height:1.3;word-break:break-word}
+.stat b .dim{color:#8b94b5;font-weight:400}
+.bar{margin-top:16px;padding:12px 14px;background:#1a2240;border:1px solid #25304f;border-radius:14px}
+.bar .track{height:9px;border-radius:99px;background:#0e1430;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-radius:99px;transition:width .3s}
+.bar .tl{display:flex;justify-content:space-between;font-size:11px;color:#8b94b5;margin-top:7px}
+.bar .tl b{color:#cbd5f1;font-weight:600}
+h2{font-size:12px;color:#8b94b5;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 8px;font-weight:600}
+select{width:100%;padding:12px 14px;border-radius:14px;border:1px solid #2a3557;background:#1a2240;color:#e8ecf7;
+  font-size:14px;appearance:none;-webkit-appearance:none;cursor:pointer}
+select:focus{outline:none;border-color:#3b82f6}
+.apps{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:10px}
+.app{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:14px;border:1px solid #26304e;background:#1a223f;
+  cursor:pointer;transition:.15s}
+.app:hover{border-color:#3b82f6}
+.app.sel{border-color:#22d3ee;background:#13213a;box-shadow:inset 0 0 0 1px #22d3ee}
+.app .nm{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:#e8ecf7}
+.app .ck{width:17px;height:17px;border-radius:50%;border:1px solid #3a466e;display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;color:#04101f;flex:0 0 auto;font-weight:700}
+.app.sel .ck{background:#22d3ee;border-color:#22d3ee}
+.app a.store{font-size:11px;color:#60a5fa;text-decoration:none}
+.btn{width:100%;padding:14px;border-radius:14px;border:0;cursor:pointer;font-size:15px;font-weight:700;transition:.15s;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn-add{margin-top:18px;background:linear-gradient(90deg,#3b82f6,#22d3ee);color:#04101f;box-shadow:0 10px 26px -8px rgba(34,211,238,.55)}
+.btn-add:active{transform:scale(.99)}
+.btn-copy{margin-top:9px;background:#1a2240;color:#c7d0ea;border:1px solid #2a3557}
+.btn svg{width:15px;height:15px;stroke:currentColor}
+.hint{font-size:12px;color:#8b94b5;margin-top:10px;line-height:1.5;text-align:center}
+.footer{font-size:11px;color:#58618a;margin:20px 0 0;text-align:center;line-height:1.9;word-break:break-all}
+.footer code{color:#7b85ab;font-size:10px}</style></head><body>
+<div class="page">
+ <div class="card">
+  <div class="cover"></div>
+  <div class="body">
+   <div class="head">
+    <div class="ava">__AVA__</div>
+    <div class="nm"><div class="name">__NAMEHT__ <span class="dot">●</span></div>
+     <span class="pill __CLS__">__STATUS__</span></div>
+   </div>
+   <div class="grid">
+    <div class="stat"><div class="lb"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Окончание</div><b>__EXP__<br><span class="dim">__EXPSUB__</span></b></div>
+    <div class="stat"><div class="lb"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="15" r="8"/><path d="M12 15l3.5-3.5M5 5l4 4"/></svg>Трафик</div><b>__TRF__</b></div>
+    <div class="stat"><div class="lb"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>Онлайн</div><b>__ONL__</b></div>
+    <div class="stat"><div class="lb"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>Протоколов</div><b>__CONNS__</b></div>
+   </div>
+   <div class="bar"><div class="track"><i style="width:__PCT__%"></i></div>
+    <div class="tl"><span>использовано</span><b>__PCTLBL__</b></div></div>
+   <h2>Платформа</h2>
+   <select id="plat">__PLATOPTS__</select>
+   <div id="apps" class="apps"></div>
+   <button class="btn btn-add" id="addBtn">+ Добавить подписку</button>
+   <button class="btn btn-copy" id="copyBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Скопировать ссылку</button>
+   <div class="hint" id="hint">Выберите приложение и нажмите «+ Добавить подписку» — лучший способ добавить на это устройство.</div>
   </div>
-  <div class="bar"><i style="width:__PCT__%"></i></div>
-  <h2>Платформа</h2>
-  <select id="plat"></select>
-  <div id="apps" class="apps"></div>
-  <button class="btn btn-add" id="addBtn">+ Добавить подписку</button>
-  <button class="btn btn-copy" id="copyBtn">Скопировать ссылку подписки</button>
-  <div class="hint" id="hint">Выберите приложение ниже, затем нажмите «+ Добавить подписку» — панель постарается открыть его на этом устройстве.</div>
+ </div>
+ <div class="footer">Подписка: <code>__SUB__</code><br>Страница: <code>__PAGE__</code></div>
 </div>
-<div class="footer">Подписка: <code>__SUB__</code><br>Страница: <code>__PAGE__</code></div>
 <script>
 const CATALOG=__CAT__;
-const PLAT_LABELS=__PLATS__;
 const SUB=__SUBJS__;
 const B64=__B64JS__;
 const NAME=__NAMEJS__;
 let cur=null;
-function render(k){
+function render(){
+  const k=document.getElementById('plat').value;
   const box=document.getElementById('apps');box.innerHTML='';
-  (CATALOG[k]||[]).forEach(a=>{
+  (CATALOG[k]||[]).forEach(function(a){
     const d=document.createElement('div');d.className='app';
-    const t=document.createElement('b');t.textContent=a.name;d.appendChild(t);
-    if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.textContent='Скачать из магазина\u2192';d.appendChild(x);}
-    d.addEventListener('click',()=>{cur=a;document.getElementById('hint').textContent='Выбрано: '+a.name+'. Нажмите «+ Добавить подписку».';
-      document.querySelectorAll('.app').forEach(e=>e.classList.remove('sel'));d.classList.add('sel');});
+    const r=document.createElement('div');r.className='nm';
+    const ck=document.createElement('span');ck.className='ck';ck.textContent='\u2713';
+    const t=document.createElement('span');t.textContent=a.name;
+    r.appendChild(ck);r.appendChild(t);d.appendChild(r);
+    if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent='Скачать \u2192';d.appendChild(x);}
+    d.addEventListener('click',function(){cur=a;document.querySelectorAll('.app').forEach(e=>e.classList.remove('sel'));d.classList.add('sel');
+      document.getElementById('hint').textContent='Выбрано: '+a.name+'. Нажмите «+ Добавить подписку».';});
     box.appendChild(d);
   });
-  if(!cur&&(CATALOG[k]||[]).length){cur=(CATALOG[k])[0];box.firstChild&&box.firstChild.classList.add('sel');}
+  const first=box.firstChild;
+  if(lastK!==k){cur=(CATALOG[k]||[])[0]||null;if(first)first.classList.add('sel');}
 }
-(function init(){
-  const sel=document.getElementById('plat');
-  __PLATOPTS__
-  render(sel.value);
-  sel.addEventListener('change',e=>render(e.target.value));
-  document.getElementById('copyBtn').addEventListener('click',()=>{
-    if(navigator.clipboard){navigator.clipboard.writeText(SUB);}
-    document.getElementById('hint').textContent='Ссылка подписки скопирована. Откройте приложение и импортируйте её.';
-  });
-  document.getElementById('addBtn').addEventListener('click',()=>{
+let lastK='';
+document.addEventListener('DOMContentLoaded',function(){
+  lastK=document.getElementById('plat').value;
+  render();
+  document.getElementById('plat').addEventListener('change',function(){lastK=this.value;render();});
+  document.getElementById('addBtn').addEventListener('click',function(){
     const hint=document.getElementById('hint');
-    if(!cur){hint.textContent='Сначала выберите приложение из списка ниже.';return;}
+    if(!cur){hint.textContent='Сначала выберите приложение из списка.';return;}
     if(cur.link){
-      const link=cur.link.replace('{b64}',B64)
-        .replace('{rawsub}',SUB)
-        .replace('{sub}',encodeURIComponent(SUB));
-      hint.textContent='Открываем «'+cur.name+'\u2026». Если ничего не произошло — нажмите «Скопировать ссылку подписки» и вставьте её в приложении вручную.';
-      location.href=link;
-      return;
+      const link=cur.link.replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB));
+      hint.textContent='Открываем «'+cur.name+'\u2026». Если не открылось — скопируйте ссылку кнопкой ниже и вставьте в приложение.';
+      location.href=link;return;
     }
-    if(navigator.share){
-      navigator.share({title:NAME,url:SUB}).catch(function(){hint.textContent='Копируйте ссылку вручную.';});
-      return;
-    }
-    navigator.clipboard.writeText(SUB);
-    hint.textContent='Ссылка скопирована. Откройте «'+cur.name+'» и импортируйте её.';
+    if(navigator.share){navigator.share({title:NAME,url:SUB}).catch(function(){hint.textContent='Копируйте ссылку вручную.';});return;}
+    if(navigator.clipboard){navigator.clipboard.writeText(SUB);}
+    hint.textContent='Ссылка подписки скопирована. Откройте «'+cur.name+'» и импортируйте её.';
   });
-})();
+  document.getElementById('copyBtn').addEventListener('click',function(){
+    if(navigator.clipboard){navigator.clipboard.writeText(SUB);}
+    document.getElementById('hint').textContent='Ссылка подписки скопирована.';
+  });
+});
 </script></body></html>"""
     plat_default = _sub_ua_platform(ua)
     plat_opts = "".join(
         "<option value='%s'%s>%s</option>" % (k, " selected" if k == plat_default else "",
                                              _SUB_PLATFORM_LABELS.get(k, k))
         for k in _SUB_APP_CATALOG)
-    return (tpl.replace("__NAMEHT__", name_html)
+    return (tpl.replace("__AVA__", avatar)
+                .replace("__NAMEHT__", name_html)
                 .replace("__CLS__", cls).replace("__STATUS__", status_txt)
-                .replace("__EXP__", exp_txt).replace("__TRF__", tr_txt)
-                .replace("__PCT__", f"{pct:.2f}")
+                .replace("__EXP__", exp_txt).replace("__EXPSUB__", exp_sub)
+                .replace("__TRF__", trf_txt).replace("__PCT__", f"{pct:.2f}")
+                .replace("__PCTLBL__", pct_txt)
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
                 .replace("__SUBJS__", json.dumps(sub_url))
                 .replace("__B64JS__", json.dumps(sub64))
                 .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
                 .replace("__CAT__", catalog_json)
-                .replace("__PLATS__", json.dumps(_SUB_PLATFORM_LABELS, ensure_ascii=False))
                 .replace("__PLATOPTS__", plat_opts))
 
 def _new_client(name, proto=None, inb=None, **kw):
@@ -3345,7 +3411,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(b)))
                 self.send_header("Cache-Control", "no-store")
                 # subscription-userinfo — клиенты (v2rayNG, Hiddify, NekoBox) показывают трафик и срок
-                ui = f"upload={up}; download={down}; total={total}; expire={int(expiry) * 1000}"
+                exp_val = int(expiry)
+                if not _expire_seconds_client(ua, xc):
+                    exp_val *= 1000  # миллисекунды
+                ui = f"upload={up}; download={down}; total={total}; expire={exp_val}"
                 self.send_header("subscription-userinfo", ui)
                 if sub_name:
                     pt = "base64:" + base64.b64encode(sub_name.encode("utf-8")).decode()
