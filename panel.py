@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.6"
+VERSION = "2.3.7"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1204,6 +1204,11 @@ def _singbox_subscription(st, sub_path, host, tr):
                 continue
     return outbounds, up, down, total, expiry, sub_name
 
+# Логотип проекта (файл icon-veil.png из поставки) — отдаётся странице /p/<token>.
+_LOGO_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon-veil.png")
+if not os.path.exists(_LOGO_PNG):
+    _LOGO_PNG = ""
+
 # Каталог приложений для страницы подписки (/p/<token>).
 # "link" — deep-link шаблон; плейсхолдеры: {sub} (URL-энкод), {rawsub} (как есть),
 #   {b64} (base64 подписки), {wgconf} (base64 личного конфига WireGuard).
@@ -1219,6 +1224,7 @@ _SUB_APP_CATALOG = {
         {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "Foxray", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
         {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "AmneziaWG", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "awg": True},
         {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}", "pay": True},
         {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
         {"name": "Loon", "store": "https://apps.apple.com/app/loon/id1373567447", "link": "", "pay": True},
@@ -1263,7 +1269,6 @@ _SUB_APP_CATALOG = {
         {"name": "Nekoray", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
         {"name": "Hiddify", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import/{rawsub}"},
         {"name": "WireGuard", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
-        {"name": "AmneziaWG", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "awg": True},
     ],
 }
 _SUB_PLATFORM_LABELS = {
@@ -1372,6 +1377,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
         for k in cat)
     tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="/logo.png">
 <title>__NAMEHT__ · подписка</title><style>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e8ecf7;
@@ -1382,13 +1388,9 @@ body{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Seg
 .card{background:linear-gradient(180deg,#161d33,#10162a);border:1px solid #263152;border-radius:22px;overflow:hidden;box-shadow:0 24px 70px -20px rgba(0,0,0,.7)}
 .hero{display:flex;flex-direction:column;align-items:center;gap:4px;padding:24px 0 8px;
   background:linear-gradient(180deg,rgba(59,130,246,.14),rgba(34,211,238,.05) 55%,transparent)}
-.logo{width:66px;height:66px;display:block}
-.lg-o{animation:lgspin 7s linear infinite;transform-origin:32px 32px}
-.lg-v{animation:lgpulse 2.6s ease-in-out infinite}
-.lg-w{animation:lgwave 3.4s ease-in-out infinite;transform-origin:32px 26px}
-@keyframes lgspin{to{transform:rotate(360deg)}}
-@keyframes lgpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.62;transform:scale(.97)}}
-@keyframes lgwave{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-3px);opacity:.85}}
+.logo{width:76px;height:76px;display:block;border-radius:20px;object-fit:cover;
+  box-shadow:0 14px 34px -6px rgba(34,211,238,.45);animation:lgfloat 3.6s ease-in-out infinite}
+@keyframes lgfloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
 .logo-name{font-size:15px;font-weight:800;letter-spacing:7px;text-transform:uppercase;padding-left:7px;
   background:linear-gradient(90deg,#3b82f6,#22d3ee,#34d399,#22d3ee,#3b82f6);background-size:300% 100%;
   -webkit-background-clip:text;background-clip:text;color:transparent;animation:lgslide 5s linear infinite}
@@ -1426,12 +1428,14 @@ h2{font-size:12px;color:#8b94b5;text-transform:uppercase;letter-spacing:.5px;mar
 select{width:100%;padding:12px 14px;border-radius:14px;border:1px solid #2a3557;background:#1a2240;color:#e8ecf7;
   font-size:14px;appearance:none;-webkit-appearance:none;cursor:pointer}
 select:focus{outline:none;border-color:#3b82f6}
-.apps{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:10px}
+.apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:9px;margin-top:10px}
+@media (max-width:400px){.apps{grid-template-columns:1fr}}
 .app{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:14px;border:1px solid #26304e;background:#1a223f;
-  cursor:pointer;transition:.15s}
+  cursor:pointer;transition:.15s;min-width:0}
 .app:hover{border-color:#3b82f6}
 .app.sel{border-color:#22d3ee;background:#13213a;box-shadow:inset 0 0 0 1px #22d3ee}
-.app .nm{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:#e8ecf7}
+.app .nm{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:#e8ecf7;min-width:0;flex-wrap:wrap;row-gap:4px}
+.app .nm>span:first-of-type{overflow-wrap:anywhere;line-height:1.3;min-width:0}
 .app .ck{width:17px;height:17px;border-radius:50%;border:1px solid #3a466e;display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;color:#04101f;flex:0 0 auto;font-weight:700}
 .app.sel .ck{background:#22d3ee;border-color:#22d3ee}
@@ -1450,14 +1454,7 @@ select:focus{outline:none;border-color:#3b82f6}
 <div class="page">
  <div class="card">
   <div class="hero">
-   <svg class="logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Veil">
-    <defs><linearGradient id="vg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b82f6"/><stop offset=".55" stop-color="#22d3ee"/><stop offset="1" stop-color="#34d399"/>
-    </linearGradient></defs>
-    <circle class="lg-o" cx="32" cy="32" r="25" fill="none" stroke="url(#vg)" stroke-width="2.5" stroke-dasharray="62 95" stroke-linecap="round"/>
-    <path class="lg-w" d="M12 26 Q32 10 52 26" fill="none" stroke="url(#vg)" stroke-width="2.5" stroke-linecap="round" opacity=".55"/>
-    <path class="lg-v" d="M20 24 L32 44 L44 24" fill="none" stroke="url(#vg)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-   </svg>
+   <img src="/logo.png" class="logo" alt="Veil" width="76" height="76">
    <div class="logo-name">Veil</div>
   </div>
   <div class="body">
@@ -3591,6 +3588,22 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(b)
+            return None
+
+        if p == "/logo.png":
+            if not _LOGO_PNG:
+                return self._send(404, {"error": "logo not found"})
+            try:
+                with open(_LOGO_PNG, "rb") as f:
+                    data = f.read()
+            except Exception:
+                return self._send(404, {"error": "logo not found"})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
             return None
 
         if p == "/api/metrics":
