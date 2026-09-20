@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.1"
+VERSION = "2.3.3"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1053,6 +1053,333 @@ def _link(inb, host, client, proto):
         qparts["security"] = "none"
     q = urllib.parse.urlencode(qparts)
     return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
+
+# ---------- sing-box JSON-подписка ----------
+# INCY, Happ+, Streisand, SFI/SFA/SFM и другие sing-box клиенты импортируют
+# подписку как JSON-массив outbound'ов; многострочные WG-блоки в base64-подписке
+# у них не разбираются (показывается только первый vless+reality).
+
+_SB_UA_HINTS = ("incy", "happ", "streisand", "sing-box", "singbox", "sfi", "sfa",
+                "sfm", "stray", "nekobox", "foxray", "hiddify", "mysterium",
+                "metacube", "v2box", "flutter")
+
+def _need_singbox_sub(ua="", fmt=""):
+    fmt = (fmt or "").lower()
+    if fmt in ("sing-box", "singbox", "sbox", "json"):
+        return True
+    if fmt in ("v2ray", "base64", "text", ""):
+        return fmt in ("v2ray", "base64", "text")  # явный выбор наоборот
+    return False
+
+def _is_singbox_client(ua=""):
+    u = (ua or "").lower()
+    if not u:
+        return False
+    for hint in _SB_UA_HINTS:
+        if hint in u:
+            return True
+    return False
+
+def _singbox_outbound(proto, inb, c, host):
+    meta = _proto_meta(proto)
+    fp = _fp()
+    base = c.get("name") or "Veil"
+    tag = f"{base} · {meta['label']}"
+    port = int(inb["port"])
+    def _tls():
+        if not meta["tls"]:
+            return {"enabled": False}
+        return {"enabled": True, "server_name": host,
+                "utls": {"enabled": True, "fingerprint": fp}}
+    def _transport():
+        if meta["net"] == "ws":
+            return {"type": "ws", "path": "/veil"}
+        if meta["net"] == "grpc":
+            return {"type": "grpc", "service_name": "veil"}
+        if meta["net"] in ("xhttp", "splithttp"):
+            return {"type": "xhttp", "path": "/veil"}
+        return None
+    if proto in ("amneziawg", "wireguard"):
+        ob = {"type": "wireguard", "tag": tag, "server": host, "server_port": port,
+              "local_address": [c.get("address") or "10.8.0.2/32"],
+              "private_key": c.get("client_private_key") or "",
+              "peer_public_key": inb.get("public_key") or "",
+              "mtu": int(inb.get("mtu", 1420))}
+        if proto == "wireguard" and inb.get("psk"):
+            ob["pre_shared_key"] = inb["psk"]
+        return ob
+    if proto.startswith("shadowsocks"):
+        return {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
+                "method": inb.get("method") or "aes-256-gcm",
+                "password": inb.get("password") or ""}
+    if proto == "hysteria2":
+        return {"type": "hysteria2", "tag": tag, "server": host, "server_port": port,
+                "password": c.get("auth") or c["uuid"],
+                "tls": {"enabled": True,
+                        "server_name": (CFG_CACHE.get("panel_domain") or "").strip() or host}}
+    if proto.startswith("vmess"):
+        ob = {"type": "vmess", "tag": tag, "server": host, "server_port": port,
+              "uuid": c["uuid"], "security": "auto"}
+    elif proto.startswith("trojan"):
+        ob = {"type": "trojan", "tag": tag, "server": host, "server_port": port,
+              "password": c.get("password") or inb.get("password") or ""}
+    else:  # vless family
+        ob = {"type": "vless", "tag": tag, "server": host, "server_port": port,
+              "uuid": c["uuid"]}
+    if proto in ("reality", "vless-xhttp-reality"):
+        ob["flow"] = "xtls-rprx-vision"
+        ob["tls"] = {"enabled": True, "server_name": inb.get("sni") or host,
+                     "reality": {"enabled": True, "public_key": inb.get("public_key") or "",
+                                 "short_id": inb.get("sid", "")},
+                     "utls": {"enabled": True, "fingerprint": fp}}
+    else:
+        ob["tls"] = _tls()
+    tr = _transport()
+    if tr:
+        ob["transport"] = tr
+    return ob
+
+def _singbox_subscription(st, sub_path, host, tr):
+    """JSON-массив sing-box outbound'ов для всех протоколов подписчика.
+    tr — результат _statsquery(). Возвращает (outbounds, up, down, total, expiry, sub_name)."""
+    outbounds = []
+    up = down = total = 0
+    expiry = 0
+    sub_name = ""
+    seen = set()
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            match = (not sub_path) or (c.get("sub_token") == sub_path) or (c["uuid"] == sub_path)
+            if not match:
+                continue
+            sub_name = c.get("name") or sub_name
+            key = c["uuid"]
+            if key not in seen:
+                seen.add(key)
+                t = tr.get(key, {})
+                up += int(t.get("uplink", 0) or 0)
+                down += int(t.get("downlink", 0) or 0)
+                lim = float(c.get("limit_gb") or 0)
+                if lim > 0:
+                    total = max(total, int(lim * 1024 ** 3))
+                ex = int(c.get("expiry") or 0)
+                if ex:
+                    expiry = max(expiry, ex)
+            try:
+                outbounds.append(_singbox_outbound(proto, inb, c, host))
+            except Exception:
+                continue
+    return outbounds, up, down, total, expiry, sub_name
+
+# Каталог приложений для страницы подписки (/p/<token>).
+# "link" — deep-link шаблон для добавления подписки (может содержать {sub} и {b64});
+# пустой link — только кнопка «Скопировать/Поделиться».
+_SUB_APP_CATALOG = {
+    "ios": [
+        {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}"},
+        {"name": "sing-box (SFI)", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
+        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": "streisand://add-profile?url={sub}"},
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
+        {"name": "Loon", "store": "https://apps.apple.com/app/loon/id1373567447", "link": ""},
+        {"name": "Foxray", "store": "https://apps.apple.com/app/foxray/id6448898396", "link": ""},
+    ],
+    "android": [
+        {"name": "v2rayNG", "store": "https://play.google.com/store/apps/details?id=com.v2ray.ang", "link": "v2rayng://install-sub?url={sub}"},
+        {"name": "NekoBox", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "nekobox://install?url={sub}"},
+        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import?url={sub}"},
+        {"name": "sing-box (SFA)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sfa://add-profile?url={sub}"},
+        {"name": "v2rayM", "store": "https://github.com/2dust/v2rayM/releases", "link": ""},
+    ],
+    "windows": [
+        {"name": "v2rayN", "store": "https://github.com/2dust/v2rayN/releases", "link": ""},
+        {"name": "Nekoray", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
+        {"name": "Clash Verge Rev", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}"},
+        {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+    ],
+    "macos": [
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
+        {"name": "sing-box", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
+        {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": "streisand://add-profile?url={sub}"},
+        {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+    ],
+    "apple_tv": [
+        {"name": "Stash", "store": "https://apps.apple.com/app/stash/id1596063349", "link": "stash://install-config?url={sub}"},
+        {"name": "sing-box", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
+    ],
+    "android_tv": [
+        {"name": "v2rayNG", "store": "https://play.google.com/store/apps/details?id=com.v2ray.ang", "link": "v2rayng://install-sub?url={sub}"},
+        {"name": "NekoBox", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "nekobox://install?url={sub}"},
+        {"name": "Hiddify", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import?url={sub}"},
+    ],
+    "linux": [
+        {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+        {"name": "Clash Verge Rev", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}"},
+        {"name": "Nekoray", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
+        {"name": "Hiddify", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import?url={sub}"},
+    ],
+}
+_SUB_PLATFORM_LABELS = {
+    "ios": "iOS", "android": "Android", "windows": "Windows", "macos": "macOS",
+    "apple_tv": "Apple TV", "android_tv": "Android TV", "linux": "Linux",
+}
+
+def _sub_status(u, now=None):
+    now = now or time.time()
+    if u.get("blocked"):
+        reason = u.get("blocked_reason") or ""
+        why = {"limit": "исчерпан лимит трафика", "expired": "подписка истекла"}.get(reason, "заблокирован")
+        return "disabled", f"Отключена — {why}"
+    ex = int(u.get("expiry") or 0)
+    if ex and now > ex:
+        return "disabled", "Отключена — срок действия истёк"
+    lim = float(u.get("limit_gb") or 0)
+    used = float(u.get("used_gb") or 0)
+    if lim > 0 and used >= lim * 0.95:
+        return "disabled", "Отключена — исчерпан лимит трафика"
+    return "active", "Активна"
+
+def _sub_ua_platform(ua=""):
+    u = (ua or "").lower()
+    if "appletv" in u or "tvos" in u:
+        return "apple_tv"
+    if "android" in u and "tv" in u:
+        return "android_tv"
+    if "android" in u:
+        return "android"
+    if "windows" in u or "win" in u:
+        return "windows"
+    if "linux" in u:
+        return "linux"
+    if "iphone" in u or "ipod" in u or "ipad" in u or "ios" in u:
+        return "ios"
+    if "macintosh" in u or "mac os" in u:
+        return "macos"
+    return "ios"
+
+def _sub_page_html(u, sub_url, host, panel_port, ua=""):
+    status, status_txt = _sub_status(u)
+    ex = int(u.get("expiry") or 0)
+    exp_txt = time.strftime("%d.%m.%Y %H:%M", time.localtime(ex)) if ex else "Без ограничения срока"
+    lim = float(u.get("limit_gb") or 0)
+    used = float(u.get("used_gb") or 0)
+    if lim > 0:
+        tr_txt = f"{used:.2f} GB / {lim:.1f} GB"
+        pct = min(100.0, used / lim * 100)
+    else:
+        tr_txt = f"{used:.2f} GB · безлимит"
+        pct = min(100.0, used * 100 / max(1.0, 1024 ** 3))
+    name_plain = str(u.get("name") or "Подписка")
+    name_html = name_plain.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    onl = int(u.get("online") or 0)
+    conns = len(u.get("protos") or [])
+    catalog_json = json.dumps(_SUB_APP_CATALOG, ensure_ascii=False)
+    page_url = f"https://{host}:{panel_port}/p/{u['sub_token']}"
+    cls = "badge-ok" if status == "active" else "badge-off"
+    sub64 = base64.urlsafe_b64encode(sub_url.encode("utf-8")).decode().rstrip("=")
+    tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__NAMEHT__ · подписка</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0c1020;color:#e6e9f2;display:flex;justify-content:center;padding:28px 14px;min-height:100vh}
+.card{width:100%;max-width:460px;background:#151b31;border:1px solid #243052;border-radius:18px;padding:22px;box-shadow:0 10px 40px #0006}
+h1{font-size:20px;margin:0;word-break:break-word}h2{font-size:13px;color:#8b93b0;margin:18px 0 8px;font-weight:600}
+.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;margin-top:8px}
+.badge-ok{background:#123524;color:#4ade80;border:1px solid #1f6b3f}.badge-off{background:#3b1518;color:#f87171;border:1px solid #7f1d1d}
+.meta{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin-top:14px;font-size:13px;color:#aab2cc}
+.meta b{color:#e6e9f2;font-weight:600;text-align:right}
+.bar{height:8px;background:#232b49;border-radius:99px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-radius:99px}
+select{width:100%;padding:11px 12px;border-radius:12px;border:1px solid #2b3660;background:#1a2140;color:#e6e9f2;font-size:14px}
+.apps{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.app{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1px solid #2b3660;background:#1a2140;cursor:pointer;transition:border-color .15s}
+.app.sel{border-color:#22d3ee}
+.app b{font-size:13px}.app a{font-size:12px;color:#60a5fa;text-decoration:none}
+.btn{width:100%;padding:13px;border-radius:12px;border:0;cursor:pointer;font-size:15px;font-weight:600;margin-top:16px}
+.btn-add{background:linear-gradient(90deg,#3b82f6,#22d3ee);color:#04101f}
+.btn-copy{background:#1a2140;color:#cbd5f1;border:1px solid #2b3660;margin-top:8px}
+.hint{font-size:12px;color:#8b93b0;margin-top:10px;line-height:1.5}
+.footer{font-size:11px;color:#5a6287;margin-top:22px;text-align:center;border-top:1px solid #243052;padding-top:14px}
+.footer code{color:#8b93b0;word-break:break-all;font-size:10px}
+.online{display:inline-block;font-size:12px;color:#4ade80;margin-left:8px}</style></head><body>
+<div class="card">
+  <h1>__NAMEHT__ <span class="online">● онлайн: __ONL__</span></h1>
+  <span class="badge __CLS__">__STATUS__</span>
+  <div class="meta">
+    <b>Истекает</b><span>__EXP__</span>
+    <b>Трафик</b><span>__TRF__</span>
+    <b>Протоколов</b><span>__CONNS__</span>
+  </div>
+  <div class="bar"><i style="width:__PCT__%"></i></div>
+  <h2>Платформа</h2>
+  <select id="plat"></select>
+  <div id="apps" class="apps"></div>
+  <button class="btn btn-add" id="addBtn">+ Добавить подписку</button>
+  <button class="btn btn-copy" id="copyBtn">Скопировать ссылку подписки</button>
+  <div class="hint" id="hint">Выберите приложение ниже, затем нажмите «+ Добавить подписку» — панель постарается открыть его на этом устройстве.</div>
+</div>
+<div class="footer">Подписка: <code>__SUB__</code><br>Страница: <code>__PAGE__</code></div>
+<script>
+const CATALOG=__CAT__;
+const PLAT_LABELS=__PLATS__;
+const SUB=__SUBJS__;
+const B64=__B64JS__;
+const NAME=__NAMEJS__;
+let cur=null;
+function render(k){
+  const box=document.getElementById('apps');box.innerHTML='';
+  (CATALOG[k]||[]).forEach(a=>{
+    const d=document.createElement('div');d.className='app';
+    const t=document.createElement('b');t.textContent=a.name;d.appendChild(t);
+    if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.textContent='Скачать из магазина\u2192';d.appendChild(x);}
+    d.addEventListener('click',()=>{cur=a;document.getElementById('hint').textContent='Выбрано: '+a.name+'. Нажмите «+ Добавить подписку».';
+      document.querySelectorAll('.app').forEach(e=>e.classList.remove('sel'));d.classList.add('sel');});
+    box.appendChild(d);
+  });
+  if(!cur&&(CATALOG[k]||[]).length){cur=(CATALOG[k])[0];box.firstChild&&box.firstChild.classList.add('sel');}
+}
+(function init(){
+  const sel=document.getElementById('plat');
+  __PLATOPTS__
+  render(sel.value);
+  sel.addEventListener('change',e=>render(e.target.value));
+  document.getElementById('copyBtn').addEventListener('click',()=>{
+    if(navigator.clipboard){navigator.clipboard.writeText(SUB);}
+    document.getElementById('hint').textContent='Ссылка подписки скопирована. Откройте приложение и импортируйте её.';
+  });
+  document.getElementById('addBtn').addEventListener('click',()=>{
+    const hint=document.getElementById('hint');
+    if(!cur){hint.textContent='Сначала выберите приложение из списка ниже.';return;}
+    if(cur.link){
+      const link=cur.link.replace('{b64}',B64).replace('{sub}',encodeURIComponent(SUB));
+      hint.textContent='Открываем «'+cur.name+'\u2026». Если ничего не произошло — нажмите «Скопировать ссылку подписки» и вставьте её в приложении вручную.';
+      location.href=link;
+      return;
+    }
+    if(navigator.share){
+      navigator.share({title:NAME,url:SUB}).catch(function(){hint.textContent='Копируйте ссылку вручную.';});
+      return;
+    }
+    navigator.clipboard.writeText(SUB);
+    hint.textContent='Ссылка скопирована. Откройте «'+cur.name+'» и импортируйте её.';
+  });
+})();
+</script></body></html>"""
+    plat_default = _sub_ua_platform(ua)
+    plat_opts = "".join(
+        "<option value='%s'%s>%s</option>" % (k, " selected" if k == plat_default else "",
+                                             _SUB_PLATFORM_LABELS.get(k, k))
+        for k in _SUB_APP_CATALOG)
+    return (tpl.replace("__NAMEHT__", name_html)
+                .replace("__CLS__", cls).replace("__STATUS__", status_txt)
+                .replace("__EXP__", exp_txt).replace("__TRF__", tr_txt)
+                .replace("__PCT__", f"{pct:.2f}")
+                .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
+                .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
+                .replace("__SUBJS__", json.dumps(sub_url))
+                .replace("__B64JS__", json.dumps(sub64))
+                .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
+                .replace("__CAT__", catalog_json)
+                .replace("__PLATS__", json.dumps(_SUB_PLATFORM_LABELS, ensure_ascii=False))
+                .replace("__PLATOPTS__", plat_opts))
 
 def _new_client(name, proto=None, inb=None, **kw):
     c = {"uuid": str(uuidlib.uuid4()),
@@ -2912,6 +3239,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Все вхождения клиента по ключу могут быть в нескольких инбаундах —
                 # соберём их в один список ссылок (по одному на протокол).
                 inb_links = {}
+                sb_objs = {}
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
                         if not c.get("sub_token"):
@@ -2937,6 +3265,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         try:
                             if proto not in inb_links:
                                 inb_links[proto] = _link(inb, host, c, proto)
+                            if proto not in sb_objs:
+                                sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
                         except Exception:
                             continue
 
@@ -2949,10 +3279,32 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "нет клиентов"})
 
                 links = list(inb_links.values())
-                payload = base64.b64encode("\n".join(links).encode()).decode()
-                b = payload.encode()
+                # Формат ответа: классический base64-список ссылок (v2rayNG, NekoBox,
+                # Hiddify и др.) либо sing-box JSON (INCY, Happ+ / Happ Plus, Streisand,
+                # SFI/SFA/SFM и другие sing-box клиенты) — у тех многострочные WG-блоки
+                # в base64 не разбираются, импортируется только первый vless+reality.
+                q = urllib.parse.urlparse(self.path).query
+                fmt = (urllib.parse.parse_qs(q).get("format") or [""])[0].lower()
+                ua = self.headers.get("User-Agent", "") or ""
+                use_sb = fmt in ("sing-box", "singbox", "sbox", "json")
+                force_v2 = fmt in ("v2ray", "base64", "text")
+                if not use_sb and not force_v2 and sub_path:
+                    use_sb = _is_singbox_client(ua)
+                if use_sb:
+                    payload = json.dumps(sb_objs, ensure_ascii=False)
+                    b = payload.encode("utf-8")
+                    ctype = "application/json; charset=utf-8"
+                else:
+                    # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
+                    # парсеры, спотыкающиеся о [Interface], всё равно импортируют остальное.
+                    one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://"))]
+                    if len(one) < len(links):
+                        links = one + [l for l in links if l not in one]
+                    payload = base64.b64encode("\n".join(links).encode()).decode()
+                    b = payload.encode()
+                    ctype = "text/plain; charset=utf-8"
                 self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(b)))
                 self.send_header("Cache-Control", "no-store")
                 # subscription-userinfo — клиенты (v2rayNG, Hiddify, NekoBox) показывают трафик и срок
@@ -2962,11 +3314,40 @@ class H(http.server.BaseHTTPRequestHandler):
                     pt = "base64:" + base64.b64encode(sub_name.encode("utf-8")).decode()
                     self.send_header("profile-title", pt)
                 self.send_header("profile-update-interval", "24")
-                self.send_header("profile-web-page-url", f"https://{host}:{panel_port}/")
+                self.send_header("profile-web-page-url",
+                                 f"https://{host}:{panel_port}/p/{sub_path}" if sub_path
+                                 else f"https://{host}:{panel_port}/")
                 self.end_headers(); self.wfile.write(b)
                 return None
             except Exception as e:
                 return self._send(500, {"error": str(e)})
+
+
+        if p.startswith("/p/"):
+            # Публичная страница подписки: сюда ведёт profile-web-page-url (кнопка «i»
+            # в клиентах). Показывает имя, статус, срок, трафик и способы подключения.
+            tok = p[3:].strip("/")
+            st = _load(STATE) or {}
+            if _migrate_state(st):
+                _save(STATE, st)
+            u = next((x for x in _subs_summary(st)
+                      if x["sub_token"] == tok or x["uuid"] == tok), None)
+            if not u:
+                return self._send(404, {"error": "подписка не найдена"})
+            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            panel_port = CFG_CACHE.get("panel_port", 8444)
+            sub_url = f"https://{host}:{panel_port}/sub/{u['sub_token']}"
+            html = _sub_page_html(u, sub_url, host, panel_port,
+                                  self.headers.get("User-Agent", "") or "")
+            b = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+            return None
 
 
         if p.startswith("/api/wgconf/") or p.startswith("/api/awgconf/"):
