@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -3487,35 +3487,56 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st is None:
                     st = _new_state(want_proto or "reality")
                 _migrate_state(st)
-                
+
                 sub_token = secrets.token_urlsafe(16)
                 client_uuid = str(uuidlib.uuid4())
                 limit_gb = float(b.get("limit_gb") or 0) or None
                 _edays = int(b.get("expiry_days") or 0) or 0
                 expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
-                
+
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
-                
-                target_proto = want_proto if (want_proto and want_proto in (st.get("inbounds") or {})) else (_proto_of(st) or "reality")
-                inb = (st.get("inbounds") or {}).get(target_proto)
-                if not inb:
-                    inb = _alloc_inbound(st, target_proto)
-                    st.setdefault("inbounds", {})[target_proto] = inb
-                    
+
                 added_links = []
-                c = _new_client(name, target_proto, inb, limit_gb=limit_gb, expiry=expiry)
-                c["uuid"] = client_uuid
-                c["sub_token"] = sub_token
-                inb.setdefault("clients", []).append(c)
-                lnk = _link(inb, host, c, target_proto)
-                added_links.append({"proto": target_proto, "link": lnk})
-                first_link = lnk
-                    
+                first_link = ""
+                if want_proto:
+                    target_proto = want_proto if (want_proto in (st.get("inbounds") or {})) else (_proto_of(st) or "reality")
+                    inb = (st.get("inbounds") or {}).get(target_proto)
+                    if not inb:
+                        inb = _alloc_inbound(st, target_proto)
+                        st.setdefault("inbounds", {})[target_proto] = inb
+                    c = _new_client(name, target_proto, inb, limit_gb=limit_gb, expiry=expiry)
+                    c["uuid"] = client_uuid
+                    c["sub_token"] = sub_token
+                    inb.setdefault("clients", []).append(c)
+                    lnk = _link(inb, host, c, target_proto)
+                    added_links.append({"proto": target_proto, "link": lnk})
+                    first_link = lnk
+                else:
+                    inbounds = st.setdefault("inbounds", {})
+                    for proto in _VALID_PROTOCOLS:
+                        if proto not in inbounds:
+                            try:
+                                inbounds[proto] = _alloc_inbound(st, proto)
+                            except Exception as e:
+                                print(f"clients/add alloc {proto} -> {e}", flush=True)
+                    if not inbounds:
+                        inbounds["reality"] = _alloc_inbound(st, "reality")
+                    for proto, inb in inbounds.items():
+                        c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry)
+                        c["uuid"] = client_uuid
+                        c["sub_token"] = sub_token
+                        inb.setdefault("clients", []).append(c)
+                        lnk = _link(inb, host, c, proto)
+                        added_links.append({"proto": proto, "link": lnk})
+                        if not first_link:
+                            first_link = lnk
+
+                _awg_sync(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
-                
+
                 sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
                 return self._send(200, {"ok": True, "client": {
                     "uuid": client_uuid, "name": name,

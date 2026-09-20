@@ -1921,9 +1921,11 @@ function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').t
 async function doAdd(){
   const name=$('newName').value.trim();
   if(!name){$('addMsg').textContent='Введи имя';$('addMsg').className='msg err';return;}
+  const _proto = addProto;
   $('addMsg').textContent='Создаю...';$('addMsg').className='msg';
   try{
     const body={name};
+    if(_proto)body.proto=_proto;
     const _lg=parseFloat($('newLimit').value);
     if(_lg>0)body.limit_gb=_lg;
     const _ed=parseInt($('newExpiry').value,10);
@@ -1932,7 +1934,7 @@ async function doAdd(){
     hideAdd();
     await refresh();
     await loadSub();
-    toast('Пользователь «'+name+'» создан со всеми протоколами','ok');
+    toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами'),'ok');
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
   }
