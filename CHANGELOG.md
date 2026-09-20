@@ -2,6 +2,16 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.3.1] - 2026-09-20
+
+- **Subscriptions: all protocols in one link** — when a subscriber is added from the Subscriptions tab, the client is now created in **all** protocol inbounds (VLESS/VMess/Trojan/Shadowsocks/Hysteria2/WireGuard/AmneziaWG variants), so the subscription URL immediately provides every transport; existing subscribers are left untouched. Per-protocol «Новый клиент» add now correctly targets the selected protocol (it was ignored before).
+- **WebProxy fixed end-to-end** — stale nginx config that intercepted Telegram's handshake (`GET /?bridge=...`) replaced with a full proxy-all to the new telemt WEB listener (`127.0.0.1:18080`); carrier forced back to `https`; verified reachable from RU (6/6 Globalping probes) with a valid HTTP/2 cert.
+- **telemt WEB mode** — new `_tg_web_ensure()` enables the telemt WEB listener, vhost on the panel domain (`926923.v6.navy`), public `tg://webproxy` link generation and nginx routing; `/etc/telemt` is chowned to the telemt user so config persists (fixes “Смена транспорта: HTTP Error 500”).
+- **WebProxy retry/reinstall button** — «⚙ Повторить / Переустановить Web Proxy» regenerates the nginx config and re-applies WEB mode; free-port buttons for 80/443 added to the Proxy tab.
+- **Decoy site** — Retro NES emulator decoy served as telemt's static vhost when the proxy isn't handed a valid bridge.
+- **Globalping auto-check** — webproxy availability from RU is probed automatically every 15 minutes with alerting.
+- **Installer v2.3.0 fixes** — install.sh menu shows the panel address on finish, `xray.service` naming compatibility for older distros, reinstall logic fixes.
+
 ## [2.2.9] - 2026-09-19
 
 - **Critical JS fix** — restored missing `$` helper function (`const $ = (id) => document.getElementById(id)`) that was accidentally removed when fixing a duplicate declaration bug. This caused all UI interactions (login, buttons, tabs) to fail silently with "ReferenceError: $ is not defined".
