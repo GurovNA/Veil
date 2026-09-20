@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.3"
+VERSION = "2.3.4"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1080,6 +1080,31 @@ def _is_singbox_client(ua=""):
             return True
     return False
 
+def _is_incy_client(ua="", xclient=""):
+    # INCY — Xray-клиент (UA: INCY/<version>/<platform>, x-client: INCY).
+    # Его подписка — открытые ссылки/база, НЕ sing-box outbound'ы.
+    return "incy" in (ua or "").lower() or (xclient or "").lower() == "incy"
+
+def _incy_link(proto, inb, c, host):
+    """Ссылка в формате INCY: по одной в строке, WG/AmneziaWG — однострочными схемами."""
+    meta = _proto_meta(proto)
+    base = c.get("name") or "Veil"
+    name = f"{base} · {meta['label']}"
+    if proto == "amneziawg":
+        conf = _link(inb, host, c, proto)
+        b64 = base64.urlsafe_b64encode(conf.encode("utf-8")).decode().rstrip("=")
+        return f"amneziawg://{b64}#{urllib.parse.quote(name)}"
+    if proto == "wireguard":
+        addr = (c.get("address") or "").split("/")[0]
+        qparts = {"publickey": inb.get("public_key") or "", "address": addr}
+        if inb.get("mtu"):
+            qparts["mtu"] = inb["mtu"]
+        q = urllib.parse.urlencode(qparts)
+        key = urllib.parse.quote(c.get("client_private_key") or "", safe="")
+        return (f"wireguard://{key}"
+                f"@{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
+    return _link(inb, host, c, proto)
+
 def _singbox_outbound(proto, inb, c, host):
     meta = _proto_meta(proto)
     fp = _fp()
@@ -1176,6 +1201,7 @@ def _singbox_subscription(st, sub_path, host, tr):
 # пустой link — только кнопка «Скопировать/Поделиться».
 _SUB_APP_CATALOG = {
     "ios": [
+        {"name": "INCY", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}"},
         {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}"},
         {"name": "sing-box (SFI)", "store": "https://apps.apple.com/app/sing-box/id6451278673", "link": "sfi://add-profile?url={sub}"},
         {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": "streisand://add-profile?url={sub}"},
@@ -1349,7 +1375,9 @@ function render(k){
     const hint=document.getElementById('hint');
     if(!cur){hint.textContent='Сначала выберите приложение из списка ниже.';return;}
     if(cur.link){
-      const link=cur.link.replace('{b64}',B64).replace('{sub}',encodeURIComponent(SUB));
+      const link=cur.link.replace('{b64}',B64)
+        .replace('{rawsub}',SUB)
+        .replace('{sub}',encodeURIComponent(SUB));
       hint.textContent='Открываем «'+cur.name+'\u2026». Если ничего не произошло — нажмите «Скопировать ссылку подписки» и вставьте её в приложении вручную.';
       location.href=link;
       return;
@@ -3239,6 +3267,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Все вхождения клиента по ключу могут быть в нескольких инбаундах —
                 # соберём их в один список ссылок (по одному на протокол).
                 inb_links = {}
+                inc_links = {}
                 sb_objs = {}
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
@@ -3265,6 +3294,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         try:
                             if proto not in inb_links:
                                 inb_links[proto] = _link(inb, host, c, proto)
+                            if proto not in inc_links:
+                                inc_links[proto] = _incy_link(proto, inb, c, host)
                             if proto not in sb_objs:
                                 sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
                         except Exception:
@@ -3279,21 +3310,27 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "нет клиентов"})
 
                 links = list(inb_links.values())
-                # Формат ответа: классический base64-список ссылок (v2rayNG, NekoBox,
-                # Hiddify и др.) либо sing-box JSON (INCY, Happ+ / Happ Plus, Streisand,
-                # SFI/SFA/SFM и другие sing-box клиенты) — у тех многострочные WG-блоки
-                # в base64 не разбираются, импортируется только первый vless+reality.
+                # Формат ответа:
+                #  * INCY — открытые ссылки по одной в строке (в т.ч. wireguard:// и
+                #    amneziawg://); базовый тип для Xray-клиентов с их же документации.
+                #  * sing-box JSON (массив outbound'ов) — только по явному ?format=sing-box.
+                #  * по умолчанию — классический base64 v2ray-список (v2rayNG, NekoBox и др.).
                 q = urllib.parse.urlparse(self.path).query
-                fmt = (urllib.parse.parse_qs(q).get("format") or [""])[0].lower()
                 ua = self.headers.get("User-Agent", "") or ""
+                xc = self.headers.get("x-client") or ""
+                fmt = (urllib.parse.parse_qs(q).get("format") or [""])[0].lower()
                 use_sb = fmt in ("sing-box", "singbox", "sbox", "json")
                 force_v2 = fmt in ("v2ray", "base64", "text")
-                if not use_sb and not force_v2 and sub_path:
-                    use_sb = _is_singbox_client(ua)
+                is_incy = (not use_sb and not force_v2 and sub_path
+                           and _is_incy_client(ua, xc))
                 if use_sb:
-                    payload = json.dumps(sb_objs, ensure_ascii=False)
+                    payload = json.dumps(list(sb_objs.values()), ensure_ascii=False)
                     b = payload.encode("utf-8")
                     ctype = "application/json; charset=utf-8"
+                elif is_incy:
+                    payload = "\n".join(inc_links.values())
+                    b = payload.encode("utf-8")
+                    ctype = "text/plain; charset=utf-8"
                 else:
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
                     # парсеры, спотыкающиеся о [Interface], всё равно импортируют остальное.
