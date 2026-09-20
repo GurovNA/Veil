@@ -1837,10 +1837,25 @@ def _webproxy_status():
             "cert_ready": has_cert,
             "can_install": (not installed) and (not busy) and domain_set and has_cert}
 
+def _webproxy_apply(domain):
+    subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True)
+    cert, key = _ng_certs(domain)
+    conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
+    os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
+    with open(_NG_CONF, "w") as f:
+        f.write(conf)
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=20)
+    if t.returncode != 0:
+        raise RuntimeError("nginx -t: " + (t.stderr or t.stdout)[-400:])
+    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
+    subprocess.run(["systemctl", "restart", "nginx"], check=True, capture_output=True, timeout=60)
+
 def _webproxy_install():
     st = _webproxy_status()
     if st["installed"]:
-        return {"ok": True, "status": st, "message": "Web Proxy уже установлен и работает"}
+        _webproxy_apply(st["domain"])
+        return {"ok": True, "status": _webproxy_status(),
+                "message": "Web Proxy переустановлен — конфигурация обновлена и nginx перезапущен"}
     if st["busy"]:
         raise RuntimeError("порт %s занят — освободи его, после этого кнопка установки появится" %
                            "/".join(map(str, st["busy"])))
@@ -1854,18 +1869,7 @@ def _webproxy_install():
                            capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError("apt nginx: " + (r.stderr or r.stdout)[-300:])
-    
-    subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True)
-    cert, key = _ng_certs(domain)
-    conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
-    os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
-    with open(_NG_CONF, "w") as f:
-        f.write(conf)
-    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=20)
-    if t.returncode != 0:
-        raise RuntimeError("nginx -t: " + (t.stderr or t.stdout)[-400:])
-    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
-    subprocess.run(["systemctl", "restart", "nginx"], check=True, capture_output=True, timeout=60)
+    _webproxy_apply(domain)
     return {"ok": True, "status": _webproxy_status()}
 
 def _find_free_port(pref=None, avoid=()):

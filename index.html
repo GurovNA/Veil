@@ -2325,30 +2325,31 @@ async function loadWp(){
     const st = document.getElementById('wpStatus');
     const hint = document.getElementById('wpHint');
     const btn = document.getElementById('wpInstallBtn');
+    btn.classList.remove('hidden');
     if(s.installed){
       st.textContent = 'установлен · nginx активен';
       st.style.color = 'var(--ok)';
-      hint.textContent = 'nginx слушает :443 и проксирует на telemt web (:18080).';
-      btn.classList.add('hidden');
+      hint.textContent = 'nginx слушает :443, отдает NES-эмулятор (заглушку) и проксирует на telemt.';
+      btn.textContent = '⚙ Повторить / Обновить Web Proxy';
       return;
     }
     st.style.color = 'var(--mut)';
     if(s.busy && s.busy.length){
       st.textContent = 'порт ' + s.busy.join(', ') + ' занят';
-      hint.textContent = 'Установка Web Proxy станет доступна после освобождения порта ' + s.busy.join(', ') + '.';
-      btn.classList.add('hidden');
+      hint.textContent = 'Порты заняты. Освободите их кнопками выше или принудительно повторите установку.';
+      btn.textContent = '⚙ Повторить установку (принудительно)';
     } else if(!s.domain_set){
       st.textContent = 'нет домена/DDNS';
       hint.textContent = 'Нет домена или DDNS — внеси его во вкладке «Сайт» (раздел DDNS/dynv6).';
-      btn.classList.add('hidden');
+      btn.textContent = '⚙ Повторить установку';
     } else if(!s.cert_ready){
       st.textContent = 'нет SSL-сертификата';
       hint.textContent = 'Домен задан, но для Web Proxy нужен SSL-сертификат (выпустите Let’s Encrypt во вкладке «Сайт»).';
-      btn.classList.add('hidden');
+      btn.textContent = '⚙ Повторить установку';
     } else {
       st.textContent = 'готов к установке';
       hint.textContent = 'Порты 80/443 свободны, домен ' + (s.domain||'') + ' и SSL-сертификат готовы.';
-      btn.classList.remove('hidden');
+      btn.textContent = '⚙ Установить Web Proxy (nginx)';
     }
   }catch(e){ /* ignore */ }
 }
@@ -2357,7 +2358,7 @@ async function installWebproxy(){
   const btn = document.getElementById('wpInstallBtn');
   btn.disabled = true;
   const old = btn.textContent;
-  btn.textContent = 'Устанавливаю nginx…';
+  btn.textContent = 'Применяю конфигурацию…';
   try{
     const r = await api('/api/webproxy/install', {method:'POST'});
     await loadWp();
