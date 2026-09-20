@@ -1770,6 +1770,9 @@ def _tg_web_ensure():
     После этого в панели появляются ссылки tg://webproxy?server=ДОМЕН&secret=dd...
     Заглушка (NES-эмулятор из /opt/vpnpanel/decoy) раздаётся telemt для обычных запросов.
     """
+    for p in ("/etc/telemt", "/etc/telemt/telemt.toml"):
+        if os.path.exists(p):
+            subprocess.run(["chown", "telemt:telemt", p], capture_output=True)
     domain = (CFG_CACHE.get("panel_domain") or "").strip()
     if not domain or ":" in domain or "//" in domain or "/" in domain:
         raise RuntimeError("нет домена — внеси его во вкладке Сайт (раздел DDNS)")
