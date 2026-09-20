@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.7"
+VERSION = "2.3.8"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -1219,11 +1219,11 @@ if not os.path.exists(_LOGO_PNG):
 _SUB_APP_CATALOG = {
     "ios": [
         {"name": "INCY", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}"},
-        {"name": "Happ Plus", "store": "https://apps.apple.com/app/happ-plus/id6800274884", "link": ""},
-        {"name": "sing-box (SFI)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "Happ Plus", "store": "https://apps.apple.com/app/happ-plus-%D1%85%D0%B0%D0%BF%D0%BF-vpn/id6800274884", "link": ""},
+        {"name": "sing-box (SFI)", "store": "https://sing-box.sagernet.org/clients/apple", "link": "sing-box://import-remote-profile?url={sub}"},
         {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "Foxray", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
-        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1441195209", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "AmneziaWG", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "awg": True},
         {"name": "Shadowrocket", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}", "pay": True},
         {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
@@ -1246,15 +1246,15 @@ _SUB_APP_CATALOG = {
         {"name": "AmneziaWG", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "awg": True},
     ],
     "macos": [
-        {"name": "sing-box (SFM)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "sing-box (SFM)", "store": "https://sing-box.sagernet.org/clients/apple", "link": "sing-box://import-remote-profile?url={sub}"},
         {"name": "Streisand", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "FlClash", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
     ],
     "apple_tv": [
-        {"name": "sing-box (SFT)", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}"},
-        {"name": "WireGuard", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "sing-box (SFT)", "store": "https://sing-box.sagernet.org/clients/apple", "link": "sing-box://import-remote-profile?url={sub}"},
+        {"name": "WireGuard", "store": "https://www.wireguard.com/install/", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "Stash", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}", "pay": True},
     ],
     "android_tv": [
