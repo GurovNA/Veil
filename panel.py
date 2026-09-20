@@ -1592,6 +1592,24 @@ def _tg_host_ok(link):
         return link
     return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
 
+def _tg_ensure_secret_in_toml(username, secret):
+    """Добавить секрет пользователя в [access.users] telemt.toml (если его там нет)."""
+    if not (username and secret):
+        return
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return
+    if re.search(r"(?m)^\"?%s\"?\s*=" % re.escape(username), text):
+        return
+    if "[access.users]" in text:
+        text = text.replace("[access.users]", '[access.users]\n%s = "%s"%s' % (username, secret, "\n" if text.split("[access.users]", 1)[1].strip() else ""), 1)
+    else:
+        text = text.rstrip("\n") + '\n[access.users]\n%s = "%s"\n' % (username, secret)
+    with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+        f.write(text)
+
 def _tg_add(username):
     name = (username or "").strip().replace(" ", "_")
     if not name:
@@ -1600,6 +1618,7 @@ def _tg_add(username):
         raise RuntimeError("только латиница, цифры, _ . - (до 32 символов)")
     d = _tg_api("POST", "/v1/users", {"username": name})
     secret = d.get("secret", "")
+    _tg_ensure_secret_in_toml(name, secret)
     links = ((d.get("data") or {}).get("user") or {}).get("links", {})
     tls = links.get("tls") or []
     link = ""
@@ -1733,17 +1752,104 @@ def _tg_web_set(carrier=None, enabled=None):
     _tg_api("PATCH", "/v1/config", {"web": patch})
     return _tg_web_get()
 
+def _strip_web_section(text):
+    out, in_web = [], False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("[") and s.endswith("]"):
+            in_web = s.startswith("[web")
+            if in_web:
+                continue
+        if not in_web:
+            out.append(ln)
+    return "\n".join(out).rstrip("\n") + "\n"
+
+def _tg_web_ensure():
+    """Включить telemt WEB (слушатель 127.0.0.1:18080 + vhost домена) и перезапустить telemt.
+
+    После этого в панели появляются ссылки tg://webproxy?server=ДОМЕН&secret=dd...
+    Заглушка (NES-эмулятор из /opt/vpnpanel/decoy) раздаётся telemt для обычных запросов.
+    """
+    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    if not domain or ":" in domain or "//" in domain or "/" in domain:
+        raise RuntimeError("нет домена — внеси его во вкладке Сайт (раздел DDNS)")
+    if not _tg_available():
+        raise RuntimeError("telemt не доступен (API 127.0.0.1:9091)")
+    ip4 = _pub_ip4() or "127.0.0.1"
+    with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+        text = f.read()
+    backup = text
+
+    try:
+        users = [u.get("username", "") for u in (_tg_api("GET", "/v1/users").get("data") or []) if u.get("username")]
+    except Exception:
+        users = []
+    m = re.search(r"(?ms)^\s*\[access\.users\]\s*$(.+?)(?=^\s*\[|\Z)", backup)
+    if m:
+        for line in m.group(1).splitlines():
+            mm = re.match(r'^"?([^"=\s]+)"?\s*=\s*"([0-9a-fA-F]+)"', line.strip())
+            if mm and mm.group(1) not in users:
+                users.append(mm.group(1))
+    users = [u for u in dict.fromkeys(users) if u]
+    if not users:
+        raise RuntimeError("нет пользователей telemt — создайте хотя бы одного")
+
+    changed = False
+    if 'transport = "web"' not in text:
+        text += ("\n[[server.listeners]]\n"
+                 'ip = "127.0.0.1"\n'
+                 "port = 18080\n"
+                 'transport = "web"\n'
+                 "proxy_protocol = false\n"
+                 "reuse_allow = false\n"
+                 'web_client_ip_source = "x_forwarded_for"\n'
+                 'web_trusted_proxy_cidrs = ["127.0.0.1/32"]\n')
+        changed = True
+
+    web_block = ('[web]\n'
+                 "enabled = true\n"
+                 'carrier = "https"\n'
+                 "\n[[web.vhosts]]\n"
+                 'host = "%s"\n'
+                 'public_addr = "%s:443"\n'
+                 "\n[web.vhosts.decoy]\n"
+                 'mode = "static_directory"\n'
+                 'directory = "/opt/vpnpanel/decoy"\n'
+                 'index = "index.html"\n' % (domain, ip4))
+    for u in users:
+        web_block += ('\n[[web.vhosts.profiles]]\n'
+                      'user = "%s"\n'
+                      'secret_mode = "dd"\n'
+                      "max_sessions = 8\n"
+                      "max_streams = 512\n"
+                      "max_streams_per_session = 64\n" % u)
+
+    if not re.search(r"(?m)^\[web\]\s*$", text):
+        text = _strip_web_section(text) + web_block + "\n"
+        changed = True
+    elif "\n[[web.vhosts]]" not in text.replace("\r", ""):
+        text = text.rstrip("\n") + "\n" + web_block + "\n"
+        changed = True
+
+    if not changed:
+        return _tg_web_get()
+
+    with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+        f.write(text)
+    try:
+        r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError("systemctl restart telemt: " + (r.stderr or r.stdout)[-300:])
+    except Exception:
+        with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+            f.write(backup)
+        subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        raise RuntimeError("telemt не принял WEB-конфиг — изменение откачено")
+    return _tg_web_get()
+
 _NG_WEBPROXY_TEMPLATE = """map $http_upgrade $telemt_connection_upgrade {
     default upgrade;
     ''      '';
-}
-
-map $uri $cache_control {
-    default                 "public, max-age=300";
-    "~^/$"                  "no-store, no-cache";
-    "~^/index\\.html$"     "no-store, no-cache";
-    "~^/manifest\\.json$"  "no-store, no-cache";
-    "~*\\.(png|jpg|jpeg|ico)$" "no-store, no-cache";
 }
 
 upstream telemt_web {
@@ -1762,14 +1868,7 @@ server {
 
     client_max_body_size 2m;
 
-    root /opt/vpnpanel/decoy;
-    index index.html;
-
     location / {
-        try_files $uri $uri/ @telemt_proxy;
-    }
-
-    location @telemt_proxy {
         proxy_pass http://telemt_web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1778,7 +1877,7 @@ server {
         proxy_set_header Connection $telemt_connection_upgrade;
 
         proxy_hide_header Cache-Control;
-        add_header Cache-Control $cache_control always;
+        add_header Cache-Control "no-store, no-cache" always;
 
         proxy_connect_timeout 5s;
         proxy_send_timeout 65s;
@@ -1838,6 +1937,7 @@ def _webproxy_status():
             "can_install": (not installed) and (not busy) and domain_set and has_cert}
 
 def _webproxy_apply(domain):
+    _tg_web_ensure()
     subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True)
     cert, key = _ng_certs(domain)
     conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
