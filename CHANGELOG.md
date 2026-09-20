@@ -2,6 +2,13 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.3.8] - 2026-09-20
+
+- **iOS: исправлены ссылки на приложения.**
+  - **Happ Plus** — сломанный слэг `happ-plus/` → корректный `happ-plus-хапп-vpn/id6800274884`.
+  - **WireGuard** — была macOS-версия (`id1451685025`, url-параметр `mt=12`), теперь iOS-версия `id1441195209`. Apple TV тоже больше не ссылается на macOS-версию.
+  - **sing-box (SFI/SFM/SFT)** — ссылка на GitHub заменена на официальный раздел установки `sing-box.sagernet.org/clients/apple`: по данным самой команды sing-box приложения Apple-платформ временно убраны из App Store ревизором (TestFlight/GitHub) — рабочей App Store-страницы сейчас не существует (`id6451272673` отдаёт 404).
+
 ## [2.3.7] - 2026-09-20
 
 - **AmneziaWG добавлен в iOS**: App Store `id6478942365` (официальное приложение Amnezia, free). На странице `/p/<token>` у подписчика с протоколом AmneziaWG теперь есть карточка и скачивание личного конфига; из Linux убран (официального клиента там нет).
