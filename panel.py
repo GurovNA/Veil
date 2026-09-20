@@ -1256,8 +1256,13 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
     host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
-    _ensure_all_protos(st)
     inbounds = st.setdefault("inbounds", {})
+    for proto in _VALID_PROTOCOLS:
+        if proto not in inbounds:
+            try:
+                inbounds[proto] = _alloc_inbound(st, proto)
+            except Exception as e:
+                print(f"create_sub alloc {proto} -> {e}", flush=True)
     if not inbounds:
         inbounds["reality"] = _alloc_inbound(st, "reality")
     first_link = None
@@ -3575,7 +3580,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 if st.get("active") not in st.get("inbounds", {}):
                     st["active"] = _proto_of(st)
                     
-                _ensure_all_protos(st)
                 _awg_sync(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()

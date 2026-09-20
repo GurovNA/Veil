@@ -2,6 +2,12 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.3.2] - 2026-09-20
+
+- **Fix: удаление подписчика больше не раскидывает остальных** — `/api/clients/delete` вызывал `_ensure_all_protos()` после удаления, из-за чего все оставшиеся клиенты «получали» все 17 протоколов. Убрано: каждый клиент остаётся только в тех inbounds, где был создан (Reality-only остаются Reality-only).
+- **Fix: bot `/addsub` больше не раскидывает существующих клиентов** — `_create_subscription()` раньше тоже вызывал `_ensure_all_protos()`; теперь создаётся недостающий inbound без распространения текущих клиентов.
+- **Восстановлено live-состояние** — после инцидента подписчики Test/Test2 возвращены в Reality (удалено 34 клона), всепротокольный подписчик сохранён.
+
 ## [2.3.1] - 2026-09-20
 
 - **Subscriptions: all protocols in one link** — when a subscriber is added from the Subscriptions tab, the client is now created in **all** protocol inbounds (VLESS/VMess/Trojan/Shadowsocks/Hysteria2/WireGuard/AmneziaWG variants), so the subscription URL immediately provides every transport; existing subscribers are left untouched. Per-protocol «Новый клиент» add now correctly targets the selected protocol (it was ignored before).
