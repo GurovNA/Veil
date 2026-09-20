@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.3.8"
+VERSION = "2.3.9"
 
 
 # ========== ENTERPRISE FEATURES (v2.1.0) ==========
@@ -274,6 +274,10 @@ def _gen_keys():
 AWG_IFACE = "awg0"
 AWG_CONF = "/etc/amnezia/amneziawg/awg0.conf"
 AWG_ADDR = "10.20.0.1/24"
+
+WG_IFACE = "veilwg"
+WG_CONF = "/etc/wireguard/veilwg.conf"
+WG_ADDR = "10.10.0.1/24"
 AWG_POOL = "10.20.0."
 # Параметры обфускации AmneziaWG. S1-S4 — размеры padding (числа 15-150), H1-H4 — уникальные
 # номера типов пакетов. ВАЖНО: S1/S2/H1-H4 должны совпадать на сервере и клиенте (server-side).
@@ -417,6 +421,128 @@ def _awg_sync(st, force=False):
             except Exception as e:
                 print("awg set peer err: " + str(e), flush=True)
     return True
+
+def _wg_pubof(priv):
+    try:
+        r = subprocess.run(["/usr/bin/wg", "pubkey"], input=str(priv).strip(),
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception as e:
+        print("wg pubkey err: " + str(e), flush=True)
+    return ""
+
+def _wg_listen_port():
+    try:
+        r = subprocess.run(["/usr/bin/wg", "show", WG_IFACE, "listen-port"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                return int(r.stdout.split()[0])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+def _wg_conf_text(inb):
+    parts = ["[Interface]\n",
+             f"Address = {inb.get('address') or WG_ADDR}\n",
+             f"ListenPort = {inb['port']}\n",
+             f"PrivateKey = {inb['private_key']}\n",
+             f"MTU = {inb.get('mtu', 1420)}\n"]
+    for c in inb.get("clients", []):
+        if c.get("blocked"):
+            continue
+        if not (c.get("client_public_key") and c.get("address")):
+            continue
+        parts += ["\n[Peer]\n",
+                  f"PublicKey = {c['client_public_key']}\n",
+                  f"AllowedIPs = {c['address']}\n",
+                  "PersistentKeepalive = 25\n"]
+    return "".join(parts)
+
+def _wg_iface_synced(inb):
+    try:
+        r = subprocess.run(["ip", "link", "show", WG_IFACE], capture_output=True, text=True)
+        with open(WG_CONF) as f:
+            live = f.read()
+        return r.returncode == 0 and live == _wg_conf_text(inb) and _wg_listen_port() == inb.get("port")
+    except Exception:
+        return False
+
+def _wg_write_conf(inb):
+    os.makedirs("/etc/wireguard", exist_ok=True)
+    with open(WG_CONF, "w") as f:
+        f.write(_wg_conf_text(inb))
+    os.chmod(WG_CONF, 0o600)
+
+def _wg_restart_iface(st):
+    try:
+        _wg_write_conf(st["inbounds"]["wireguard"])
+        subprocess.run(["systemctl", "stop", "wg-quick@" + WG_IFACE],
+                       capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["systemctl", "start", "wg-quick@" + WG_IFACE],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            print("wg restart err: " + (r.stderr or r.stdout), flush=True)
+        return r.returncode == 0
+    except Exception as e:
+        print("wg restart exc: " + str(e), flush=True)
+        return False
+
+def _wg_sync(st, force=False):
+    """Синхронизирует kernel-wireguard интерфейс veilwg: ключи, порт и список peers.
+    WireGuard работает на штатном kernel-модуле (через wg-quick@veilwg), а не в Xray:
+    userspace-tun Xray пакеты в интернет не маршрутизирует.
+    wg-quick сам регистрирует маршруты /32 каждого клиента; при любом изменении
+    конфиг переписывается и интерфейс перезапускается."""
+    if not st:
+        return False
+    _ensure_wg_net()
+    inbounds = st.setdefault("inbounds", {})
+    inb = inbounds.get("wireguard")
+    if inb is None:
+        inb = _alloc_inbound(st, "wireguard")
+        inbounds["wireguard"] = inb
+    if not inb.get("private_key"):
+        return False
+    if not inb.get("public_key"):
+        inb["public_key"] = _wg_pubof(inb.get("private_key", ""))
+    if not _wg_iface_synced(inb) or force:
+        _wg_restart_iface(st)
+    return True
+
+def _ensure_wg_net():
+    """IPv4-forwarding + NAT masquerade для туннельных подсетей
+    (wireguard 10.10.0.0/24 и amneziawg 10.20.0.0/24).
+    Идемпотентно; повторно применяется при каждом старте панели."""
+    try:
+        subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"],
+                       capture_output=True, text=True, timeout=10)
+        with open("/etc/sysctl.d/99-veil-wg.conf", "w") as f:
+            f.write("net.ipv4.ip_forward = 1\n")
+    except Exception:
+        pass
+    try:
+        subprocess.run(["nft", "create", "table", "ip", "veil_wg"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "create", "chain", "ip", "veil_wg", "post",
+                        "{ type nat hook postrouting priority srcnat; policy accept; }"],
+                       capture_output=True, text=True, timeout=10)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["nft", "flush", "table", "ip", "veil_wg"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "add", "rule", "ip", "veil_wg", "post",
+                        "ip", "saddr", "10.10.0.0/24", "masquerade"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "add", "rule", "ip", "veil_wg", "post",
+                        "ip", "saddr", "10.20.0.0/24", "masquerade"],
+                       capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print("nft err: " + str(e), flush=True)
 
 def _reality_key_std(k):
     if not k: return k
@@ -636,8 +762,7 @@ def _new_inbound(proto):
     if proto == "wireguard":
         priv, pub = _gen_keys()
         inb.update({"private_key": priv, "public_key": pub,
-                    "address": "10.10.0.1/32", "mtu": 1420, "next_address": 2,
-                    "psk": _gen_wg_psk()})
+                    "address": "10.10.0.1/24", "mtu": 1420, "next_address": 2})
     if proto == "amneziawg":
         priv, pub = _gen_keys()
         inb.update({"private_key": _wg_key_std(priv), "public_key": _wg_key_std(pub),
@@ -806,7 +931,7 @@ def _autoblock_limits(st, force=False):
 def _write_xray(st):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
-        if proto == "amneziawg":
+        if proto in ("amneziawg", "wireguard"):
             continue
         if inb.get("clients"):
             inbounds.append(_inbound(proto, inb))
@@ -998,7 +1123,6 @@ def _link(inb, host, client, proto):
                 "PersistentKeepalive = 25\n"
                 "")
     if proto == "wireguard":
-        psk = inb.get("psk") or ""
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}\n"
@@ -1006,8 +1130,7 @@ def _link(inb, host, client, proto):
                 f"MTU = {inb.get('mtu', 1420)}\n\n"
                 "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
-                + (f"PresharedKey = {psk}\n" if psk else "")
-                + f"Endpoint = {host}:{inb['port']}\n"
+                f"Endpoint = {host}:{inb['port']}\n"
                 "AllowedIPs = 0.0.0.0/0, ::/0\n"
                 "PersistentKeepalive = 25\n"
                 "")
@@ -1138,8 +1261,6 @@ def _singbox_outbound(proto, inb, c, host):
               "private_key": c.get("client_private_key") or "",
               "peer_public_key": inb.get("public_key") or "",
               "mtu": int(inb.get("mtu", 1420))}
-        if proto == "wireguard" and inb.get("psk"):
-            ob["pre_shared_key"] = inb["psk"]
         return ob
     if proto.startswith("shadowsocks"):
         return {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
@@ -1797,6 +1918,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
         if not first_link:
             first_link = lnk
     _awg_sync(st)
+    _wg_sync(st)
     _write_xray(st)
     _save(STATE, st)
     _restart_xray()
@@ -3233,6 +3355,7 @@ def _limits_loop():
                     _save(STATE, st)
                     try:
                         _awg_sync(st)
+                        _wg_sync(st)
                         _write_xray(st); _restart_xray()
                     except Exception as e:
                         print("[limits] " + str(e), flush=True)
@@ -4143,6 +4266,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             first_link = lnk
 
                 _awg_sync(st)
+                _wg_sync(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
 
@@ -4185,6 +4309,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     st["active"] = _proto_of(st)
                     
                 _awg_sync(st)
+                _wg_sync(st)
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 return self._send(200, {"ok": True})
@@ -4811,9 +4936,8 @@ class S(socketserver.ThreadingTCPServer):
                 port = CFG_CACHE.get("panel_port", 8443)
                 try:
                     sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
-                                  "Location: https://%s:%d/\r\n"
-                                  "Content-Length: 0\r\n"
-                                  "Connection: close\r\n\r\n" % (host, int(port))).encode())
+                                   "Content-Length: 0\r\n"
+                                   "Connection: close\r\n\r\n" % (host, int(port))).encode())
                 except Exception: pass
                 try: sock.close()
                 except Exception: pass
@@ -4828,14 +4952,20 @@ if __name__ == "__main__":
     try:
         st = _load(STATE)
         xc = _load(XRAY)
-        chg = _ensure_wg_psk(st) or _ensure_wg_std(st)
+        chg = _ensure_wg_std(st)
         chg = _ensure_xray_keys_urlsafe(st) or chg
         # chg = _ensure_all_protos(st) or chg
-        # AmneziaWG: импорт/синхронизация системного awg0 (ключи и peers) после возможного рестарта ОС
+        # WireGuard: kernel-интерфейс veilwg и AmneziaWG: системный awg0 —
+        # импорт/синхронизация после возможного рестарта ОС.
+        _ensure_wg_net()
         try:
             _awg_sync(st)
         except Exception as e:
             print("awg sync init: " + str(e), flush=True)
+        try:
+            _wg_sync(st)
+        except Exception as e:
+            print("wg sync init: " + str(e), flush=True)
         if chg:
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
