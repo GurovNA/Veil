@@ -2329,7 +2329,7 @@ async function loadWp(){
     if(s.installed){
       st.textContent = 'установлен · nginx активен';
       st.style.color = 'var(--ok)';
-      hint.textContent = 'nginx слушает :443, отдает NES-эмулятор (заглушку) и проксирует на telemt.';
+      hint.textContent = 'nginx :443 → telemt web (:18080). Telemt раздает NES-заглушку и проксирует Telegram; ссылки tg://webproxy — в разделе «Веб-прокси».';
       btn.textContent = '⚙ Повторить / Обновить Web Proxy';
       return;
     }
