@@ -18,7 +18,13 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.4.4"
+VERSION = "2.5.0"
+# 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
+#        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
+#        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
+#        Prometheus /metrics (veil_* метрики, Bearer-токен), split-tunnel RU/IR
+#        в подписках и /sb-конфигах sing-box + ночное зеркало geoip/geosite-правил
+#        с выдачи sing-box, /sub userinfo-заголовки, одно кликовый откат релиза.
 # 2.4.4: заглушка на 443 полностью переписана — «8BIT HAVEN»: рабочий эмулятор JSNES
 #        (корректный blit кадров, плавающий аудиобуфер, CRT-фильтр), две легально
 #        распространяемые домашние ROM (RoboRun GPL-3.0, Falling MIT) вместо битого
@@ -1035,6 +1041,10 @@ def _autoblock_limits(st, force=False):
     return out
 
 def _write_xray(st):
+    try:
+        os.makedirs(os.path.dirname(_XRAY_ACCESS), exist_ok=True)
+    except Exception:
+        pass
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
@@ -1057,7 +1067,7 @@ def _write_xray(st):
         })
     
     cfg = {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "warning", "access": _XRAY_ACCESS},
         "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
         "stats": {},
         "inbounds": inbounds,
@@ -1096,6 +1106,130 @@ def _statsquery():
         out[email][direction] = int(s.get("value", 0) or 0)
     return out
 
+def _cycle_key(kind, ts=None):
+    """Ключ текущего цикла трафика (UTC). '' = lifetime (без сброса)."""
+    if kind not in ("day", "week", "month"):
+        return "lifetime"
+    d = datetime.datetime.fromtimestamp(
+        ts if ts is not None else time.time(), datetime.timezone.utc)
+    if kind == "day":  return d.strftime("%Y-%m-%d")
+    if kind == "week": return d.strftime("%G-W%V")
+    return d.strftime("%Y-%m")
+
+def _traffic_tick(st):
+    """Накапливает дельты счётчиков Xray в cycle-полях клиента (up/down).
+    Счётчики Xray живут в памяти и обнуляются при рестарте — поэтому ведём
+    last_up/last_down и копим дельты. На границе цикла обнуляем накопленное
+    и делаем xray api statsreset. Значения зеркалятся во ВСЕ записи одного
+    uuid (клиент может быть в нескольких инбаундах с одним uuid). True = изменения."""
+    tr = _statsquery()
+    if not tr:
+        return False
+    groups = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            groups.setdefault(c["uuid"], []).append(c)
+    changed = False
+    for key, cs in groups.items():
+        c0 = cs[0]
+        ck = _cycle_key(c0.get("reset_cycle"))
+        if c0.get("cycle") != ck:
+            for c in cs:
+                c["cycle"] = ck
+                c["up"] = 0; c["down"] = 0
+                c["last_up"] = 0; c["last_down"] = 0
+                c["warned_80"] = False
+            try:
+                subprocess.run(
+                    ["xray", "api", "statsreset", "--server", f"127.0.0.1:{_STATS_PORT}",
+                     "--pattern", f"user>>>{key}>>>"],
+                    capture_output=True, text=True, timeout=8)
+            except Exception:
+                pass
+            changed = True
+            continue
+        t = tr.get(key) or {}
+        cu = int(t.get("uplink", 0) or 0); cd = int(t.get("downlink", 0) or 0)
+        lu = int(c0.get("last_up") or 0); ld = int(c0.get("last_down") or 0)
+        du = cu - lu; dd = cd - ld
+        if du < 0: du = cu   # Xray перезапустился — считаем текущее значение с нуля
+        if dd < 0: dd = cd
+        if du or dd:
+            for c in cs:
+                c["up"] = int(c.get("up") or 0) + du
+                c["down"] = int(c.get("down") or 0) + dd
+            changed = True
+        if lu != cu or ld != cd:
+            for c in cs:
+                c["last_up"] = cu; c["last_down"] = cd
+            changed = True
+    return changed
+
+_GB = 1024 ** 3
+
+def _user_traffic(c):
+    return int(c.get("up") or 0) + int(c.get("down") or 0)
+
+def _maybe_traffic_alerts(st):
+    """TG-предупреждения: 80% лимита, скорая блокировка (3/1 день), сброс цикла.
+    Возвращает True, если выставили новые флаги (state надо сохранять)."""
+    ids = CFG_CACHE.get("bot_chat_ids") or []
+    if not ids:
+        return False
+    now = time.time()
+    changed = False
+    seen = set()
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c["uuid"] in seen or c.get("blocked"):
+                continue
+            seen.add(c["uuid"])
+            group = []
+            for p2, i2 in (st.get("inbounds") or {}).items():
+                for c2 in i2.get("clients", []):
+                    if c2["uuid"] == c["uuid"]:
+                        group.append(c2)
+            msgs = []
+            lim = float(c.get("limit_gb") or 0)
+            if lim > 0 and not c.get("warned_80"):
+                if _user_traffic(c) >= lim * _GB * 0.8:
+                    msgs.append(
+                        f"⚠️ <b>80% лимита</b>\nКлиент: {c.get('name')}\n"
+                        f"Использовано: {_user_traffic(c) / _GB:.2f} из {lim:g} ГБ")
+                    for g in group: g["warned_80"] = True
+                    changed = True
+            ex = int(c.get("expiry") or 0)
+            if ex > now:
+                days_left = int((ex - now) / 86400) + 1
+                warned = list(c.get("warned_days") or [])
+                for d in (3, 1):
+                    if days_left <= d and d not in warned:
+                        msgs.append(
+                            f"⏳ <b>Срок истекает</b>\nКлиент: {c.get('name')}\n"
+                            f"Осталось дней: {days_left}")
+                        warned.append(d)
+                        for g in group: g["warned_days"] = warned
+                        changed = True
+                        break
+            if msgs:
+                try:
+                    _bot_send_message(ids[0], "\n".join(msgs), "HTML")
+                except Exception as e:
+                    print("[alert] " + str(e), flush=True)
+    return changed
+
+def _notify_blocked(bl):
+    """TG-уведомление о сработавшей автоблокировке."""
+    try:
+        ids = CFG_CACHE.get("bot_chat_ids") or []
+        if not ids or not bl: return
+        reason_ru = {"limit": "лимит трафика", "expired": "срок истёк"}
+        lines = [f"⛔ <b>Клиент заблокирован:</b> {b['name']} ({reason_ru.get(b['reason'], b['reason'])})"
+                 for b in bl]
+        _bot_send_message(ids[0], "\n".join(lines), "HTML")
+    except Exception as e:
+        print("[alert] " + str(e), flush=True)
+
 _ONLINE_CACHE = {}
 
 def _online_count(email):
@@ -1132,7 +1266,6 @@ def _subs_summary(st, for_display=False):
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
     ipv6 = _my_ipv6()
-    tr = _statsquery()
     users = {}
     state_changed = False
     for proto, inb in (st.get("inbounds") or {}).items():
@@ -1147,6 +1280,8 @@ def _subs_summary(st, for_display=False):
                      "created": c.get("created", 0),
                      "limit_gb": float(c.get("limit_gb") or 0),
                      "expiry": int(c.get("expiry") or 0),
+                     "reset_cycle": c.get("reset_cycle") or "",
+                     "cycle": c.get("cycle") or "lifetime",
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
                      "links": {}, "protos": [], "up": 0, "down": 0}
@@ -1162,15 +1297,18 @@ def _subs_summary(st, for_display=False):
             if proto not in [x["proto"] for x in u["protos"]]:
                 u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
                                     "port": inb.get("port", 0)})
-            t = tr.get(c["uuid"], {})
-            u["up"] += int(t.get("uplink", 0) or 0)
-            u["down"] += int(t.get("downlink", 0) or 0)
+            if not u.get("_tr_taken"):
+                u["_tr_taken"] = True
+                u["up"] = int(c.get("up") or 0)
+                u["down"] = int(c.get("down") or 0)
     if state_changed:
         _save(STATE, st)
     out = []
     for u in users.values():
+        u.pop("_tr_taken", None)
         u["used_gb"] = round((u["up"] + u["down"]) / (1024 ** 3), 3)
         u["sub_url"] = f"https://{host}:{panel_port}/sub/{u['sub_token']}"
+        u["sb_url"] = f"https://{host}:{panel_port}/sb/{u['sub_token']}"
         u["online"] = int(_online_count(u["uuid"]) or 0)
         out.append(u)
     return out
@@ -1430,9 +1568,8 @@ def _singbox_subscription(st, sub_path, host, tr):
             key = c["uuid"]
             if key not in seen:
                 seen.add(key)
-                t = tr.get(key, {})
-                up += int(t.get("uplink", 0) or 0)
-                down += int(t.get("downlink", 0) or 0)
+                up += int(c.get("up") or 0)
+                down += int(c.get("down") or 0)
                 lim = float(c.get("limit_gb") or 0)
                 if lim > 0:
                     total = max(total, int(lim * 1024 ** 3))
@@ -1605,6 +1742,10 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
         conf_blocks.append('<a class="btn-conf" href="' + awg_url + '" download>'
                            '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
                            'AmneziaWG · .conf</a>')
+    if u.get("sb_url"):
+        conf_blocks.append('<a class="btn-conf" href="' + u["sb_url"] + '">'
+                           '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
+                           'sing-box · полный конфиг</a>')
     confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
     cat = {k: [dict(a) for a in v
                if not (a.get("wg") and not wg_conf)
@@ -1914,6 +2055,12 @@ def _new_client(name, proto=None, inb=None, **kw):
     # Лимиты трафика/срок (0 = без ограничений)
     c["limit_gb"] = float(kw.get("limit_gb") or 0)
     c["expiry"] = int(kw.get("expiry") or 0)
+    rc = (kw.get("reset_cycle") or "").strip().lower()
+    c["reset_cycle"] = rc if rc in ("day", "week", "month") else ""
+    c["cycle"] = _cycle_key(c["reset_cycle"])
+    c["up"] = 0; c["down"] = 0
+    try: c["max_devices"] = max(0, int(kw.get("max_devices") or 0))
+    except Exception: c["max_devices"] = 0
     if proto and proto.startswith("trojan"):
         c["password"] = secrets.token_urlsafe(12)
     if proto == "hysteria2":
@@ -2955,9 +3102,483 @@ def _login_throttle(client_ip):
 
 def _login_fail(client_ip):
     _LOGIN_FAILS.setdefault(client_ip, []).append(time.time())
+    try:
+        _f2b_maybe_ban(client_ip)
+    except Exception as e:
+        print("[f2b] " + str(e), flush=True)
 
 def _login_ok(client_ip):
     _LOGIN_FAILS.pop(client_ip, None)
+
+# ---------- fail2ban-lite: баны по IP в nftables (без fail2ban демона) ----------
+# Таблица inet veil_bans: множества b4/b6 с timeout — IP отваливается сам.
+# protected: IP с активной сессией панели НЕ банится (защита от самоблокировки),
+# приватные/loopback адреса не банятся вообще. bans.json — персист ре-аппрая после рестарта.
+
+BANS_FILE = f"{BASE}/bans.json"
+BANS = {}
+
+def _bans_load():
+    global BANS
+    try:
+        d = json.load(open(BANS_FILE)) or {}
+        if isinstance(d, dict):
+            now = time.time()
+            BANS = {ip: v for ip, v in d.items()
+                    if isinstance(v, dict) and int(v.get("until") or 0) > now}
+    except Exception:
+        BANS = {}
+
+def _bans_save():
+    try:
+        _save(BANS_FILE, BANS)
+    except Exception as e:
+        print("[f2b] bans save: " + str(e), flush=True)
+
+def _bans_cleanup():
+    """Убирает просроченные записи из BANS. True = были удаления."""
+    now = time.time()
+    gone = [ip for ip, v in BANS.items() if int(v.get("until") or 0) <= now]
+    for ip in gone:
+        BANS.pop(ip, None)
+    if gone:
+        _bans_save()
+    return bool(gone)
+
+def _f2b_cfg():
+    if not CFG_CACHE.get("f2b_enabled", True):
+        return None
+    try:
+        thr = max(1, int(CFG_CACHE.get("f2b_threshold") or 5))
+        win = max(1, int(CFG_CACHE.get("f2b_window_min") or 10)) * 60
+        ban = max(1, int(CFG_CACHE.get("f2b_ban_hours") or 24)) * 3600
+    except Exception:
+        return None
+    return thr, win, ban
+
+def _f2b_public(ip):
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except Exception:
+        return False
+    return not (a.is_private or a.is_loopback or a.is_link_local or
+                a.is_multicast or a.is_unspecified)
+
+def _f2b_has_session(ip):
+    now = time.time()
+    for tok, meta in SESSIONS_META.items():
+        if isinstance(meta, dict) and meta.get("ip") == ip and \
+           float(SESSIONS.get(tok) or 0) > now:
+            return True
+    return False
+
+def _f2b_nft(*args):
+    try:
+        subprocess.run(("nft",) + tuple(args), capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print("[f2b] nft " + " ".join(args[:3]) + ": " + str(e), flush=True)
+
+def _f2b_bootstrap():
+    """Пересоздаёт таблицу (идемпотентно при рестартах панели) и возвращает живые баны."""
+    _f2b_nft("delete", "table", "inet", "veil_bans")
+    _f2b_nft("add", "table", "inet", "veil_bans")
+    _f2b_nft("add", "chain", "inet", "veil_bans", "input",
+             "{ type filter hook input priority -100; policy accept; }")
+    _f2b_nft("add", "set", "inet", "veil_bans", "b4", "{ type ipv4_addr; flags timeout; }")
+    _f2b_nft("add", "set", "inet", "veil_bans", "b6", "{ type ipv6_addr; flags timeout; }")
+    _f2b_nft("add", "rule", "inet", "veil_bans", "input",
+             'iifname != "lo" ip saddr @b4 drop')
+    _f2b_nft("add", "rule", "inet", "veil_bans", "input",
+             'iifname != "lo" meta nfproto ipv6 ip6 saddr @b6 drop')
+    now = time.time()
+    for ip, v in list(BANS.items()):
+        left = int(v.get("until") or 0) - now
+        if left <= 0:
+            BANS.pop(ip, None)
+            continue
+        fam = "b6" if ":" in ip else "b4"
+        _f2b_nft("add", "element", "inet", "veil_bans", fam,
+                 "{ " + ip + " timeout " + str(int(left)) + "s }")
+    _bans_save()
+
+def _ban_ip(ip, secs, reason):
+    """Общий бан IP через inet/veil_bans + bans.json. False = уже забанен."""
+    if ip in BANS:
+        return False
+    BANS[ip] = {"until": int(time.time()) + secs, "reason": reason, "fails": 0}
+    _bans_save()
+    fam = "b6" if ":" in ip else "b4"
+    _f2b_nft("add", "element", "inet", "veil_bans", fam,
+             "{ " + ip + " timeout " + str(secs) + "s }")
+    return True
+
+def _f2b_maybe_ban(ip):
+    cfgf = _f2b_cfg()
+    if not cfgf or ip in BANS:
+        return
+    thr, win, ban_sec = cfgf
+    now = time.time()
+    fails = [x for x in _LOGIN_FAILS.get(ip, []) if x > now - win]
+    if len(fails) < thr:
+        return
+    if not _f2b_public(ip) or _f2b_has_session(ip):
+        return
+    if not _ban_ip(ip, ban_sec, "login fails"):
+        return
+    BANS[ip]["fails"] = len(fails)
+    _bans_save()
+    _audit("f2b_ban", ip=ip, fails=len(fails), hours=ban_sec // 3600)
+    print("[f2b] бан " + ip + " на " + str(ban_sec // 3600) + "ч", flush=True)
+    try:
+        ids = CFG_CACHE.get("bot_chat_ids") or []
+        if ids:
+            _bot_send_message(ids[0],
+                f"🔒 <b>fail2ban-lite:</b> {ip} забанен на {ban_sec // 3600}ч "
+                f"({len(fails)} неудачных входов за {win // 60} мин)", "HTML")
+    except Exception:
+        pass
+
+def _f2b_unban(ip):
+    if ip not in BANS:
+        return False
+    BANS.pop(ip, None)
+    _bans_save()
+    fam = "b6" if ":" in ip else "b4"
+    _f2b_nft("delete", "element", "inet", "veil_bans", fam, "{ " + ip + " }")
+    _audit("f2b_unban", ip=ip)
+    return True
+
+# ---------- лимит устройств на клиента (P3) ----------
+# Источник — access-лог Xray (в нём email == uuid клиента). Окно активности 15 мин;
+# при превышении max_devices самый «свежий» публичный IP банируется на 2ч через
+# veil_bans. WireGuard/amneziawg идут мимо Xray — для них лимит не применяется.
+
+_XRAY_ACCESS = f"{BASE}/logs/xray-access.log"
+_DEV_WIN_SEC = 900
+_DEV_BAN_SEC = 2 * 3600
+_DEVTRACK = {}          # uuid -> {ip: last_seen_ts}
+_DEV_POS = [0, 0]       # [offset чтения, последний размер файла]
+
+# Пример строки: `2026-09-22 12:56:32.927 from 1.2.3.4:5678 accepted vless:... [in] [uuid]`
+_ACC_RE = re.compile(r"^\S+\s+\S+\s+(?:from\s+)?(\S+)\s+accepted\b")
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+def _acc_email(line):
+    for b in re.findall(r"\[([^\]]*)\]", line):
+        if _UUID_RE.match(b.strip()):
+            return b.strip()
+    return ""
+
+def _access_log_lines():
+    try:
+        sz = os.path.getsize(_XRAY_ACCESS)
+    except OSError:
+        return []
+    if sz < _DEV_POS[1]:
+        _DEV_POS[0] = 0              # copytruncate-ротация — читаем заново с нуля
+    if sz == _DEV_POS[1] and _DEV_POS[0] == sz:
+        return []
+    try:
+        with open(_XRAY_ACCESS, "r", errors="replace") as f:
+            f.seek(_DEV_POS[0])
+            data = f.read()
+            _DEV_POS[0] = f.tell()
+        _DEV_POS[1] = sz
+    except OSError:
+        return []
+    return data.splitlines()
+
+def _strip_port(addr):
+    if addr.startswith("["):
+        j = addr.find("]")
+        return addr[1:j] if j > 0 else addr
+    return addr.rsplit(":", 1)[0] if addr.count(":") == 1 else addr
+
+def _device_tick(st):
+    limits = {}
+    names = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            names[c["uuid"]] = c.get("name") or str(c["uuid"])[:8]
+            if proto in ("wireguard", "amneziawg"):
+                continue
+            md = int(c.get("max_devices") or 0)
+            if md > 0:
+                limits[c["uuid"]] = max(limits.get(c["uuid"], 0), md)
+    now = time.time()
+    for line in _access_log_lines():
+        m = _ACC_RE.match(line)
+        if not m:
+            continue
+        email = _acc_email(line)
+        if not email or email not in limits:
+            continue
+        ip = _strip_port(m.group(1))
+        if _f2b_public(ip):
+            _DEVTRACK.setdefault(email, {})[ip] = now
+    if not limits:
+        _DEVTRACK.clear()
+        return
+    for email, md in limits.items():
+        d = _DEVTRACK.get(email)
+        if not d:
+            continue
+        for ip, ts in list(d.items()):
+            if now - ts > _DEV_WIN_SEC:
+                d.pop(ip, None)
+        while len(d) > md:
+            newest = max(d, key=lambda ip: d[ip])
+            d.pop(newest, None)
+            if _f2b_has_session(newest):
+                continue
+            if not _ban_ip(newest, _DEV_BAN_SEC, "devices:" + str(email)[:8]):
+                break
+            _audit("device_ban", ip=newest, uuid=email, name=names.get(email, ""),
+                   max_devices=md)
+            print("[devices] бан " + newest + " (клиент " + names.get(email, "") + ")",
+                  flush=True)
+            try:
+                ids = CFG_CACHE.get("bot_chat_ids") or []
+                if ids:
+                    _bot_send_message(ids[0],
+                        f"📱 <b>Лимит устройств</b>\nКлиент: {names.get(email, '?')}\n"
+                        f"Разрешено: {md}, новый IP {newest} забанен на 2ч", "HTML")
+            except Exception:
+                pass
+
+def _ensure_logrotate():
+    """ротация access-лога Xray (50M, 2 копии) — панель ведёт лог постоянно."""
+    try:
+        os.makedirs(BASE + "/logs", exist_ok=True)
+        with open("/etc/logrotate.d/veil-xray", "w") as f:
+            f.write('"' + _XRAY_ACCESS + '" {\n    size 50M\n    rotate 2\n'
+                    '    copytruncate\n    missingok\n    notifempty\n}\n')
+    except Exception as e:
+        print("logrotate: " + str(e), flush=True)
+
+# ---------- P6: зеркалирование rule-set'ов RU/IR + полный sing-box конфиг ----------
+# Панель скачивает свежие rule-set'ы из upstream-релизов и раздаёт их с себя
+# (/rulesets/<файл>): клиенту не нужен доступ к GitHub из-под VPN.
+
+RULESET_DIR = f"{BASE}/rulesets"
+_RULESET_FILES = {"geoip-ru.srs", "geosite-ru.srs", "geoip-ir.db", "geosite-ir.db"}
+_RULESET_STATE = {"updated": 0, "error": "", "tag_ru": "", "tag_ir": ""}
+
+def _gh_release_latest(repo):
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    req = urllib.request.Request(url, headers=_gh_headers())
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+def _rulesets_update():
+    os.makedirs(RULESET_DIR, exist_ok=True)
+    errs = []
+    with tempfile.TemporaryDirectory(prefix="rs-") as tmp:
+        try:
+            rel = _gh_release_latest("runetfreedom/russia-v2ray-rules-dat")
+            assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+            if "sing-box.zip" not in assets:
+                raise RuntimeError("в релизе нет sing-box.zip")
+            zp = os.path.join(tmp, "sb.zip")
+            _dl(assets["sing-box.zip"], zp)
+            with zipfile.ZipFile(zp) as z:
+                # локальное имя <- участник архива: RU-напрямую = категории RU-сайтов
+                want = {"geoip-ru.srs": "geoip-ru.srs",
+                        "geosite-ru.srs": "geosite-category-ru.srs"}
+                for local, member in want.items():
+                    mem = [m for m in z.namelist() if m.endswith("/" + member)]
+                    if not mem:
+                        raise RuntimeError("в архиве нет " + member)
+                    with z.open(mem[0]) as src, \
+                         open(os.path.join(RULESET_DIR, local), "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+            _RULESET_STATE["tag_ru"] = str(rel.get("tag_name", ""))
+        except Exception as e:
+            errs.append("ru: " + str(e))
+        try:
+            rel = _gh_release_latest("chocolate4u/Iran-sing-box-rules")
+            assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+            for src_name, dst_name in (("geoip.db", "geoip-ir.db"),
+                                       ("geosite.db", "geosite-ir.db")):
+                if src_name not in assets:
+                    raise RuntimeError("в релизе нет " + src_name)
+                p = os.path.join(tmp, src_name)
+                _dl(assets[src_name], p)
+                shf = os.path.join(tmp, src_name + ".sha")
+                _dl(assets[src_name + ".sha256sum"], shf)
+                with open(shf) as f:
+                    expected = f.read().strip().split()[0]
+                if _sha256_file(p).lower() != expected.lower():
+                    raise RuntimeError("sha256 не совпал: " + src_name)
+                shutil.copy2(p, os.path.join(RULESET_DIR, dst_name))
+            _RULESET_STATE["tag_ir"] = str(rel.get("tag_name", ""))
+        except Exception as e:
+            errs.append("ir: " + str(e))
+    _RULESET_STATE["error"] = "; ".join(errs)
+    if not errs:
+        _RULESET_STATE["updated"] = int(time.time())
+    print(("[rulesets] обновлены ru=" + _RULESET_STATE["tag_ru"] +
+           " ir=" + _RULESET_STATE["tag_ir"]) if not errs
+          else "[rulesets] " + _RULESET_STATE["error"], flush=True)
+    return not errs
+
+def _rulesets_loop():
+    time.sleep(20)  # не тормозим старт панели
+    while True:
+        try:
+            _rulesets_update()
+        except Exception as e:
+            _RULESET_STATE["error"] = str(e)
+            print("[rulesets] " + str(e), flush=True)
+        time.sleep(86400)
+
+def _sb_config(st, sub_path, host, panel_port):
+    """Полный standalone-конфиг sing-box для подписчика: tun + all outbounds
+    + split-tunnel RU/IR через rule-sets, раздаваемые панелью. None = нет клиента."""
+    outs = []
+    tags = []
+    split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
+    for proto, inb in (st.get("inbounds") or {}).items():
+        if proto == "amneziawg":
+            continue  # magic-амнезия в sing-box wireguard не импортируется
+        for c in inb.get("clients", []):
+            if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
+                continue
+            try:
+                ob = _singbox_outbound(proto, inb, c, host)
+            except Exception:
+                continue
+            if ob["tag"] in tags:
+                continue
+            # приоритет WG-туннелю: он стабильнее TCP-протоколов на мобильных
+            if proto == "wireguard":
+                outs.insert(0, ob)
+                tags.insert(0, ob["tag"])
+            else:
+                outs.append(ob)
+                tags.append(ob["tag"])
+    if not outs:
+        return None
+    first = outs[0]["tag"]
+    # ru: российские домены/сети — напрямую, остальное через VPN (аналог ru_bypass);
+    # ir: перечисленные сервисы — через VPN, остальное напрямую (bypass-профиль).
+    want = []
+    proxy_matched = False
+    if split == "ru":
+        want = [("geoip-ru.srs", "geoip-ru"), ("geosite-ru.srs", "geosite-ru")]
+    elif split == "ir":
+        want = [("geoip-ir.db", "geoip-ir"), ("geosite-ir.db", "geosite-ir")]
+        proxy_matched = True
+    rule_sets = []
+    for fname, tag in want:
+        if not os.path.exists(os.path.join(RULESET_DIR, fname)):
+            continue
+        rule_sets.append({"tag": tag, "type": "remote", "format": "binary",
+                          "url": f"https://{host}:{panel_port}/rulesets/{fname}",
+                          "download_detour": "direct"})
+    rules = [{"protocol": ["dns"], "outbound": "dns-out"}]
+    final = first
+    if rule_sets:
+        rules.append({"rule_set": [x["tag"] for x in rule_sets],
+                      "outbound": first if proxy_matched else "direct"})
+        if proxy_matched:
+            final = "direct"
+    dns = {"servers": [
+               {"tag": "local-dns", "address": "https://dns.yandex.com/dns-query",
+                "detour": "direct"},
+               {"tag": "remote-dns", "address": "https://dns.google/dns-query",
+                "detour": first}],
+           "final": "remote-dns"}
+    dns_rules = []
+    if split == "ru" and any(x["tag"] == "geosite-ru" for x in rule_sets):
+        dns_rules.append({"rule_set": ["geosite-ru"], "server": "local-dns"})
+    if dns_rules:
+        dns["rules"] = dns_rules
+    return {
+        "log": {"level": "warning"},
+        "dns": dns,
+        "inbounds": [
+            {"type": "tun", "tag": "tun-in", "interface_name": "veiltun",
+             "address": ["172.19.0.1/30"], "auto_route": True,
+             "strict_route": False, "stack": "mixed", "sniff": True},
+            {"type": "mixed", "tag": "http-in", "listen": "127.0.0.1",
+             "listen_port": 2080}],
+        "outbounds": outs + [{"type": "direct", "tag": "direct"},
+                             {"type": "dns", "tag": "dns-out"}],
+        "route": {"rules": rules, "rule_set": rule_sets, "final": final}}
+
+# ---------- P5: Prometheus-экспорт ----------
+
+def _ms_label(s):
+    return re.sub(r'[^A-Za-z0-9_.-]', '_', str(s or ""))[:64]
+
+def _metrics_text():
+    st = _load(STATE) or {}
+    L = []
+    def m(name, value, labels="", help_text=""):
+        if help_text:
+            L.append(f"# HELP {name} {help_text}")
+            L.append(f"# TYPE {name} gauge")
+        lab = ("{" + labels + "}") if labels else ""
+        L.append(f"{name}{lab} {value}")
+    m("veil_panel_up", 1, help_text="Veil panel process alive")
+    m("veil_version_info", 1, f'version="{_ms_label(VERSION)}"', "Panel version")
+    try:
+        r = subprocess.run(["systemctl", "is-active", "xray"],
+                           capture_output=True, text=True, timeout=5)
+        m("veil_xray_active", 1 if r.stdout.strip() == "active" else 0,
+          help_text="systemd xray unit active")
+    except Exception:
+        pass
+    users = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            u = users.setdefault(c["uuid"], c)
+    m("veil_clients_total", len(users), help_text="Unique subscription users")
+    for uid, c in list(users.items())[:500]:
+        lab = (f'email="{_ms_label(c.get("name") or str(uid)[:8])}",'
+               f'uuid="{_ms_label(str(uid)[:8])}"')
+        m("veil_client_used_bytes", _user_traffic(c), lab, "Traffic in current cycle")
+        lim = float(c.get("limit_gb") or 0)
+        m("veil_client_limit_bytes", int(lim * _GB), lab, "Traffic limit (0=unlimited)")
+        m("veil_client_expiry_timestamp", int(c.get("expiry") or 0), lab, "Expiry unix ts")
+        m("veil_client_blocked", 1 if c.get("blocked") else 0, lab, "Blocked by limits")
+        m("veil_client_devices", len(_DEVTRACK.get(uid) or {}), lab, "Active devices (15m)")
+    m("veil_login_fail_ips", sum(1 for v in _LOGIN_FAILS.values() if v),
+      help_text="IPs with recent failed login attempts")
+    m("veil_bans_active", len(BANS), help_text="Active nft bans (veil_bans)")
+    try:
+        du = shutil.disk_usage("/")
+        m("veil_disk_total_bytes", du.total)
+        m("veil_disk_free_bytes", du.free)
+    except Exception:
+        pass
+    try:
+        mi = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                mi[k.strip()] = int(v.split()[0]) * 1024
+        m("veil_mem_total_bytes", mi.get("MemTotal", 0))
+        m("veil_mem_available_bytes", mi.get("MemAvailable", 0))
+    except Exception:
+        pass
+    try:
+        if not _CERT_STATE.get("expire"):
+            try: _cert_status()
+            except Exception: pass
+        exp = _CERT_STATE.get("expire") or 0
+        if exp:
+            m("veil_cert_expire_timestamp", int(exp), help_text="TLS cert expiry")
+            m("veil_cert_days_left", int((exp - time.time()) / 86400))
+    except Exception:
+        pass
+    m("veil_rulesets_updated_timestamp", _RULESET_STATE.get("updated") or 0,
+      help_text="Last successful RU/IR ruleset mirror")
+    m("veil_inbounds_total", len(st.get("inbounds") or {}))
+    return "\n".join(L) + "\n"
 
 # ---------- veil-zapret2 fix ----------
 
@@ -3564,6 +4185,24 @@ def _limits_loop():
         try:
             st = _load(STATE)
             if st:
+                try:
+                    if _traffic_tick(st):
+                        _save(STATE, st)
+                except Exception as e:
+                    print("[traffic] " + str(e), flush=True)
+                try:
+                    if _maybe_traffic_alerts(st):
+                        _save(STATE, st)
+                except Exception as e:
+                    print("[alert] " + str(e), flush=True)
+                try:
+                    _bans_cleanup()
+                except Exception as e:
+                    print("[f2b] " + str(e), flush=True)
+                try:
+                    _device_tick(st)
+                except Exception as e:
+                    print("[devices] " + str(e), flush=True)
                 bl = _autoblock_limits(st)
                 if bl:
                     _save(STATE, st)
@@ -3575,6 +4214,7 @@ def _limits_loop():
                         print("[limits] " + str(e), flush=True)
                     print("[limits] автоблок: " +
                           ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
+                    _notify_blocked(bl)
         except Exception as e:
             print("[limits] " + str(e), flush=True)
         time.sleep(60)
@@ -3610,6 +4250,7 @@ def _bot_poll_loop():
 threading.Thread(target=_ddns_loop, daemon=True).start()
 threading.Thread(target=_limits_loop, daemon=True).start()
 threading.Thread(target=_bot_poll_loop, daemon=True).start()
+threading.Thread(target=_rulesets_loop, daemon=True).start()
 
 def _stats():
     st = _load(STATE) or {}
@@ -3762,7 +4403,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
 
-                tr = _statsquery()
                 links = []
                 seen_uuids = set()
                 found_client = False
@@ -3789,9 +4429,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         key = c["uuid"]
                         if key not in seen_uuids:
                             seen_uuids.add(key)
-                            t = tr.get(key, {})
-                            up += int(t.get("uplink", 0) or 0)
-                            down += int(t.get("downlink", 0) or 0)
+                            up += int(c.get("up") or 0)
+                            down += int(c.get("down") or 0)
                             lim = float(c.get("limit_gb") or 0)
                             if lim > 0:
                                 total = max(total, int(lim * 1024 ** 3))
@@ -3869,6 +4508,59 @@ class H(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"error": str(e)})
 
+
+        if p == "/metrics":
+            # Prometheus-экспорт. Отключён, если токен не задан (503).
+            tok = (CFG_CACHE.get("metrics_token") or "").strip()
+            if not tok:
+                return self._send(503, {"error": "metrics отключены: задайте токен в настройках"})
+            auth = self.headers.get("Authorization", "") or ""
+            qt = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            given = auth[7:].strip() if auth.lower().startswith("bearer ") else \
+                    (qt.get("token") or [""])[0]
+            if not secrets.compare_digest(given or "\x00", tok):
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                body = _metrics_text().encode("utf-8")
+            except Exception as e:
+                return self._send(500, {"error": str(e)})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers(); self.wfile.write(body)
+            return None
+
+        if p.startswith("/rulesets/"):
+            name = os.path.basename(p[len("/rulesets/"):])
+            if name not in _RULESET_FILES:
+                return self._send(404, {"error": "not found"})
+            fp = os.path.join(RULESET_DIR, name)
+            try:
+                with open(fp, "rb") as f:
+                    data = f.read()
+            except OSError:
+                return self._send(404, {"error": "файлы ещё не загружены"})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers(); self.wfile.write(data)
+            return None
+
+        if p.startswith("/sb/"):
+            # Полный standalone-конфиг sing-box (tun + split-tunnel) для подписчика.
+            tok = p[4:].strip("/")
+            if not tok:
+                return self._send(400, {"error": "нужен токен подписки"})
+            st = _load(STATE) or {}
+            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            panel_port = CFG_CACHE.get("panel_port", 8444)
+            cfgj = _sb_config(st, tok, host, panel_port)
+            if cfgj is None:
+                return self._send(404, {"error": "клиент не найден"})
+            return self._send(200, cfgj)
 
         if p.startswith("/p/"):
             # Публичная страница подписки: сюда ведёт profile-web-page-url (кнопка «i»
@@ -4004,7 +4696,6 @@ class H(http.server.BaseHTTPRequestHandler):
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             ipv6 = _my_ipv6()
-            tr = _statsquery()
             out = []
             state_changed = False
             for proto, inb in (st.get("inbounds") or {}).items():
@@ -4014,15 +4705,19 @@ class H(http.server.BaseHTTPRequestHandler):
                         state_changed = True
                     sub_token = c["sub_token"]
                     sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
-                    t = tr.get(c["uuid"], {})
+                    cu = int(c.get("up") or 0); cdn = int(c.get("down") or 0)
                     item = {"uuid": c["uuid"], "name": c["name"],
                             "link": _link(inb, host, c, proto),
                             "sub_token": sub_token,
                             "sub_url": sub_url,
-                            "up": t.get("uplink", 0), "down": t.get("downlink", 0),
+                            "sb_url": f"https://{host}:{panel_port}/sb/{sub_token}",
+                            "up": cu, "down": cdn,
                             "limit_gb": float(c.get("limit_gb") or 0),
                             "expiry": int(c.get("expiry") or 0),
-                            "used_gb": round((t.get("uplink", 0) + t.get("downlink", 0)) / (1024**3), 3),
+                            "reset_cycle": c.get("reset_cycle") or "",
+                            "cycle": c.get("cycle") or "lifetime",
+                            "max_devices": int(c.get("max_devices") or 0),
+                            "used_gb": round((cu + cdn) / (1024**3), 3),
                             "ipv6": ipv6,
                             "proto": proto, "port": inb["port"],
                             "proto_label": _proto_meta(proto)["label"],
@@ -4230,7 +4925,23 @@ class H(http.server.BaseHTTPRequestHandler):
                 "bind": CFG_CACHE.get("panel_bind", ""),
                 "cert_path": CFG_CACHE.get("panel_cert_path", ""),
                 "key_path": CFG_CACHE.get("panel_key_path", ""),
+                "f2b_enabled": bool(CFG_CACHE.get("f2b_enabled", True)),
+                "f2b_threshold": int(CFG_CACHE.get("f2b_threshold") or 5),
+                "f2b_window_min": int(CFG_CACHE.get("f2b_window_min") or 10),
+                "f2b_ban_hours": int(CFG_CACHE.get("f2b_ban_hours") or 24),
+                "metrics_token": CFG_CACHE.get("metrics_token", ""),
+                "split_tunnel": CFG_CACHE.get("split_tunnel", "off"),
+                "rulesets": dict(_RULESET_STATE),
             })
+        if p == "/api/bans":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            now = time.time()
+            out = []
+            for ip, v in sorted(BANS.items(), key=lambda x: -int(x[1].get("until") or 0)):
+                out.append({"ip": ip, "until": int(v.get("until") or 0),
+                            "reason": v.get("reason", ""), "fails": int(v.get("fails") or 0),
+                            "left_min": max(0, int((int(v.get("until") or 0) - now) / 60))})
+            return self._send(200, {"bans": out, "enabled": bool(CFG_CACHE.get("f2b_enabled", True))})
         if p == "/wallpaper":
             if os.path.exists(WALL):
                 t = _load(THEME, {}) or {}
@@ -4539,6 +5250,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 limit_gb = float(b.get("limit_gb") or 0) or None
                 _edays = int(b.get("expiry_days") or 0) or 0
                 expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
+                reset_cycle = (b.get("reset_cycle") or "").strip().lower()
+                try: max_devices = max(0, int(b.get("max_devices") or 0))
+                except Exception: max_devices = 0
 
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
@@ -4552,7 +5266,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not inb:
                         inb = _alloc_inbound(st, target_proto)
                         st.setdefault("inbounds", {})[target_proto] = inb
-                    c = _new_client(name, target_proto, inb, limit_gb=limit_gb, expiry=expiry)
+                    c = _new_client(name, target_proto, inb, limit_gb=limit_gb, expiry=expiry,
+                                    reset_cycle=reset_cycle, max_devices=max_devices)
                     c["uuid"] = client_uuid
                     c["sub_token"] = sub_token
                     inb.setdefault("clients", []).append(c)
@@ -4570,7 +5285,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not inbounds:
                         inbounds["reality"] = _alloc_inbound(st, "reality")
                     for proto, inb in inbounds.items():
-                        c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry)
+                        c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry,
+                                        reset_cycle=reset_cycle, max_devices=max_devices)
                         c["uuid"] = client_uuid
                         c["sub_token"] = sub_token
                         inb.setdefault("clients", []).append(c)
@@ -4628,6 +5344,32 @@ class H(http.server.BaseHTTPRequestHandler):
                 _restart_xray()
                 return self._send(200, {"ok": True})
 
+            if p == "/api/clients/unblock":
+                b = self._body()
+                u = b.get("uuid")
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                group = [c for proto, inb in (st.get("inbounds") or {}).items()
+                         for c in inb.get("clients", []) if c["uuid"] == u]
+                if not group: return self._send(404, {"error": "клиент не найден"})
+                was = any(c.get("blocked") for c in group)
+                by_limit = any(c.get("blocked") and c.get("blocked_reason") == "limit" for c in group)
+                for c in group:
+                    c.pop("blocked", None); c.pop("blocked_reason", None)
+                    if by_limit:
+                        # без обнуления счётчика автоблок вернулся бы через минуту
+                        c["up"] = 0; c["down"] = 0
+                        c["warned_80"] = False
+                if was:
+                    _save(STATE, st)
+                    try:
+                        _awg_sync(st); _wg_sync(st)
+                        _write_xray(st); _restart_xray()
+                    except Exception as e:
+                        return self._send(500, {"error": str(e)})
+                _audit("client_unblock", uuid=u, name=group[0].get("name"))
+                return self._send(200, {"ok": True})
+
             if p == "/api/clients/rename":
                 b = self._body()
                 u = b.get("uuid"); name = (b.get("name") or "").strip()
@@ -4637,6 +5379,57 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not inb: return self._send(404, {"error": "клиент не найден"})
                 c["name"] = name
                 _save(STATE, st)
+                return self._send(200, {"ok": True})
+
+            if p == "/api/clients/update":
+                # Правка лимитов существующего клиента: ГБ, срок (в днях от сейчас),
+                # цикл сброса трафика и лимит устройств. Применяется ко всем записям uuid.
+                b = self._body()
+                u = b.get("uuid")
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                group = [c for proto, inb in (st.get("inbounds") or {}).items()
+                         for c in inb.get("clients", []) if c["uuid"] == u]
+                if not group: return self._send(404, {"error": "клиент не найден"})
+                if "limit_gb" in b:
+                    try: group[0]["limit_gb"] = max(0.0, float(b.get("limit_gb") or 0))
+                    except Exception: return self._send(400, {"error": "limit_gb не число"})
+                    for c in group: c["limit_gb"] = group[0]["limit_gb"]
+                    if float(group[0]["limit_gb"]) > 0:
+                        for c in group: c["warned_80"] = False
+                if "expiry_days" in b:
+                    try: d = max(0, int(b.get("expiry_days") or 0))
+                    except Exception: return self._send(400, {"error": "expiry_days не число"})
+                    group[0]["expiry"] = (int(time.time()) + d * 86400) if d > 0 else 0
+                    for c in group:
+                        c["expiry"] = group[0]["expiry"]; c["warned_days"] = []
+                if "reset_cycle" in b:
+                    rc = (b.get("reset_cycle") or "").strip().lower()
+                    if rc not in ("", "day", "week", "month"):
+                        return self._send(400, {"error": "reset_cycle: day|week|month или ''"})
+                    for c in group: c["reset_cycle"] = rc
+                    # смена цикла обнулит накопанный трафик на следующем тике
+                if "max_devices" in b:
+                    try: md = max(0, int(b.get("max_devices") or 0))
+                    except Exception: return self._send(400, {"error": "max_devices не число"})
+                    for c in group: c["max_devices"] = md
+                if b.get("unblock"):
+                    for c in group:
+                        c.pop("blocked", None); c.pop("blocked_reason", None)
+                _save(STATE, st)
+                if b.get("unblock"):
+                    try:
+                        _awg_sync(st); _wg_sync(st)
+                        _write_xray(st); _restart_xray()
+                    except Exception as e:
+                        return self._send(500, {"error": str(e)})
+                return self._send(200, {"ok": True})
+
+            if p == "/api/bans/unban":
+                b = self._body()
+                ip = (b.get("ip") or "").strip()
+                if not ip: return self._send(400, {"error": "ip не указан"})
+                if not _f2b_unban(ip): return self._send(404, {"error": "такого бана нет"})
                 return self._send(200, {"ok": True})
 
             if p == "/api/favorite":
@@ -5107,7 +5900,37 @@ class H(http.server.BaseHTTPRequestHandler):
                     else:
                         CFG_CACHE.pop("panel_key_path", None)
                     panel_changed = True
-                if xray_changed or panel_changed:
+                f2b_changed = False
+                if "f2b_enabled" in body:
+                    CFG_CACHE["f2b_enabled"] = bool(body["f2b_enabled"])
+                    f2b_changed = True
+                for fk, fmin, fmax in (("f2b_threshold", 1, 1000),
+                                       ("f2b_window_min", 1, 1440),
+                                       ("f2b_ban_hours", 1, 720)):
+                    if fk in body:
+                        try: fv = int(body[fk])
+                        except Exception:
+                            return self._send(400, {"error": fk + ": не число"})
+                        if not (fmin <= fv <= fmax):
+                            return self._send(400, {"error": f"{fk}: диапазон {fmin}..{fmax}"})
+                        CFG_CACHE[fk] = fv
+                        f2b_changed = True
+                if "metrics_token" in body:
+                    mt = (body["metrics_token"] or "").strip()
+                    if mt and not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", mt):
+                        return self._send(400, {"error": "metrics_token: 8-64 символа [A-Za-z0-9_-]"})
+                    if mt:
+                        CFG_CACHE["metrics_token"] = mt
+                    else:
+                        CFG_CACHE.pop("metrics_token", None)
+                    f2b_changed = True
+                if "split_tunnel" in body:
+                    stv = (body["split_tunnel"] or "off").strip().lower()
+                    if stv not in ("off", "ru", "ir"):
+                        return self._send(400, {"error": "split_tunnel: off|ru|ir"})
+                    CFG_CACHE["split_tunnel"] = stv
+                    f2b_changed = True
+                if xray_changed or panel_changed or f2b_changed:
                     _save(CFG, CFG_CACHE)
                 if xray_changed and not panel_changed:
                     try:
@@ -5263,6 +6086,12 @@ if __name__ == "__main__":
     bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
     print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
     _load_sessions()
+    try:
+        _bans_load()
+        _f2b_bootstrap()
+        _ensure_logrotate()
+    except Exception as e:
+        print("f2b init: " + str(e), flush=True)
     try:
         st = _load(STATE)
         xc = _load(XRAY)

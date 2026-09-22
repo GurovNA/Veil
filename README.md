@@ -43,9 +43,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - Public subscription page `/p/<token>`: status, traffic, QR codes, app catalog with deep links, `WireGuard.conf` / `AmneziaWG.conf` downloads
 - `subscription-userinfo` headers (used/left/expiry) with per-client time units
 - Traffic quotas and expiry with automatic blocking; online count and per-client traffic via the Xray Stats API
+- **Traffic reset cycles** (day / week / month / lifetime) with delta-accumulated counters that survive Xray restarts, plus **Telegram alerts** at 80 % of quota, on expiry and on auto-block
+- **Per-client device limit**: active public IPs tracked from the Xray access log; excess devices auto-banned for 2 h via nftables
+- **RU / IR split tunnel** pushed into client configs (direct-to-RU or proxy-only-IR), with the panel mirroring the upstream sing-box geoip/geosite rule sets nightly and serving them from `/rulesets/`
+- Standalone full sing-box config per subscriber at `/sb/<token>` (TUN + mixed port, DNS and split-tunnel rules included)
 
 ### Security
 - 2FA (TOTP), login/password change, brute-force throttling
+- **fail2ban-lite for the panel login**: repeat offenders banned into nftables timeout sets (`veil_bans`), never locking out your own session or private IPs; active-ban list with unban in the UI, bans survive restarts
+- **Prometheus `/metrics`** (Bearer-protected): per-client traffic/limit/expiry/devices, bans, disk/mem, cert expiry and more — one-click token generation in settings
 - Session management: list (IP, user-agent, last seen), revoke one or all others
 - Built-in journals: API action audit and login history in the UI
 - Native ACME client for Let's Encrypt with auto-renewal; dynv6 DDNS with DoH domain verification

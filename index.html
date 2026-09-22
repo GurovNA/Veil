@@ -337,8 +337,38 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
       <input id="newLimit" type=number min=0 step=0.5 placeholder="Лимит, ГБ (пусто = безлимит)" value="">
       <label for="newExpiry">Срок, дней (0=бессрочно)</label>
 <input id=newExpiry type=number min=0 step=1 placeholder="Срок, дней (0=без)" value="0">
+      <label for="newCycle">Сброс трафика</label>
+<select id=newCycle>
+        <option value="">без сброса (за всё время)</option>
+        <option value="day">ежедневно</option>
+        <option value="week">еженедельно</option>
+        <option value="month">ежемесячно</option>
+      </select>
+      <label for="newDevs">Макс. устройств (0=без лимита)</label>
+<input id=newDevs type=number min=0 step=1 value="0">
       <button onclick=doAdd()>Создать</button>
       <div class=msg id=addMsg></div>
+      </div>
+    </div>
+    <div id=editBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Настройки клиента</b><button class=tiny onclick=hideEdit()>Отмена</button></div>
+      <div id=editWho class=muted></div>
+      <label for="editLimit">Лимит, ГБ (0=безлимит)</label>
+      <input id=editLimit type=number min=0 step=0.5>
+      <label for="editExpiry">Срок с сейчас, дней (0=бессрочно)</label>
+      <input id=editExpiry type=number min=0 step=1>
+      <label for="editCycle">Сброс трафика</label>
+      <select id=editCycle>
+        <option value="">без сброса (за всё время)</option>
+        <option value="day">ежедневно</option>
+        <option value="week">еженедельно</option>
+        <option value="month">ежемесячно</option>
+      </select>
+      <label for="editDevs">Макс. устройств (0=без лимита)</label>
+      <input id=editDevs type=number min=0 step=1>
+      <button onclick=doEdit()>Сохранить</button>
+      <div class=msg id=editMsg></div>
       </div>
     </div>
     <div id=renameBox class="dialog hidden">
@@ -586,6 +616,37 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <div style="margin:12px 0">
       <label>Путь к приватному ключу сертификата панели<input id=panelKeyPath type=text placeholder="/path/to/key.pem" style="width:100%;margin-top:4px"></label>
       <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
+    </div>
+    <div style="margin:12px 0">
+      <label for=splitTunnel>Split-tunnel для полных конфигов sing-box (<code>/sb/&lt;токен&gt;</code>)</label>
+      <select id=splitTunnel style="width:100%;margin-top:4px">
+        <option value="off">выключен — весь трафик через VPN</option>
+        <option value="ru">РФ напрямую (geosite/geoip: ru) — для России</option>
+        <option value="ir">Сервисы Ирана через VPN, остальное напрямую</option>
+      </select>
+      <p class=mut style="margin:4px 0 0;font-size:12px">Rule-set'ы зеркалируются с upstream раз в сутки и раздаются панелью из <code>/rulesets/</code>.</p>
+      <p class=mut id=rsState style="margin:4px 0 0;font-size:12px">—</p>
+    </div>
+    <div style="margin:12px 0">
+      <label><input type=checkbox id=f2bEnabled> fail2ban-lite — бан IP в nftables после серии неудачных входов в панель</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;align-items:center">
+        <label>входов<input id=f2bThreshold type=number min=1 max=1000 value=5 style="width:64px;margin-left:4px"></label>
+        <label>окно, мин<input id=f2bWindow type=number min=1 max=1440 value=10 style="width:64px;margin-left:4px"></label>
+        <label>бан, часов<input id=f2bBanHrs type=number min=1 max=720 value=24 style="width:64px;margin-left:4px"></label>
+      </div>
+      <p class=mut style="margin:6px 0 0;font-size:12px">IP с активной сессией панели и локальные адреса не банятся (защита от самоблокировки).</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <button class="tiny sec" onclick=loadBans()>Активные баны</button>
+        <span class=mut id=bansCount style="font-size:12px"></span>
+      </div>
+      <div id=bansList style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div style="margin:12px 0">
+      <label for=metricsToken>Токен Prometheus <code>/metrics</code> (пусто = экспорт выключен)</label>
+      <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+        <input id=metricsToken type=text placeholder="8-64 символа [A-Za-z0-9_-]" style="flex:1;min-width:180px">
+        <button class="tiny sec" onclick=genMetricsToken()>Сгенерировать</button>
+      </div>
     </div>
     <button class=sec onclick=saveNetworkSettings()>Сохранить сетевые настройки</button>
     <div class=msg id=netMsg></div>
@@ -1356,6 +1417,7 @@ function clientCard(c){
         <button class="tiny sec" data-act=v6 title="Скопировать ссылку IPv6" hidden>IPv6</button>
         <button class="tiny sec" data-act=sub title="Личная ссылка подписки клиента">🔗 Подписка</button>
         <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
+        <button class="tiny sec" data-act=edit title="Лимиты, цикл сброса, устройства">⚙️</button>
         ${isWG?'':'<button class="tiny sec" data-act=qr>QR</button>'}
         ${isWG?'<button class="tiny sec" data-act=conf title="Скачать .conf">⬇</button>':''}
         <button class="tiny sec" data-act=copy>Копировать</button>
@@ -1388,6 +1450,7 @@ function clientCard(c){
     downloadConf(c.link,c.name);
   };
   div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
+  div.querySelector('[data-act=edit]').onclick=()=>showEdit(c);
   div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,isWG?'Конфиг скопирован':'Ссылка скопирована');
   div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
   div.querySelector('.traffic').innerHTML=`
@@ -1396,7 +1459,7 @@ function clientCard(c){
     <span class="t-online"><span class=dot></span><span class=t-otxt>офлайн</span></span>
   `;
   const _up=div.querySelector('.t-up b');const _down=div.querySelector('.t-down b');
-  if(c.limit_gb>0||c.expiry||c.blocked){
+  if(c.limit_gb>0||c.expiry||c.blocked||c.reset_cycle||c.max_devices>0){
     const _lr=document.createElement('div');_lr.className='limitrow';
     if(c.blocked)_lr.classList.add('blk');
     if(c.limit_gb>0){
@@ -1415,6 +1478,12 @@ function clientCard(c){
       const _dt=document.createElement('span');_dt.className='limdate'+( _left<=0?' bad':'');
       _dt.textContent='Срок: '+( (c.expiry&&c.expiry>0)? ((_left<=0)?'⛔ истёк':'осталось '+_d+' дн.') : 'бессрочно');
       _lr.appendChild(_dt);
+    }
+    if(c.reset_cycle||c.max_devices>0){
+      const _cy=document.createElement('span');_cy.className='limdate';
+      const _cn={day:'ежедневно',week:'еженедельно',month:'ежемесячно'}[c.reset_cycle]||'';
+      _cy.textContent=[_cn?('Сброс: '+_cn):'',(c.max_devices>0?('Устройств: '+c.max_devices):'')].filter(Boolean).join(' · ');
+      _lr.appendChild(_cy);
     }
     if(c.blocked){
       const _fl=document.createElement('span');_fl.className='limflag';
@@ -2012,7 +2081,9 @@ function showAdd(proto){
     : 'Новый подписчик (все протоколы)';
   showModal('addBox');
 }
-function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';}
+function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';
+  const _l=$('newLimit');if(_l)_l.value='';const _e=$('newExpiry');if(_e)_e.value='0';
+  const _c=$('newCycle');if(_c)_c.value='';const _d=$('newDevs');if(_d)_d.value='0';}
 
 async function doAdd(){
   const name=$('newName').value.trim();
@@ -2026,6 +2097,10 @@ async function doAdd(){
     if(_lg>0)body.limit_gb=_lg;
     const _ed=parseInt($('newExpiry').value,10);
     if(_ed>0)body.expiry_days=_ed;
+    const _cy=$('newCycle').value;
+    if(_cy)body.reset_cycle=_cy;
+    const _dv=parseInt($('newDevs').value,10);
+    if(_dv>0)body.max_devices=_dv;
     await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
     await refresh();
@@ -2033,6 +2108,38 @@ async function doAdd(){
     toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами'),'ok');
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
+  }
+}
+
+let editUuid=null;
+function showEdit(c){
+  editUuid=c.uuid;
+  $('editWho').textContent=(c.name||'')+' · '+(protoLabels[c.proto]||c.proto||'');
+  $('editLimit').value=c.limit_gb||0;
+  $('editExpiry').value=0;
+  $('editCycle').value=c.reset_cycle||'';
+  $('editDevs').value=c.max_devices||0;
+  $('editMsg').textContent='';
+  showModal('editBox');
+}
+function hideEdit(){editUuid=null;hideModal();}
+async function doEdit(){
+  if(!editUuid)return;
+  $('editMsg').textContent='Сохраняю...';$('editMsg').className='msg';
+  try{
+    const body={uuid:editUuid,
+      limit_gb:parseFloat($('editLimit').value)||0,
+      reset_cycle:$('editCycle').value||'',
+      max_devices:parseInt($('editDevs').value,10)||0};
+    const _d=parseInt($('editExpiry').value,10);
+    if(_d>0)body.expiry_days=_d;
+    else if(_d===0&&confirm('Срок: снять ограничение (0=бессрочно)?'))body.expiry_days=0;
+    await api('/api/clients/update',{method:'POST',body:JSON.stringify(body)});
+    hideEdit();
+    await refresh();
+    toast('Настройки сохранены','ok');
+  }catch(e){
+    $('editMsg').textContent=e.message;$('editMsg').className='msg err';
   }
 }
 
@@ -2100,6 +2207,7 @@ function closeModal(){
     const id=o.id;
     hideModal();
     if(id==='addBox')hideAdd();
+    if(id==='editBox')hideEdit();
     if(id==='inbBox')hideInb();
     if(id==='renameBox')hideRename();
     if(id==='tgAddBox')hideTgAdd();
@@ -2959,7 +3067,41 @@ async function loadNetworkSettings(){
     if(r.bind!==undefined)$('panelBind').value=r.bind;
     if(r.cert_path!==undefined)$('panelCertPath').value=r.cert_path;
     if(r.key_path!==undefined)$('panelKeyPath').value=r.key_path;
+    if(r.split_tunnel!==undefined)$('splitTunnel').value=r.split_tunnel;
+    if(r.f2b_enabled!==undefined)$('f2bEnabled').checked=!!r.f2b_enabled;
+    if(r.f2b_threshold)$('f2bThreshold').value=r.f2b_threshold;
+    if(r.f2b_window_min)$('f2bWindow').value=r.f2b_window_min;
+    if(r.f2b_ban_hours)$('f2bBanHrs').value=r.f2b_ban_hours;
+    if(r.metrics_token!==undefined)$('metricsToken').value=r.metrics_token;
+    const rs=r.rulesets||{};
+    let _rs='rule-sets: ';
+    if(rs.updated)_rs+='обновлены '+new Date(rs.updated*1000).toLocaleDateString('ru-RU')+' (ru '+(rs.tag_ru||'?')+', ir '+(rs.tag_ir||'?')+')';
+    else _rs+='ещё не загружены (первая загрузка до ~1 мин после старта)';
+    if(rs.error)_rs+=' · ошибка: '+rs.error;
+    $('rsState').textContent=_rs;
   }catch(e){}
+}
+async function loadBans(){
+  const box=$('bansList'); box.textContent='Загружаю...';
+  try{
+    const r=await api('/api/bans');
+    const b=r.bans||[];
+    $('bansCount').textContent=b.length?('активных: '+b.length):'нет активных банов';
+    box.innerHTML='';
+    b.forEach(x=>{
+      const d=document.createElement('div');d.className='brow';
+      d.style.cssText='display:flex;gap:8px;align-items:center;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(128,128,128,.15)';
+      const s=document.createElement('span');
+      s.textContent=x.ip+' · '+(x.reason||'')+(x.fails?(' ('+x.fails+' входов)'):'')+' · осталось '+x.left_min+' мин';
+      const btn=document.createElement('button');btn.className='tiny sec';btn.textContent='Разбанить';
+      btn.onclick=async()=>{try{await api('/api/bans/unban',{method:'POST',body:JSON.stringify({ip:x.ip})});loadBans();}catch(e){toast(e.message,'err');}};
+      d.appendChild(s);d.appendChild(btn);box.appendChild(d);
+    });
+  }catch(e){box.textContent=e.message;}
+}
+function genMetricsToken(){
+  const a=new Uint8Array(18);crypto.getRandomValues(a);
+  $('metricsToken').value=[...a].map(x=>x.toString(36).padStart(2,'0')).join('').slice(0,24);
 }
 async function saveNetworkSettings(){
   const btn=event.target; btn.disabled=true;
@@ -2970,13 +3112,24 @@ async function saveNetworkSettings(){
       ru_bypass: rb ? rb.checked : false,
       bind: $('panelBind').value.trim(),
       cert_path: $('panelCertPath').value.trim(),
-      key_path: $('panelKeyPath').value.trim()
+      key_path: $('panelKeyPath').value.trim(),
+      split_tunnel: $('splitTunnel').value,
+      f2b_enabled: $('f2bEnabled').checked,
+      f2b_threshold: parseInt($('f2bThreshold').value,10)||5,
+      f2b_window_min: parseInt($('f2bWindow').value,10)||10,
+      f2b_ban_hours: parseInt($('f2bBanHrs').value,10)||24,
+      metrics_token: $('metricsToken').value.trim()
     };
     const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
     if(r.ok){
-      $('netMsg').textContent='Сохранено. Перезапуск панели...'; $('netMsg').className='msg ok';
-      toast('Настройки сохранены','ok');
-      setTimeout(()=>location.reload(),1500);
+      if(r.restarting){
+        $('netMsg').textContent='Сохранено. Перезапуск панели...'; $('netMsg').className='msg ok';
+        setTimeout(()=>location.reload(),1500);
+      }else{
+        $('netMsg').textContent='Сохранено'; $('netMsg').className='msg ok';
+        toast('Настройки сохранены','ok');
+        loadNetworkSettings();
+      }
     }else{
       throw new Error(r.error||'Ошибка');
     }
