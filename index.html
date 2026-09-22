@@ -104,6 +104,7 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .pmenu button{width:100%;background:transparent;border:0;color:var(--fg);text-align:left;padding:9px 10px;border-radius:8px;font-size:13px;cursor:pointer;display:flex;gap:8px;align-items:center}
 .pmenu button:hover{background:color-mix(in srgb,var(--acc) 22%,transparent)}
 
+.client{border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-left:3px solid color-mix(in srgb,var(--gc,var(--g-vless)) 65%,transparent);border-radius:13px;background:color-mix(in srgb,var(--bg) 34%,transparent);padding:12px 14px;transition:border-color .18s,transform .15s,box-shadow .2s}
 .client:hover{border-color:color-mix(in srgb,var(--gc,var(--g-vless)) 60%,transparent);transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.4)}
 .client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .client .name{font-weight:700;font-size:14px;word-break:break-word}
@@ -234,7 +235,161 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
 .lim-date.bad{color:#f77;font-weight:bold}
 .lim-block{font-size:12px;color:#f77;margin:4px 8px;font-weight:bold}
 .limit-row{padding:2px 0 4px}
-</style></head><body><div class=wrap>
+.desSel{display:flex;align-items:center;gap:10px;width:auto;flex:1;min-width:220px;max-width:340px;text-align:left;background:color-mix(in srgb,var(--card2) 45%,transparent);border:1px solid var(--br);color:var(--fg);box-shadow:none;padding:12px;border-radius:14px;font-weight:600}
+.desSel:hover{border-color:color-mix(in srgb,var(--acc) 55%,transparent);transform:none;filter:none}
+.desSel.sel{border-color:var(--acc);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc) 35%,transparent)}
+.desPrev{flex:none;width:48px;height:36px;border-radius:9px;background:var(--pbg);position:relative;overflow:hidden;border:1px solid #ffffff1a}
+.desPrev::before{content:"";position:absolute;left:6px;right:6px;top:15px;height:14px;border-radius:4px;background:var(--pcard);border:1px solid var(--pacc)}
+.desPrev::after{content:"";position:absolute;left:6px;top:6px;width:20px;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--pacc),var(--pacc2))}
+.desSel b{display:block;font-size:13.5px}
+.desSel .mut{font-size:11.5px;line-height:1.3}
+
+/* ===== Новый интерфейс (body.ui-new) ===== */
+body:not(.ui-new) .tabs button[data-tab=dashboard]{display:none}
+body:not(.ui-new) #tab-dashboard{display:none!important}
+body.ui-new{padding:22px 18px 46px}
+body.ui-new .wrap{max-width:1200px}
+body.ui-new #bgFx{opacity:.45}
+body.ui-new #panel{display:grid;grid-template-columns:232px minmax(0,1fr);gap:18px;align-items:start}
+body.ui-new #panel>.sidebar{grid-column:1;grid-row:1;position:sticky;top:22px;display:flex;flex-direction:column;gap:12px;min-height:calc(100vh - 44px);max-height:calc(100vh - 44px);overflow:auto;scrollbar-width:thin}
+body.ui-new .side-status{margin-top:auto;display:flex;align-items:center;gap:9px;padding:11px 14px;border:1px solid var(--br);border-radius:14px;background:var(--bg2,#ffffff08);font-size:12.5px;color:var(--mut)}
+body.ui-new .side-status .ss-cap{font-weight:600;color:var(--fg)}
+body.ui-new .side-status .ss-ver{margin-left:auto;font-family:ui-monospace,monospace;font-size:11px;opacity:.7}
+@media(max-width:900px){body.ui-new .side-status{display:none}}
+body.ui-new #panel>.tab-pane{grid-column:2;min-width:0}
+body.ui-new .hero{margin:0;padding:14px 16px;border-radius:16px}
+body.ui-new .hero .row{margin-bottom:2px;flex-wrap:wrap;gap:6px}
+body.ui-new .hero h1.brand{font-size:20px}
+body.ui-new .hero .subtitle{display:none}
+body.ui-new .hero .status-line{margin-top:8px;flex-wrap:wrap;gap:6px;font-size:13px}
+body.ui-new .hero .xrbtns{margin-left:0;width:100%;display:flex;gap:6px;flex-wrap:wrap}
+body.ui-new .hero .xrbtns button.tiny{margin-left:0}
+body.ui-new nav.tabs{flex-direction:column;align-items:stretch;gap:3px;margin:0;padding:8px;border-radius:16px}
+body.ui-new nav.tabs button{width:100%;flex:none;text-align:left;padding:10px 12px;font-size:13.5px;border-radius:11px}
+body.ui-new .card{border-radius:18px;padding:20px 22px;margin-bottom:16px;box-shadow:0 10px 30px rgba(0,0,0,.32)}
+body.ui-new .card::before{display:none}
+body.ui-new .mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+body.ui-new .mstat{max-width:none}
+/* — виджеты дашборда — */
+body.ui-new .dash-top{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:16px;margin-bottom:16px}
+body.ui-new .dash-mid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:16px;align-items:stretch}
+body.ui-new .dash-bot{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:16px;align-items:stretch}
+body.ui-new .dash-top>.card,body.ui-new .dash-mid>.card,body.ui-new .dash-bot>.card{margin-bottom:0}
+body.ui-new .dash-status{display:flex;align-items:center;gap:14px}
+body.ui-new .dash-status.on{border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+body.ui-new .dash-status.bad{border-color:color-mix(in srgb,var(--err) 45%,transparent)}
+body.ui-new .ds-ico{flex:none;width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;background:color-mix(in srgb,var(--br) 30%,transparent)}
+body.ui-new .dash-status.on .ds-ico{background:color-mix(in srgb,var(--ok) 14%,transparent);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
+body.ui-new .dash-status.bad .ds-ico{background:color-mix(in srgb,var(--err) 14%,transparent);border:1px solid color-mix(in srgb,var(--err) 40%,transparent)}
+body.ui-new .ds-main{font-size:17px;font-weight:800;line-height:1.2}
+body.ui-new .ds-cap{font-size:12px;color:var(--mut);margin-top:3px}
+body.ui-new .kpi-cap{font-size:12px;color:var(--mut);font-weight:600}
+body.ui-new .kpi-val{display:flex;align-items:baseline;gap:8px;margin-top:8px;flex-wrap:wrap}
+body.ui-new .kpi-val b{font-size:26px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+body.ui-new .kpi-tot{font-size:14px;color:var(--mut);font-weight:600}
+body.ui-new .kpi-delta{font-size:11.5px;font-weight:800;padding:2px 9px;border-radius:999px}
+body.ui-new .kpi-delta.up{color:var(--ok);background:color-mix(in srgb,var(--ok) 13%,transparent)}
+body.ui-new .kpi-delta.down{color:var(--err);background:color-mix(in srgb,var(--err) 13%,transparent)}
+body.ui-new .kpi-delta.flat{color:var(--mut);background:color-mix(in srgb,var(--br) 30%,transparent)}
+body.ui-new .kpi-sub{font-size:11.5px;color:var(--mut);margin-top:8px}
+body.ui-new .plist{display:flex;flex-direction:column}
+body.ui-new .prow2{display:flex;align-items:center;gap:11px;padding:9px 2px;border-bottom:1px dashed color-mix(in srgb,var(--br) 55%,transparent);min-width:0}
+body.ui-new .prow2:last-child{border-bottom:0}
+body.ui-new .pico2{flex:none;width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;background:color-mix(in srgb,var(--gc,var(--acc)) 15%,transparent);border:1px solid color-mix(in srgb,var(--gc,var(--acc)) 45%,transparent);color:var(--gc,var(--acc))}
+body.ui-new .pname2{flex:1;min-width:0;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.ui-new .pname2 small{display:block;color:var(--mut);font-weight:400;font-size:11px}
+body.ui-new .pstat2{flex:none;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px}
+body.ui-new .pstat2.on{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
+body.ui-new .pstat2.off{color:var(--err);background:color-mix(in srgb,var(--err) 12%,transparent);border:1px solid color-mix(in srgb,var(--err) 40%,transparent)}
+body.ui-new .rings{display:flex;justify-content:space-around;gap:10px;margin-top:6px}
+body.ui-new .ring{text-align:center}
+body.ui-new .ring .gauge{width:64px;height:64px;margin:0 auto}
+body.ui-new .ring .gauge svg{width:64px;height:64px}
+body.ui-new .ring .gv{font-size:14px}
+body.ui-new .ring-cap{font-size:11.5px;color:var(--mut);margin-top:6px}
+body.ui-new .dash-chart-box{display:flex;gap:8px;align-items:stretch}
+body.ui-new .dash-yaxis{flex:none;width:60px;display:flex;flex-direction:column;justify-content:space-between;font-size:10.5px;color:var(--mut);text-align:right;padding:4px 2px;font-variant-numeric:tabular-nums}
+body.ui-new .dash-chart{flex:1;min-width:0;height:190px;display:block}
+body.ui-new .evts{display:flex;flex-direction:column}
+body.ui-new .evt{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px dashed color-mix(in srgb,var(--br) 55%,transparent);font-size:13px;min-width:0}
+body.ui-new .evt:last-child{border-bottom:0}
+body.ui-new .evt-t{flex:none;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--mut)}
+body.ui-new .evt-d{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.ui-new .evt-ok{flex:none;font-size:12px;font-weight:800}
+body.ui-new .qacts{display:flex;flex-direction:column;gap:8px}
+body.ui-new .qact{display:flex;align-items:center;gap:11px;width:100%;text-align:left;background:color-mix(in srgb,var(--card2) 55%,transparent);border:1px solid color-mix(in srgb,var(--br) 70%,transparent);color:var(--fg);box-shadow:none;padding:11px 14px;border-radius:12px;font-weight:600;font-size:13.5px;margin:0;transition:border-color .15s,background .15s}
+body.ui-new .qact:hover{border-color:color-mix(in srgb,var(--acc) 55%,transparent);background:color-mix(in srgb,var(--acc) 10%,transparent);transform:none;box-shadow:none;filter:none}
+body.ui-new .qact span{font-size:15px;flex:none}
+@media(max-width:1060px){body.ui-new .dash-mid,body.ui-new .dash-bot{grid-template-columns:1fr}}
+.dash-chart-info{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--mut);margin-top:4px}
+/* — полировка новых вкладок на широком экране — */
+body.ui-new #loginCard{max-width:430px;margin:8vh auto 0}
+body.ui-new input:not([type=checkbox]):not([type=color]),body.ui-new select{max-width:560px}
+body.ui-new .card>button:not(.tiny){max-width:560px}
+body.ui-new .card>p.mut{max-width:72ch}
+body.ui-new .sidebar{scrollbar-color:var(--br) transparent}
+body.ui-new table.data th:first-child,body.ui-new table.data td:first-child{padding-left:16px}
+body.ui-new table.data th:last-child,body.ui-new table.data td:last-child{padding-right:16px}
+body.ui-new .card.hero .row{justify-content:flex-start}
+body.ui-new .clients{gap:12px}
+body.ui-new .client{max-width:none}
+/* — секции и ритм — */
+:root{--brd:var(--br)}
+body.ui-new .card h2{font-size:17px;margin:0 0 14px}
+body.ui-new .card h3{font-size:15px;font-weight:700;margin:20px 0 8px}
+body.ui-new .card>.row h3,body.ui-new .card>h3:first-child{margin-top:0}
+body.ui-new .card hr{margin:22px 0;border-top-color:color-mix(in srgb,var(--br) 65%,transparent)}
+body.ui-new .card>p.mut{margin:6px 0 10px}
+/* — детали/спойлеры — */
+body.ui-new details summary{border-radius:12px!important;transition:filter .15s}
+body.ui-new details summary:hover{filter:brightness(1.14)}
+body.ui-new details[open]>summary{margin-bottom:6px}
+/* — инлайн-код — */
+body.ui-new code{background:color-mix(in srgb,var(--bg) 62%,transparent);border:1px solid color-mix(in srgb,var(--br) 55%,transparent);border-radius:6px;padding:1px 6px;font-size:.9em;font-family:ui-monospace,monospace}
+body.ui-new .client code,body.ui-new .pmenu code{padding:9px;border-radius:9px;background:color-mix(in srgb,var(--bg) 72%,transparent);border:1px solid var(--br)}
+/* — сообщения — */
+body.ui-new .msg:not(:empty){padding:9px 13px;border-radius:11px;background:color-mix(in srgb,var(--card2) 42%,transparent);border:1px solid color-mix(in srgb,var(--br) 55%,transparent);font-size:12.5px}
+body.ui-new .msg.err:not(:empty){border-color:color-mix(in srgb,var(--err) 45%,transparent);background:color-mix(in srgb,var(--err) 9%,transparent)}
+body.ui-new .msg.ok:not(:empty){border-color:color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 9%,transparent)}
+/* — таблицы — */
+body.ui-new .sub-pane{border:1px solid color-mix(in srgb,var(--br) 55%,transparent);border-radius:14px;padding:14px;background:color-mix(in srgb,var(--card2) 20%,transparent)}
+body.ui-new .journal-sub-btn{font-weight:600}
+body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
+/* — мобильная раскладка нового UI — */
+@media(max-width:900px){
+ body.ui-new{padding:12px 10px 34px}
+ body.ui-new #panel{display:block}
+ body.ui-new #panel>.sidebar{position:static;max-height:none;min-height:0;overflow:visible;gap:10px}
+ body.ui-new .hero{padding:10px 14px}
+ body.ui-new .hero .row{margin-bottom:0;align-items:center}
+ body.ui-new .hero .status-line{margin-top:6px;font-size:12.5px}
+ body.ui-new .hero .xrbtns{margin-top:8px}
+ body.ui-new nav.tabs{margin-top:0;flex-direction:row;overflow-x:auto;scrollbar-width:none;padding:5px;gap:4px;border-radius:14px}
+ body.ui-new nav.tabs button{width:auto;flex:none;white-space:nowrap;padding:9px 12px;font-size:12.5px}
+ body.ui-new nav.tabs::-webkit-scrollbar{display:none}
+ body.ui-new .side-status{display:none}
+ body.ui-new .card{padding:15px 14px;border-radius:16px;margin-bottom:12px;box-shadow:0 8px 20px rgba(0,0,0,.3)}
+ body.ui-new .card h3{margin:16px 0 6px}
+ body.ui-new .card hr{margin:16px 0}
+ body.ui-new .mini-stats{grid-template-columns:1fr 1fr}
+ body.ui-new .mstat{min-width:0}
+ body.ui-new .dash-top{grid-template-columns:1fr;gap:12px}
+ body.ui-new .dash-mid,body.ui-new .dash-bot{gap:12px}
+ body.ui-new .dash-chart{height:150px}
+ body.ui-new .dash-yaxis{width:46px;font-size:9.5px}
+ body.ui-new .ring .gauge,body.ui-new .ring .gauge svg{width:54px;height:54px}
+ body.ui-new .kpi-val b{font-size:22px}
+ body.ui-new input:not([type=checkbox]):not([type=color]),body.ui-new select{max-width:none}
+ body.ui-new .card>button:not(.tiny),body.ui-new .dialog{max-width:none}
+}
+@media(max-width:420px){
+ body.ui-new .mini-stats{grid-template-columns:1fr}
+ body.ui-new .rings .gv{font-size:12px}
+}
+@media(max-width:520px){
+ #toasts{left:10px;right:10px;max-width:none}
+}
+</style></head><body class="ui-__UI_STYLE__"><div class=wrap>
 <div id=bgFx aria-hidden=true><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 
 <div class=card id=loginCard>
@@ -251,12 +406,72 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
 
 <div id=panel style=display:none>
   <nav class=tabs>
+    <button data-tab=dashboard>📊 Дашборд</button>
     <button data-tab=vpn class=active>🛡 VPN</button>
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
     <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
   </nav>
+
+  <div id=tab-dashboard class="tab-pane">
+    <div class=dash-top>
+      <div class="card dash-status" id=dStatus>
+        <div class=ds-ico>🛡</div>
+        <div style="min-width:0"><div class=ds-main id=dXray>—</div><div class=ds-cap id=dXraySub>состояние Xray</div></div>
+      </div>
+      <div class="card dash-kpi">
+        <div class=kpi-cap>👥 Клиенты онлайн</div>
+        <div class=kpi-val><b id=dOnline>—</b><span class=kpi-tot id=dOnlineTot></span></div>
+        <div class=kpi-sub>из общего числа подписок</div>
+      </div>
+      <div class="card dash-kpi">
+        <div class=kpi-cap>📈 Трафик за сутки</div>
+        <div class=kpi-val><b id=dToday>—</b><span class=kpi-delta id=dTodayDelta></span></div>
+        <div class=kpi-sub id=dTodaySub>неделя: — · месяц: —</div>
+      </div>
+    </div>
+    <div class=dash-mid>
+      <div class=card>
+        <h2>Статус протоколов</h2>
+        <div id=dProtos class=plist><span class=mut>загрузка…</span></div>
+      </div>
+      <div class=card>
+        <h2>Нагрузка сервера</h2>
+        <div class=rings>
+          <div class=ring><div class=gauge><svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-cpu" id=dCpuGauge cx=18 cy=18 r=15.9></circle></svg><div class=gv id=dCpuV>—</div></div><div class=ring-cap>Процессор</div></div>
+          <div class=ring><div class=gauge><svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-mem" id=dRamGauge cx=18 cy=18 r=15.9></circle></svg><div class=gv id=dRamV>—</div></div><div class=ring-cap>Память</div></div>
+          <div class=ring><div class=gauge><svg viewBox="0 0 36 36"><circle class=gbg cx=18 cy=18 r=15.9></circle><circle class="gval g-disk" id=dDiskGauge cx=18 cy=18 r=15.9></circle></svg><div class=gv id=dDiskV>—</div></div><div class=ring-cap>Диск</div></div>
+        </div>
+        <div class=mut id=dLoadLine style="margin-top:12px;font-size:12.5px">Load avg: —</div>
+      </div>
+    </div>
+    <div class=card>
+      <h2>Сетевой трафик<span class=mut style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px;margin-left:6px">за 30 дней</span></h2>
+      <div class=dash-chart-box>
+        <div class=dash-yaxis id=dChartY><span>—</span><span></span><span></span><span>0</span></div>
+        <svg id=dashChart class=dash-chart viewBox="0 0 640 190" preserveAspectRatio=none role=img aria-label="График трафика за 30 дней"></svg>
+      </div>
+      <div class=dash-chart-info><span id=dashChartRange></span><span id=dashChartMax></span></div>
+    </div>
+    <div class=dash-bot>
+      <div class=card>
+        <h2>Последние события</h2>
+        <div id=dEvents class=evts><span class=mut>загрузка…</span></div>
+      </div>
+      <div class=card>
+        <h2>Быстрые действия</h2>
+        <div class=qacts>
+          <button type=button class=qact onclick=quickAddClient()><span>➕</span>Добавить клиента</button>
+          <button type=button class=qact onclick=quickRestartXray()><span>⟳</span>Перезапустить Xray</button>
+          <button type=button class=qact onclick=quickTab('diagnostics')><span>🩺</span>Диагностика сервера</button>
+          <button type=button class=qact onclick=quickTab('journal')><span>📋</span>Журналы и сессии</button>
+          <button type=button class=qact onclick=quickTab('security')><span>🔑</span>Безопасность и баны</button>
+          <button type=button class=qact onclick=quickTab('subscription')><span>🔗</span>Подписки</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id=tab-vpn class="tab-pane active">
     <div class="card hero">
@@ -685,6 +900,21 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
   <div id=tab-appearance class="tab-pane"><div class=card>
     <h2>Оформление</h2>
     <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
+
+    <div style="margin:4px 0 14px">
+      <span class=mut style="display:block;margin-bottom:8px">Интерфейс панели:</span>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type=button class=desSel id=uiStyleNew onclick=setUiStyle('new')>
+          <span class=desPrev style="--pbg:linear-gradient(135deg,#0a122a,#0d1b3a);--pcard:#122043;--pacc:#4f8ef7;--pacc2:#22d3ee"></span>
+          <span><b>Новый</b><span class=mut style="display:block">Боковое меню, дашборд, чистые карточки</span></span>
+        </button>
+        <button type=button class=desSel id=uiStyleClassic onclick=setUiStyle('classic')>
+          <span class=desPrev style="--pbg:linear-gradient(135deg,#0b1023,#0d1230);--pcard:#151c3d;--pacc:#6d5df6;--pacc2:#22d3ee"></span>
+          <span><b>Классический</b><span class=mut style="display:block">Прежний вид с вкладками сверху</span></span>
+        </button>
+      </div>
+      <span class=mut style="display:block;margin-top:6px;font-size:12px">Выбор сохраняется на сервере, страница перезагрузится автоматически.</span>
+    </div>
 
     <div style="margin:4px 0 14px">
       <span class=mut style="display:block;margin-bottom:8px">Дизайн панели:</span>
@@ -2065,6 +2295,7 @@ async function refresh(){
     await loadXrayInfo();
     await loadVersions();
     await loadTheme();
+    if(document.body.classList.contains('ui-new'))loadDashboard();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
       $('loginCard').classList.remove('hidden');
@@ -2890,9 +3121,181 @@ document.querySelectorAll('.tabs button').forEach(b=>{
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
        if(b.dataset.tab==='diagnostics')loadDiagnostics();
+       if(b.dataset.tab==='dashboard')loadDashboard();
 
   });
 });
+
+let dashActiveProto='reality';
+const DASH_EV_LABELS={login:'Вход в панель',login_ok:'Вход выполнен',login_fail:'Неудачный вход',client_unblock:'Разблокировка клиента',device_ban:'Бан устройства',f2b_ban:'Автобан (fail2ban)',f2b_unban:'Разбан IP',session_revoke:'Отзыв сессии',sessions_revoke_others:'Отзыв прочих сессий'};
+function dashEvText(x){
+  let t=DASH_EV_LABELS[x.ev]||x.ev||'Событие';
+  const d=x.name||x.user||x.ip||x.detail||'';
+  return d?t+' · '+d:t;
+}
+function renderDashEvents(a,l){
+  const box=$('dEvents'); if(!box)return;
+  let items=[];
+  if(a&&a.items)items=items.concat(a.items);
+  if(l&&l.items)items=items.concat(l.items);
+  items.sort((x,y)=>String(y.ts||'').localeCompare(String(x.ts||'')));
+  items=items.slice(0,6);
+  if(!items.length){box.innerHTML='<span class=mut>Событий пока нет</span>';return;}
+  box.innerHTML=items.map(x=>{
+    const t=String(x.ts||'').slice(11,16)||'—';
+    const ok=x.ok===false?'<span class="evt-ok" style="color:var(--err)">✗</span>':'<span class="evt-ok" style="color:var(--ok)">✓</span>';
+    return '<div class=evt><span class=evt-t>'+t+'</span><span class=evt-d>'+escapeHtml(dashEvText(x))+'</span>'+ok+'</div>';
+  }).join('');
+}
+const DASH_PROTO_ICONS={reality:'R',vless:'V',vmess:'M',trojan:'T',ss:'S',hy2:'H',wg:'W',awg:'A',amneziawg:'A',mtproto:'MT'};
+function renderDashProtos(list){
+  const box=$('dProtos'); if(!box)return;
+  if(!list.length){box.innerHTML='<span class=mut>Протоколы не настроены</span>';return;}
+  box.innerHTML=list.map(p=>{
+    const sub=[];
+    if(p.port)sub.push('порт '+p.port);
+    if(p.clients)sub.push(p.clients+' кл.');
+    const stat=p.running?'<span class="pstat2 on">Активен</span>':'<span class="pstat2 off">Остановлен</span>';
+    return '<div class="prow2" style="--gc:'+groupColor(p.proto)+'"><div class=pico2>'+(DASH_PROTO_ICONS[p.proto]||'•')+'</div>'+
+      '<div class=pname2>'+escapeHtml(p.label)+(sub.length?'<small>'+escapeHtml(sub.join(' · '))+'</small>':'')+'</div>'+stat+'</div>';
+  }).join('');
+}
+function setDashRing(id,v){
+  v=Math.max(0,Math.min(100,Number(v)||0));
+  const g=$(id+'Gauge'); if(g)g.style.strokeDashoffset=100-v;
+  const t=$(id+'V'); if(t)t.textContent=Math.round(v)+'%';
+}
+function drawDashChart(days){
+  const svg=$('dashChart'); if(!svg)return;
+  const W=640,H=190,P=10;
+  let grid='';
+  for(let g=0;g<=3;g++){const y=P+(H-2*P)*g/3;grid+='<line x1="'+P+'" y1="'+y.toFixed(1)+'" x2="'+(W-P)+'" y2="'+y.toFixed(1)+'" stroke="#ffffff12" stroke-width="1"/>';}
+  const ya=$('dChartY'),rng=$('dashChartRange'),mx=$('dashChartMax');
+  const vals=days.map(x=>x[1]||0), n=vals.length;
+  const max=Math.max.apply(null,vals.concat([0]));
+  if(!n||!max){
+    svg.innerHTML=grid;
+    if(ya)ya.innerHTML='<span>0</span><span></span><span></span><span>0</span>';
+    if(rng)rng.textContent='данных за 30 дней пока нет';
+    if(mx)mx.textContent='';
+    return;
+  }
+  const pts=vals.map((v,i)=>[P+(W-2*P)*(n<2?0.5:i/(n-1)), H-P-(H-2*P)*v/max]);
+  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area=line+' L '+pts[n-1][0].toFixed(1)+' '+(H-P)+' L '+pts[0][0].toFixed(1)+' '+(H-P)+' Z';
+  const dots=pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.4" fill="var(--acc2)"/>').join('');
+  svg.innerHTML='<defs><linearGradient id="dgFill" x1="0" y1="0" x2="0" y2="1">'+
+    '<stop offset="0" stop-color="var(--acc2)" stop-opacity="0.32"/>'+
+    '<stop offset="1" stop-color="var(--acc2)" stop-opacity="0"/></linearGradient></defs>'+
+    grid+'<path d="'+area+'" fill="url(#dgFill)"/>'+
+    '<path d="'+line+'" fill="none" stroke="var(--acc2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'+dots;
+  if(ya)ya.innerHTML='<span>'+fmtBytes(max)+'</span><span>'+fmtBytes(max/2)+'</span><span>'+fmtBytes(max/4)+'</span><span>0</span>';
+  if(rng)rng.textContent=days[0][0]+' — '+days[n-1][0];
+  if(mx)mx.textContent='макс. сутки: '+fmtBytes(max);
+}
+function fmtUptime(s){
+  s=Math.max(0,Math.floor(Number(s)||0));
+  const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  if(d)return d+' дн. '+h+' ч';
+  if(h)return h+' ч '+m+' мин';
+  return m+' мин';
+}
+async function loadDashboard(){
+  try{
+    const [d,m,au,lh]=await Promise.all([
+      api('/api/dashboard').catch(()=>null),
+      api('/api/metrics').catch(()=>null),
+      api('/api/audit?limit=8').catch(()=>null),
+      api('/api/login/history?limit=8').catch(()=>null)
+    ]);
+    if(d){
+      dashActiveProto=d.active||'reality';
+      const ds=$('dStatus'),x=$('dXray'),xs=$('dXraySub');
+      if(ds){ds.classList.toggle('on',!!d.xray);ds.classList.toggle('bad',!d.xray);}
+      if(x)x.textContent=d.xray?'Xray — Онлайн':'Xray — Остановлен';
+      if(xs)xs.textContent=d.xray?('аптайм сервера: '+fmtUptime(d.uptime)):'сервис не отвечает — загляните в диагностику';
+      $('dOnline').textContent=d.online||0;
+      $('dOnlineTot').textContent='/ '+d.clients;
+      $('dToday').textContent=fmtBytes(d.today||0);
+      const dl=$('dTodayDelta');
+      if(dl){
+        if(d.yesterday>0){
+          const pc=Math.round(((d.today-d.yesterday)/d.yesterday)*100);
+          dl.textContent=(pc>0?'+':'')+pc+'%';
+          dl.className='kpi-delta '+(pc>0?'up':(pc<0?'down':'flat'));
+        }else{dl.textContent='';dl.className='kpi-delta';}
+      }
+      $('dTodaySub').textContent='неделя: '+fmtBytes(d.week||0)+' · месяц: '+fmtBytes(d.month||0)+(d.bans?' · банов: '+d.bans:'');
+      renderDashProtos(d.protos||[]);
+      drawDashChart(d.days||[]);
+      const ss=$('sideStatus');
+      if(ss){
+        const dot=ss.querySelector('.dot'); if(dot)dot.className='dot '+(d.xray?'on':'off');
+        const cap=$('ssCap'); if(cap)cap.textContent=d.xray?'Сервер · Онлайн':'Сервер · Офлайн';
+        const ver=$('ssVer'); if(ver)ver.textContent=d.version?('v'+d.version):'';
+      }
+    }
+    if(m){
+      setDashRing('dCpu',m.cpu_percent);
+      setDashRing('dRam',m.ram_percent);
+      setDashRing('dDisk',m.disk_used_percent);
+      const dl2=$('dLoadLine');
+      if(dl2)dl2.textContent='Load avg: '+(m.load1||0)+' · свободно на /: '+(m.disk_free_gb||0)+' ГБ';
+    }
+    renderDashEvents(au,lh);
+  }catch(e){}
+}
+function quickTab(name){
+  const b=document.querySelector('.tabs button[data-tab='+name+']');
+  if(b)b.click();
+}
+function quickAddClient(){
+  quickTab('vpn');
+  setTimeout(()=>{try{showAdd(dashActiveProto);}catch(e){}},150);
+}
+function quickRestartXray(){restartXray();}
+setInterval(function(){
+  if(document.body.classList.contains('ui-new')&&!document.hidden){
+    const b=document.querySelector('.tabs button[data-tab=dashboard]');
+    if(b&&b.classList.contains('active'))loadDashboard();
+  }
+},30000);
+
+async function setUiStyle(v){
+  const btn=$(v==='new'?'uiStyleNew':'uiStyleClassic');
+  if(btn)btn.disabled=true;
+  try{
+    await api('/api/network/settings',{method:'POST',body:JSON.stringify({ui_style:v})});
+    location.reload();
+  }catch(e){
+    if(btn)btn.disabled=false;
+    toast('Не удалось сохранить интерфейс','err');
+  }
+}
+
+(function initUiNew(){
+  const isNew=document.body.classList.contains('ui-new');
+  const sel=$(isNew?'uiStyleNew':'uiStyleClassic');
+  if(sel)sel.classList.add('sel');
+  if(!isNew)return;
+  const panel=$('panel'); if(!panel)return;
+  const hero=panel.querySelector('#tab-vpn .hero');
+  const nav=panel.querySelector('nav.tabs');
+  if(hero&&nav){
+    const sb=document.createElement('div'); sb.className='sidebar';
+    panel.insertBefore(sb,nav);
+    sb.appendChild(hero); sb.appendChild(nav);
+    const ss=document.createElement('div'); ss.className='side-status'; ss.id='sideStatus';
+    ss.innerHTML='<span class="dot on"></span><span class="ss-cap" id="ssCap">Сервер</span><span class="ss-ver" id="ssVer"></span>';
+    sb.appendChild(ss);
+  }
+  document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
+  const db=document.querySelector('.tabs button[data-tab=dashboard]');
+  if(db)db.classList.add('active');
+  const dp=$('tab-dashboard'); if(dp)dp.classList.add('active');
+  loadDashboard();
+})();
 
 function showQR(text, title){
   document.getElementById('qrTitle').textContent = title || 'QR-код';
