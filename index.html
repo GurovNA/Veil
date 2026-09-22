@@ -132,6 +132,18 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .tab-pane{display:none}.tab-pane.active{display:block;animation:fadeIn .25s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .hidden{display:none}
+.sub-pane{display:none;animation:fadeIn .2s ease}
+.sub-pane.active{display:block}
+.journal-sub-btn{background:color-mix(in srgb,var(--card2) 80%,transparent);color:var(--mut);border:1px solid var(--br);padding:6px 14px;font-size:13px;border-radius:10px}
+.journal-sub-btn.active{background:var(--grad);color:#fff;border-color:transparent}
+table.data{width:100%;border-collapse:collapse;font-size:13.5px}
+table.data th,table.data td{padding:10px 12px;text-align:left;border-bottom:1px solid color-mix(in srgb,var(--br) 60%,transparent)}
+table.data th{color:var(--mut);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.4px;background:color-mix(in srgb,var(--card2) 50%,transparent)}
+table.data tr:hover td{background:color-mix(in srgb,var(--fg) 3%,transparent)}
+@media(max-width:640px){
+  table.data th,table.data td{padding:8px 10px;font-size:12px}
+  .sub-pane{overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
 hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);margin:16px 0}
 .bar{background:color-mix(in srgb,var(--br) 42%,transparent);border-radius:999px;height:12px;overflow:hidden;border:1px solid color-mix(in srgb,var(--br) 65%,transparent)}
 .bar-fill{background:var(--grad);height:100%;width:0%;border-radius:999px;transition:width .7s cubic-bezier(.4,0,.2,1);box-shadow:0 0 12px color-mix(in srgb,var(--acc) 50%,transparent)}
@@ -243,7 +255,7 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
-    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button><button data-tab=telegrambot>🤖 Telegram Bot</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
   </nav>
 
   <div id=tab-vpn class="tab-pane active">
@@ -612,6 +624,20 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
   <div id=tab-appearance class="tab-pane"><div class=card>
     <h2>Оформление</h2>
     <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
+
+    <div style="margin:4px 0 14px">
+      <span class=mut style="display:block;margin-bottom:8px">Дизайн панели:</span>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type=button class=desSel onclick=applyThemePreset('Тёмная') id=desCur>
+          <span class=desPrev style="--pbg:linear-gradient(135deg,#0b1023,#0d1230);--pcard:#151c3d;--pacc:#6d5df6;--pacc2:#22d3ee"></span>
+          <span><b>Текущий дизайн</b><span class=mut style="display:block">Глубокая тёмная палитра с градиентными элементами</span></span>
+        </button>
+        <button type=button class=desSel onclick=applyThemePreset('Неон-Глубина') id=desNew>
+          <span class=desPrev style="--pbg:linear-gradient(135deg,#081226,#0a1b2f);--pcard:#0d1f3a;--pacc:#0080f0;--pacc2:#22d3ee"></span>
+          <span><b>Неон-Глубина</b><span class=mut style="display:block">Тёмно-синий неон со стеклянными карточками</span></span>
+        </button>
+      </div>
+    </div>
     
     <div style="margin:12px 0 4px">
       <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
@@ -888,6 +914,75 @@ body.layout-desk .mini-stats .mstat{min-width:150px}
     <div class=msg id=faMsg></div>
   </div></div>
 
+  <div id=tab-journal class="tab-pane"><div class=card>
+    <h2>📋 Журналы безопасности</h2>
+    <p class=mut>Аудит действий и история входов в панель (хранение 7 дней).</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 16px">
+      <button class="tiny journal-sub-btn active" id="jbtn-audit" onclick="jumpTab('audit')">🛡 Аудит</button>
+      <button class="tiny journal-sub-btn" id="jbtn-loginhistory" onclick="jumpTab('loginhistory')">🔐 История входов</button>
+      <button class="tiny journal-sub-btn" id="jbtn-sessions" onclick="jumpTab('sessions')">📱 Сессии</button>
+    </div>
+    
+    <div id=tab-inner-audit class="sub-pane active">
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+        <input id=auditQ placeholder="Фильтр по тексту (ev, ip, user, детали)" style="flex:1;min-width:200px;margin:0">
+        <button class=tiny onclick="auditFetch()">🔍 Применить</button>
+        <button class=tiny onclick="auditFetchPlain()">♻ Последние 50</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table class=data style="width:100%">
+          <thead><tr><th>Время</th><th>Событие</th><th>Кто / IP</th><th>Детали</th></tr></thead>
+          <tbody id=auditRows></tbody>
+        </table>
+      </div>
+      <div class=msg id=auditMsg></div>
+    </div>
+
+    <div id=tab-inner-loginhistory class="sub-pane">
+      <div style="overflow-x:auto">
+        <table class=data style="width:100%">
+          <thead><tr><th>Время</th><th>Статус</th><th>Логин</th><th>IP</th><th>UA</th><th>Причина</th></tr></thead>
+          <tbody id=loginHistRows></tbody>
+        </table>
+      </div>
+      <div class=msg id=loginHistMsg></div>
+    </div>
+
+    <div id=tab-inner-sessions class="sub-pane">
+      <p class=mut style="margin-bottom:10px">Активные сессии входа. Текущая сессия выделена зелёным цветом.</p>
+      <div style="overflow-x:auto">
+        <table class=data style="width:100%">
+          <thead><tr><th>Sid</th><th>IP</th><th>Браузер / UA</th><th>Создана</th><th>Срок / Тип</th><th>Действия</th></tr></thead>
+          <tbody id=sessRows></tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+        <button class="tiny danger" onclick=revokeOthers()>🚪 Завершить все, кроме текущей</button>
+        <button class=tiny onclick=loadSessions()>🔄 Обновить</button>
+      </div>
+      <div class=msg id=sessMsg></div>
+    </div>
+  </div></div>
+
+  <div id=tab-diagnostics class="tab-pane"><div class=card>
+    <h2>🩺 Центр диагностики</h2>
+    <p class=mut>Проверка состояния служб, портов, системных ресурсов и самотестирование.</p>
+    <div style="display:flex;gap:8px;margin:12px 0 16px">
+      <button class=tiny onclick="loadDiagnostics()">🔄 Запросить диагностику</button>
+    </div>
+    <div id=diagResults style="display:flex;flex-direction:column;gap:12px">
+      <div class=stat-tile style="text-align:left;padding:14px">
+        <b>Системные метрики и службы</b>
+        <div id=diagMetrics class=mut style="margin-top:6px">Загрузка данных...</div>
+      </div>
+      <div class=stat-tile style="text-align:left;padding:14px">
+        <b>Тест доступности портов (Selftest)</b>
+        <div id=diagPorts class=mut style="margin-top:6px">Проверка портов...</div>
+      </div>
+    </div>
+    <div class=msg id=diagMsg></div>
+  </div></div>
+
 </div>
 
 </div><script>
@@ -1119,7 +1214,8 @@ const TH_PRESETS={
   'Сакура':          {bg:'1a0f18',bg2:'251424',card:'331c31',card2:'422540',br:'663a63',fg:'ffeefb',mut:'d0a6cc',acc:'ec4899',acc2:'f43f5e'},
   'Матча':           {bg:'0e1612',bg2:'132119',card:'1a2e23',card2:'223d2f',br:'3a664f',fg:'eafff2',mut:'a2d0b8',acc:'059669',acc2:'10b981'},
   'Закат':           {bg:'180f1e',bg2:'24162e',card:'321d40',card2:'422654',br:'643b80',fg:'faeeff',mut:'ccb2e0',acc:'a855f7',acc2:'ec4899'},
-  'Космос':          {bg:'080c14',bg2:'0d1424',card:'131f36',card2:'192a4a',br:'2b4371',fg:'eef4ff',mut:'9db6e8',acc:'3b82f6',acc2:'8b5cf6'},
+   'Космос':          {bg:'080c14',bg2:'0d1424',card:'131f36',card2:'192a4a',br:'2b4371',fg:'eef4ff',mut:'9db6e8',acc:'3b82f6',acc2:'8b5cf6'},
+  'Неон-Глубина':     {bg:'081226',bg2:'0a1b2f',card:'0d1f3a',card2:'102a4d',br:'1d3d68',fg:'f2f7ff',mut:'8ea8cc',acc:'0080f0',acc2:'22d3ee'},
 };
 function applyThemePreset(name){
   const p=TH_PRESETS[name];
@@ -2683,7 +2779,9 @@ document.querySelectorAll('.tabs button').forEach(b=>{
        if(b.dataset.tab==='proxy')loadTgVerInfo();
        if(b.dataset.tab==='security')load2faStatus();
        if(b.dataset.tab==='site')loadMyIps();
-       if(b.dataset.tab==='telegrambot')loadBotConfig();
+        if(b.dataset.tab==='telegrambot')loadBotConfig();
+       if(b.dataset.tab==='journal')loadJournal();
+       if(b.dataset.tab==='diagnostics')loadDiagnostics();
 
   });
 });
@@ -2975,6 +3073,160 @@ function restartPanel(){
 }
 loadNetworkSettings();
 loadTheme();
+
+function jumpTab(name){
+  document.querySelectorAll('.sub-pane').forEach(el => el.classList.remove('active'));
+  const target = $('tab-inner-' + name);
+  if(target) target.classList.add('active');
+  document.querySelectorAll('.journal-sub-btn').forEach(btn => btn.classList.remove('active'));
+  const btn = document.getElementById('jbtn-' + name);
+  if(btn) btn.classList.add('active');
+}
+
+async function loadDiagnostics(){
+  const mBox = $('diagMetrics');
+  const pBox = $('diagPorts');
+  if(mBox) mBox.textContent = 'Загрузка...';
+  if(pBox) pBox.textContent = 'Проверка...';
+  try{
+    const [met, self] = await Promise.all([
+      api('/api/metrics').catch(()=>({})),
+      api('/api/selftest').catch(()=>({}))
+    ]);
+    if(mBox){
+      mBox.innerHTML = `
+        <div style="margin-bottom:6px">🧠 Использование RAM: <b>${met.ram_percent || 0}%</b></div>
+        <div style="margin-bottom:6px">💻 Загрузка CPU: <b>${met.cpu_percent || 0}%</b> (Load Avg: ${met.load1 || 0})</div>
+        <div style="margin-bottom:6px">💽 Диск: <b>${met.disk_used_percent || 0}%</b> (Свободно: ${met.disk_free_gb || 0} GB)</div>
+        <div>🛡 Xray служба: <b style="color:${met.xray_running?'var(--ok)':'var(--err)'}">${met.xray_running?'АКТИВНА':'ОСТАНОВЛЕНА'}</b></div>
+      `;
+    }
+    if(pBox){
+      let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:6px">';
+      for(let [port, info] of Object.entries(self)){
+        if(port === 'ok') continue;
+        const status = typeof info === 'string' ? info : (info.status || '');
+        const label = typeof info === 'object' && info.label ? info.label : '';
+        const ok = status.includes('OK');
+        html += `<div style="background:color-mix(in srgb,var(--card2) 60%,transparent);border:1px solid var(--br);border-radius:10px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center">
+          <div><div style="font-weight:700;font-size:13px">Порт ${port}</div><div class=mut style="font-size:11px">${label}</div></div>
+          <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:${ok?'color-mix(in srgb,var(--ok) 20%,transparent)':'color-mix(in srgb,var(--err) 20%,transparent)'};color:${ok?'var(--ok)':'var(--err)'}">${status}</span>
+        </div>`;
+      }
+      html += '</div>';
+      pBox.innerHTML = html;
+    }
+  }catch(e){
+    if($('diagMsg')) $('diagMsg').textContent = 'Ошибка диагностики: ' + e.message;
+  }
+}
+
+async function auditFetch(){
+  const q=(((auditQ&&auditQ.value)||'')).trim();
+  const rows=$('auditRows');
+  if(!rows)return;
+  try{
+    const ar=await api('/api/audit?limit=100');
+    if(!ar||!ar.ok){if($('auditMsg'))$('auditMsg').textContent=(ar&&ar.error)||'ошибка аудита';return;}
+    const ev_=((location.search.match(/[?&]ev=([^&]+)/)&&decodeURIComponent(RegExp.$1))||'');
+    let items=(ar.items||[]);
+    if(q){const lq=q.toLowerCase();items=items.filter(x=>((x.ev||'')+' '+(x.user||x.ip||'')+' '+(x.detail||'')+' '+(x.ip||'')).toLowerCase().includes(lq));}
+    renderAudit(items,ev_,rows);
+  }catch(e){if($('auditMsg'))$('auditMsg').textContent='Ошибка: '+e.message;}
+}
+async function auditFetchPlain(){
+  const rows=$('auditRows');
+  if(!rows)return;
+  try{
+    const ar=await api('/api/audit?limit=50');
+    if(!ar||!ar.ok){if($('auditMsg'))$('auditMsg').textContent=(ar&&ar.error)||'ошибка аудита';return;}
+    const ev_=((location.search.match(/[?&]ev=([^&]+)/)&&decodeURIComponent(RegExp.$1))||'');
+    renderAudit(ar.items||[],ev_,rows);
+  }catch(e){if($('auditMsg'))$('auditMsg').textContent='Ошибка: '+e.message;}
+}
+async function loadSessions(){
+  const rows=$('sessRows')||$('sessionsListRows');
+  try{
+    const sr=await api('/api/sessions');
+    if(!sr||!sr.ok){if($('sessMsg'))$('sessMsg').textContent=(sr&&sr.error)||'ошибка сессий';return;}
+    renderSessionsList(sr.items||[],rows);
+  }catch(e){if($('sessMsg'))$('sessMsg').textContent='Ошибка: '+e.message;}
+}
+async function revokeOthers(){
+  if(!confirm('Завершить все сессии, кроме текущей?'))return;
+  try{
+    const r=await api('/api/sessions/revoke_others',{method:'POST'});
+    if(r&&r.ok){
+      if(window.toast)toast('Все остальные сессии завершены','ok');
+      loadSessions();
+    }else{
+      if(window.toast)toast(r&&r.error||'ошибка','err');
+    }
+  }catch(e){if(window.toast)toast('Ошибка: '+e.message,'err');}
+}
+async function loadJournal(){
+  const msg=$('journalMsg');
+  const a=$('auditRows');
+  const lh=$('loginHistRows');
+  if(!a||!lh||!a.sub)return;
+  a.classList.remove('hidden');
+  lh.classList.remove('hidden');
+  msg.textContent='';
+  a.innerHTML='';updateJournalTabCounts();
+  try{
+    updateJournalTabCounts();
+    const qs=new URLSearchParams(location.search);
+    const ev_=qs.get('ev')||'';
+
+    const ar=await api('/api/audit?limit=100');
+    const lr=await api('/api/login/history?limit=100');
+    const sr=await api('/api/sessions');
+
+    if(!ar||!ar.ok){msg.textContent=(ar&&ar.error)||'ошибка аудита';return;}
+    if(!lr||!lr.ok){msg.textContent=(lr&&lr.error)||'ошибка истории входов';return;}
+    if(!sr||!sr.ok){msg.textContent=(sr&&sr.error)||'ошибка сессий';return;}
+
+    renderAudit(ar.items||[],ev_,$('auditRows'));
+    renderLoginHist((lr.items||[]).slice().reverse(),$('loginHistRows'));
+    renderSessionsList(sr.items||[],$('sessRows'));
+  }catch(e){msg.textContent='Ошибка: '+e.message;}
+  updateJournalTabCounts();
+}
+function updateJournalTabCounts(){
+  document.querySelectorAll('[data-tab=journal]').forEach(b=>{
+    b.innerHTML=b.innerHTML.replace(/\(\d+\)$/,'');
+  });
+}
+function renderAudit(items,ev_,rows){
+  rows.innerHTML = items.filter(x=>{
+    if(ev_ && x.ev!==ev_) return false;
+    return true;
+  }).map(x=>`<tr><td>${escapeHtml(x.ts||'')}</td><td>${escapeHtml(x.ev||'')}</td><td>${escapeHtml(x.user||x.ip||'')}</td><td>${escapeHtml(x.detail||'')}</td></tr>`).join('')||'<tr><td colspan=4 class=mut>Записей нет</td></tr>';
+}
+function renderLoginHist(items,rows){
+  rows.innerHTML = items.map(x=>`<tr><td>${escapeHtml(x.ts||'')}</td><td>${x.ok?'<span style=color:var(--ok)>✓</span>':'<span style=color:var(--err)>✗</span>'}</td><td>${escapeHtml(x.user||'')}</td><td>${escapeHtml(x.ip||'')}</td><td title="${escapeHtml(x.ua||'')}">${escapeHtml((x.ua||'').slice(0,60))}</td></tr>`).join('')||'<tr><td colspan=5 class=mut>Нет входов</td></tr>';
+}
+function renderSessionsList(items,rows){
+  rows.innerHTML = (items||[]).map(s=>{
+    const cur=s.current?' (текущая)':'';
+    const createdStr = s.created ? new Date(s.created).toLocaleString('ru-RU') : '';
+    const expStr = s.expires ? new Date(s.expires*1000).toLocaleDateString('ru-RU') : '';
+    return `<tr><td style=word-break:break-all>${escapeHtml((s.sid||s.token||'').slice(0,12))}${cur?`<b style=color:var(--ok)>${cur}</b>`:''}</td>`+
+      `<td>${escapeHtml(s.ip||'')}</td>`+
+      `<td title="${escapeHtml(s.ua||'')}">${escapeHtml((s.ua||'').slice(0,50))}</td>`+
+      `<td>${escapeHtml(createdStr)}</td>`+
+      `<td>${s.remember?'да (30д)':'нет'}${expStr?`<br><span style="font-size:11px;color:var(--mut)">до ${expStr}</span>`:''}</td>`+
+      `<td>${s.current?'':`<button class="tiny danger" onclick="revokeSid('${escapeHtml(s.sid||s.token||'')}')">Завершить</button>`}</td></tr>`;
+  }).join('')||'<tr><td colspan=6 class=mut>Сессий нет</td></tr>';
+}
+async function revokeSid(sid){
+  if(!sid||!confirm('Завершить сессию?'))return;
+  const r=await api('/api/sessions/revoke',{method:'POST',body:JSON.stringify({sid})});
+  loadJournal();
+  if(r&&r.ok)toast('Сессия завершена','ok');
+  else toast((r&&r.error)||'Ошибка','err');
+}
+
 </script>
 <div id=qrModal style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:20px;z-index:9999">
   <div style="background:linear-gradient(180deg,color-mix(in srgb,var(--card) 82%,transparent),color-mix(in srgb,var(--card) 55%,transparent));border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-radius:18px;padding:22px;max-width:420px;width:100%;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.5);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)" onclick="event.stopPropagation()">
