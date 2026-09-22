@@ -410,6 +410,9 @@ UNITEOF
   systemctl daemon-reload
   systemctl enable --now vpnpanel
   systemctl restart vpnpanel
+  # telemt кэширует каталог заглушки (/opt/vpnpanel/decoy) при старте:
+  # без перезапуска посетители продолжают видеть старый index.html и не видят новые .nes.
+  systemctl is-active --quiet telemt && systemctl restart telemt
   ok "Переустановка с сохранением данных завершена."
   show_panel_info_internal
   exit 0
