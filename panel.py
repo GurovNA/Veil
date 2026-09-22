@@ -18,7 +18,12 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.4.3"
+VERSION = "2.4.4"
+# 2.4.4: заглушка на 443 полностью переписана — «8BIT HAVEN»: рабочий эмулятор JSNES
+#        (корректный blit кадров, плавающий аудиобуфер, CRT-фильтр), две легально
+#        распространяемые домашние ROM (RoboRun GPL-3.0, Falling MIT) вместо битого
+#        nestest.nes, мультитач-геймпад/клавиатура/Gamepad API и загрузка своих .nes;
+#        install.sh перезапускает telemt после переустановки (telemt кэширует decoy при старте).
 # 2.4.3: исправлен формат wireguard:// ссылок для INCY (publickey/address плейнтекстом,
 #        address без префикса /32, без mtu; secretKey в userinfo остаётся percent-encoded —
 #        Incy декодирует только userinfo); decoy-каталог дополнен jsnes.min.js и nestest.nes.

@@ -51,7 +51,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - Native ACME client for Let's Encrypt with auto-renewal; dynv6 DDNS with DoH domain verification
 
 ### Censorship bypass & Telegram
-- **Zapret2** (DPI bypass) toggled from the panel, Nginx-based web proxy, **decoy site** (bundled NES emulator) for obfuscation
+- **Zapret2** (DPI bypass) toggled from the panel, Nginx-based web proxy, **decoy site** for obfuscation: a self-contained 8-bit NES arcade (JSNES + two homebrew ROMs, gamepad/keyboard/touch, own-ROM loader, no CDN and no outbound requests)
 - **Telegram bot**: create subscriptions with limits, list clients, restart, alerts
 - **telemt**: MTProto proxy with web settings and version switching
 
