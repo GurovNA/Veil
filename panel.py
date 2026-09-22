@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -55,7 +55,8 @@ def get_nodes():
     return []
 
 def save_nodes(nodes):
-    json.dump(nodes, open(NODES_CONFIG_FILE, "w"), indent=2)
+    # содержит токены нод — только 0600
+    _save(NODES_CONFIG_FILE, nodes)
 
 def generate_totp(secret_key, interval=30):
     try:
@@ -2613,14 +2614,348 @@ def _authed(self):
 # ---------- telemt / telegram proxy ----------
 
 
-def verify_api_token(environ):
-    auth_header = environ.get("HTTP_AUTHORIZATION", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        tokens = CFG_CACHE.get("api_tokens", [])
-        if token in tokens:
-            return True
-    return False
+# ---------- node federation: входящий API (/api/ext/*) ----------
+
+_EXT_SCOPES = ("read", "write")
+_EXT_HITS = {}
+_EXT_LOCK = threading.Lock()
+
+def _node_tokens():
+    toks = CFG_CACHE.get("node_tokens")
+    return toks if isinstance(toks, list) else []
+
+def _save_node_tokens(toks):
+    CFG_CACHE["node_tokens"] = toks
+    _save(CFG, CFG_CACHE)
+
+def _ext_rate_ok(ip):
+    now = time.time()
+    with _EXT_LOCK:
+        q = [t for t in (_EXT_HITS.get(ip) or []) if now - t < 10]
+        if len(q) >= 30:
+            _EXT_HITS[ip] = q
+            return False
+        q.append(now)
+        _EXT_HITS[ip] = q
+        if len(_EXT_HITS) > 512:
+            for k in [k for k, v in _EXT_HITS.items() if not v or now - max(v) > 60]:
+                _EXT_HITS.pop(k, None)
+    return True
+
+def _ext_auth(self, need_write=False):
+    """Auth /api/ext/* по Bearer/X-Node-Token. Возвращает dict токена или None (ответ отправлен)."""
+    ip = self.client_address[0] if getattr(self, "client_address", None) else "?"
+    if not _ext_rate_ok(ip):
+        _audit("ext_rate_limit", ip=ip)
+        self._send(429, {"error": "слишком много запросов"})
+        return None
+    auth = self.headers.get("Authorization", "") or ""
+    tok = auth[7:].strip() if auth.startswith("Bearer ") else (self.headers.get("X-Node-Token") or "").strip()
+    if not tok or len(tok) > 128:
+        self._send(401, {"error": "unauthorized"})
+        return None
+    given = hashlib.sha256(tok.encode()).hexdigest()
+    match = None
+    for t in _node_tokens():
+        h = t.get("hash") or ""
+        if isinstance(h, str) and h and secrets.compare_digest(given, h):
+            match = t
+            break
+    if not match:
+        _audit("ext_denied", ip=ip, token_hint=(given[:12] or None))
+        self._send(401, {"error": "unauthorized"})
+        return None
+    if need_write and "write" not in (match.get("scopes") or []):
+        self._send(403, {"error": "токен только для чтения"})
+        return None
+    now = int(time.time())
+    if now - int(match.get("last_used") or 0) > 300:
+        match["last_used"] = now
+        _save_node_tokens(_node_tokens())
+    return match
+
+def _ext_owned_group(st, tid, u):
+    return [c for proto, inb in (st.get("inbounds") or {}).items()
+            for c in inb.get("clients", []) if c.get("uuid") == u and c.get("ext_owner") == tid]
+
+# ---------- node federation: исходящий вызов мастер→нода ----------
+
+def _node_call(node, path, body=None, timeout=8, need_token=True):
+    """HTTPS-запрос к Node API ноды. (data, err, fp): fp — sha256 дерта сертификата.
+    Pin-нинг: если у ноды задан pin, чужой сертификат отсекается до отправки токена."""
+    import http.client
+    host = (node.get("host") or "").strip()
+    port = int(node.get("port") or 8443)
+    if not host:
+        return None, "нода без адреса", ""
+    token = (node.get("token") or "").strip()
+    if need_token and not token:
+        return None, "у ноды не задан токен", ""
+    ctx = ssl._create_unverified_context()
+    conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+    try:
+        conn.connect()
+        der = conn.sock.getpeercert(True)
+        fp = hashlib.sha256(der).hexdigest() if der else ""
+        pin = (node.get("pin") or "").strip().lower()
+        if pin and fp and pin != fp:
+            return None, "сертификат ноды не совпадает с закреплённым отпечатком (возможен MITM)", fp
+        hdrs = {"Authorization": f"Bearer {token}", "User-Agent": f"VeilPanel/{VERSION}"}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            hdrs["Content-Type"] = "application/json"
+        conn.request("POST" if body is not None else "GET", path, body=data, headers=hdrs)
+        r = conn.getresponse()
+        raw = r.read()
+        if r.status >= 400:
+            try:
+                msg = json.loads(raw or b"{}").get("error")
+            except Exception:
+                msg = None
+            return None, (msg or f"HTTP {r.status}"), fp
+        return (json.loads(raw or b"{}"), None, fp)
+    except Exception as e:
+        return None, str(e)[:200], ""
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def _veil_nodes(nodes=None):
+    nodes = nodes if nodes is not None else get_nodes()
+    return [n for n in (nodes or []) if (n.get("type") or "agent") == "veil"]
+
+def _agent_nodes(nodes=None):
+    nodes = nodes if nodes is not None else get_nodes()
+    return [n for n in (nodes or []) if (n.get("type") or "agent") == "agent"]
+
+def _nodes_public():
+    return [{k: v for k, v in n.items() if k != "token"} for n in get_nodes()]
+
+def _node_poll_one(n):
+    """Один опрос ноды (veil или agent): online/pin/кэш статуса. Меняет n на месте."""
+    if (n.get("type") or "agent") == "veil":
+        data, err, fp = _node_call(n, "/api/ext/status")
+        if data is not None:
+            n["online"] = True
+            n["err"] = None
+            n["remote_version"] = data.get("version")
+            n["node_clients"] = data.get("clients")
+            n["node_online"] = data.get("online")
+            n["node_xray"] = data.get("xray")
+            n["status_cache"] = {"inbounds": data.get("inbounds") or [],
+                                 "at": int(time.time())}
+        else:
+            n["online"] = False
+            n["err"] = err
+    else:
+        data, err, fp = _node_call(n, "/agent/status")
+        if data is None:
+            n["online"] = False
+            n["err"] = err
+            n["last_check"] = int(time.time())
+            if fp and not (n.get("pin") or "").strip():
+                n["pin"] = fp
+            return
+        n["online"] = True
+        n["err"] = None
+        n["remote_version"] = data.get("version")
+        n["node_clients"] = data.get("clients")
+        n["node_xray"] = data.get("xray")
+        hd, herr, hfp = _node_call(n, "/agent/hello", need_token=False)
+        if hd and hd.get("public_key"):
+            hd["at"] = int(time.time())
+            n["agent_params"] = hd
+        elif not (n.get("agent_params") or {}):
+            n["err"] = herr or "нода не вернула параметры"
+    if not (n.get("pin") or "").strip() and fp:
+        n["pin"] = fp  # TOFU: фиксируем при первом успешном контакте
+    n["last_check"] = int(time.time())
+
+def _nodes_poll_loop():
+    import traceback
+    while True:
+        try:
+            nodes = get_nodes()
+            if nodes:
+                for n in nodes:
+                    _node_poll_one(n)
+                save_nodes(nodes)
+        except Exception:
+            try:
+                with open(f"{BASE}/logs/panel.err", "a") as f:
+                    f.write("nodes_poll: " + traceback.format_exc() + "\n")
+            except Exception:
+                pass
+        time.sleep(45)
+
+def _node_expiry_days(c):
+    ex = int(c.get("expiry") or 0)
+    if ex <= 0:
+        return 0
+    return max(0, -(-(ex - int(time.time())) // 86400))
+
+def _client_node_entries(st, u):
+    ents = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c.get("uuid") == u:
+                for h, e in (c.get("nodes") or {}).items():
+                    ents[h] = e
+    return ents
+
+def _agent_link(n, ap, u, c0):
+    """vless+reality ссылка на агента-ноду из параметров /agent/hello."""
+    host = (n.get("host") or "").strip()
+    qparts = {"type": "tcp", "security": "reality",
+              "pbk": ap.get("public_key") or "",
+              "fp": ap.get("fp") or "firefox",
+              "sni": ap.get("sni") or "", "sid": ap.get("sid") or "",
+              "spx": "/", "flow": "xtls-rprx-vision"}
+    q = urllib.parse.urlencode(qparts)
+    name = f"{c0.get('name') or 'Veil'} · {n.get('name') or host}"
+    return f"vless://{u}@{host}:{int(ap.get('port') or 443)}?{q}#{urllib.parse.quote(name)}"
+
+def _deploy_client_to_nodes(st, u):
+    """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (deployed, skipped)."""
+    deployed, skipped = [], []
+    recs = [(proto, inb, c) for proto, inb in (st.get("inbounds") or {}).items()
+            for c in inb.get("clients", []) if c.get("uuid") == u]
+    if not recs:
+        return deployed, [{"host": "-", "reason": "клиент не найден"}]
+    proto_local = recs[0][0]
+    c0 = recs[0][2]
+    nodes = get_nodes()
+    for n in nodes:
+        host = (n.get("host") or "").strip()
+        is_agent = (n.get("type") or "agent") == "agent"
+        if not n.get("online"):
+            skipped.append({"host": host, "reason": "офлайн"})
+            continue
+        if any((c.get("nodes") or {}).get(host) for _, _, c in recs):
+            skipped.append({"host": host, "reason": "уже размещён"})
+            continue
+        if is_agent:
+            dep, sk = _deploy_client_to_agent(n, host, recs, proto_local, c0, u)
+        else:
+            dep, sk = _deploy_client_to_veil(n, host, recs, proto_local, c0, u)
+        deployed.extend(dep)
+        skipped.extend(sk)
+    if deployed:
+        _save(STATE, st)
+        save_nodes(nodes)
+    return deployed, skipped
+
+def _deploy_client_to_veil(n, host, recs, proto_local, c0, u):
+    deployed, skipped = [], []
+    sc = n.get("status_cache") or {}
+    inbs = sc.get("inbounds") or []
+    if time.time() - int(sc.get("at") or 0) > 120:
+        data, err, _ = _node_call(n, "/api/ext/inbounds")
+        if data is None:
+            return deployed, [{"host": host, "reason": err or "нет ответа"}]
+        inbs = data.get("inbounds") or []
+        n["status_cache"] = {"inbounds": inbs, "at": int(time.time())}
+    if proto_local not in {i.get("proto") for i in inbs}:
+        return deployed, [{"host": host, "reason": f"на ноде нет входящего {proto_local}"}]
+    body = {"name": c0.get("name") or "Клиент", "proto": proto_local,
+            "limit_gb": float(c0.get("limit_gb") or 0)}
+    ed = _node_expiry_days(c0)
+    if ed:
+        body["expiry_days"] = ed
+    if c0.get("reset_cycle"):
+        body["reset_cycle"] = c0["reset_cycle"]
+    if int(c0.get("max_devices") or 0) > 0:
+        body["max_devices"] = int(c0["max_devices"])
+    data, err, _ = _node_call(n, "/api/ext/clients", body)
+    nc = (data or {}).get("client") or {}
+    if data is None or not nc.get("uuid"):
+        return deployed, [{"host": host, "reason": err or "ошибка ноды"}]
+    for _, _, c in recs:
+        c.setdefault("nodes", {})[host] = {
+            "uuid": nc["uuid"], "proto": nc.get("proto") or proto_local,
+            "link": nc.get("link") or "", "sub_url": nc.get("sub_url") or "",
+            "at": int(time.time())}
+    return [{"host": host, "name": n.get("name") or host}], []
+
+def _deploy_client_to_agent(n, host, recs, proto_local, c0, u):
+    deployed, skipped = [], []
+    if proto_local != "reality":
+        return deployed, [{"host": host, "reason": "агент поддерживает только vless+reality"}]
+    ap = n.get("agent_params") or {}
+    if not ap.get("public_key") or time.time() - int(ap.get("at") or 0) > 900:
+        hd, herr, _ = _node_call(n, "/agent/hello", need_token=False)
+        if hd and hd.get("public_key"):
+            hd["at"] = int(time.time())
+            n["agent_params"] = ap = hd
+        elif not ap.get("public_key"):
+            return deployed, [{"host": host, "reason": herr or "нода не вернула параметры"}]
+    body = {"action": "add", "uuid": u, "name": c0.get("name") or "Клиент",
+            "limit_gb": float(c0.get("limit_gb") or 0)}
+    ed = _node_expiry_days(c0)
+    if ed:
+        body["expiry_days"] = ed
+    if c0.get("reset_cycle"):
+        body["reset_cycle"] = c0["reset_cycle"]
+    data, err, _ = _node_call(n, "/agent/apply", body)
+    if data is None and "уже есть" not in (err or ""):
+        return deployed, [{"host": host, "reason": err or "ошибка ноды"}]
+    link = _agent_link(n, n.get("agent_params") or ap, u, c0)
+    for _, _, c in recs:
+        c.setdefault("nodes", {})[host] = {
+            "uuid": u, "proto": "reality", "link": link, "sub_url": "",
+            "at": int(time.time())}
+    return [{"host": host, "name": n.get("name") or host}], []
+
+def _nodes_by_host():
+    out = {}
+    for n in get_nodes():
+        h = (n.get("host") or "").strip().lower()
+        if h:
+            out[h] = n
+    return out
+
+def _node_apply_remove(n, uuid):
+    if (n.get("type") or "agent") == "agent":
+        _node_call(n, "/agent/apply", {"action": "remove", "uuid": uuid}, timeout=6)
+    else:
+        _node_call(n, "/api/ext/clients/delete", {"uuid": uuid}, timeout=6)
+
+def _undeploy_client_from_nodes(st, u):
+    ents = _client_node_entries(st, u)
+    nodes = _nodes_by_host()
+    for host, e in ents.items():
+        n = nodes.get(host.strip().lower())
+        if n and e.get("uuid"):
+            _node_apply_remove(n, e["uuid"])
+
+def _repropagate_client_to_nodes(st, u):
+    """Синхронизировать лимит/срок клиента на нодах, где он размещён."""
+    ents = _client_node_entries(st, u)
+    if not ents:
+        return
+    recs = [c for proto, inb in (st.get("inbounds") or {}).items()
+            for c in inb.get("clients", []) if c.get("uuid") == u]
+    if not recs:
+        return
+    c0 = recs[0]
+    nodes = _nodes_by_host()
+    for host, e in ents.items():
+        n = nodes.get(host.strip().lower())
+        if not n or not e.get("uuid"):
+            continue
+        if (n.get("type") or "agent") == "agent":
+            _node_call(n, "/agent/apply", {
+                "action": "set_limits", "uuid": e["uuid"],
+                "limit_gb": float(c0.get("limit_gb") or 0),
+                "expiry_days": _node_expiry_days(c0),
+                "reset_cycle": c0.get("reset_cycle") or ""}, timeout=6)
+        else:
+            _node_call(n, "/api/ext/clients/update", {
+                "uuid": e["uuid"], "limit_gb": float(c0.get("limit_gb") or 0),
+                "expiry_days": _node_expiry_days(c0)}, timeout=6)
 
 
 def _tg_api(method, path, body=None):
@@ -4470,6 +4805,160 @@ class H(http.server.BaseHTTPRequestHandler):
     def _is_cur_pw(self, cur):
         return _hash(CFG_CACHE.get("salt", ""), cur) == CFG_CACHE.get("pass_hash")
 
+    # ----.ext: входящий API для внешних панелей/узлов----
+    def _ext_get(self, p):
+        t = _ext_auth(self)
+        if t is None:
+            return
+        st = _load(STATE) or {}
+        inbs = st.get("inbounds") or {}
+        if p == "/api/ext/status":
+            try:
+                with open("/proc/uptime") as f:
+                    uptime = int(float(f.read().split()[0]))
+            except Exception:
+                uptime = 0
+            today_k = time.strftime("%Y-%m-%d")
+            uuids = {c.get("uuid") for inb in inbs.values() for c in inb.get("clients", [])}
+            online = 0
+            for u in uuids:
+                try: online += _online_count(u)
+                except Exception: pass
+            inb_list = [{"proto": proto, "port": inb.get("port"),
+                         "clients": len(inb.get("clients") or [])}
+                        for proto, inb in inbs.items()]
+            return self._send(200, {
+                "version": VERSION, "uptime": uptime,
+                "xray": subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0,
+                "clients": len(uuids), "online": online,
+                "traffic_today": int(_TRAFFIC_DAYS.get(today_k) or 0),
+                "inbounds": inb_list})
+        if p == "/api/ext/inbounds":
+            return self._send(200, {"inbounds": [
+                {"proto": proto, "port": inb.get("port"),
+                 "clients": len(inb.get("clients") or [])}
+                for proto, inb in inbs.items()]})
+        if p == "/api/ext/traffic":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            u = (qs.get("uuid") or [""])[0].strip()
+            out = []
+            for proto, inb in inbs.items():
+                for c in inb.get("clients") or []:
+                    if c.get("ext_owner") != t.get("id"):
+                        continue
+                    if u and c.get("uuid") != u:
+                        continue
+                    try: on = _online_count(c.get("uuid"))
+                    except Exception: on = 0
+                    out.append({"uuid": c.get("uuid"), "name": c.get("name"),
+                                "proto": proto, "up": int(c.get("up") or 0),
+                                "down": int(c.get("down") or 0),
+                                "limit_gb": float(c.get("limit_gb") or 0),
+                                "expiry": int(c.get("expiry") or 0),
+                                "blocked": bool(c.get("blocked")), "online": on})
+            if u and not out:
+                return self._send(404, {"error": "клиент не найден или не принадлежит токену"})
+            return self._send(200, {"clients": out})
+        return self._send(404, {"error": "not found"})
+
+    def _ext_post(self, p):
+        t = _ext_auth(self, need_write=True)
+        if t is None:
+            return
+        try:
+            b = self._body()
+        except Exception:
+            return self._send(400, {"error": "bad json"})
+        tid = t.get("id")
+        if p == "/api/ext/clients":
+            name = (b.get("name") or "").strip() or "Клиент"
+            proto = (b.get("proto") or "").strip()
+            st = _load(STATE) or {}
+            inb = (st.get("inbounds") or {}).get(proto)
+            if not inb:
+                return self._send(400, {"error": "inbound не найден; допустимы только существующие"})
+            limit_gb = float(b.get("limit_gb") or 0) or None
+            try:
+                _edays = int(b.get("expiry_days") or 0)
+            except Exception:
+                return self._send(400, {"error": "expiry_days не число"})
+            expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
+            reset_cycle = (b.get("reset_cycle") or "").strip().lower()
+            try:
+                max_devices = max(0, int(b.get("max_devices") or 0))
+            except Exception:
+                max_devices = 0
+            c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry,
+                            reset_cycle=reset_cycle, max_devices=max_devices)
+            c["ext_owner"] = tid
+            inb.setdefault("clients", []).append(c)
+            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            panel_port = CFG_CACHE.get("panel_port", 8444)
+            _awg_sync(st); _wg_sync(st)
+            _write_xray(st); _save(STATE, st)
+            _restart_xray()
+            link = ""
+            try:
+                link = _link(inb, host, c, proto)
+            except Exception:
+                pass
+            _audit("ext_client_add", uuid=c["uuid"], name=name, proto=proto, token=t.get("label"))
+            return self._send(200, {"client": {
+                "uuid": c["uuid"], "name": name, "proto": proto,
+                "sub_token": c.get("sub_token"),
+                "sub_url": f"https://{host}:{panel_port}/sub/{c.get('sub_token')}",
+                "link": link}})
+        if p == "/api/ext/clients/update":
+            u = (b.get("uuid") or "").strip()
+            st = _load(STATE) or {}
+            group = _ext_owned_group(st, tid, u)
+            if not group:
+                return self._send(404, {"error": "клиент не найден или не принадлежит токену"})
+            if "limit_gb" in b:
+                try: lg = max(0.0, float(b.get("limit_gb") or 0))
+                except Exception: return self._send(400, {"error": "limit_gb не число"})
+                for c in group:
+                    c["limit_gb"] = lg
+                    if lg > 0: c["warned_80"] = False
+            if "expiry_days" in b:
+                try: d = max(0, int(b.get("expiry_days") or 0))
+                except Exception: return self._send(400, {"error": "expiry_days не число"})
+                exp = (int(time.time()) + d * 86400) if d > 0 else 0
+                for c in group:
+                    c["expiry"] = exp; c["warned_days"] = []
+            if "reset_cycle" in b:
+                rc = (b.get("reset_cycle") or "").strip().lower()
+                if rc not in ("", "day", "week", "month"):
+                    return self._send(400, {"error": "reset_cycle: day|week|month или ''"})
+                for c in group: c["reset_cycle"] = rc
+            if "max_devices" in b:
+                try: md = max(0, int(b.get("max_devices") or 0))
+                except Exception: return self._send(400, {"error": "max_devices не число"})
+                for c in group: c["max_devices"] = md
+            _awg_sync(st); _wg_sync(st)
+            _write_xray(st); _save(STATE, st)
+            _restart_xray()
+            _audit("ext_client_update", uuid=u, token=t.get("label"))
+            return self._send(200, {"ok": True})
+        if p == "/api/ext/clients/delete":
+            u = (b.get("uuid") or "").strip()
+            st = _load(STATE) or {}
+            group = _ext_owned_group(st, tid, u)
+            if not group:
+                return self._send(404, {"error": "клиент не найден или не принадлежит токену"})
+            for proto, inb in list((st.get("inbounds") or {}).items()):
+                inb["clients"] = [c for c in inb.get("clients") or []
+                                  if not (c.get("uuid") == u and c.get("ext_owner") == tid)]
+            if st.get("active") not in st.get("inbounds", {}):
+                st["active"] = _proto_of(st)
+            _awg_sync(st); _wg_sync(st)
+            _write_xray(st); _save(STATE, st)
+            _restart_xray()
+            _audit("ext_client_delete", uuid=u, token=t.get("label"))
+            return self._send(200, {"ok": True})
+        return self._send(404, {"error": "not found"})
+
     # ---- GET ----
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
@@ -4499,6 +4988,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 inb_links = {}
                 inc_links = {}
                 sb_objs = {}
+                node_links = {}
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
                         if not c.get("sub_token"):
@@ -4529,6 +5019,10 @@ class H(http.server.BaseHTTPRequestHandler):
                                 sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
                         except Exception:
                             continue
+                        for h, e in (c.get("nodes") or {}).items():
+                            lk = (e or {}).get("link")
+                            if lk:
+                                node_links[h] = lk
 
                 if state_changed:
                     _save(STATE, st)
@@ -4561,6 +5055,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     b = payload.encode("utf-8")
                     ctype = "text/plain; charset=utf-8"
                 else:
+                    # ссылки нод, куда клиент размещён мастером — в общий base64-список
+                    links = links + list(node_links.values())
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
                     # парсеры, спотыкающиеся о [Interface], всё равно импортируют остальное.
                     one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://"))]
@@ -4721,12 +5217,23 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
             return None
 
+        if p.startswith("/api/ext/"):
+            return self._ext_get(p)
         if p == "/api/metrics":
             return self._send(200, get_system_metrics())
         if p == "/api/selftest":
             return self._send(200, run_protocol_self_test())
         if p == "/api/nodes":
-            return self._send(200, get_nodes())
+            if not _authed(self):
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _nodes_public())
+        if p == "/api/nodes/tokens":
+            if not _authed(self):
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {"tokens": [
+                {"id": t.get("id"), "label": t.get("label"), "scopes": t.get("scopes") or [],
+                 "created": t.get("created"), "last_used": t.get("last_used")}
+                for t in _node_tokens()]})
 
         if p == "/test_links.txt":
             try:
@@ -4807,6 +5314,12 @@ class H(http.server.BaseHTTPRequestHandler):
                             "proto": proto, "port": inb["port"],
                             "proto_label": _proto_meta(proto)["label"],
                             "created": c.get("created", 0)}
+                    if c.get("nodes"):
+                        item["nodes"] = c["nodes"]
+                    if c.get("ext_owner"):
+                        item["ext_by"] = next(
+                            (t.get("label") for t in _node_tokens() if t.get("id") == c["ext_owner"]),
+                            "внешняя панель")
                     if ipv6:
                         item["link6"] = _link(inb, f"[{ipv6}]", c, proto)
                     if proto == "wireguard" and c.get("address"):
@@ -5229,7 +5742,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 ma = 2592000 if rem else 259200
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
-            if not _authed(self) and p != "/api/bot/webhook": return self._send(401, {"error": "unauthorized"})
+            if not _authed(self) and p != "/api/bot/webhook" and not p.startswith("/api/ext/"):
+                return self._send(401, {"error": "unauthorized"})
             if p == "/api/bot/webhook":
                 # Telegram webhook endpoint (no auth needed - called by Telegram)
                 if self.command != "POST":
@@ -5359,6 +5873,67 @@ class H(http.server.BaseHTTPRequestHandler):
                                         "sub_token": sub_token, "sub_url": sub_url})
 
             # ---- clients ----
+            if p.startswith("/api/ext/"):
+                return self._ext_post(p)
+            if p == "/api/nodes/tokens/add":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                label = (b.get("label") or "").strip() or "Токен"
+                scopes = [s for s in (b.get("scopes") or []) if s in _EXT_SCOPES]
+                if not scopes:
+                    return self._send(400, {"error": "выбери хотя бы один scope"})
+                toks = _node_tokens()
+                if len(toks) >= 20:
+                    return self._send(400, {"error": "не более 20 токенов"})
+                token = secrets.token_urlsafe(24)
+                tid = uuidlib.uuid4().hex[:12]
+                toks.append({"id": tid, "hash": hashlib.sha256(token.encode()).hexdigest(),
+                             "label": label[:40], "scopes": scopes,
+                             "created": int(time.time()), "last_used": 0})
+                _save_node_tokens(toks)
+                _audit("node_token_add", label=label[:40], scopes=",".join(scopes))
+                return self._send(200, {"id": tid, "token": token, "label": label[:40], "scopes": scopes})
+            if p == "/api/nodes/tokens/revoke":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                tid = (b.get("id") or "").strip()
+                toks = _node_tokens()
+                label = next((t.get("label") for t in toks if t.get("id") == tid), None)
+                out = [t for t in toks if t.get("id") != tid]
+                if len(out) == len(toks):
+                    return self._send(404, {"error": "токен не найден"})
+                _save_node_tokens(out)
+                _audit("node_token_revoke", token_id=tid, label=label)
+                return self._send(200, {"ok": True})
+            if p == "/api/nodes/check":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                host = (b.get("host") or "").strip()
+                nodes = get_nodes()
+                node = next((n for n in nodes
+                             if (n.get("host") or "").strip().lower() == host.lower()), None)
+                if not node:
+                    return self._send(404, {"error": "нода не найдена"})
+                is_agent = (node.get("type") or "agent") == "agent"
+                pinned = bool((node.get("pin") or "").strip())
+                _node_poll_one(node)
+                save_nodes(nodes)
+                if not node.get("online"):
+                    return self._send(200, {"online": False, "error": node.get("err")})
+                status = {"version": node.get("remote_version"),
+                          "clients": node.get("node_clients"),
+                          "xray": node.get("node_xray")}
+                if is_agent:
+                    status["params"] = node.get("agent_params")
+                else:
+                    status["online"] = node.get("node_online")
+                    status["inbounds"] = (node.get("status_cache") or {}).get("inbounds")
+                return self._send(200, {"online": True, "status": status,
+                                        "pin": node.get("pin"),
+                                        "new_pin": (not pinned) and bool(node.get("pin"))})
             if p == "/api/nodes/add":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
@@ -5367,6 +5942,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 host = (b.get("host") or "").strip()
                 port = int((b.get("port") or 0) or 0)
                 token = (b.get("token") or "").strip()
+                ntype = (b.get("type") or "agent").strip().lower()
+                if ntype not in ("agent", "veil"):
+                    return self._send(400, {"error": "type: agent|veil"})
                 if not host:
                     return self._send(400, {"error": "укажи адрес ноды"})
                 if host in ("0.0.0.0", "::", "localhost"):
@@ -5377,10 +5955,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 for n in nodes:
                     if (n.get("host") or "").strip().lower() == host.lower():
                         return self._send(400, {"error": "такая нода уже добавлена"})
-                nodes.append({"name": name, "host": host, "port": port,
+                nodes.append({"name": name, "host": host, "port": port, "type": ntype,
                               "token": token, "online": False, "added": int(time.time())})
                 save_nodes(nodes)
-                return self._send(200, {"ok": True, "nodes": get_nodes()})
+                return self._send(200, {"ok": True, "nodes": _nodes_public()})
             if p == "/api/nodes/delete":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
@@ -5392,7 +5970,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if len(out) == len(nodes):
                     return self._send(404, {"error": "нода не найдена"})
                 save_nodes(out)
-                return self._send(200, {"ok": True, "nodes": get_nodes()})
+                return self._send(200, {"ok": True, "nodes": _nodes_public()})
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"
@@ -5457,11 +6035,63 @@ class H(http.server.BaseHTTPRequestHandler):
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
 
+                nodes_res = None
+                if b.get("to_nodes"):
+                    try:
+                        dep, skip = _deploy_client_to_nodes(st, client_uuid)
+                        nodes_res = {"deployed": dep, "skipped": skip}
+                    except Exception as e:
+                        nodes_res = {"error": str(e)[:120]}
                 sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
                 return self._send(200, {"ok": True, "client": {
                     "uuid": client_uuid, "name": name,
                     "sub_token": sub_token, "sub_url": sub_url,
-                    "link": first_link, "links": added_links}})
+                    "link": first_link, "links": added_links},
+                    "nodes": nodes_res})
+
+            if p == "/api/clients/deploy":
+                b = self._body()
+                u = (b.get("uuid") or "").strip()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                try:
+                    dep, skip = _deploy_client_to_nodes(st, u)
+                except Exception as e:
+                    return self._send(500, {"error": str(e)[:200]})
+                if dep:
+                    _audit("client_deploy", uuid=u, nodes=",".join(d["host"] for d in dep))
+                return self._send(200, {"deployed": dep, "skipped": skip})
+
+            if p == "/api/clients/undeploy":
+                b = self._body()
+                u = (b.get("uuid") or "").strip()
+                host = (b.get("host") or "").strip().lower()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                recs = [c for proto, inb in (st.get("inbounds") or {}).items()
+                        for c in inb.get("clients", []) if c.get("uuid") == u]
+                if not recs: return self._send(404, {"error": "клиент не найден"})
+                ents = _client_node_entries(st, u)
+                e = next((v for k, v in ents.items() if k.strip().lower() == host), None)
+                node = next((n for n in get_nodes()
+                             if (n.get("host") or "").strip().lower() == host), None)
+                if e and e.get("uuid") and node:
+                    if (node.get("type") or "agent") == "agent":
+                        _, err, _ = _node_call(node, "/agent/apply",
+                                               {"action": "remove", "uuid": e["uuid"]})
+                    else:
+                        _, err, _ = _node_call(node, "/api/ext/clients/delete",
+                                               {"uuid": e["uuid"]})
+                    if err and "не найден" not in str(err):
+                        return self._send(502, {"error": "нода не приняла удаление: " + str(err)[:120]})
+                removed = False
+                for c in recs:
+                    for k in [k for k in (c.get("nodes") or {}) if k.strip().lower() == host]:
+                        del c["nodes"][k]; removed = True
+                if removed:
+                    _save(STATE, st)
+                    _audit("client_undeploy", uuid=u, node=host)
+                return self._send(200, {"ok": True})
 
             if p == "/api/clients/delete":
                 b = self._body()
@@ -5471,7 +6101,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "нет клиентов"})
                 if _client_count(st) <= 1:
                     return self._send(400, {"error": "нельзя удалить последнего клиента"})
-                    
+
+                try:
+                    _undeploy_client_from_nodes(st, u)
+                except Exception:
+                    pass
+
                 target_sub_token = None
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
@@ -5574,6 +6209,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     for c in group:
                         c.pop("blocked", None); c.pop("blocked_reason", None)
                 _save(STATE, st)
+                try:
+                    _repropagate_client_to_nodes(st, u)
+                except Exception:
+                    pass
                 if b.get("unblock"):
                     try:
                         _awg_sync(st); _wg_sync(st)
@@ -6286,6 +6925,7 @@ if __name__ == "__main__":
     except Exception as e:
         print("migrate error: " + str(e), flush=True)
     _web_tls_ctx()
+    threading.Thread(target=_nodes_poll_loop, daemon=True).start()
     with S((bind, port), H) as srv:
         srv.serve_forever()
 

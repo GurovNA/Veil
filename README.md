@@ -69,7 +69,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 ### Diagnostics & administration
 - Diagnostics tab: CPU/RAM/load metrics, service and port status, protocol-aware self-test (TCP/UDP), **Globalping** measurements from worldwide probes with Telegram alerts
 - Update center: panel / Xray / telemt with rollback to previous version; state export/import (backup)
-- PWA; themes, wallpapers and logo configurable from the UI; multi-node management (beta)
+- PWA; themes, wallpapers and logo configurable from the UI
+- **Node federation**: accept other Veil panels' clients over a scoped Node API (`/api/ext/*`, rate-limited, audited, revocable tokens) and place your own clients on remote nodes — either a Veil panel or the standalone `agent.py` (vless+reality, traffic accounting, autoblock, same-uuid mirrors added to the subscription; TLS pin TOFU)
 
 ## Documentation
 
