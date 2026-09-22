@@ -18,7 +18,8 @@
 - Лицензия: MIT (полный текст — `LICENSE-FALLING`)
 
 ## JSNES (`jsnes.min.js`)
-- https://github.com/binaryage/jsnes, GNU GPL-3.0. Локальная копия, без CDN-зависимостей.
+- https://github.com/bfirsh/jsnes, Apache License 2.0 (полный текст — `LICENSE-JSNES`).
+  Локальная копия UMD-сборки: страница не зависит от CDN и ничего не загружает извне.
 
 ## «Своя ROM»
 Страница умеет открывать `.nes`-файл, выбранный пользователем: он читается
