@@ -109,6 +109,9 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .client .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .client .name{font-weight:700;font-size:14px;word-break:break-word}
 .client .proto-tag{display:inline-block;color:var(--gc,var(--g-vless));font-size:11px;font-family:ui-monospace,monospace;margin-top:5px;letter-spacing:.2px;border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 45%,transparent);background:color-mix(in srgb,var(--gc,var(--g-vless)) 13%,transparent);padding:1px 8px;border-radius:999px}
+.client .name .nchip{display:inline-block;font-size:10.5px;font-family:ui-monospace,monospace;padding:1px 8px;border-radius:999px;margin-left:6px;vertical-align:1px;border:1px solid var(--br);color:var(--mut);background:color-mix(in srgb,var(--card2) 40%,transparent)}
+.client .name .nchip.ext{color:#f59e0b;border-color:color-mix(in srgb,#f59e0b 45%,transparent);background:color-mix(in srgb,#f59e0b 12%,transparent)}
+.client .name .nchip:not(.ext){cursor:pointer}
 .client .uuid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;word-break:break-all;margin-top:4px;letter-spacing:.2px}
 .client .actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:100%}
 .client .link-row{margin-top:10px}
@@ -561,6 +564,7 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       </select>
       <label for="newDevs">Макс. устройств (0=без лимита)</label>
 <input id=newDevs type=number min=0 step=1 value="0">
+      <label class="fldlbl" style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0" for="newToNodes"><input type=checkbox id=newToNodes> разместить также на Veil-нодах</label>
       <button onclick=doAdd()>Создать</button>
       <div class=msg id=addMsg></div>
       </div>
@@ -1120,44 +1124,37 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       <details style="margin-bottom:16px">
         <summary style="cursor:pointer;font-weight:600;padding:10px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;color:var(--acc)">📘 Инструкция: как добавить ноду (нажмите, чтобы развернуть)</summary>
         <div style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px;line-height:1.8">
-          <h4 style="margin:0 0 8px;color:var(--fg)">📋 Как добавить ноду (пошагово)</h4>
+          <h4 style="margin:0 0 8px;color:var(--fg)">📋 Как подключить удалённую панель Veil как ноду</h4>
           <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
-            <li><b>Подготовь второй сервер.</b> Это должен быть отдельный VPS с этой же панелью (Veil Panel) и включённым HTTPS.</li>
-            <li><b>Узнай его адрес и порт панели.</b> Например: IP <span class="fldlbl">5.23.45.67</span> и порт <span class="fldlbl">8444</span>. Токен — общий секрет, который ты задашь на обеих панелях.</li>
-            <li><b>Заполни форму ниже:</b> имя (как подписать ноду), адрес без порта, порт панели ноды, токен.</li>
-            <li><b>Нажми «Создать».</b> Нода появится в списке; статус «онлайн/офлайн» обновится автоматически.</li>
-            <li><b>Проверка:</b> если у ноды открыта панель и указаны верные порт и токен — она станет «онлайн». Удаляется кнопкой «Удалить» в карточке.</li>
+            <li><b>На той (удалённой) панели</b> открой «Ноды → Node API» и создай токен со scope <b>чтение + запись</b> — он показывается один раз.</li>
+            <li><b>Здесь:</b> «+ Добавить ноду», тип «Панель Veil», адрес и порт её панели (например 5.23.45.67 : 8443) и этот токен.</li>
+            <li><b>«Проверить»</b> — панель запросит статус ноды по защищённому API; при успехе нода станет «🟢 онлайн», а её сертификат будет закреплён по отпечатку. Статус обновляется автоматически каждые 45 секунд.</li>
+            <li>Чтобы <b>этот сервер</b> был доступен чужим панелям — создай токен в «Node API» ниже и передай его той панели. Её клиенты разместятся в существующих входящих этого сервера и будут помечены как внешние (🌐).</li>
+            <li><b>Разместить своего клиента на ноде:</b> в карточке клиента кнопка «🖥» (или галочка при создании). На ноде создаётся его зеркало, а в личную подписку клиента добавляется ссылка на ноду — клиент сам выберет сервер. Снять — кликом по бейджу «🖥 host».</li>
+            <li>Лимиты и срок при правке клиента прокидываются на ноды автоматически; при удалении клиента его зеркала снимаются с нод.</li>
           </ol>
           
-          <hr style="margin:16px 0;border-color:var(--br)">
-          
-          <h4 style="margin:0 0 8px;color:var(--fg)">🔐 Генерация токена (секрета)</h4>
-          <p style="margin:0 0 8px">Токен — это общий секрет для связи двух панелей. Его можно сгенерировать автоматически:</p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
-            <button class="sec" onclick="generateNodeToken()">🔐 Сгенерировать секрет</button>
-            <button class="sec" onclick="copyNodeToken()" style="display:none" id="copyNodeTokenBtn">📋 Скопировать</button>
-          </div>
-          <input id="nodeTokenDisplay" type="text" readonly style="width:100%;font-family:monospace;font-size:13px;padding:8px;background:var(--bg2);border:1px solid var(--br);border-radius:6px;margin-bottom:8px" placeholder="Нажмите «Сгенерировать секрет»">
-          
-          <hr style="margin:16px 0;border-color:var(--br)">
-          
-          <h4 style="margin:0 0 8px;color:var(--fg)">📖 Как пользоваться после добавления ноды</h4>
-          <p style="margin:0 0 8px">После того как нода добавлена и статус «🟢 онлайн»:</p>
-          <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
-            <li>На ноде автоматически создадутся те же входящие соединения (протоколы), что и на главном сервере.</li>
-            <li>Клиенты, добавленные на главном сервере, автоматически получат доступ к новой ноде через единую подписку.</li>
-            <li>В подписке пользователя появятся ссылки на обе ноды — клиент сам выберет лучшую.</li>
-            <li>Статус ноды обновляется каждые 30 секунд. Если нода «🔴 офлайн» — проверьте, что на ней запущена панель и открыт порт.</li>
-            <li>Управление клиентами (добавление/удаление/лимиты) делается только на главном сервере — изменения синхронизируются автоматически.</li>
-          </ol>
-          
-          <p style="margin:8px 0 0;font-size:12px;color:var(--mut)">💡 Подсказка: одна панель = одна нода. Для нескольких серверов добавьте каждую в список.</p>
+          <p style="margin:8px 0 0;font-size:12px;color:var(--mut)">💡 <b>Режим агента (agent.py):</b> если на сервере нет панели Veil — скопируй туда <code>agent.py</code>, запусти <code>python3 agent.py</code> (нужны xray и openssl), возьми токен командой <code>python3 agent.py --token</code> и добавь ноду с типом «Агент». Агент сам поднимет vless+reality на своём порту, ведёт учёт трафика и автоблокировку; клиент на него размещается той же кнопкой «🖥». Токен можно отозвать в любой момент — доступ прекращается немедленно.</p>
         </div>
 </details>
       <div style="margin-top:10px">
         <button class="sec" onclick="showAddNode()">+ Добавить ноду</button>
         <div id="nodeList"></div>
       </div>
+      <hr>
+      <h3>Node API (входящие подключения)</h3>
+      <p class=mut>Токены для других панелей Veil: они смогут размещать и вести <b>своих</b> клиентов на этом сервере (в существующих входящих). Токен показывается один раз при создании и отзывается в любой момент.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <input id=ntLabel placeholder="Название токена (например: панель Казань)" maxlength=40 style="flex:1;min-width:180px">
+        <label class=mut style="display:flex;align-items:center;gap:5px"><input type=checkbox id=ntRead checked> чтение</label>
+        <label class=mut style="display:flex;align-items:center;gap:5px"><input type=checkbox id=ntWrite> запись</label>
+        <button class=sec onclick=doAddNodeToken()>Создать токен</button>
+      </div>
+      <div id=ntNewBox style="display:none;margin:8px 0;padding:12px;border:1px solid var(--br);border-radius:12px;background:color-mix(in srgb,var(--card2) 50%,transparent)">
+        <p style="margin:0 0 6px;color:#f59e0b;font-weight:600">Скопируй токен сейчас — потом он не показывается:</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><input id=ntNewVal readonly style="flex:1;min-width:220px;font-family:monospace"><button class=tiny onclick=copyNewNodeToken()>Копировать</button></div>
+      </div>
+      <div id=ntList class=mut>Загружаю…</div>
     </div>
   </div>
 
@@ -1165,6 +1162,12 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       <div id=nodeAddBox class="dialog hidden">
         <div class=dcard>
           <div class=row><b id=nodeAddTitle>Добавить ноду</b><button class=tiny onclick=hideAddNode()>Отмена</button></div>
+          <label class=fldlbl for=nodeType>Тип ноды</label>
+          <select id=nodeType onchange="var pp=$('nodePort'); if(pp){pp.value=this.value==='agent'?'9444':'8444';}">
+            <option value=veil>Панель Veil (Node API — приём клиентов и статус)</option>
+            <option value=agent>Агент agent.py (порт API 9444)</option>
+          </select>
+          <label class=fldlbl for=nodeName>Имя ноды</label>
           <input id=nodeName placeholder="Имя (например: Москва-2)" maxlength=32>
           <label class=fldlbl for=nodeHost>Адрес ноды (IP или домен, без порта)</label>
           <input id=nodeHost placeholder="Например: 5.23.45.67" maxlength=200>
@@ -1397,26 +1400,6 @@ function showAddNode(){
   showModal('nodeAddBox');
 }
 function hideAddNode(){hideModal();}
-async function doAddNode(){
-  b={
-    name: $('nodeName').value.trim(),
-    host: $('nodeHost').value.trim(),
-    port: parseInt($('nodePort').value,10),
-    token: $('nodeToken').value.trim()
-  };
-  if(!b.host){$('nodeAddMsg').textContent='Введи адрес ноды';$('nodeAddMsg').className='msg err';return;}
-  if(!(b.port>=1&&b.port<=65535)){$('nodeAddMsg').textContent='Порт от 1 до 65535';$('nodeAddMsg').className='msg err';return;}
-  if(!b.token){$('nodeAddMsg').textContent='Введи токен ноды';$('nodeAddMsg').className='msg err';return;}
-  $('nodeAddMsg').textContent='Добавляю...';$('nodeAddMsg').className='msg';
-  try{
-    await api('/api/nodes/add',{method:'POST',body:JSON.stringify(b)});
-    hideAddNode();
-    await renderNodes();
-  }catch(e){
-    $('nodeAddMsg').textContent=(e&&e.message)||'Ошибка добавления';
-    $('nodeAddMsg').className='msg err';
-  }
-}
 async function delNode(host){
   if(!confirm('Удалить ноду '+host+'?'))return;
   try{
@@ -1426,49 +1409,53 @@ async function delNode(host){
     alert((e&&e.message)||'Ошибка удаления');
   }
 }
-
-function showAddNode(){ setMsg('nodeAddMsg',''); showModal('nodeAddBox'); }
-function hideAddNode(){ hideModal(); }
 async function doAddNode(){
   const name=$('nodeName').value.trim();
   const host=$('nodeHost').value.trim().replace(/^https?:\/\//,'').replace(/\/.*$/,'');
   const port=parseInt($('nodePort').value,10);
   const token=$('nodeToken').value.trim();
+  const type=($('nodeType')||{}).value||'veil';
   const msg=$('nodeAddMsg');
   if(!host){ msg.textContent='введи адрес ноды'; msg.className='msg err'; return; }
   if(!(port>=1&&port<=65535)){ msg.textContent='порт от 1 до 65535'; msg.className='msg err'; return; }
+  if(!token){ msg.textContent='введи токен '+(type==='veil'?'Node API (создай его на ноде)':'агента (agent.py --token на ноде)'); msg.className='msg err'; return; }
   msg.textContent='добавляю...'; msg.className='msg';
   try{
-    await api('/api/nodes/add',{method:'POST',body:JSON.stringify({name,host,port,token})});
+    await api('/api/nodes/add',{method:'POST',body:JSON.stringify({name,host,port,token,type})});
     hideAddNode();
+    try{ await api('/api/nodes/check',{method:'POST',body:JSON.stringify({host})}); }catch(e){}
     await renderNodes();
+    toast('Нода добавлена','ok');
   }catch(e){ msg.textContent=(e&&e.message)||'ошибка'; msg.className='msg err'; }
 }
-async function delNode(host){
-  if(!confirm('Удалить ноду '+host+'?')) return;
+async function checkNode(host){
+  toast('Проверяю связь с нодой…');
   try{
-    await api('/api/nodes/delete',{method:'POST',body:JSON.stringify({host})});
+    const d=await api('/api/nodes/check',{method:'POST',body:JSON.stringify({host})});
     await renderNodes();
-  }catch(e){ alert((e&&e.message)||'ошибка'); }
+    if(d.online) toast('Нода '+host+' на связи'+(d.status&&d.status.version?(' (v'+d.status.version+')'):''),'ok');
+    else toast('Нода не отвечает: '+(d.error||'ошибка'),'err');
+  }catch(e){ toast((e&&e.message)||'ошибка','err'); }
 }
-async function generateNodeToken(){
-  const arr = new Uint8Array(16);
-  crypto.getRandomValues(arr);
-  const token = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
-  document.getElementById('nodeTokenDisplay').value = token;
-  document.getElementById('nodeToken').value = token;
-  document.getElementById('copyNodeTokenBtn').style.display = 'inline-block';
-  toast('Секрет сгенерирован','ok');
+async function doDeploy(c){
+  toast('Размещаю на нодах…');
+  try{
+    const d=await api('/api/clients/deploy',{method:'POST',body:JSON.stringify({uuid:c.uuid})});
+    await refresh();
+    const dep=d.deployed||[],sk=d.skipped||[];
+    if(dep.length) toast('Размещён на: '+dep.map(x=>x.name||x.host).join(', ')+(sk.length?(' · пропущено: '+sk.length):''),'ok');
+    else toast('Не размещено ни на одной ноде'+(sk.length?(': '+(sk[0].reason||'')) : ' — добавь ноду во вкладке «Ноды»'),'err');
+  }catch(e){ toast((e&&e.message)||'ошибка','err'); }
 }
-
-function copyNodeToken(){
-  const input = document.getElementById('nodeTokenDisplay');
-  if(!input.value) return;
-  navigator.clipboard.writeText(input.value).then(()=>{
-    toast('Секрет скопирован в буфер обмена','ok');
-  });
+async function doUndeploy(c,host){
+  if(!confirm('Снять клиента «'+c.name+'» с ноды '+host+'? На ноде будет удалён его зеркальный клиент.'))return;
+  try{
+    await api('/api/clients/undeploy',{method:'POST',body:JSON.stringify({uuid:c.uuid,host})});
+    await refresh();
+    toast('Снят с ноды '+host,'ok');
+  }catch(e){ toast((e&&e.message)||'ошибка','err'); }
 }
-
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 async function renderNodes(){
   const box = document.getElementById('nodeList') || document.querySelector('#tab-nodes .card');
   if(!box) return;
@@ -1481,14 +1468,62 @@ async function renderNodes(){
       return;
     }
     box.innerHTML = nodes.map(n=>
-      '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
-      '<div><strong>' + (n.name||'Нода') + '</strong>' +
-      '<div class=mut>' + (n.host||'') + ':' + (n.port||'') + '</div></div>' +
-      '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span>' + '<button class=tiny onclick="delNode(\'' + (n.host||'') + '\')">Удалить</button></div>'
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
+      '<div><strong>' + escapeHtml(n.name||'Нода') + '</strong> ' +
+      '<span class=mut style="font-size:11px;border:1px solid var(--brd);border-radius:6px;padding:1px 6px">' + ((n.type||'agent')==='veil'?'панель Veil':'агент') + '</span>' +
+      '<div class=mut>' + escapeHtml(n.host||'') + ':' + (n.port||'') +
+      (n.remote_version ? (' · '+((n.type||'agent')==='veil'?'Veil ':'агент ')+escapeHtml(n.remote_version)) : '') +
+      (typeof n.node_clients==='number' ? (' · клиентов на ноде: '+n.node_clients) : '') + '</div>' +
+      '<div class=mut style="font-size:11px;opacity:.75">отпечаток: '+escapeHtml((n.pin||'не закреплён').slice(0,16))+(n.err?(' · '+escapeHtml(String(n.err).slice(0,60))):'')+'</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px">' +
+      '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span>' +
+      '<button class=tiny onclick="checkNode(\''+escapeHtml(n.host||'')+'\')">Проверить</button>' +
+      '<button class=tiny onclick="delNode(\'' + escapeHtml(n.host||'') + '\')">Удалить</button></div></div>'
     ).join('');
   }catch(e){
     box.innerHTML = '<p class=mut>Ноды не добавлены — пока сервер работает в одностерверном режиме.</p>';
   }
+}
+
+async function loadNodeTokens(){
+  const box=$('ntList'); if(!box) return;
+  try{
+    const d=await api('/api/nodes/tokens');
+    const toks=d.tokens||[];
+    if(!toks.length){ box.innerHTML='<p class=mut>Токенов нет. Создай токен и передай его админу удалённой панели — она сможет размещать своих клиентов на этом сервере.</p>'; return; }
+    box.innerHTML = toks.map(t=>
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
+      '<div><strong>'+esc(t.label)+'</strong> <span class=mut style="font-size:11px">'+(t.scopes||[]).map(s=>s==='write'?'запись':'чтение').join(' + ')+'</span>' +
+      '<div class=mut style="font-size:11.5px">id '+esc(t.id)+' · создан '+new Date((t.created||0)*1000).toLocaleDateString()+(t.last_used?(' · использован '+new Date(t.last_used*1000).toLocaleString()):' · ещё не использовался')+'</div></div>' +
+      '<button class=tiny onclick="doRevokeNodeToken(\''+esc(t.id)+'\',\''+esc(t.label)+'\')">Отозвать</button></div>'
+    ).join('');
+  }catch(e){ box.textContent='не удалось загрузить токены'; }
+}
+async function doAddNodeToken(){
+  const label=$('ntLabel').value.trim();
+  const scopes=[]; if($('ntRead').checked)scopes.push('read'); if($('ntWrite').checked)scopes.push('write');
+  if(!scopes.length){ toast('выбери хотя бы один scope','err'); return; }
+  try{
+    const d=await api('/api/nodes/tokens/add',{method:'POST',body:JSON.stringify({label,scopes})});
+    $('ntNewVal').value=d.token||'';
+    $('ntNewBox').style.display='block';
+    $('ntLabel').value='';
+    await loadNodeTokens();
+    toast('Токен создан','ok');
+  }catch(e){ toast((e&&e.message)||'ошибка','err'); }
+}
+function copyNewNodeToken(){
+  const v=$('ntNewVal').value; if(!v) return;
+  navigator.clipboard.writeText(v).then(()=>toast('Скопировано','ok'));
+}
+async function doRevokeNodeToken(id,label){
+  if(!confirm('Отозвать токен «'+label+'»? Удалённая панель сразу потеряет доступ.')) return;
+  try{
+    await api('/api/nodes/tokens/revoke',{method:'POST',body:JSON.stringify({id})});
+    await loadNodeTokens();
+    toast('Токен отозван','ok');
+  }catch(e){ toast((e&&e.message)||'ошибка','err'); }
 }
 
 
@@ -1648,6 +1683,7 @@ function clientCard(c){
         <button class="tiny sec" data-act=sub title="Личная ссылка подписки клиента">🔗 Подписка</button>
         <button class="tiny sec" data-act=rename title=Переименовать>✏️</button>
         <button class="tiny sec" data-act=edit title="Лимиты, цикл сброса, устройства">⚙️</button>
+        <button class="tiny sec" data-act=deploy title="Разместить на подключённых Veil-нодах">🖥</button>
         ${isWG?'':'<button class="tiny sec" data-act=qr>QR</button>'}
         ${isWG?'<button class="tiny sec" data-act=conf title="Скачать .conf">⬇</button>':''}
         <button class="tiny sec" data-act=copy>Копировать</button>
@@ -1681,6 +1717,25 @@ function clientCard(c){
   };
   div.querySelector('[data-act=rename]').onclick=()=>showRename(c);
   div.querySelector('[data-act=edit]').onclick=()=>showEdit(c);
+  div.querySelector('[data-act=deploy]').onclick=()=>doDeploy(c);
+  // бейджи: размещено на нодах / внешний клиент
+  const _nh=Object.keys(c.nodes||{});
+  if(_nh.length){
+    const _nm=div.querySelector('.name');
+    _nh.forEach(h=>{
+      const s=document.createElement('span');s.className='nchip';
+      s.title='Кликни, чтобы снять с этой ноды';
+      s.textContent='🖥 '+h;
+      s.onclick=(ev)=>{ev.stopPropagation();doUndeploy(c,h);};
+      _nm.appendChild(s);
+    });
+  }
+  if(c.ext_by){
+    const s=document.createElement('span');s.className='nchip ext';
+    s.title='Клиент размещён внешней панелью по Node API';
+    s.textContent='🌐 '+c.ext_by;
+    div.querySelector('.name').appendChild(s);
+  }
   div.querySelector('[data-act=copy]').onclick=()=>copyText(c.link,isWG?'Конфиг скопирован':'Ссылка скопирована');
   div.querySelector('[data-act=del]').onclick=()=>doDelete(c);
   div.querySelector('.traffic').innerHTML=`
@@ -2314,7 +2369,8 @@ function showAdd(proto){
 }
 function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';
   const _l=$('newLimit');if(_l)_l.value='';const _e=$('newExpiry');if(_e)_e.value='0';
-  const _c=$('newCycle');if(_c)_c.value='';const _d=$('newDevs');if(_d)_d.value='0';}
+  const _c=$('newCycle');if(_c)_c.value='';const _d=$('newDevs');if(_d)_d.value='0';
+  const _n=$('newToNodes');if(_n)_n.checked=false;}
 
 async function doAdd(){
   const name=$('newName').value.trim();
@@ -2332,11 +2388,14 @@ async function doAdd(){
     if(_cy)body.reset_cycle=_cy;
     const _dv=parseInt($('newDevs').value,10);
     if(_dv>0)body.max_devices=_dv;
-    await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
+    if($('newToNodes')&&$('newToNodes').checked)body.to_nodes=true;
+    const r=await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
     await refresh();
     await loadSub();
-    toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами'),'ok');
+    let _nts='';
+    if(r&&r.nodes){const dep=r.nodes.deployed||[];if(dep.length)_nts=' · на нодах: '+dep.map(x=>x.name||x.host).join(', ');}
+    toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами')+_nts,'ok');
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
   }
@@ -3113,7 +3172,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     $('tab-'+b.dataset.tab).classList.add('active');
     if(b.dataset.tab==='settings')autoCheckForUpdate()
       if(b.dataset.tab==='subscription')loadSub();
-      if(b.dataset.tab==='nodes')renderNodes();
+      if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
        if(b.dataset.tab==='proxy')loadTgVerInfo();
        if(b.dataset.tab==='security')load2faStatus();
