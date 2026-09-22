@@ -48,6 +48,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - **RU / IR split tunnel** pushed into client configs (direct-to-RU or proxy-only-IR), with the panel mirroring the upstream sing-box geoip/geosite rule sets nightly and serving them from `/rulesets/`
 - Standalone full sing-box config per subscriber at `/sb/<token>` (TUN + mixed port, DNS and split-tunnel rules included)
 
+### Interface & dashboard
+- **New sidebar interface** (default) with a switch back to the classic layout in "Appearance"; the choice is stored server-side
+- **Live dashboard widgets**: Xray status with uptime, "clients online" and "traffic today" KPIs (delta vs. yesterday), active protocol list, CPU/RAM/disk rings, a 30-day traffic chart, an events feed and quick actions
+- Mobile layout: horizontal tab strip, compact cards, responsive grids
+
 ### Security
 - 2FA (TOTP), login/password change, brute-force throttling
 - **fail2ban-lite for the panel login**: repeat offenders banned into nftables timeout sets (`veil_bans`), never locking out your own session or private IPs; active-ban list with unban in the UI, bans survive restarts

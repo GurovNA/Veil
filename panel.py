@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -1158,12 +1158,27 @@ def _traffic_tick(st):
             for c in cs:
                 c["up"] = int(c.get("up") or 0) + du
                 c["down"] = int(c.get("down") or 0) + dd
+            _traffic_days_add(du + dd)
             changed = True
         if lu != cu or ld != cd:
             for c in cs:
                 c["last_up"] = cu; c["last_down"] = cd
             changed = True
     return changed
+
+# Общесерверная дневная история трафика (для дашборда): {дата: байты}, до 120 дней.
+_TRAFFIC_DAYS_FILE = f"{BASE}/logs/traffic_days.json"
+_TRAFFIC_DAYS = _load(_TRAFFIC_DAYS_FILE, {}) or {}
+
+def _traffic_days_add(nb):
+    if nb <= 0:
+        return
+    k = time.strftime("%Y-%m-%d", time.gmtime())
+    _TRAFFIC_DAYS[k] = int(_TRAFFIC_DAYS.get(k) or 0) + int(nb)
+    if len(_TRAFFIC_DAYS) > 120:
+        for old in sorted(_TRAFFIC_DAYS)[:len(_TRAFFIC_DAYS) - 120]:
+            _TRAFFIC_DAYS.pop(old, None)
+    _save(_TRAFFIC_DAYS_FILE, _TRAFFIC_DAYS)
 
 _GB = 1024 ** 3
 
@@ -1282,6 +1297,7 @@ def _subs_summary(st, for_display=False):
                      "expiry": int(c.get("expiry") or 0),
                      "reset_cycle": c.get("reset_cycle") or "",
                      "cycle": c.get("cycle") or "lifetime",
+                     "max_devices": int(c.get("max_devices") or 0),
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
                      "links": {}, "protos": [], "up": 0, "down": 0}
@@ -1597,7 +1613,7 @@ if not os.path.exists(_LOGO_PNG):
 _SUB_APP_CATALOG = {
     "ios": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}#{name}"},
-        {"name": "Happ Plus", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-plus-%D1%85%D0%B0%D0%BF%D0%BF-vpn/id6800274884", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-proxy-utility/id6504287215", "link": ""},
         {"name": "sing-box (SFI)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Streisand", "ic": "S", "col": "#9333ea", "col2": "#d946ef", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "Foxray", "ic": "F", "col": "#ea580c", "col2": "#f59e0b", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
@@ -1609,17 +1625,25 @@ _SUB_APP_CATALOG = {
     ],
     "android": [
         {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
-        {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://play.google.com/store/apps/details?id=com.happproxy", "link": ""},
+        {"name": "Karing", "ic": "K", "col": "#7c3aed", "col2": "#c084fc", "store": "https://karing.app/en/download", "link": ""},
+        {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
+        {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
+        {"name": "Hysteria2", "ic": "H", "col": "#e11d48", "col2": "#f97316", "store": "https://github.com/apernet/hysteria/releases", "link": "", "hy2": True},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "link": "wgconf://{awgconf}", "awg": True},
+        {"name": "Amnezia VPN", "ic": "A", "col": "#0ea5e9", "col2": "#818cf8", "store": "https://play.google.com/store/apps/details?id=org.amnezia.vpn", "link": "", "awg": True},
     ],
     "windows": [
         {"name": "v2rayN", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayN/releases", "link": ""},
-        {"name": "Nekoray", "ic": "N", "col": "#65a30d", "col2": "#84cc16", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
+        {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "Clash Verge Rev", "ic": "C", "col": "#2563eb", "col2": "#3b82f6", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}#{name}"},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
+        {"name": "sing-box (GUI)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/GUI-for-Cores/GUI.for.SingBox/releases", "link": ""},
+        {"name": "Nekoray", "ic": "N", "col": "#65a30d", "col2": "#84cc16", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
         {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "link": "wgconf://{awgconf}", "awg": True},
     ],
@@ -1637,6 +1661,8 @@ _SUB_APP_CATALOG = {
     ],
     "android_tv": [
         {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
+        {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
@@ -1747,9 +1773,46 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
                            '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
                            'sing-box · полный конфиг</a>')
     confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
+    # Строка под именем: лимиты вместо дубля окончания срока (он есть в карточках).
+    cyc_label = {"day": "ежедневно", "week": "еженедельно",
+                 "month": "ежемесячно"}.get(u.get("reset_cycle") or "", "")
+    try: mdev = int(u.get("max_devices") or 0)
+    except Exception: mdev = 0
+    segs = []
+    if cyc_label:
+        segs.append("сброс " + cyc_label)
+    if mdev:
+        segs.append(f"до {mdev} устр.")
+    if segs:
+        head_line = "<b>" + " · ".join(segs) + "</b> · " + exp_sub
+    else:
+        head_line = ("Подписка <b>до " + exp_txt + "</b> · " if ex else "Подписка <b>бессрочная</b> · ") + exp_sub
+    split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
+    rt_html = ""
+    if split == "ru":
+        rt_html = ("<div class='sec'><h2>Маршрутизация</h2><div class='rt'>"
+                   "<b>Российские сайты и приложения идут напрямую</b>, остальное — через туннель.<br>"
+                   "Готовые правила — в кнопке «sing-box · полный конфиг» выше (подходит для Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
+                   "Клиентам, которые импортируют ссылки, правило нужно включить в самом приложении:"
+                   "<ul>"
+                   "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → добавить правила <code>GEOSITE,category-ru,DIRECT</code> и <code>GEOIP,ru,DIRECT</code>.</li>"
+                   "<li><b>v2rayNG</b>: Настройки маршрутизации → «Пользовательские» → правило <code>geosite:category-ru</code> → Direct.</li>"
+                   "<li><b>INCY</b>: своих гео-правил нет — вместо ссылки подписки возьмите «sing-box · полный конфиг».</li>"
+                   "</ul></div></div>")
+    elif split == "ir":
+        rt_html = ("<div class='sec'><h2>Маршрутизация</h2><div class='rt'>"
+                   "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
+                   "Готовые правила — в кнопке «sing-box · полный конфиг» выше. В ссылочных клиентах правило настраивается в самом приложении:"
+                   "<ul>"
+                   "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → <code>GEOIP,ir,PROXY</code> и <code>GEOSITE,ir,PROXY</code>, финальное правило — DIRECT.</li>"
+                   "<li><b>v2rayNG</b>: «Пользовательские» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, остальные правила → Direct.</li>"
+                   "<li><b>INCY</b>: своих гео-правил нет — возьмите «sing-box · полный конфиг».</li>"
+                   "</ul></div></div>")
+    hy2_conf = links.get("hysteria2") or ""
     cat = {k: [dict(a) for a in v
                if not (a.get("wg") and not wg_conf)
-               and not (a.get("awg") and not awg_conf)]
+               and not (a.get("awg") and not awg_conf)
+               and not (a.get("hy2") and not hy2_conf)]
            for k, v in _SUB_APP_CATALOG.items()}
     catalog_json = json.dumps(cat, ensure_ascii=False)
     plat_default = _sub_ua_platform(ua)
@@ -1759,17 +1822,17 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/png" href="/logo.png">
-<meta name="theme-color" content="#070b16">
+<meta name="theme-color" content="#0a122a">
 <title>__NAMEHT__ · подписка</title><style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0}
 body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e8ecf7;
-  background:#070b16;display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
+  background:#0a122a;display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
 .bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
 .blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.45;animation:drift 18s ease-in-out infinite}
-.b1{width:52vmax;height:52vmax;left:-18vmax;top:-20vmax;background:radial-gradient(circle,#1d3f8f,transparent 65%)}
-.b2{width:46vmax;height:46vmax;right:-16vmax;top:20%;background:radial-gradient(circle,#0e7c8f,transparent 65%);animation-delay:-6s}
-.b3{width:40vmax;height:40vmax;left:12%;bottom:-22vmax;background:radial-gradient(circle,#14483f,transparent 65%);animation-delay:-11s}
+.b1{width:52vmax;height:52vmax;left:-18vmax;top:-20vmax;background:radial-gradient(circle,#24407f,transparent 65%)}
+.b2{width:46vmax;height:46vmax;right:-16vmax;top:20%;background:radial-gradient(circle,#0e6f8f,transparent 65%);animation-delay:-6s}
+.b3{width:40vmax;height:40vmax;left:12%;bottom:-22vmax;background:radial-gradient(circle,#143f5e,transparent 65%);animation-delay:-11s}
 @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(4vmax,-3vmax) scale(1.06)}66%{transform:translate(-3vmax,3vmax) scale(.96)}}
 .ray{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
   background:radial-gradient(900px 600px at 50% -12%,rgba(56,189,248,.10),transparent 60%)}
@@ -1826,6 +1889,12 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
   background:rgba(30,58,138,.5);border:1px solid rgba(59,130,246,.45);transition:.15s}
 .btn-conf:hover{border-color:#3b82f6;background:rgba(30,58,138,.85)}
 .btn-conf svg{width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.rt{font-size:12.5px;color:#9aa6c8;line-height:1.65;background:rgba(22,29,52,.75);
+  border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:12px 14px}
+.rt b{color:#cbd5f1}
+.rt ul{margin:8px 0 0;padding-left:18px}
+.rt li{margin:5px 0}
+.rt code{color:#7dd3fc;font-size:11px;background:rgba(10,15,33,.6);padding:1px 5px;border-radius:5px}
 .sec{padding:18px 20px 20px}
 h2{font-size:13px;color:#94a3c4;text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
   display:flex;align-items:center}
@@ -1877,6 +1946,17 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
 .footer code{color:#5d6a94;font-size:10px}
 .fade{animation:rise .5s ease both}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (min-width:760px){
+.page{max-width:680px}
+.action{max-width:680px}
+.apps{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.apps{grid-template-columns:1fr 1fr}}
+.stats{grid-template-columns:repeat(4,1fr)}
+.head{padding:24px 26px 18px}
+.stats,.barwrap,.confs{padding-left:26px;padding-right:26px}
+.sec{padding:20px 26px 24px}
+.meta .name{font-size:24px}
+}
 </style></head><body>
 <div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 <div class="ray"></div>
@@ -1891,7 +1971,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="ava"><span class="ring"></span>__AVA__</div>
    <div class="meta">
     <div class="name">__NAMEHT__</div>
-    <div class="sub">Подписка <b>до __EXP__</b> · __EXPSUB__</div>
+    <div class="sub">__HEADLINE__</div>
    </div>
   </div>
   <div class="stats">
@@ -1910,6 +1990,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="chips" id="chips"></div>
    <div id="apps" class="apps"></div>
   </div>
+  __RT__
  </main>
  <div class="action">
   <button class="btn btn-add fade" style="animation-delay:.16s" id="addBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span id="addLbl">Добавить / Импортировать</span></button>
@@ -2036,6 +2117,8 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
                 .replace("__CONFS__", confs_html)
+                .replace("__HEADLINE__", head_line)
+                .replace("__RT__", rt_html)
                 .replace("__SUBJS__", json.dumps(sub_url))
                 .replace("__B64JS__", json.dumps(sub64))
                 .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
@@ -4661,6 +4744,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if p in ("/", "/index.html"):
             with open(HTML, "rb") as f:
                 content = f.read()
+            style = (CFG_CACHE.get("ui_style") or "new").strip().lower()
+            content = content.replace(b"__UI_STYLE__", b"classic" if style == "classic" else b"new")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
@@ -4931,7 +5016,79 @@ class H(http.server.BaseHTTPRequestHandler):
                 "f2b_ban_hours": int(CFG_CACHE.get("f2b_ban_hours") or 24),
                 "metrics_token": CFG_CACHE.get("metrics_token", ""),
                 "split_tunnel": CFG_CACHE.get("split_tunnel", "off"),
+                "ui_style": (CFG_CACHE.get("ui_style") or "new").strip().lower(),
                 "rulesets": dict(_RULESET_STATE),
+            })
+        if p == "/api/dashboard":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            st = _load(STATE) or {}
+            uuids = set()
+            for proto, inb in (st.get("inbounds") or {}).items():
+                for c in inb.get("clients", []):
+                    uuids.add(c.get("uuid"))
+            now = time.gmtime()
+            days = []
+            for i in range(29, -1, -1):
+                k = time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
+                days.append([k, int(_TRAFFIC_DAYS.get(k) or 0)])
+            today_k = time.strftime("%Y-%m-%d", now)
+            mo_k = time.strftime("%Y-%m", now)
+            week = sum(int(_TRAFFIC_DAYS.get(
+                time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
+            ) or 0) for i in range(7))
+            month = sum(v for k, v in _TRAFFIC_DAYS.items() if k.startswith(mo_k))
+            yest_k = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+            yesterday = int(_TRAFFIC_DAYS.get(yest_k) or 0)
+            try:
+                with open("/proc/uptime") as f:
+                    uptime = int(float(f.read().split()[0]))
+            except Exception:
+                uptime = 0
+            online = 0
+            for u in uuids:
+                try:
+                    if u and _online_count(u):
+                        online += 1
+                except Exception:
+                    pass
+            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+            tg_running = subprocess.run(["systemctl", "is-active", "--quiet", "telemt"]).returncode == 0
+            protos = []
+            _grp_lbl = {"reality": "VLESS + Reality", "vless": "VLESS", "vmess": "VMess",
+                        "trojan": "Trojan", "ss": "Shadowsocks", "hy2": "Hysteria2",
+                        "wg": "WireGuard", "awg": "AmneziaWG", "amneziawg": "AmneziaWG", "mtproto": "MTProto"}
+            agg = {}
+            for proto, inb in (st.get("inbounds") or {}).items():
+                n = len(inb.get("clients", []))
+                if not n:
+                    continue
+                try:
+                    grp = _proto_meta(proto).get("group") or proto
+                except Exception:
+                    grp = proto
+                a = agg.setdefault(grp, {"clients": 0, "port": inb.get("port")})
+                a["clients"] += n
+            for grp, a in agg.items():
+                protos.append({"proto": grp, "label": _grp_lbl.get(grp, grp),
+                               "clients": a["clients"], "port": a["port"], "running": running})
+            if tg_running:
+                protos.append({"proto": "mtproto", "label": "MTProto Proxy",
+                               "clients": 0, "port": None, "running": True})
+            return self._send(200, {
+                "days": days,
+                "today": int(_TRAFFIC_DAYS.get(today_k) or 0),
+                "yesterday": yesterday,
+                "week": week, "month": month,
+                "clients": len(uuids),
+                "online": online,
+                "protos": protos,
+                "active": _proto_of(st),
+                "inbounds": len(st.get("inbounds") or {}),
+                "bans": len([1 for ip, v in BANS.items()
+                             if int(v.get("until") or 0) > time.time()]),
+                "xray": bool(running),
+                "version": VERSION,
+                "uptime": uptime,
             })
         if p == "/api/bans":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -5929,6 +6086,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     if stv not in ("off", "ru", "ir"):
                         return self._send(400, {"error": "split_tunnel: off|ru|ir"})
                     CFG_CACHE["split_tunnel"] = stv
+                    f2b_changed = True
+                if "ui_style" in body:
+                    uv = (body["ui_style"] or "new").strip().lower()
+                    if uv not in ("new", "classic"):
+                        return self._send(400, {"error": "ui_style: new|classic"})
+                    CFG_CACHE["ui_style"] = uv
                     f2b_changed = True
                 if xray_changed or panel_changed or f2b_changed:
                     _save(CFG, CFG_CACHE)
