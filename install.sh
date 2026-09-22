@@ -3,7 +3,7 @@
 # Usage: bash install.sh [--step N] [--dry-run] [--help]
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.4.3"
 REPO="GurovNA/Veil"
 LOG_FILE="/var/log/veil-install.log"
 IPIFY="https://api.ipify.org"
@@ -265,7 +265,7 @@ step_5_panel() {
   if [ ! -f /opt/vpnpanel/config.json ]; then
     PANEL_PORT="$(find_free_port "$PANEL_PORT")"
   fi
-  local TARBALL_URL="https://github.com/${REPO}/releases/download/v${VERSION}/veil.tar.gz"
+  local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   run "mkdir -p /opt/vpnpanel"
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
     tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
@@ -383,7 +383,7 @@ uninstall_completely() {
 
 reinstall_keeping_data() {
   msg "Переустановка с сохранением данных..."
-  local TARBALL_URL="https://github.com/${REPO}/releases/download/v${VERSION}/veil.tar.gz"
+  local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   mkdir -p /opt/vpnpanel
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
     tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
