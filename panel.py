@@ -2740,6 +2740,11 @@ server {
         proxy_hide_header Cache-Control;
         add_header Cache-Control "no-store, no-cache" always;
 
+        # telemt жёстко отдаёт CSP без 'wasm-unsafe-eval' — под ней WASM-эмулятор
+        # заглушки не запускается. Переопределяем своей политикой (всё с этого хоста).
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" always;
+
         proxy_connect_timeout 5s;
         proxy_send_timeout 65s;
         proxy_read_timeout 65s;
