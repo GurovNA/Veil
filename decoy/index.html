@@ -2,132 +2,435 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Retro NES Arcade - Online Emulator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Retro NES Arcade · 8-bit Cloud Gaming</title>
+    <!-- Локальная копия JSNES — работает без внешнего интернета -->
+    <script src="jsnes.min.js"></script>
     <style>
+        * { box-sizing: border-box; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
         body {
-            background-color: #12151c;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #090c15;
+            color: #f1f5f9;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            overflow: hidden;
+        }
+
+        /* Шапка аркады */
+        header {
+            width: 100%;
+            padding: 10px 16px;
+            background: linear-gradient(180deg, #131b2e 0%, #0d1322 100%);
+            border-bottom: 1px solid #1e293b;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .brand-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #3b82f6, #22d3ee);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            box-shadow: 0 0 15px rgba(34,211,238,0.4);
+        }
+        .brand h1 {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            background: linear-gradient(90deg, #60a5fa, #22d3ee);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .brand span {
+            font-size: 10px;
+            color: #64748b;
+            display: block;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .menu-btns {
+            display: flex;
+            gap: 6px;
+        }
+        .top-btn {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .top-btn:hover { background: #3b82f6; color: #fff; border-color: #60a5fa; }
+
+        /* Игровой экран */
+        .viewport {
+            flex: 1;
+            width: 100%;
+            max-width: 600px;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            overflow: hidden;
+            padding: 8px;
+            position: relative;
         }
-        .arcade-container {
-            text-align: center;
-            background: #1e222a;
-            padding: 20px;
-            border-radius: 14px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
-            border: 1px solid #3a3f4b;
-        }
-        h1 {
-            margin: 0 0 10px;
-            font-size: 24px;
-            color: #4CAF50;
-            letter-spacing: 1px;
-        }
-        p {
-            margin: 0 0 15px;
-            color: #8b949e;
-            font-size: 14px;
-        }
-        canvas {
+        .screen-container {
+            position: relative;
             background: #000;
-            border: 4px solid #282c34;
-            border-radius: 6px;
-            box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
-            image-rendering: pixelated;
-            width: 512px;
-            height: 480px;
-            max-width: 100%;
-        }
-        .controls {
-            margin-top: 15px;
+            border: 4px solid #1e293b;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8), inset 0 0 20px rgba(0,0,0,0.9);
+            width: 100%;
+            max-width: 512px;
+            aspect-ratio: 4 / 3.75;
             display: flex;
-            gap: 10px;
+            align-items: center;
             justify-content: center;
         }
-        button {
-            background: #238636;
-            color: #fff;
+        canvas {
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            display: block;
+        }
+        .overlay-msg {
+            position: absolute;
+            inset: 0;
+            background: rgba(9, 12, 21, 0.88);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            transition: opacity 0.3s ease;
+            z-index: 5;
+            padding: 20px;
+            text-align: center;
+        }
+        .overlay-msg.hidden { opacity: 0; pointer-events: none; }
+        .overlay-msg h2 { margin: 0; font-size: 18px; color: #38bdf8; }
+        .overlay-msg p { margin: 0; font-size: 12px; color: #94a3b8; max-width: 280px; line-height: 1.4; }
+        
+        .hero-btn {
+            background: linear-gradient(90deg, #3b82f6, #22d3ee);
+            color: #04101f;
             border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 800;
             cursor: pointer;
-            font-weight: 600;
-            transition: background 0.2s;
+            box-shadow: 0 8px 25px -6px rgba(34,211,238,0.6);
+            transition: transform 0.1s;
         }
-        button:hover {
-            background: #2ea043;
+        .hero-btn:active { transform: scale(0.96); }
+
+        /* Мобильный ретро-геймпад */
+        .controller {
+            width: 100%;
+            max-width: 500px;
+            background: #0f172a;
+            border-top: 1px solid #1e293b;
+            padding: 12px 20px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 -10px 30px rgba(0,0,0,0.6);
+            z-index: 10;
         }
-        .status {
-            margin-top: 10px;
-            font-size: 12px;
-            color: #8b949e;
+
+        /* Крестовина */
+        .dpad {
+            position: relative;
+            width: 120px;
+            height: 120px;
+        }
+        .dpad-key {
+            position: absolute;
+            background: #1e293b;
+            border: 2px solid #334155;
+            color: #94a3b8;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+            transition: background 0.1s, border-color 0.1s;
+        }
+        .dpad-key:active, .dpad-key.pressed { background: #3b82f6; color: #fff; border-color: #60a5fa; }
+        .dpad-up { top: 0; left: 40px; width: 40px; height: 42px; border-radius: 8px 8px 0 0; }
+        .dpad-down { bottom: 0; left: 40px; width: 40px; height: 42px; border-radius: 0 0 8px 8px; }
+        .dpad-left { top: 40px; left: 0; width: 42px; height: 40px; border-radius: 8px 0 0 8px; }
+        .dpad-right { top: 40px; right: 0; width: 42px; height: 40px; border-radius: 0 8px 8px 0; }
+        .dpad-mid { top: 40px; left: 40px; width: 40px; height: 40px; background: #162032; border: none; }
+
+        /* Центральные кнопки Select / Start */
+        .center-cluster {
+            display: flex;
+            gap: 10px;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .ctrl-pill {
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 5px 14px;
+            border-radius: 99px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+        }
+        .ctrl-pill:active, .ctrl-pill.pressed { background: #475569; color: #fff; }
+
+        /* Кнопки A и B */
+        .actions-cluster {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+            padding-bottom: 10px;
+        }
+        .action-btn {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            background: #1e293b;
+            border: 2px solid #334155;
+            color: #f43f5e;
+            font-weight: 900;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.5);
+            position: relative;
+        }
+        .action-btn.btn-a { color: #38bdf8; border-color: #0284c7; }
+        .action-btn:active, .action-btn.pressed { transform: scale(0.93); filter: brightness(1.2); }
+        .action-btn.btn-b:active, .action-btn.btn-b.pressed { background: #f43f5e; color: #fff; border-color: #fb7185; }
+        .action-btn.btn-a:active, .action-btn.btn-a.pressed { background: #0284c7; color: #fff; border-color: #38bdf8; }
+        .action-btn span { position: absolute; bottom: -18px; font-size: 10px; color: #64748b; font-weight: 700; }
+
+        .status-bar {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 4px;
+            text-align: center;
+        }
+
+        @media (max-width: 480px) {
+            .controller { padding: 10px 12px 16px; }
+            .dpad { width: 105px; height: 105px; }
+            .dpad-up { left: 35px; width: 35px; height: 37px; }
+            .dpad-down { left: 35px; width: 35px; height: 37px; }
+            .dpad-left { top: 35px; width: 37px; height: 35px; }
+            .dpad-right { top: 35px; width: 37px; height: 35px; }
+            .dpad-mid { top: 35px; left: 35px; width: 35px; height: 35px; }
+            .action-btn { width: 48px; height: 48px; font-size: 14px; }
         }
     </style>
 </head>
 <body>
-    <div class="arcade-container">
-        <h1>🕹️ Retro NES Arcade</h1>
-        <p>Classic 8-bit NES Emulator in your browser</p>
-        <canvas id="nes-canvas" width="256" height="240"></canvas>
-        <div class="controls">
-            <button onclick="loadDemoGame()">Загрузить Demo</button>
-            <button onclick="toggleFullscreen()">На весь экран</button>
+    <header>
+        <div class="brand">
+            <div class="brand-icon">🕹️</div>
+            <div>
+                <h1>Retro Arcade</h1>
+                <span>8-bit Cloud Station</span>
+            </div>
         </div>
-        <div class="status" id="status">Нажмите «Загрузить Demo» для старта</div>
+        <div class="menu-btns">
+            <button class="top-btn" onclick="document.getElementById('rom-input').click()">📁 ROM</button>
+            <input type="file" id="rom-input" accept=".nes" style="display:none" onchange="loadUserRom(event)">
+            <button class="top-btn" onclick="toggleFullscreen()">📺 Экран</button>
+        </div>
+    </header>
+
+    <div class="viewport">
+        <div class="screen-container" id="screen-box">
+            <canvas id="nes-canvas" width="256" height="240"></canvas>
+            <div class="overlay-msg" id="overlay">
+                <h2>Готовы к игре?</h2>
+                <p>Нажмите кнопку ниже, чтобы запустить классическую 8-битную аркаду прямо в браузере с телефона или ПК.</p>
+                <button class="hero-btn" onclick="startGame()">▶ Запустить игру</button>
+                <div class="status-bar" id="status">Нажмите для старта</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Мобильный геймпад -->
+    <div class="controller">
+        <div class="dpad">
+            <div class="dpad-key dpad-up" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_UP, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_UP, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_UP, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_UP, false)">▲</div>
+            <div class="dpad-key dpad-down" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_DOWN, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_DOWN, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_DOWN, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_DOWN, false)">▼</div>
+            <div class="dpad-key dpad-left" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_LEFT, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_LEFT, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_LEFT, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_LEFT, false)">◀</div>
+            <div class="dpad-key dpad-right" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_RIGHT, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_RIGHT, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_RIGHT, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_RIGHT, false)">▶</div>
+            <div class="dpad-mid"></div>
+        </div>
+
+        <div class="center-cluster">
+            <div class="ctrl-pill" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_SELECT, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_SELECT, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_SELECT, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_SELECT, false)">Select</div>
+            <div class="ctrl-pill" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_START, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_START, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_START, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_START, false)">Start</div>
+        </div>
+
+        <div class="actions-cluster">
+            <div class="action-btn btn-b" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_B, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_B, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_B, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_B, false)">B<span>B</span></div>
+            <div class="action-btn btn-a" ontouchstart="pressBtn(1, jsnes.Controller.BUTTON_A, true)" ontouchend="pressBtn(1, jsnes.Controller.BUTTON_A, false)" onmousedown="pressBtn(1, jsnes.Controller.BUTTON_A, true)" onmouseup="pressBtn(1, jsnes.Controller.BUTTON_A, false)">A<span>A</span></div>
+        </div>
     </div>
 
     <script>
         const canvas = document.getElementById('nes-canvas');
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#050505';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        ctx.fillStyle = '#4CAF50';
-        ctx.font = '14px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('NES Emulator Ready', canvas.width / 2, canvas.height / 2 - 10);
-        ctx.fillStyle = '#8b949e';
-        ctx.font = '10px monospace';
-        ctx.fillText('Insert ROM or Load Demo', canvas.width / 2, canvas.height / 2 + 15);
+        const imageData = ctx.createImageData(256, 240);
 
-        function loadDemoGame() {
-            document.getElementById('status').textContent = 'Демонстрационный режим запущен (Canvas Active)';
-            let x = 128, y = 120, dx = 2, dy = 2;
-            function animate() {
-                ctx.fillStyle = '#111';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                // Draw retro bouncing pixel box
-                ctx.fillStyle = '#ff5722';
-                ctx.fillRect(x, y, 16, 16);
-                
-                ctx.fillStyle = '#4CAF50';
-                ctx.font = '12px monospace';
-                ctx.fillText('RETRO DEMO 8-BIT', 128, 30);
+        // Инициализация черного экрана
+        for (let i = 0; i < imageData.data.length; i += 4) {
+            imageData.data[i] = 12;
+            imageData.data[i+1] = 16;
+            imageData.data[i+2] = 24;
+            imageData.data[i+3] = 255;
+        }
+        ctx.putImageData(imageData, 0, 0);
 
-                x += dx; y += dy;
-                if(x <= 0 || x >= 240) dx = -dx;
-                if(y <= 20 || y >= 224) dy = -dy;
-                requestAnimationFrame(animate);
+        let nes = new jsnes.NES({
+            onFrame: function(frameBuffer) {
+                for (let i = 0; i < frameBuffer.length; i++) {
+                    let pixel = frameBuffer[i];
+                    let j = i * 4;
+                    imageData.data[j] = (pixel & 0xFF0000) >> 16;
+                    imageData.data[j+1] = (pixel & 0FF00) >> 8;
+                    imageData.data[j+2] = pixel & 0xFF;
+                }
+                ctx.putImageData(imageData, 0, 0);
+            },
+            onAudioSample: function(sample) {}
+        });
+
+        let running = false;
+        let animId = null;
+
+        function emulationLoop() {
+            if (!running) return;
+            nes.frame();
+            animId = requestAnimationFrame(emulationLoop);
+        }
+
+        function startGame() {
+            document.getElementById('overlay').classList.add('hidden');
+            document.getElementById('status').textContent = 'Загрузка ROM...';
+
+            // Локальный демо-ROM — прилагается к странице
+            fetch('nestest.nes')
+                .then(res => {
+                    if (!res.ok) throw new Error('Network error');
+                    return res.arrayBuffer();
+                })
+                .then(buf => {
+                    nes.loadROM(buf);
+                    running = true;
+                    cancelAnimationFrame(animId);
+                    animId = requestAnimationFrame(emulationLoop);
+                    document.getElementById('status').textContent = 'Игра активна';
+                })
+                .catch(err => {
+                    document.getElementById('status').textContent = 'Ошибка загрузки ROM';
+                });
+        }
+
+        function loadUserRom(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    nes.loadROM(e.target.result);
+                    document.getElementById('overlay').classList.add('hidden');
+                    running = true;
+                    cancelAnimationFrame(animId);
+                    animId = requestAnimationFrame(emulationLoop);
+                    document.getElementById('status').textContent = ' ROM: ' + file.name;
+                } catch(ex) {
+                    alert('Неверный формат ROM файла (.nes)');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function pressBtn(player, button, isDown) {
+            if (isDown) {
+                nes.buttonDown(player, button);
+            } else {
+                nes.buttonUp(player, button);
             }
-            animate();
         }
 
         function toggleFullscreen() {
+            const box = document.getElementById('screen-container') || document.getElementById('screen-box');
             if (!document.fullscreenElement) {
-                canvas.requestFullscreen();
+                box.requestFullscreen().catch(err => {});
             } else {
                 document.exitFullscreen();
             }
         }
+
+        // Поддержка клавиатуры для ПК
+        const keyMap = {
+            'ArrowUp': jsnes.Controller.BUTTON_UP,
+            'ArrowDown': jsnes.Controller.BUTTON_DOWN,
+            'ArrowLeft': jsnes.Controller.BUTTON_LEFT,
+            'ArrowRight': jsnes.Controller.BUTTON_RIGHT,
+            'KeyZ': jsnes.Controller.BUTTON_A,
+            'KeyX': jsnes.Controller.BUTTON_B,
+            'KeyA': jsnes.Controller.BUTTON_A,
+            'KeyS': jsnes.Controller.BUTTON_B,
+            'ShiftLeft': jsnes.Controller.BUTTON_SELECT,
+            'Enter': jsnes.Controller.BUTTON_START
+        };
+
+        window.addEventListener('keydown', e => {
+            if (keyMap[e.code] !== undefined) {
+                nes.buttonDown(1, keyMap[e.code]);
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', e => {
+            if (keyMap[e.code] !== undefined) {
+                nes.buttonUp(1, keyMap[e.code]);
+                e.preventDefault();
+            }
+        });
     </script>
 </body>
 </html>
