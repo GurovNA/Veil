@@ -663,6 +663,7 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
   <div id=tab-proxy class="tab-pane"><div class=card>
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+    <div id=tgMpStatus class="msg" style="margin:6px 0"></div>
     <div class="row" style="margin:10px 0;gap:8px">
       <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
       <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
@@ -3347,7 +3348,9 @@ async function loadTg(){
       return;
     }
     tgUsers = d.users || [];
+    window.tgMp = d.mtproto || null;
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
+    renderTgMp();
     renderTg();
     renderWeb(d.web);
     renderTgSni(d.sni);
@@ -3575,9 +3578,27 @@ async function doWebSetCarrier(k){
   }
 }
 
+function renderTgMp(){
+  const el = document.getElementById('tgMpStatus'); if(!el) return;
+  const mp = window.tgMp;
+  if(!mp || !mp.port){ el.style.display='none'; el.textContent=''; return; }
+  el.style.display='';
+  if(mp.up){
+    el.className='msg ok';
+    el.textContent='✅ Сервер MTProto активен на :'+mp.port+' — ссылка tg://proxy работает.';
+  } else {
+    el.className='msg err';
+    el.innerHTML='⚠ Сервер MTProto сейчас <b>недоступен</b>: '+esc(mp.note||'')
+      +'. Ссылку tg://proxy клиент не сможет открыть, пока порт не займёт telemt.'
+      +'<br><span class=mut style="font-size:12px">Чаще всего :443 занят веб-прокси nginx — тогда используйте веб-прокси (tg://webproxy) либо настройте SNI-мюкс во вкладке «Сайт».</span>';
+  }
+}
+
 function renderTg(){
   const box = document.getElementById('tgList');
   box.innerHTML = '';
+  const mp = window.tgMp || {};
+  const mpDown = mp.port && !mp.up;
   tgUsers.forEach(function(u){
     const div = document.createElement('div');
     div.className = 'client';
@@ -3588,14 +3609,14 @@ function renderTg(){
         '<div class=uuid></div>' +
       '</div>' +
       '<div class=actions>' +
-        '<button class="tiny sec" data-act=open title="Открыть MTProto-прокси в приложении Telegram">📱 MTProto</button>' +
-        '<button class="tiny sec" data-act=qr title="QR-код MTProto">📷</button>' +
-        '<button class="tiny sec" data-act=copy title="Скопировать ссылку MTProto">📋</button>' +
-        (hasWeb ? '<button class="tiny sec" data-act=openweb title="Открыть веб-прокси в приложении Telegram">📱 Веб</button>' +
-                  '<button class="tiny sec" data-act=qrweb title="QR-код веб-прокси">📷w</button>' +
-                  '<button class="tiny sec" data-act=copyweb title="Скопировать веб-ссылку">📋w</button>' : '') +
-        '<button class="tiny sec" data-act=tag title="Спонсорский канал @MTProxybot">🏷 ad_tag</button>' +
-        '<button class="tiny sec" data-act=rot title="Сменить секрет (ссылка станет новой)">🔑 Секрет</button>' +
+        '<button class="tiny sec'+(mpDown?' warn':'')+'" data-act=open title="'+(mpDown?'Сервер MTProto не активен — ссылка не откроется':'Открыть MTProto-прокси (tg://proxy) в Telegram')+'">📱 Открыть MTProto</button>' +
+        '<button class="tiny sec" data-act=qr title="Показать QR-код MTProto-ссылки">QR MTProto</button>' +
+        '<button class="tiny sec" data-act=copy title="Скопировать ссылку tg://proxy">Копир. MTProto</button>' +
+        (hasWeb ? '<button class="tiny sec" data-act=openweb title="Открыть веб-прокси (tg://webproxy) в Telegram">🌐 Открыть веб</button>' +
+                  '<button class="tiny sec" data-act=qrweb title="Показать QR-код веб-ссылки">QR веб</button>' +
+                  '<button class="tiny sec" data-act=copyweb title="Скопировать ссылку tg://webproxy">Копир. веб</button>' : '') +
+        '<button class="tiny sec" data-act=tag title="Привязать спонсорский канал @MTProxybot (ad_tag)">🏷 Рекламный канал</button>' +
+        '<button class="tiny sec" data-act=rot title="Сменить секрет — старые ссылки перестанут работать">🔑 Новый секрет</button>' +
         '<button class="tiny sec" data-act=del title="Удалить пользователя">🗑 Удалить</button>' +
       '</div>' +
     '</div>' +
@@ -3607,7 +3628,10 @@ function renderTg(){
       + (hasWeb ? ' · веб-прокси' : '');
     div.querySelector('[data-mp]').textContent = u.link;
     if (hasWeb) div.querySelector('[data-web]').textContent = u.web_link;
-    div.querySelector('[data-act=open]').onclick = function(){ openProxyInTg(u.link); };
+    div.querySelector('[data-act=open]').onclick = function(){
+      if (mpDown){ setMsg('tgMsg','Сервер MTProto не активен ('+(mp.note||'порт не слушается')+'). Используйте веб-прокси или настройте SNI-мюкс во вкладке «Сайт».','err'); return; }
+      openProxyInTg(u.link);
+    };
     div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'MTProto: ' + u.username); };
     div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка MTProto скопирована'); };
     if (hasWeb){

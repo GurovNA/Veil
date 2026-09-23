@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.4"
+VERSION = "2.7.5"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -4106,6 +4106,7 @@ def _tg_status():
         return {"installed": False, "users": []}
     web = _tg_web_get()
     web_links = {u: _tg_web_link(u) for u in (web["profiles"] if web else [])}
+    mp = _tg_mtproto_info()
     users = []
     for u in d.get("data", []):
         users.append({
@@ -4118,8 +4119,8 @@ def _tg_status():
             "total_octets": u.get("total_octets", 0),
         })
     for u in users:
-        u["link"] = _tg_host_ok(u.get("link") or "")
-    res = {"installed": True, "users": users, "sni": _tg_sni()}
+        u["link"] = _tg_fix_mtproto_link(u.get("link") or "", mp.get("port"))
+    res = {"installed": True, "users": users, "sni": _tg_sni(), "mtproto": mp}
     if web:
         res["web"] = web
     return res
@@ -4130,6 +4131,57 @@ def _tg_host_ok(link):
     if not host or not link:
         return link
     return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
+
+def _tg_toml_server_port():
+    """Порт нативного MTProto-сервера из [server] port telemt.toml (API /v1/config его не отдаёт)."""
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return 0
+    m = re.search(r"(?ms)^\s*\[server\]\s*$(.+?)(?=^\s*\[|\Z)", text)
+    if not m:
+        return 0
+    pm = re.search(r"(?m)^\s*port\s*=\s*(\d+)", m.group(1))
+    return int(pm.group(1)) if pm else 0
+
+def _tg_mtproto_info():
+    """Реальный публичный порт MTProto и слушает ли его именно telemt.
+    При включённом FakeTLS (censorship.mask) клиенты идут на mask_port, иначе на [server] port.
+    Возвращает {port, mask, up, proc, note}."""
+    try:
+        c = _tg_api("GET", "/v1/config").get("data", {}).get("censorship") or {}
+    except Exception:
+        c = {}
+    mask = bool(c.get("mask"))
+    try:
+        mask_port = int(c.get("mask_port") or 0)
+    except (TypeError, ValueError):
+        mask_port = 0
+    port = mask_port if (mask and mask_port) else _tg_toml_server_port()
+    info = {"port": port, "mask": mask, "up": False, "proc": "", "note": ""}
+    if not port:
+        info["note"] = "не удалось определить порт MTProto"
+        return info
+    occ = _sock_occupant(port)
+    info["proc"] = occ.get("proc", "")
+    if occ.get("free"):
+        info["note"] = "на :%d никто не слушает — MTProto недоступен" % port
+    elif "telemt" in (occ.get("proc") or ""):
+        info["up"] = True
+        info["note"] = "MTProto активен на :%d" % port
+    else:
+        info["note"] = ("порт :%d занят %s — не telemt, MTProto FakeTLS его не слушает"
+                        % (port, occ.get("proc") or "другим процессом"))
+    return info
+
+def _tg_fix_mtproto_link(link, port):
+    """Ссылка tg://proxy: подставить публичный домен и реальный порт MTProto
+    (telemt иногда отдаёт порт своего loopback-веб-листенера вместо нативного)."""
+    link = _tg_host_ok(link)
+    if link and port:
+        link = re.sub(r"(?i)(port=)\d+", lambda m: m.group(1)+str(port), link)
+    return link
 
 def _tg_ensure_secret_in_toml(username, secret):
     """Добавить секрет пользователя в [access.users] telemt.toml (если его там нет)."""
@@ -4191,7 +4243,9 @@ def _tg_add(username, mode="both"):
     links = ((d.get("data") or {}).get("user") or {}).get("links", {})
     link = _tg_pick_tls_link(links.get("tls"))
     web_link = _tg_web_enable_user(name) if mode in ("web", "both") else ""
-    return {"username": name, "secret": secret, "link": _tg_host_ok(link), "web_link": web_link}
+    return {"username": name, "secret": secret,
+            "link": _tg_fix_mtproto_link(link, _tg_mtproto_info().get("port")),
+            "web_link": web_link}
 
 def _tg_remove(username):
     if not username:
