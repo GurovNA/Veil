@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.1"
+VERSION = "2.7.2"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -204,9 +204,11 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
-# Порт 443/80 заняты nginx (webproxy/decoy и Let's Encrypt), 18080 — telemt web,
-# 9091 — telemt API, 7443 — telemt MTProto. Панель не должна их занимать.
-_RESERVED_PORTS = {80, 443, 8080, 18080, 9091, 7443}
+# Порт 80 занят nginx/Let's Encrypt, 18080 — telemt web, 9091 — telemt API,
+# 7443 — telemt MTProto. 443 намеренно НЕ зарезервирован: на чистом хосте Reality
+# должен занять его (см. _find_free_port — bind-тест), а если его держит nginx —
+# bind упадёт и порт выделяется резервный. Панель не должна брать 80/telemt-порты.
+_RESERVED_PORTS = {80, 8080, 18080, 9091, 7443}
 CERT_DIR = f"{BASE}/certs"
 
 def _proto_meta(proto):
@@ -290,6 +292,187 @@ def _login_history(ev, ip=None, ua=None, user=None, ok=True, err=None):
     except Exception:
         pass
     _audit("login_" + ev, ip=ip, ua=(ua or "")[:256], user=user, **({"err": err} if err else {}))
+
+# ---------- УСТРОЙСТВА И КЛИЕНТЫ ПОДПИСЧИКОВ (User-Agent + IP с /sub) ----------
+_SUBDEV_FILE = f"{BASE}/sub_devices.json"
+_SUBPREF_FILE = f"{BASE}/sub_prefs.json"
+_SUBDEV_LOCK = threading.Lock()
+_SUBDEV = None    # {sub_token: [ {ip,ua,client,version,os,type,old,n,first_ts,last_ts} ]}
+_SUBPREF = None   # {sub_token: {"fmt": "auto|base64|singbox"}}
+_SUBDEV_MAX_IPS = 24
+_UA_CLIENTS = [
+    ("v2rayng", "v2rayNG"), ("sing-box", "sing-box"), ("xray-core", "Xray"),
+    ("hiddify", "Hiddify"), ("nekobox", "NekoBox"), ("someka", "NekoBox"),
+    ("nekocap", "Neko"), ("nekoray", "NekoRay"), ("neko", "Neko"),
+    ("streisand", "Streisand"), ("shadowrocket", "Shadowrocket"),
+    ("foxray", "FoXray"), ("fock", "FoXray"), ("v2box", "v2Box"),
+    ("quantumult", "Quantumult X"), ("stash", "Stash"), ("kitsunebi", "Kitsunebi"),
+    ("surfboard", "Surfboard"), ("loon", "Loon"), ("potatso", "Potatso"),
+    ("happ", "Happ"), ("flclash", "FlClash"), ("clash-verge", "Clash Verge"),
+    ("clashverge", "Clash Verge"), ("v2rayn", "v2rayN"), ("clash", "Clash"),
+    ("incy", "INCY"), ("okhttp", "Android-клиент"), ("dalvik", "Android-клиент"),
+    ("curl", "curl"), ("python", "скрипт"), ("mozilla", "Браузер"),
+]
+_OLD_MIN = {"v2rayNG": (1, 8, 0), "v2rayN": (5, 0, 0), "sing-box": (1, 8, 0),
+            "NekoBox": (0, 4, 0), "Hiddify": (0, 4, 0), "Happ": (3, 0, 0), "INCY": (1, 0, 0)}
+# Коды моделей по префиксу (сначала проверяются, когда UA несёт модель)
+_ANDROID_CODES = [
+    ("sm-", "Samsung"), ("sgt-", "Samsung"), ("sph-", "Samsung"), ("gt-", "Samsung"),
+    ("m0", "Xiaomi"), ("m1", "Xiaomi"), ("m2", "Xiaomi"), ("2109", "Xiaomi"),
+    ("2201", "Xiaomi"), ("2307", "Xiaomi"), ("redmi", "Xiaomi"), ("poco", "POCO"),
+    ("kb2", "OnePlus"), ("kb5", "OnePlus"), ("hd1", "OnePlus"), ("hd2", "OnePlus"),
+    ("rmx", "realme"), ("cph", "OPPO"), ("v20", "vivo"), ("v21", "vivo"), ("v22", "vivo"),
+    ("xt2", "Motorola"), ("lnb", "Lenovo"),
+]
+# Узнаваемые имена брендов (подстрока в UA)
+_ANDROID_NAMES = [
+    ("samsung", "Samsung"), ("xiaomi", "Xiaomi"), ("redmi", "Redmi"), ("poco", "POCO"),
+    ("pixel", "Google Pixel"), ("oneplus", "OnePlus"), ("huawei", "Huawei"), ("honor", "Honor"),
+    ("motorola", "Motorola"), ("asus", "ASUS"), ("zenfone", "ASUS"), ("oppo", "OPPO"),
+    ("vivo", "vivo"), ("realme", "realme"), ("nokia", "Nokia"), ("lenovo", "Lenovo"),
+    ("tecno", "Tecno"), ("infinix", "Infinix"), ("sony", "Sony"), ("lg-", "LG"),
+]
+
+def _device_type(u, os_, ua=""):
+    """Человекочитаемый тип/бренд устройства из User-Agent (когда он его содержит)."""
+    if "iphone" in u: return "📱 iPhone"
+    if "ipad" in u:   return "📱 iPad"
+    if "ipod" in u:  return "📱 iPod touch"
+    if os_ == "iOS": return "📱 iOS-устройство"
+    if os_ == "macOS": return "💻 Mac"
+    if "windows" in u: return "🖥 Windows"
+    if os_ == "Linux": return "🖥 Linux"
+    if os_ != "Android": return ""
+    src = ua or u
+    m = re.search(r"Android[\s\d._]*;\s*([^;)]+)", src)
+    model = (m.group(1).strip()[:26] if m else "")
+    ml = model.lower()
+    if ml:
+        for pref, name in _ANDROID_CODES:
+            if ml.startswith(pref): return "📱 " + name
+    for key, name in _ANDROID_NAMES:
+        if key in u: return "📱 " + name
+    return "📱 Android" + ((" " + model) if model else "")
+
+def _subdev_load():
+    global _SUBDEV, _SUBPREF
+    if _SUBDEV is None:
+        try:
+            d = json.load(open(_SUBDEV_FILE))
+            _SUBDEV = d if isinstance(d, dict) else {}
+        except Exception:
+            _SUBDEV = {}
+    if _SUBPREF is None:
+        try:
+            d = json.load(open(_SUBPREF_FILE))
+            _SUBPREF = d if isinstance(d, dict) else {}
+        except Exception:
+            _SUBPREF = {}
+
+def _parse_client(ua, xclient=""):
+    u = (ua or "").lower()
+    name = ""
+    for needle, pretty in _UA_CLIENTS:
+        if needle in u:
+            name = pretty
+            break
+    if not name and (xclient or "").lower() == "incy":
+        name = "INCY"
+    ver = ""
+    if name:
+        m = re.search(re.escape(name.lower()) + r"[\s/]*v?(\d+\.\d+(?:\.\d+)?)", u)
+        if not m:
+            m = re.search(r"(\d+\.\d+(?:\.\d+)?)", u)
+        if m:
+            ver = m.group(1)
+    os_ = ""
+    for hay, lab in (("android", "Android"), ("iphone", "iOS"), ("ios", "iOS"),
+                     ("mac os", "macOS"), ("macos", "macOS"), ("darwin", "macOS"),
+                     ("windows", "Windows"), ("linux", "Linux")):
+        if hay in u:
+            os_ = lab
+            break
+    old = False
+    if name and ver and name in _OLD_MIN:
+        try:
+            vt = tuple(int(x) for x in ver.split(".")[:3])
+        except Exception:
+            vt = ()
+        if vt and vt < _OLD_MIN[name]:
+            old = True
+    dtype = _device_type(u, os_, ua)
+    return name, ver, os_, old, dtype
+
+def _subdev_note(token, ip, ua, xclient=""):
+    if not token:
+        return
+    name, ver, os_, old, dtype = _parse_client(ua, xclient)
+    ts = _now_iso()
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        lst = _SUBDEV.get(token) or []
+        dev = next((d for d in lst if d.get("ip") == ip), None)
+        if dev:
+            dev["last_ts"] = ts
+            dev["n"] = int(dev.get("n", 0)) + 1
+            if ua:
+                dev["ua"] = (ua or "")[:200]
+            if name:
+                dev["client"] = name
+            if ver:
+                dev["version"] = ver
+            if os_:
+                dev["os"] = os_
+            if dtype:
+                dev["type"] = dtype
+            dev["old"] = bool(old)
+        else:
+            lst.append({"ip": ip, "ua": (ua or "")[:200], "client": name,
+                        "version": ver, "os": os_, "type": dtype, "old": bool(old),
+                        "n": 1, "first_ts": ts, "last_ts": ts})
+        lst.sort(key=lambda d: d.get("last_ts", ""), reverse=True)
+        _SUBDEV[token] = lst[:_SUBDEV_MAX_IPS]
+        _save(_SUBDEV_FILE, _SUBDEV)
+
+def _subdev_list(token):
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        return [dict(d) for d in (_SUBDEV.get(token) or [])]
+
+def _subdev_remove(token, ip):
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        _SUBDEV[token] = [d for d in (_SUBDEV.get(token) or []) if d.get("ip") != ip]
+        _save(_SUBDEV_FILE, _SUBDEV)
+
+def _subdev_pref(token):
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        return (_SUBPREF.get(token) or {}).get("fmt", "auto")
+
+def _subdev_set_pref(token, fmt):
+    if fmt not in ("auto", "base64", "singbox"):
+        return False
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        p = _SUBPREF.get(token) or {}
+        p["fmt"] = fmt
+        _SUBPREF[token] = p
+        _save(_SUBPREF_FILE, _SUBPREF)
+    return True
+
+def _subdev_prune(valid_tokens):
+    with _SUBDEV_LOCK:
+        _subdev_load()
+        changed = False
+        for src in (_SUBDEV, _SUBPREF):
+            for k in list(src):
+                if k not in valid_tokens:
+                    src.pop(k, None)
+                    changed = True
+        if changed:
+            _save(_SUBDEV_FILE, _SUBDEV)
+            _save(_SUBPREF_FILE, _SUBPREF)
 
 # ---------- helpers ----------
 
@@ -917,8 +1100,29 @@ def _ensure_hy2_cert(dom):
     except Exception as e:
         print(f"не удалось создать hy2 cert: {e}", flush=True)
 
+def _deep_merge(base, over):
+    """Рекурсивно врезает over в base (словари сливаются, остальное заменяется).
+        base не мутируется; пустой/не-словарь over -> копия base без изменений."""
+    if not isinstance(over, dict) or not over:
+        return dict(base) if isinstance(base, dict) else base
+    out = dict(base) if isinstance(base, dict) else {}
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+def _as_list(v):
+    if isinstance(v, list):
+        return [x for x in v if str(x).strip()]
+    if v is None or str(v).strip() == "":
+        return None
+    return [x.strip() for x in re.split(r"[,\n;]+", str(v)) if x.strip()]
+
 def _stream_settings(proto, inb):
     meta = _proto_meta(proto)
+    adv = inb.get("_adv")
     if proto == "hysteria2":
         dom = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
         cert, key = inb.get("cert"), inb.get("key")
@@ -926,7 +1130,7 @@ def _stream_settings(proto, inb):
             _ensure_hy2_cert(dom)
             cert, key = HY2_CERT, HY2_KEY
         masq = {"type": "proxy", "url": "https://" + dom} if dom else {"type": "404"}
-        return {"network": "hysteria",
+        base = {"network": "hysteria",
                 "security": "tls",
                 "tlsSettings": {"serverName": dom, "alpn": ["h3"],
                                 "certificates": [{"certificateFile": cert,
@@ -935,32 +1139,42 @@ def _stream_settings(proto, inb):
                     "version": 2,
                     "udpIdleTimeout": 60,
                     "masquerade": masq}}
+        return _deep_merge(base, adv)
     if proto == "wireguard":
         return {}
+    snis = _as_list(inb.get("snis")) or [inb.get("sni") or "www.samsung.com"]
+    sids = _as_list(inb.get("sids")) or ([inb.get("sid")] if inb.get("sid") else [])
     def _reality():
-        return {"show": False, "dest": inb["dest"], "xver": 0,
-                "serverNames": [inb["sni"]], "privateKey": inb["private_key"],
-                "shortIds": [inb["sid"]]}
+        return {"show": False, "dest": inb.get("dest") or "www.samsung.com:443", "xver": 0,
+                "serverNames": snis, "privateKey": inb["private_key"],
+                "shortIds": sids}
     if proto == "reality":
-        return {"network": "tcp", "security": "reality", "realitySettings": _reality()}
+        return _deep_merge({"network": "tcp", "security": "reality",
+                            "realitySettings": _reality()}, adv)
+    path = inb.get("path") or "/veil"
+    alpn = _as_list(inb.get("alpn"))
     ss = {"network": meta["net"],
           "security": "tls" if meta["tls"] else "none"}
     if proto == "vless-xhttp-reality":
         ss["security"] = "reality"
         ss["realitySettings"] = _reality()
     if meta["net"] == "ws":
-        ss["wsSettings"] = {"path": "/veil", "headers": {}}
+        hdrs = {}
+        if inb.get("host"): hdrs["Host"] = inb["host"]
+        ss["wsSettings"] = {"path": path, "headers": hdrs}
     elif meta["net"] == "grpc":
-        ss["grpcSettings"] = {"serviceName": "veil"}
+        ss["grpcSettings"] = {"serviceName": inb.get("service") or "veil"}
+        if inb.get("host"): ss["grpcSettings"]["authority"] = inb["host"]
+        if inb.get("mode"): ss["grpcSettings"]["mode"] = inb["mode"]
     elif meta["net"] == "xhttp":
-        ss["xhttpSettings"] = {"path": "/veil", "mode": "auto"}
+        ss["xhttpSettings"] = {"path": path, "mode": inb.get("mode") or "auto"}
     elif meta["net"] == "splithttp":
-        ss["splithttpSettings"] = {"path": "/veil", "mode": "auto"}
+        ss["splithttpSettings"] = {"path": path, "mode": inb.get("mode") or "auto"}
     if meta["tls"]:
         ss["tlsSettings"] = {
-            "alpn": ["h2", "http/1.1"] if meta["net"] in ("grpc", "xhttp", "splithttp") else ["http/1.1"],
+            "alpn": alpn or (["h2", "http/1.1"] if meta["net"] in ("grpc", "xhttp", "splithttp") else ["http/1.1"]),
             "certificates": [{"certificateFile": inb.get("cert"), "keyFile": inb.get("key")}]}
-    return ss
+    return _deep_merge(ss, adv)
 
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
@@ -988,6 +1202,11 @@ def _inbound(proto, inb):
         ib["sniffing"] = {"enabled": False}
         return ib
     ib["sniffing"] = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+    sn = inb.get("sniff")
+    if sn is False:
+        ib["sniffing"] = {"enabled": False}
+    elif isinstance(sn, dict) and sn:
+        ib["sniffing"] = sn
     if proto.startswith("shadowsocks"):
         ib["protocol"] = "shadowsocks"
         ib["settings"] = {"method": inb.get("method") or "aes-256-gcm",
@@ -1006,13 +1225,30 @@ def _inbound(proto, inb):
             for c in inb["clients"]]}
     else:
         ib["protocol"] = "vless"
-        flow = "xtls-rprx-vision" if proto == "reality" else ""
+        if "flow" in inb:
+            flow = inb.get("flow") or ""
+        else:
+            flow = "xtls-rprx-vision" if proto == "reality" else ""
         ib["settings"] = {"clients": [
             {"id": c["uuid"], "flow": flow, "email": c["uuid"]}
             for c in inb["clients"]],
             "decryption": "none"}
     ib["streamSettings"] = _stream_settings(proto, inb)
-    return ib
+    return _deep_merge(ib, inb.get("_adv_ib"))
+
+_INBOUND_EDIT_KEYS = ("sni", "snis", "dest", "sid", "sids", "path", "host",
+                      "service", "mode", "alpn", "sniff", "flow", "mtu",
+                      "_adv", "_adv_ib")
+
+def _inbound_public(proto, inb):
+    """Безопасное для UI представление точечных настроек inbound (без приватных ключей)."""
+    meta = _proto_meta(proto)
+    out = {"proto": proto, "port": inb.get("port"),
+           "net": meta.get("net", ""), "tls": bool(meta.get("tls")),
+           "reality": ("reality" in proto)}
+    for k in _INBOUND_EDIT_KEYS:
+        if k in inb: out[k] = inb[k]
+    return out
 
 _STATS_PORT = 10088
 
@@ -1041,24 +1277,20 @@ def _autoblock_limits(st, force=False):
             out.append({"uuid": c["uuid"], "name": c["name"], "reason": why})
     return out
 
-def _write_xray(st):
-    try:
-        os.makedirs(os.path.dirname(_XRAY_ACCESS), exist_ok=True)
-    except Exception:
-        pass
+def _build_xray_cfg(st, force_proto=None):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
             continue
-        if inb.get("clients"):
+        if inb.get("clients") or proto == force_proto:
             inbounds.append(_inbound(proto, inb))
     inbounds.append({
         "listen": "127.0.0.1", "port": _STATS_PORT, "protocol": "dokodemo-door",
         "settings": {"address": "127.0.0.1"}, "tag": "api"})
-    
+
     routing_rules = [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]
     outbounds = [{"protocol": "freedom", "tag": "direct"}]
-    
+
     if CFG_CACHE.get("ru_bypass"):
         routing_rules.append({
             "type": "field",
@@ -1066,8 +1298,8 @@ def _write_xray(st):
             "domain": ["geosite:category-ru"],
             "ip": ["geoip:ru"]
         })
-    
-    cfg = {
+
+    return {
         "log": {"loglevel": "warning", "access": _XRAY_ACCESS},
         "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
         "stats": {},
@@ -1078,7 +1310,13 @@ def _write_xray(st):
             "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True,
                              "statsUserOnline": True}},
             "system": {"statsInboundUplink": True, "statsInboundDownlink": True}}}
-    _save(XRAY, cfg, 0o644)
+
+def _write_xray(st):
+    try:
+        os.makedirs(os.path.dirname(_XRAY_ACCESS), exist_ok=True)
+    except Exception:
+        pass
+    _save(XRAY, _build_xray_cfg(st), 0o644)
 
 def _statsquery():
     try:
@@ -1308,9 +1546,9 @@ def _subs_summary(st, for_display=False):
             except Exception:
                 pass
             if proto == "wireguard":
-                u["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{key}"
+                u["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{key}"
             if proto == "amneziawg":
-                u["conf_url"] = f"https://{host}:{panel_port}/api/awgconf/{key}"
+                u["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{key}"
             if proto not in [x["proto"] for x in u["protos"]]:
                 u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
                                     "port": inb.get("port", 0)})
@@ -1324,8 +1562,8 @@ def _subs_summary(st, for_display=False):
     for u in users.values():
         u.pop("_tr_taken", None)
         u["used_gb"] = round((u["up"] + u["down"]) / (1024 ** 3), 3)
-        u["sub_url"] = f"https://{host}:{panel_port}/sub/{u['sub_token']}"
-        u["sb_url"] = f"https://{host}:{panel_port}/sb/{u['sub_token']}"
+        u["sub_url"] = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
+        u["sb_url"] = f"{_pb(host, panel_port)}/sb/{u['sub_token']}"
         u["online"] = int(_online_count(u["uuid"]) or 0)
         out.append(u)
     return out
@@ -1342,6 +1580,34 @@ def _restart_xray():
     if t.returncode:
         raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
     subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
+
+def _validate_and_apply(st, force_proto=None):
+    """Проверяет candidate-конфиг через `xray run -test` на временном файле.
+    Если валиден — коммитит config.json и state.json и перезапускает xray.
+    Если нет — ничего не трогает (STATE на диске остаётся прежним). Возвращает (ok, err)."""
+    tmp = os.path.join(os.path.dirname(XRAY), "panel.validate.json")
+    try:
+        cfg = _build_xray_cfg(st, force_proto=force_proto)
+        _save(tmp, cfg, 0o644)
+        t = subprocess.run(["xray", "run", "-test", "-config", tmp],
+                           capture_output=True, text=True, timeout=30)
+        if t.returncode:
+            return False, ("конфиг Xray невалиден: "
+                           + (t.stderr or t.stdout or "").strip()[:600])
+        _save(XRAY, cfg, 0o644)
+        _save(STATE, st)
+        try:
+            subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
+        except Exception as e:
+            return False, "xray не перезапустился: " + str(e)
+        return True, None
+    except subprocess.TimeoutExpired:
+        return False, "xray -test: таймаут проверки конфига"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        try: os.remove(tmp)
+        except Exception: pass
 
 _FP_VALUES = {"firefox", "chrome", "safari", "ios", "android", "edge", "randomized", "random"}
 
@@ -1437,6 +1703,364 @@ def _link(inb, host, client, proto):
         qparts["security"] = "none"
     q = urllib.parse.urlencode(qparts)
     return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
+
+# ---------- экспорт / импорт подписчиков (B2) ----------
+# Два формата обмена между панелями:
+#   json  — внутренний снимок Veil→Veil (identичность + лимиты на каждый протокол),
+#           восстанавливается без потерь; хост/порты/ключи сервера берёт приёмник.
+#   links — текст ссылок vless/trojan/vmess/ss/hy2 (+ URL подписки) — для 3x-ui,
+#           marzban, Hiddify, Remnawave; на импорте пересоздаём клиентов с той же
+#           идентичностью/транспортом против СВОЕГО сервера Veil.
+
+def _subs_export_json(st):
+    """Внутренний снимок подписчиков (Veil→Veil). Группировка по sub_token."""
+    subs = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        if proto not in _VALID_PROTOCOLS:
+            continue
+        for c in inb.get("clients", []):
+            tok = c.get("sub_token") or ""
+            if not tok:
+                continue
+            s = subs.get(tok)
+            if s is None:
+                s = {"name": c.get("name") or "Клиент", "sub_token": tok,
+                     "limit_gb": float(c.get("limit_gb") or 0),
+                     "expiry": int(c.get("expiry") or 0),
+                     "reset_cycle": c.get("reset_cycle") or "",
+                     "max_devices": int(c.get("max_devices") or 0),
+                     "tg_proxy": c.get("tg_proxy") or "",
+                     "tg_user": c.get("tg_user") or "",
+                     "blocked": bool(c.get("blocked")),
+                     "blocked_reason": c.get("blocked_reason", "") or "",
+                     "created": int(c.get("created") or 0),
+                     "clients": []}
+                subs[tok] = s
+            cc = {"proto": proto}
+            for k in ("uuid", "password", "auth", "flow",
+                      "client_private_key", "client_public_key", "address"):
+                if c.get(k) is not None:
+                    cc[k] = c[k]
+            s["clients"].append(cc)
+    return {"format": "veil-subs-v1", "exported": int(time.time()),
+            "panel_version": VERSION, "count": len(subs),
+            "subs": list(subs.values())}
+
+def _subs_export_links(st):
+    """Текст ссылок для переноса/распространения: по блоку на подписчика."""
+    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    panel_port = CFG_CACHE.get("panel_port", 8444)
+    out = ["# Veil — экспорт подписчиков " + time.strftime("%Y-%m-%d %H:%M"), ""]
+    for u in _subs_summary(st):
+        protos = [x["proto"] for x in u.get("protos", [])]
+        labels = ", ".join(_proto_meta(pr).get("label", pr) for pr in protos)
+        out.append("# ==== " + (u.get("name") or "Клиент") + " (" + labels + ") ====")
+        for pr in protos:
+            ln = (u.get("links") or {}).get(pr)
+            if ln and "\n" not in ln:
+                out.append(ln)
+        if u.get("sub_url"):
+            out.append(u["sub_url"])
+        if u.get("conf_url"):
+            out.append(u["conf_url"])
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+def _split_hostport(s):
+    s = (s or "").strip()
+    if s.startswith("["):
+        j = s.find("]")
+        host = s[:j + 1]
+        rest = s[j + 1:]
+        if rest.startswith(":"):
+            return host, rest[1:]
+        return host, ""
+    if s.count(":") == 1:
+        a, b = s.split(":", 1)
+        return a, b
+    return s, ""
+
+def _sub_base_name(name):
+    name = (name or "").strip()
+    if " · " in name:
+        name = name.rsplit(" · ", 1)[0].strip()
+    return (name[:40] or "Клиент")
+
+def _map_vless_proto(sec, typ):
+    typ = {"splithttp": "xhttp", "tcp": "tcp", "ws": "ws", "grpc": "grpc"}.get(typ, typ)
+    if sec == "reality":
+        return "vless-xhttp-reality" if typ == "xhttp" else "reality"
+    if sec == "tls":
+        return {"ws": "vless-ws-tls", "grpc": "vless-grpc-tls",
+                "xhttp": "vless-xhttp-tls", "tcp": "vless-tcp-tls"}.get(typ)
+    if sec in ("", "none"):
+        return "vless-ws" if typ == "ws" else None
+    return None
+
+def _map_trojan_proto(typ):
+    typ = {"splithttp": "xhttp", "ws": "ws", "grpc": "grpc", "tcp": "tcp"}.get(typ, "tcp")
+    return {"ws": "trojan-ws-tls", "grpc": "trojan-grpc-tls", "tcp": "trojan-tcp-tls"}.get(typ)
+
+def _map_vmess_proto(net, tls):
+    net = {"splithttp": "xhttp", "h2": "xhttp", "ws": "ws", "grpc": "grpc", "tcp": "tcp"}.get((net or "").lower(), (net or "").lower())
+    if net == "ws":   return "vmess-ws-tls" if tls else "vmess-ws"
+    if net == "tcp":  return "vmess-tcp-tls" if tls else None
+    if net == "grpc": return "vmess-grpc-tls" if tls else None
+    return None
+
+def _parse_link_line(line):
+    """Одна строка ссылки → dict идентичности + целевой proto Veil, либо None."""
+    line = (line or "").strip()
+    if not line or line[0] == "#":
+        return None
+    low = line.lower()
+    try:
+        if low.startswith("vless://"):
+            body = line[8:]
+            frag = ""
+            if "#" in body: body, frag = body.split("#", 1)
+            q = ""
+            if "?" in body: body, q = body.split("?", 1)
+            params = urllib.parse.parse_qs(q)
+            if "@" not in body: return None
+            uid, hp = body.rsplit("@", 1)
+            sec = (params.get("security") or [""])[0].strip().lower()
+            typ = (params.get("type") or [""])[0].strip().lower()
+            proto = _map_vless_proto(sec, typ)
+            return {"scheme": "vless", "proto": proto, "uuid": uid.strip(),
+                    "name": urllib.parse.unquote(frag), "host": _split_hostport(hp)[0]}
+        if low.startswith("trojan://"):
+            body = line[9:]
+            frag = ""
+            if "#" in body: body, frag = body.split("#", 1)
+            q = ""
+            if "?" in body: body, q = body.split("?", 1)
+            params = urllib.parse.parse_qs(q)
+            if "@" not in body: return None
+            pw, hp = body.rsplit("@", 1)
+            typ = (params.get("type") or [""])[0].strip().lower()
+            return {"scheme": "trojan", "proto": _map_trojan_proto(typ),
+                    "password": urllib.parse.unquote(pw),
+                    "name": urllib.parse.unquote(frag), "host": _split_hostport(hp)[0]}
+        if low.startswith("vmess://"):
+            b64 = line[8:].strip()
+            pad = "=" * ((4 - len(b64) % 4) % 4)
+            try:
+                obj = json.loads(base64.b64decode(b64 + pad).decode("utf-8", "replace"))
+            except Exception:
+                return None
+            net = (obj.get("net") or obj.get("type") or "").lower()
+            tls = (obj.get("tls") or "").lower() in ("tls", "1", "true")
+            return {"scheme": "vmess", "proto": _map_vmess_proto(net, tls),
+                    "uuid": (obj.get("id") or "").strip(),
+                    "name": urllib.parse.unquote(obj.get("ps") or "")}
+        if low.startswith("ss://"):
+            body = line[5:]
+            frag = ""
+            if "#" in body: body, frag = body.split("#", 1)
+            if "@" in body:
+                cred, hp = body.rsplit("@", 1)
+            else:
+                cred, hp = body, ""
+            method = password = ""
+            if ":" in cred:
+                method, password = cred.split(":", 1)
+            else:
+                try:
+                    pad = "=" * ((4 - len(cred) % 4) % 4)
+                    dec = base64.urlsafe_b64decode(cred + pad).decode("utf-8", "replace")
+                    if ":" in dec: method, password = dec.split(":", 1)
+                except Exception:
+                    password = cred
+            return {"scheme": "ss", "proto": "shadowsocks", "ss_method": method or "aes-256-gcm",
+                    "password": password, "name": urllib.parse.unquote(frag)}
+        if low.startswith("hy2://"):
+            body = line[6:]
+            frag = ""
+            if "#" in body: body, frag = body.split("#", 1)
+            if "@" not in body: return None
+            auth, hp = body.rsplit("@", 1)
+            return {"scheme": "hy2", "proto": "hysteria2", "auth": auth,
+                    "name": urllib.parse.unquote(frag)}
+    except Exception:
+        return None
+    return None
+
+def _parse_subscription_blob(blob):
+    """Тело подписки (base64-строка ссылок или plain text) → список items без дублей."""
+    blob = (blob or "").strip()
+    if not blob:
+        return []
+    cand = [blob]
+    try:
+        b = blob.replace("-","+").replace("_","/")
+        pad = "=" * ((4 - len(b) % 4) % 4)
+        dec = base64.b64decode(b + pad).decode("utf-8", "replace")
+        if "://" in dec:
+            cand.append(dec)
+    except Exception:
+        pass
+    out, seen = [], set()
+    for src in cand:
+        for ln in src.splitlines():
+            it = _parse_link_line(ln)
+            if not it:
+                continue
+            key = (it.get("scheme"), it.get("uuid") or it.get("password") or it.get("auth"),
+                   it.get("ss_method"), it.get("proto"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(it)
+    return out
+
+def _fetch_subscription(url):
+    """Бounded server-side GET подписки по URL администратора (для импорта ссылок)."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme not in ("http", "https"):
+        raise ValueError("только http/https")
+    ctx = None
+    if u.scheme == "https":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url, headers={"User-Agent": "veil-panel-import"})
+    with urllib.request.urlopen(req, timeout=12, context=ctx) as r:
+        raw = r.read(2 * 1024 * 1024)
+    return raw.decode("utf-8", "replace")
+
+def _import_from_links(st, text):
+    """Разбираем вставленный текст ссылок (+URL подписки) и пересоздаём подписчиков
+    против этого сервера. Возвращаем (imported_subs, warnings)."""
+    warnings = []
+    items = []
+    fetch_targets = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line[0] == "#":
+            continue
+        low = line.lower()
+        if low.startswith(("http://", "https://")):
+            fetch_targets.append(line)
+            continue
+        it = _parse_link_line(line)
+        if it:
+            items.append(it)
+        else:
+            warnings.append("не распознана строка: " + line[:48])
+    for url in fetch_targets:
+        try:
+            items.extend(_parse_subscription_blob(_fetch_subscription(url)))
+        except Exception as e:
+            warnings.append("не удалось получить подписку " + url[:56] + ": " + str(e)[:70])
+    groups = {}
+    for it in items:
+        groups.setdefault(_sub_base_name(it.get("name")), []).append(it)
+    imported = 0
+    for base, its in groups.items():
+        sub_token = secrets.token_urlsafe(16)
+        made = 0
+        for it in its:
+            proto = it.get("proto")
+            if not proto:
+                warnings.append(base + ": нет подходящего inbound для " + it.get("scheme", "?") + " — пропущено")
+                continue
+            inb = (st.get("inbounds") or {}).get(proto)
+            if inb is None:
+                try:
+                    inb = _alloc_inbound(st, proto)
+                    st.setdefault("inbounds", {})[proto] = inb
+                except Exception as e:
+                    warnings.append(base + ": не создал inbound " + proto + ": " + str(e)[:70])
+                    continue
+            if proto == "shadowsocks":
+                if it.get("ss_method"): inb["method"] = it["ss_method"]
+                if it.get("password"): inb["password"] = it["password"]
+            c = _new_client(base, proto, inb)
+            c["sub_token"] = sub_token
+            if it.get("uuid") and not any(x.get("uuid") == it["uuid"] for x in inb.get("clients", [])):
+                c["uuid"] = it["uuid"]
+            elif it.get("uuid"):
+                warnings.append(base + ": uuid занят на " + proto + ", назначен новый")
+            if proto.startswith("trojan") and it.get("password"):
+                c["password"] = it["password"]
+            if proto == "hysteria2" and it.get("auth"):
+                c["auth"] = it["auth"]
+            inb.setdefault("clients", []).append(c)
+            made += 1
+        if made:
+            imported += 1
+        else:
+            warnings.append(base + ": ни один протокол не импортирован")
+    return imported, warnings
+
+def _import_from_json(st, data):
+    """Восстанавливаем снимок Veil→Veil без потерь (identичность + лимиты)."""
+    warnings = []
+    subs = data.get("subs") if isinstance(data, dict) else None
+    if not isinstance(subs, list):
+        raise ValueError("нет массива subs (ожидаю внутренний формат veil-subs-v1)")
+    existing_toks = {c.get("sub_token") for inb in (st.get("inbounds") or {}).values()
+                     for c in inb.get("clients", [])}
+    imported = 0
+    for s in subs:
+        if not isinstance(s, dict):
+            continue
+        name = (s.get("name") or "Клиент").strip()[:40] or "Клиент"
+        tok = s.get("sub_token") or ""
+        if not tok or tok in existing_toks:
+            tok = secrets.token_urlsafe(16)
+        else:
+            existing_toks.add(tok)
+        try: limit_gb = float(s.get("limit_gb") or 0)
+        except Exception: limit_gb = 0
+        try: expiry = int(s.get("expiry") or 0)
+        except Exception: expiry = 0
+        try: max_devices = int(s.get("max_devices") or 0)
+        except Exception: max_devices = 0
+        reset_cycle = (s.get("reset_cycle") or "").strip().lower()
+        tg_mode = (s.get("tg_proxy") or "").strip().lower()
+        if tg_mode not in ("off", "shared", "personal"):
+            tg_mode = ""
+        made = 0
+        for cc in (s.get("clients") or []):
+            proto = (cc or {}).get("proto")
+            if proto not in _VALID_PROTOCOLS:
+                warnings.append(name + ": неизвестный протокол " + str(proto))
+                continue
+            inb = (st.get("inbounds") or {}).get(proto)
+            if inb is None:
+                try:
+                    inb = _alloc_inbound(st, proto)
+                    st.setdefault("inbounds", {})[proto] = inb
+                except Exception as e:
+                    warnings.append(name + ": inbound " + proto + ": " + str(e)[:70])
+                    continue
+            c = _new_client(name, proto, inb, limit_gb=limit_gb or None, expiry=expiry,
+                            reset_cycle=reset_cycle, max_devices=max_devices)
+            c["sub_token"] = tok
+            u = cc.get("uuid")
+            if u and not any(x.get("uuid") == u for x in inb.get("clients", [])):
+                c["uuid"] = u
+            if proto.startswith("trojan") and cc.get("password") is not None:
+                c["password"] = cc["password"]
+            if proto == "hysteria2" and cc.get("auth"):
+                c["auth"] = cc["auth"]
+            if tg_mode:
+                c["tg_proxy"] = tg_mode
+                if s.get("tg_user"):
+                    c["tg_user"] = s["tg_user"]
+            if s.get("blocked"):
+                c["blocked"] = True
+                c["blocked_reason"] = s.get("blocked_reason", "") or ""
+            inb.setdefault("clients", []).append(c)
+            made += 1
+        if made:
+            imported += 1
+        else:
+            warnings.append(name + ": ни один клиент не импортирован")
+    return imported, warnings
 
 # ---------- sing-box JSON-подписка ----------
 # INCY, Happ+, Streisand, SFI/SFA/SFM и другие sing-box клиенты импортируют
@@ -1714,7 +2338,7 @@ def _sub_ua_platform(ua=""):
         return "macos"
     return "ios"
 
-def _sub_page_html(u, sub_url, host, panel_port, ua=""):
+def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None):
     status, status_txt = _sub_status(u)
     now = time.time()
     ex = int(u.get("expiry") or 0)
@@ -1748,7 +2372,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     onl = int(u.get("online") or 0)
     conns = len(u.get("protos") or [])
     tok = u["sub_token"]
-    page_url = f"https://{host}:{panel_port}/p/{tok}"
+    page_url = f"{_pb(host, panel_port)}/p/{tok}"
     cls = "ok" if status == "active" else "off"
     sub64 = base64.urlsafe_b64encode(sub_url.encode("utf-8")).decode().rstrip("=")
     avatar = (name_plain[:1] or "V").upper()
@@ -1758,8 +2382,8 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     def _b64(s):
         return base64.urlsafe_b64encode(s.encode("utf-8")).decode().rstrip("=") if s else ""
     wg_b64, awg_b64 = _b64(wg_conf), _b64(awg_conf)
-    wg_url = f"https://{host}:{panel_port}/api/wgconf/{tok}"
-    awg_url = f"https://{host}:{panel_port}/api/awgconf/{tok}"
+    wg_url = f"{_pb(host, panel_port)}/api/wgconf/{tok}"
+    awg_url = f"{_pb(host, panel_port)}/api/awgconf/{tok}"
     conf_blocks = []
     if wg_conf:
         conf_blocks.append('<a class="btn-conf" href="' + wg_url + '" download>'
@@ -1819,6 +2443,42 @@ def _sub_page_html(u, sub_url, host, panel_port, ua=""):
     plat_default = _sub_ua_platform(ua)
     if plat_default not in cat:
         plat_default = next(iter(cat), "")
+    def _esc(s):
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+    def _ago_txt(iso):
+        try:
+            dt = datetime.datetime.fromisoformat(iso).timestamp()
+        except Exception:
+            return ""
+        s = max(0, int(now - dt))
+        if s < 120: return "только что"
+        if s < 3600: return "%d мин назад" % (s // 60)
+        if s < 86400: return "%d ч назад" % (s // 3600)
+        return "%d дн назад" % (s // 86400)
+    drows = []
+    for d in (devs or [])[:10]:
+        cli = _esc(d.get("client") or "Клиент")
+        ver = _esc(d.get("version") or "")
+        typ = _esc(d.get("type") or "")
+        osl = _esc(d.get("os") or "")
+        ip = _esc(d.get("ip") or "")
+        ago = _esc(_ago_txt(d.get("last_ts") or ""))
+        try: n = int(d.get("n") or 1)
+        except Exception: n = 1
+        who = cli + ((" " + ver) if ver else "")
+        sub = " · ".join(x for x in (typ or osl, ip,
+                     (ago + ((" ×%d" % n) if n > 1 else "")) if ago else "") if x)
+        drows.append('<div class="devr"><div class="devi"><b>' + who +
+                     '</b><span>' + sub + '</span></div>'
+                     '<button class="devx" data-ip="' + ip + '">Забыть</button></div>')
+    if drows:
+        devs_html = ('<div class="sec"><h2>Мои устройства</h2><div class="devlist">'
+                     + "".join(drows) + '</div><div class="devnote">Устройства, '
+                     'которые запрашивали вашу подписку. «Забыть» уберёт запись, '
+                     'пока клиент снова не обновит подписку с этого адреса.</div></div>')
+    else:
+        devs_html = ''
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
     tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1896,6 +2556,17 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .rt ul{margin:8px 0 0;padding-left:18px}
 .rt li{margin:5px 0}
 .rt code{color:#7dd3fc;font-size:11px;background:rgba(10,15,33,.6);padding:1px 5px;border-radius:5px}
+.devlist{display:flex;flex-direction:column;gap:8px}
+.devr{display:flex;align-items:center;gap:10px;background:rgba(22,29,52,.75);
+  border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:10px 12px}
+.devi{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
+.devi b{font-size:13px;font-weight:700;color:#edf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.devi span{font-size:11px;color:#8b94b5;overflow-wrap:anywhere}
+.devx{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:#fca5a5;
+  background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.35);border-radius:10px;padding:7px 12px;transition:.15s}
+.devx:hover{background:rgba(251,113,133,.2)}
+.devx:disabled{opacity:.5;cursor:default}
+.devnote{font-size:11px;color:#58618a;margin-top:10px;line-height:1.55}
 .sec{padding:18px 20px 20px}
 h2{font-size:13px;color:#94a3c4;text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
   display:flex;align-items:center}
@@ -1991,6 +2662,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="chips" id="chips"></div>
    <div id="apps" class="apps"></div>
   </div>
+  __DEVS__
   __RT__
  </main>
  <div class="action">
@@ -2013,6 +2685,7 @@ const AWGCONF=__AWGCONF__;
 const WGDOWN=__WGDOWN__;
 const AWGDOWN=__AWGDOWN__;
 const PLATS=__PLATS__;
+const TOK=__TOK__;
 let cur=null;
 let lastK=__PLATDEFAULT__;
 const HP=document.getElementById.bind(document);
@@ -2107,6 +2780,17 @@ document.addEventListener('DOMContentLoaded',function(){
         .catch(function(){hint('Не удалось скопировать автоматически.');});
     }else{hint('Не удалось скопировать автоматически.');}
   });
+  Array.prototype.forEach.call(document.querySelectorAll('.devx'),function(btn){
+    btn.addEventListener('click',function(){
+      var ip=btn.getAttribute('data-ip');
+      if(!confirm('Забыть это устройство?'))return;
+      btn.disabled=true;
+      fetch('/p/'+encodeURIComponent(TOK)+'/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})})
+        .then(function(r){return r.json();})
+        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint('Устройство забыто.','#4ade80');} else {hint('Не удалось забыть устройство: '+((j&&j.error)||'ошибка'),'#fb7185'); btn.disabled=false;} })
+        .catch(function(){hint('Сеть недоступна.','#fb7185'); btn.disabled=false;});
+    });
+  });
 });
 </script></body></html>"""
     return (tpl.replace("__AVA__", avatar)
@@ -2119,6 +2803,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
                 .replace("__CONFS__", confs_html)
                 .replace("__HEADLINE__", head_line)
+                .replace("__DEVS__", devs_html)
                 .replace("__RT__", rt_html)
                 .replace("__SUBJS__", json.dumps(sub_url))
                 .replace("__B64JS__", json.dumps(sub64))
@@ -2129,6 +2814,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__AWGDOWN__", json.dumps(awg_url))
                 .replace("__CAT__", catalog_json)
                 .replace("__PLATS__", plats_json)
+                .replace("__TOK__", json.dumps(u["sub_token"]))
                 .replace("__PLATDEFAULT__", json.dumps(plat_default)))
 
 def _new_client(name, proto=None, inb=None, **kw):
@@ -2362,7 +3048,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
     _write_xray(st)
     _save(STATE, st)
     _restart_xray()
-    sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+    sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
     return {"name": name, "sub_token": sub_token, "sub_url": sub_url,
             "link": first_link or "", "limit_gb": float(limit_gb) or 0,
             "expiry_days": int(expiry_days)}
@@ -3173,6 +3859,14 @@ def _agent_link(n, ap, u, c0):
     name = f"{c0.get('name') or 'Veil'} · {n.get('name') or host}"
     return f"vless://{u}@{host}:{int(ap.get('port') or 443)}?{q}#{urllib.parse.quote(name)}"
 
+# Порядок предпочтения протокола при размещении клиента на ноде:
+# берём первый протокол клиента, который нода реально поддерживает.
+_NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "hysteria2",
+                        "vless-xhttp-tls", "vless-ws-tls", "vless-tcp-tls", "vless-grpc-tls", "vless-ws",
+                        "trojan-tcp-tls", "trojan-ws-tls", "trojan-grpc-tls",
+                        "vmess-ws-tls", "vmess-tcp-tls", "vmess-grpc-tls", "vmess-ws",
+                        "shadowsocks", "wireguard", "amneziawg")
+
 def _deploy_client_to_nodes(st, u):
     """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (deployed, skipped)."""
     deployed, skipped = [], []
@@ -3180,8 +3874,7 @@ def _deploy_client_to_nodes(st, u):
             for c in inb.get("clients", []) if c.get("uuid") == u]
     if not recs:
         return deployed, [{"host": "-", "reason": "клиент не найден"}]
-    proto_local = recs[0][0]
-    c0 = recs[0][2]
+    by_proto = {proto: (proto, inb, c) for proto, inb, c in recs}
     nodes = get_nodes()
     for n in nodes:
         host = (n.get("host") or "").strip()
@@ -3193,9 +3886,15 @@ def _deploy_client_to_nodes(st, u):
             skipped.append({"host": host, "reason": "уже размещён"})
             continue
         if is_agent:
-            dep, sk = _deploy_client_to_agent(n, host, recs, proto_local, c0, u)
+            # агент поднимает только VLESS+Reality — ищем именно его среди протоколов клиента
+            rec = by_proto.get("reality")
+            if not rec:
+                skipped.append({"host": host,
+                                "reason": "у клиента нет VLESS+Reality — агент поддерживает только его"})
+                continue
+            dep, sk = _deploy_client_to_agent(n, host, recs, rec, u)
         else:
-            dep, sk = _deploy_client_to_veil(n, host, recs, proto_local, c0, u)
+            dep, sk = _deploy_client_to_veil(n, host, recs, by_proto, u)
         deployed.extend(dep)
         skipped.extend(sk)
     if deployed:
@@ -3203,7 +3902,7 @@ def _deploy_client_to_nodes(st, u):
         save_nodes(nodes)
     return deployed, skipped
 
-def _deploy_client_to_veil(n, host, recs, proto_local, c0, u):
+def _deploy_client_to_veil(n, host, recs, by_proto, u):
     deployed, skipped = [], []
     sc = n.get("status_cache") or {}
     inbs = sc.get("inbounds") or []
@@ -3213,8 +3912,15 @@ def _deploy_client_to_veil(n, host, recs, proto_local, c0, u):
             return deployed, [{"host": host, "reason": err or "нет ответа"}]
         inbs = data.get("inbounds") or []
         n["status_cache"] = {"inbounds": inbs, "at": int(time.time())}
-    if proto_local not in {i.get("proto") for i in inbs}:
-        return deployed, [{"host": host, "reason": f"на ноде нет входящего {proto_local}"}]
+    node_protos = {i.get("proto") for i in inbs}
+    proto_local = next((p for p in _NODE_PROTO_PRIORITY
+                        if p in by_proto and p in node_protos), None)
+    if proto_local is None:
+        common = [p for p in by_proto if p in node_protos]
+        proto_local = common[0] if common else None
+    if proto_local is None:
+        return deployed, [{"host": host, "reason": "нет общего поддерживаемого протокола с нодой"}]
+    c0 = by_proto[proto_local][2]
     body = {"name": c0.get("name") or "Клиент", "proto": proto_local,
             "limit_gb": float(c0.get("limit_gb") or 0)}
     ed = _node_expiry_days(c0)
@@ -3235,10 +3941,9 @@ def _deploy_client_to_veil(n, host, recs, proto_local, c0, u):
             "at": int(time.time())}
     return [{"host": host, "name": n.get("name") or host}], []
 
-def _deploy_client_to_agent(n, host, recs, proto_local, c0, u):
+def _deploy_client_to_agent(n, host, recs, rec, u):
     deployed, skipped = [], []
-    if proto_local != "reality":
-        return deployed, [{"host": host, "reason": "агент поддерживает только vless+reality"}]
+    c0 = rec[2]
     ap = n.get("agent_params") or {}
     if not ap.get("public_key") or time.time() - int(ap.get("at") or 0) > 900:
         hd, herr, _ = _node_call(n, "/agent/hello", need_token=False)
@@ -3271,6 +3976,37 @@ def _nodes_by_host():
         if h:
             out[h] = n
     return out
+
+def _node_agent_purge(node):
+    """Снять veil-agent с хоста agent-ноды (best-effort по ключу панели).
+    veil-ноду (чужую полноценную панель) НЕ трогаем — вернёт (None, пояснение)."""
+    if (node.get("type") or "agent") != "agent":
+        return (None, "не агент-нода: чужая панель не демонтируется")
+    host = (node.get("host") or "").strip()
+    user = (node.get("ssh_user") or "root").strip() or "root"
+    key = (node.get("ssh_key") or "").strip()
+    try:
+        sport = int(node.get("ssh_port") or 22)
+    except Exception:
+        sport = 22
+    if not host or not key or not os.path.exists(key):
+        return (False, "нет SSH-ключа панели — агент не снят автоматически")
+    cmd = ("systemctl disable --now veil-agent >/dev/null 2>&1; "
+           "pkill -9 -f '[x]ray-agent.json' >/dev/null 2>&1; "
+           "pkill -9 -f '[v]eil-agent/agent.py' >/dev/null 2>&1; "
+           "rm -rf /opt/veil-agent /etc/systemd/system/veil-agent.service; "
+           "systemctl daemon-reload >/dev/null 2>&1; echo VPURGED")
+    full = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(key) + [f"{user}@{host}", cmd]
+    try:
+        r = subprocess.run(full, capture_output=True, text=True, timeout=25,
+                           stdin=subprocess.DEVNULL)
+        if r.returncode == 0 and "VPURGED" in (r.stdout or ""):
+            return (True, "агент снят с сервера")
+        return (False, ((r.stderr or "") + (r.stdout or "")).strip()[:160] or "сбой SSH")
+    except subprocess.TimeoutExpired:
+        return (False, "таймаут SSH — агент остался на сервере")
+    except Exception as e:
+        return (False, str(e)[:160])
 
 def _node_apply_remove(n, uuid):
     if (n.get("type") or "agent") == "agent":
@@ -3340,25 +4076,18 @@ def _tg_status():
     web_links = {u: _tg_web_link(u) for u in (web["profiles"] if web else [])}
     users = []
     for u in d.get("data", []):
-        links = (u.get("links") or {}).get("tls") or []
-        # Первая ссылка обычно IPv4 — предпочтём её
-        link = ""
-        for l in links:
-            if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
-                link = l; break
-        if not link and links:
-            link = links[0]
         users.append({
             "username": u.get("username", ""),
             "enabled": bool(u.get("enabled")),
-            "link": link,
+            "link": _tg_pick_tls_link((u.get("links") or {}).get("tls")),
             "web_link": web_links.get(u.get("username", ""), ""),
+            "ad_tag": u.get("user_ad_tag") or "",
             "connections": u.get("active_unique_ips", 1 if u.get("current_connections", 0) else 0),
             "total_octets": u.get("total_octets", 0),
         })
     for u in users:
         u["link"] = _tg_host_ok(u.get("link") or "")
-    res = {"installed": True, "users": users}
+    res = {"installed": True, "users": users, "sni": _tg_sni()}
     if web:
         res["web"] = web
     return res
@@ -3388,37 +4117,48 @@ def _tg_ensure_secret_in_toml(username, secret):
     with open(TELEMT_CONF, "w", encoding="utf-8") as f:
         f.write(text)
 
-def _tg_add(username):
+def _tg_pick_tls_link(tls):
+    """Первая ссылка обычно IPv4 — предпочтём её."""
+    for l in tls or []:
+        if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
+            return l
+    return (tls or [""])[0]
+
+def _tg_web_enable_user(name):
+    """Добавить пользователя в веб-профили vhosts (нужен включённый web в telemt)."""
+    w = _tg_web_get()
+    if not (w and w.get("enabled") and w.get("host")):
+        return ""
+    users = list(w["profiles"])
+    if name not in users:
+        users.append(name)
+        try:
+            _tg_web_set_profiles(users)
+            w = _tg_web_get()
+        except Exception:
+            w = None
+    if not w or name not in w["profiles"]:
+        return ""
+    return _tg_web_link(name)
+
+def _tg_add(username, mode="both"):
+    """Создать пользователя telemt. mode: mtproto | web | both."""
     name = (username or "").strip().replace(" ", "_")
     if not name:
         raise RuntimeError("имя пустое")
     if not re.match(r"^[a-zA-Z0-9_.-]{1,32}$", name):
         raise RuntimeError("только латиница, цифры, _ . - (до 32 символов)")
+    mode = mode if mode in ("mtproto", "web", "both") else "both"
+    if mode == "web":
+        w0 = _tg_web_get()
+        if not (w0 and w0.get("enabled") and w0.get("host")):
+            raise RuntimeError("веб-прокси в telemt выключен — сначала установи Web Proxy (nginx)")
     d = _tg_api("POST", "/v1/users", {"username": name})
     secret = d.get("secret", "")
     _tg_ensure_secret_in_toml(name, secret)
     links = ((d.get("data") or {}).get("user") or {}).get("links", {})
-    tls = links.get("tls") or []
-    link = ""
-    for l in tls:
-        if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
-            link = l; break
-    if not link and tls:
-        link = tls[0]
-    web_link = ""
-    w = _tg_web_get()
-    if w and w.get("enabled") and w.get("host"):
-        users = list(w["profiles"])
-        if name not in users:
-            users.append(name)
-            try:
-                _tg_web_set_profiles(users)
-                w = _tg_web_get()
-            except Exception:
-                w = None
-        if w and name in w["profiles"]:
-            s = secret or _tg_web_secret(name)
-            web_link = "tg://webproxy?server=%s&secret=dd%s" % (w["host"], s) if s else ""
+    link = _tg_pick_tls_link(links.get("tls"))
+    web_link = _tg_web_enable_user(name) if mode in ("web", "both") else ""
     return {"username": name, "secret": secret, "link": _tg_host_ok(link), "web_link": web_link}
 
 def _tg_remove(username):
@@ -3432,6 +4172,152 @@ def _tg_remove(username):
             pass
     _tg_api("DELETE", "/v1/users/" + urllib.parse.quote(username))
     return {"ok": True}
+
+_TG_HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+def _tg_user_row(username):
+    return (_tg_api("GET", "/v1/users/" + urllib.parse.quote(username)).get("data") or {})
+
+def _tg_set_adtag(username, tag):
+    """Спонсорский канал @MTProxybot: телеметрик-тег пользователя (32 hex) либо null (снять).
+
+    Ссылка клиента при этом НЕ меняется — телеграм подставляет канал по тегу на стороне прокси,
+    для чего нужен general.use_middle_proxy = true (у telemt по умолчанию включён).
+    """
+    name = (username or "").strip()
+    if not name:
+        raise RuntimeError("имя пустое")
+    tag = (tag or "").strip().lower()
+    if tag and not _TG_HEX32.match(tag):
+        raise RuntimeError("ad_tag — ровно 32 hex-символа из @MTProxybot (или пусто, чтобы снять)")
+    _tg_api("PATCH", "/v1/users/" + urllib.parse.quote(name), {"user_ad_tag": tag or None})
+    warn = ""
+    if tag and not _tg_middle_proxy_on():
+        warn = "нужен general.use_middle_proxy = true в telemt — включи и перезапусти telemt"
+    return {"username": name, "ad_tag": tag or None, "warning": warn}
+
+def _tg_middle_proxy_on():
+    try:
+        g = _tg_api("GET", "/v1/config").get("data", {}).get("general") or {}
+    except Exception:
+        return True
+    return bool(g.get("use_middle_proxy", True))
+
+def _tg_rotate_secret(username, secret=""):
+    """Смена секрета пользователя: ссылка меняется, телеmt сам обновляет [access.users]."""
+    name = (username or "").strip()
+    if not name:
+        raise RuntimeError("имя пустое")
+    secret = (secret or "").strip().lower()
+    if secret and not _TG_HEX32.match(secret):
+        raise RuntimeError("секрет — 32 hex-символа или пусто (сгенерировать автоматически)")
+    d = _tg_api("POST", "/v1/users/" + urllib.parse.quote(name) + "/rotate-secret",
+                {"secret": secret} if secret else {}).get("data") or {}
+    new_secret = d.get("secret") or ""
+    if new_secret:
+        _tg_ensure_secret_in_toml(name, new_secret)
+    links = ((d.get("user") or {}).get("links") or {}).get("tls") or []
+    return {"username": name, "secret": new_secret,
+            "link": _tg_host_ok(_tg_pick_tls_link(links)),
+            "web_link": _tg_web_link(name)}
+
+def _tg_sni():
+    """SNI (маскировка) прокси: censorship.tls_domain + список tls_domains."""
+    try:
+        c = _tg_api("GET", "/v1/config").get("data", {}).get("censorship") or {}
+    except Exception:
+        return {"tls_domain": "", "tls_domains": []}
+    return {"tls_domain": c.get("tls_domain") or "", "tls_domains": c.get("tls_domains") or []}
+
+def _tg_sni_set(tls_domain=None, tls_domains=None):
+    dom = (tls_domain or "").strip().lower() if tls_domain is not None else None
+    if dom is not None:
+        if dom and not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?", dom):
+            raise RuntimeError("домен: только имя хоста без портов и путей")
+    extra = None
+    if tls_domains is not None:
+        extra = []
+        for d0 in tls_domains:
+            d0 = (d0 or "").strip().lower()
+            if not d0:
+                continue
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?", d0):
+                raise RuntimeError("домен: только имя хоста без портов и путей")
+            if d0 not in extra:
+                extra.append(d0)
+    body = {}
+    if dom is not None:
+        body["tls_domain"] = dom
+    if extra is not None:
+        body["tls_domains"] = extra
+    if not body:
+        raise RuntimeError("нечего менять")
+    _tg_api("PATCH", "/v1/config", {"censorship": body})
+    _audit("tg_sni", **({"domain": dom} if dom is not None else {}))
+    return _tg_sni()
+
+_TG_TRANS = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+             "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+             "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+             "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
+             "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya"}
+
+def _tg_slug(name, fallback="client"):
+    """Имя клиента в допустимое имя пользователя telemt (латиница, _ . -)."""
+    s = "".join(_TG_TRANS.get(ch, ch) for ch in (name or "").lower())
+    s = re.sub(r"[^a-z0-9_.-]", "_", s).strip("._-")[:24]
+    return s or fallback
+
+def _tg_ensure_user(username, web=True):
+    """Вернуть {username, link, web_link} для пользователя telemt, создав его при отсутствии.
+
+    None — если telemt/API недоступны (тогда подписка отдаётся без прокси-ссылок).
+    """
+    name = _tg_slug(username)
+    try:
+        users = [u.get("username") for u in (_tg_api("GET", "/v1/users").get("data") or [])]
+    except Exception:
+        return None
+    if name not in users:
+        try:
+            _tg_add(name, "both" if web else "mtproto")
+        except Exception:
+            return None
+    try:
+        u = _tg_user_row(name)
+    except Exception:
+        return None
+    return {"username": name,
+            "link": _tg_host_ok(_tg_pick_tls_link((u.get("links") or {}).get("tls"))),
+            "web_link": _tg_web_link(name) if web else ""}
+
+def _tg_sub_links(client=None):
+    """Ссылки Telegram-прокси, добавляемые в подписку клиента (обычные и персональные)."""
+    mode = ((client or {}).get("tg_proxy") or CFG_CACHE.get("sub_tg_mode") or "").strip().lower()
+    if mode in ("", "off", "none", "0"):
+        return []
+    if mode == "personal":
+        name = (client or {}).get("tg_user") or ""
+        if not name:
+            name = _tg_slug((client or {}).get("name"), "client") + "-" + \
+                   ((client or {}).get("sub_token") or "x")[:6]
+    else:
+        name = CFG_CACHE.get("tg_shared_user") or "common"
+    u = _tg_ensure_user(name, web=True)
+    if not u:
+        return []
+    return [l for l in (u.get("link"), u.get("web_link")) if l]
+
+def _sub_settings():
+    try:
+        h = max(1, min(168, int(CFG_CACHE.get("sub_update_hours") or 24)))
+    except Exception:
+        h = 24
+    mode = (CFG_CACHE.get("sub_tg_mode") or "off").strip().lower()
+    if mode not in ("off", "shared", "personal"):
+        mode = "off"
+    return {"update_hours": h, "tg_mode": mode,
+            "tg_shared_user": CFG_CACHE.get("tg_shared_user") or "common"}
 
 def _tg_web_get():
     """WEB-конфиг telemt: enabled, carrier, vhosts-профили, host."""
@@ -4287,7 +5173,7 @@ def _sb_config(st, sub_path, host, panel_port):
         if not os.path.exists(os.path.join(RULESET_DIR, fname)):
             continue
         rule_sets.append({"tag": tag, "type": "remote", "format": "binary",
-                          "url": f"https://{host}:{panel_port}/rulesets/{fname}",
+                          "url": f"{_pb(host, panel_port)}/rulesets/{fname}",
                           "download_detour": "direct"})
     rules = [{"protocol": ["dns"], "outbound": "dns-out"}]
     final = first
@@ -4742,7 +5628,7 @@ def _dynv6_create_zone(name, account_token):
         up = {"ok": False, "error": str(e)}
     return {"ok": True, "host": name, "token": account_token, "zone_created": True, "update": up}
 
-def _dynv6_update():
+def _dynv6_update(force4=None):
     conf = _dynv6_conf()
     host, token = conf["host"], conf["token"]
     if not host or not token:
@@ -4750,6 +5636,8 @@ def _dynv6_update():
     if not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", host):
         raise RuntimeError("некорректный dynv6-host")
     ip4, ip6 = _pub_ip4(), _pub_ip6()
+    if force4:
+        ip4 = str(force4)
     p = [("hostname", host)]
     if ip4: p.append(("ipv4", ip4))
     if ip6: p.append(("ipv6", ip6))
@@ -4771,6 +5659,411 @@ def _dynv6_update():
         raise RuntimeError("dynv6: " + body[:200])
     return {"ok": True, "host": host, "ipv4": ip4, "ipv6": ip6, "response": body}
 
+
+# ---------- АВТОЗАМЕНА IP ПРИ ПАДЕНИИ ДОСТУПНОСТИ ИЗ РФ ----------
+
+_ROT = {"ts": 0.0, "ok": 0, "total": 0, "pct": None, "state": "idle",
+        "suspect_since": 0.0, "last_swap": 0.0, "ip": "", "error": "",
+        "events": [], "busy": False}
+_ROT_LOCK = threading.Lock()
+
+
+def _is_ip4(s):
+    return bool(re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", s or "")) and all(
+        int(x) < 256 for x in (s or "0").split("."))
+
+
+def _is_pub_ip4(s):
+    """Публичный IPv4 (не loopback/private/CGNAT/link-local/multicast/reserved)."""
+    if not _is_ip4(s):
+        return False
+    try:
+        import ipaddress
+        return ipaddress.ip_address(s).is_global
+    except Exception:
+        return False
+
+
+def _rot_conf():
+    def _num(key, dflt, lo, hi):
+        try:
+            v = float(CFG_CACHE.get(key) if CFG_CACHE.get(key) is not None else dflt)
+        except Exception:
+            v = float(dflt)
+        return max(lo, min(hi, v))
+    prov = (CFG_CACHE.get("rot_provider") or "dynv6").strip().lower()
+    if prov not in ("off", "dynv6", "cloudflare", "both"):
+        prov = "dynv6"
+    pool = [x.strip() for x in (CFG_CACHE.get("rot_pool") or []) if _is_ip4(x.strip())]
+    dom = (CFG_CACHE.get("panel_domain") or "").strip()
+    return {
+        "enabled": bool(CFG_CACHE.get("rot_enabled")),
+        "threshold": _num("rot_threshold", 50, 1, 100),
+        "window_min": int(_num("rot_window_min", 5, 0, 180)),
+        "check_min": int(_num("rot_check_min", 15, 5, 240)),
+        "cooldown_min": int(_num("rot_cooldown_min", 30, 1, 1440)),
+        "provider": prov,
+        "pool": pool,
+        "use_iface": bool(CFG_CACHE.get("rot_use_iface", True)),
+        "target": (CFG_CACHE.get("rot_target") or dom or _pub_ip4() or "").strip(),
+        "port": int(_num("rot_port", 443, 1, 65535)),
+        "path": (CFG_CACHE.get("rot_path") or "/").strip() or "/",
+        "cf_zone": (CFG_CACHE.get("cf_zone") or "").strip(),
+        "cf_records": list(CFG_CACHE.get("cf_records") or []),
+        "cf_has_token": bool(CFG_CACHE.get("cf_token")),
+    }
+
+
+def _rot_event(text, kind="info"):
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+    with _ROT_LOCK:
+        _ROT["events"] = (_ROT["events"] + [{"ts": ts, "text": text, "kind": kind}])[-40:]
+
+
+def _rot_notify(text):
+    ids = CFG_CACHE.get("bot_chat_ids") or []
+    if not ids:
+        return
+    try:
+        _bot_send_message(ids[0], text, "HTML")
+    except Exception:
+        pass
+
+
+def _rot_candidates():
+    """Кандидаты на замену: явно заданный пул + адреса интерфейсов (если разрешено)."""
+    cfg = _rot_conf()
+    out = []
+    for ip in cfg["pool"]:
+        if ip not in out:
+            out.append(ip)
+    if cfg["use_iface"]:
+        try:
+            for a in _all_iface_ips():
+                for ip in a.get("ipv4") or []:
+                    if _is_pub_ip4(ip) and ip not in out:
+                        out.append(ip)
+        except Exception:
+            pass
+    return out
+
+
+def _rot_pick_ip(cur):
+    """Следующий свободный IP после текущего (round-robin по списку)."""
+    cand = [ip for ip in _rot_candidates() if ip != cur]
+    if not cand:
+        return ""
+    last = (CFG_CACHE.get("rot_last_ip") or "").strip()
+    if last in cand:
+        try:
+            i = (cand.index(last) + 1) % len(cand)
+            return cand[i]
+        except Exception:
+            pass
+    return cand[0]
+
+
+def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200):
+    """Серверная проверка доступности через Globalping (зонды из РФ). -> (ok, total)"""
+    if not target:
+        raise RuntimeError("не задан адрес для проверки")
+    proto = proto or ("HTTPS" if port in (443, 8443, 2053, 2083, 2087, 2096) else "HTTP")
+    body = {"type": "http", "target": target,
+            "locations": [{"country": "RU", "limit": limit}],
+            "measurementOptions": {"protocol": proto, "port": port,
+                                   "request": {"method": "GET", "path": path}}}
+    def _req(url, data=None):
+        req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                     headers={"Content-Type": "application/json",
+                                              "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    d = _req("https://api.globalping.io/v1/measurements", json.dumps(body).encode())
+    mid = (d.get("id") or "").strip()
+    if not mid:
+        raise RuntimeError("Globalping не вернул id измерения")
+    deadline = time.time() + wait_s
+    results = None
+    while time.time() < deadline:
+        time.sleep(6)
+        try:
+            dd = _req("https://api.globalping.io/v1/measurements/" + mid)
+        except Exception:
+            continue
+        if dd.get("status") == "finished":
+            results = dd.get("results") or []
+            break
+        if dd.get("status") == "failed":
+            raise RuntimeError("Globalping: измерение не удалось")
+    if results is None:
+        raise RuntimeError("таймаут ожидания результатов Globalping")
+    ok = 0
+    for r in results:
+        st = (r.get("result") or {})
+        if st.get("statusCode") and 200 <= int(st["statusCode"]) < 400:
+            ok += 1
+    return ok, len(results)
+
+
+def _cf_api(method, path, body=None):
+    tok = (CFG_CACHE.get("cf_token") or "").strip()
+    if not tok:
+        raise RuntimeError("не задан API-токен Cloudflare (Zone → DNS:Edit)")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request("https://api.cloudflare.com/client/v4" + path, data=data,
+                                 method=method,
+                                 headers={"Authorization": "Bearer " + tok,
+                                          "Content-Type": "application/json",
+                                          "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            d = json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            txt = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            txt = ""
+        raise RuntimeError("cloudflare HTTP %d %s" % (e.code, txt))
+    if not d.get("success"):
+        errs = d.get("errors") or []
+        msg = errs[0].get("message") if errs and isinstance(errs[0], dict) else str(errs)
+        raise RuntimeError("cloudflare: " + str(msg)[:200])
+    return d.get("result")
+
+
+def _cf_zone():
+    z = (CFG_CACHE.get("cf_zone") or "").strip().lower()
+    if not z:
+        dom = (CFG_CACHE.get("panel_domain") or "").strip().lower()
+        if dom:
+            z = ".".join(dom.rsplit(".", 2)[-2:])
+    if not z:
+        raise RuntimeError("не задана зона Cloudflare")
+    cached = CFG_CACHE.get("cf_zone_id")
+    if cached:
+        return cached, z
+    res = _cf_api("GET", "/zones?" + urllib.parse.urlencode({"name": z})) or []
+    if not res:
+        raise RuntimeError("зона %s не найдена в Cloudflare" % z)
+    zid = res[0].get("id") or ""
+    if zid:
+        CFG_CACHE["cf_zone_id"] = zid
+        _save(CFG, CFG_CACHE)
+    return zid, z
+
+
+def _cf_record_names():
+    raw = CFG_CACHE.get("cf_records") or []
+    if isinstance(raw, str):
+        raw = re.split(r"[,\s]+", raw)
+    _, zone = _cf_zone()
+    out = []
+    for n in raw:
+        n = (n or "").strip().strip(".").lower()
+        if not n or n in ("@", "apex"):
+            n = zone
+        elif not n.endswith("." + zone) and n != zone and "." not in n:
+            n = n + "." + zone
+        if n not in out:
+            out.append(n)
+    if not out:
+        dom = (CFG_CACHE.get("panel_domain") or "").strip().lower()
+        out = [dom or zone]
+    return out
+
+
+def _cf_current_ip():
+    """IP, на который сейчас смотрит первая A-запись (или '' если не определён)."""
+    try:
+        zid, _ = _cf_zone()
+        names = _cf_record_names()
+        res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
+                      (urllib.parse.quote(zid), urllib.parse.quote(names[0]))) or []
+        return (res[0].get("content") if res else "") or ""
+    except Exception:
+        return ""
+
+
+def _cf_set_ip(ip):
+    """Заменить content у всех настроенных A-записей. Вернуть список изменений."""
+    zid, zone = _cf_zone()
+    changed = []
+    for name in _cf_record_names():
+        res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
+                      (urllib.parse.quote(zid), urllib.parse.quote(name))) or []
+        if not res:
+            raise RuntimeError("A-запись %s не найдена в зоне %s" % (name, zone))
+        for rec in res:
+            if (rec.get("content") or "") == ip:
+                continue
+            body = {"type": "A", "name": name, "content": ip,
+                    "ttl": int(rec.get("ttl") or 60), "proxied": bool(rec.get("proxied"))}
+            _cf_api("PUT", "/zones/%s/dns_records/%s" % (urllib.parse.quote(zid),
+                                                         urllib.parse.quote(rec.get("id") or "")),
+                    body)
+            changed.append({"name": name, "from": rec.get("content"), "to": ip,
+                            "proxied": body["proxied"]})
+    return changed
+
+
+def _rot_apply(ip):
+    """Применить новый IP к выбранным провайдерам DNS. Вернуть отчёт."""
+    cfg = _rot_conf()
+    rep = []
+    prov = cfg["provider"]
+    if prov in ("dynv6", "both"):
+        try:
+            r = _dynv6_update(force4=ip)
+            rep.append("dynv6: %s → %s" % (r.get("host"), ip))
+        except Exception as e:
+            rep.append("dynv6: ошибка %s" % str(e)[:120])
+    if prov in ("cloudflare", "both"):
+        try:
+            ch = _cf_set_ip(ip)
+            rep.append("cloudflare: " + (", ".join("%s %s→%s%s" %
+                       (c["name"], c["from"], c["to"], " (оранжевое облако)" if c["proxied"] else "")
+                       for c in ch) if ch else "записи уже актуальны"))
+        except Exception as e:
+            rep.append("cloudflare: ошибка %s" % str(e)[:160])
+    if prov == "off":
+        rep.append("провайдер смены выключен")
+    return rep
+
+
+def _rotate_ip(reason=""):
+    """Одна замена IP. Возвращает (ok, сообщение)."""
+    cfg = _rot_conf()
+    if cfg["provider"] == "off":
+        return False, "провайдер смены не выбран"
+    if time.time() - _ROT["last_swap"] < cfg["cooldown_min"] * 60:
+        return False, "кулдаун %d мин после прошлой замены" % cfg["cooldown_min"]
+    cur = _cf_current_ip() if cfg["provider"] in ("cloudflare", "both") else (_pub_ip4() or "")
+    if not cur:
+        cur = _pub_ip4() or ""
+    new = _rot_pick_ip(cur)
+    if not new:
+        return False, "нет свободных IP в пуле (текущий %s)" % (cur or "?")
+    rep = _rot_apply(new)
+    CFG_CACHE["rot_last_ip"] = new
+    _save(CFG, CFG_CACHE)
+    with _ROT_LOCK:
+        _ROT["last_swap"] = time.time()
+        _ROT["ip"] = new
+        _ROT["state"] = "idle"
+        _ROT["suspect_since"] = 0.0
+    _rot_event("замена IP %s → %s%s: %s" % (cur or "?", new, (" (" + reason + ")") if reason else "",
+                                            "; ".join(rep)), "swap")
+    _audit("ip_rotate", frm=cur, to=new, provider=cfg["provider"], reason=reason)
+    _rot_notify("🔁 <b>Сменён IP: %s → %s</b>\n%s\nПричина: %s" %
+                (cur or "?", new, "\n".join(rep), reason or "доступность из РФ"))
+    return True, "; ".join(rep)
+
+
+def _rot_tick():
+    """Один шаг монитора: замер, при низком результате — окно перепроверки и замена."""
+    cfg = _rot_conf()
+    if not cfg["enabled"] or cfg["provider"] == "off" or not cfg["target"]:
+        return
+    with _ROT_LOCK:
+        if _ROT["busy"]:
+            return
+        _ROT["busy"] = True
+    try:
+        ok, total = _gp_probe(cfg["target"], cfg["port"], cfg["path"])
+    except Exception as e:
+        with _ROT_LOCK:
+            _ROT["error"] = str(e)[:200]
+            _ROT["busy"] = False
+        _rot_event("проверка доступности не удалась: " + str(e)[:160], "err")
+        return
+    if total <= 0:
+        with _ROT_LOCK:
+            _ROT["error"] = "нет ответов от зондов"
+            _ROT["busy"] = False
+        return
+    pct = ok * 100.0 / total
+    now = time.time()
+    with _ROT_LOCK:
+        _ROT.update(ts=now, ok=ok, total=total, pct=pct, error="")
+        state = _ROT["state"]
+        suspect = _ROT["suspect_since"]
+    _gp_record_history(ok, total, cfg)
+    if pct > cfg["threshold"]:
+        if state != "idle":
+            _rot_event("доступность восстановилась: %d/%d (%.0f%%)" % (ok, total, pct), "ok")
+        with _ROT_LOCK:
+            _ROT["state"] = "idle"
+            _ROT["suspect_since"] = 0.0
+        return
+    if state != "suspect":
+        _rot_event("доступность %.0f%% ≤ порога %.0f%% (%d/%d)" % (pct, cfg["threshold"], ok, total),
+                   "warn")
+        with _ROT_LOCK:
+            _ROT["state"] = "suspect"
+            _ROT["suspect_since"] = now
+        if cfg["window_min"] <= 0:
+            _rotate_ip("сразу: %.0f%%" % pct)
+        return
+    if now - suspect < cfg["window_min"] * 60:
+        return
+    _rotate_ip("повторно %.0f%% через %d мин" % (pct, cfg["window_min"]))
+
+
+def _gp_record_history(ok, total, cfg):
+    """Записать серверный замер в ту же историю, что и браузерные проверки."""
+    entry = {"created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+             "success": ok == total, "success_count": ok, "total_count": total,
+             "source": "panel", "target": "%s:%d%s" % (cfg["target"], cfg["port"], cfg["path"]),
+             "details": []}
+    try:
+        p = f"{BASE}/globalping_history.json"
+        h = _load(p, []) or []
+        if not isinstance(h, list):
+            h = []
+        h = (h + [entry])[-50:]
+        _save(p, h)
+        _gp_maybe_alert(entry)
+    except Exception:
+        pass
+
+
+def _rotate_loop():
+    time.sleep(45)
+    while True:
+        try:
+            cfg = _rot_conf()
+            iv = max(300, cfg["check_min"] * 60)
+            t0 = time.time()
+            if cfg["enabled"]:
+                _rot_tick()
+            with _ROT_LOCK:
+                busy = _ROT["busy"]
+            if not busy:
+                time.sleep(max(30, min(120, iv - (time.time() - t0))))
+        except Exception as e:
+            try:
+                _ROT["error"] = str(e)[:200]
+            except Exception:
+                pass
+            time.sleep(120)
+
+
+def _rot_status():
+    cfg = _rot_conf()
+    with _ROT_LOCK:
+        st = dict(_ROT)
+        st["events"] = list(_ROT["events"])[-12:]
+    st["conf"] = cfg
+    st["pool"] = _rot_candidates()
+    st["now_ip4"] = _pub_ip4() or ""
+    st["iface_ips"] = [a.get("ipv4") or [] for a in _all_iface_ips()]
+    st["iface"] = [{"iface": a.get("iface"), "ipv4": a.get("ipv4") or []} for a in _all_iface_ips()]
+    if cfg["provider"] in ("cloudflare", "both"):
+        st["cf_ip"] = _cf_current_ip()
+        st["cf_records"] = _cf_record_names() if CFG_CACHE.get("cf_token") else []
+    return st
+
+
 _WEB_CTX = None
 
 def _web_tls_ctx():
@@ -4790,6 +6083,12 @@ def _web_tls_ctx():
         return None
     _WEB_CTX = ctx
     return ctx
+
+
+def _pb(host, panel_port):
+    """Базовый URL панели; схема следует реальному режиму: https только когда серт подключён."""
+    return ("https" if _WEB_CTX is not None else "http") + f"://{host}:{panel_port}"
+
 
 def _cert_pathes():
     c = CFG_CACHE or {}
@@ -5059,6 +6358,7 @@ def _bot_poll_loop():
         time.sleep(2)
 
 threading.Thread(target=_ddns_loop, daemon=True).start()
+threading.Thread(target=_rotate_loop, daemon=True).start()
 threading.Thread(target=_limits_loop, daemon=True).start()
 threading.Thread(target=_bot_poll_loop, daemon=True).start()
 threading.Thread(target=_rulesets_loop, daemon=True).start()
@@ -5300,7 +6600,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"client": {
                 "uuid": c["uuid"], "name": name, "proto": proto,
                 "sub_token": c.get("sub_token"),
-                "sub_url": f"https://{host}:{panel_port}/sub/{c.get('sub_token')}",
+                "sub_url": f"{_pb(host, panel_port)}/sub/{c.get('sub_token')}",
                 "link": link}})
         if p == "/api/ext/clients/update":
             u = (b.get("uuid") or "").strip()
@@ -5370,6 +6670,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 links = []
                 seen_uuids = set()
+                tg_links = []
                 found_client = False
                 state_changed = False
                 up = down = total = 0
@@ -5403,6 +6704,12 @@ class H(http.server.BaseHTTPRequestHandler):
                             ex = int(c.get("expiry") or 0)
                             if ex:
                                 expiry = max(expiry, ex)
+                            try:
+                                for l in _tg_sub_links(c):
+                                    if l not in tg_links:
+                                        tg_links.append(l)
+                            except Exception:
+                                pass
                         try:
                             if proto not in inb_links:
                                 inb_links[proto] = _link(inb, host, c, proto)
@@ -5439,6 +6746,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 force_v2 = fmt in ("v2ray", "base64", "text")
                 is_incy = (not use_sb and not force_v2 and sub_path
                            and _is_incy_client(ua, xc))
+                if sub_path:
+                    _xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                    _dip = _xff or (self.client_address[0] if getattr(self, "client_address", None) else "?")
+                    try:
+                        _subdev_note(sub_path, _dip, ua, xc)
+                    except Exception:
+                        pass
+                    _pin = _subdev_pref(sub_path)
+                    if _pin == "base64":
+                        use_sb = False; is_incy = False
+                    elif _pin == "singbox":
+                        use_sb = True; is_incy = False
                 if use_sb:
                     payload = json.dumps(list(sb_objs.values()), ensure_ascii=False).replace(r'\/', '/')
                     b = payload.encode("utf-8")
@@ -5449,10 +6768,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     ctype = "text/plain; charset=utf-8"
                 else:
                     # ссылки нод, куда клиент размещён мастером — в общий base64-список
-                    links = links + list(node_links.values())
+                    links = links + list(node_links.values()) + tg_links
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
                     # парсеры, спотыкающиеся о [Interface], всё равно импортируют остальное.
-                    one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://"))]
+                    one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "tg://"))]
                     if len(one) < len(links):
                         links = one + [l for l in links if l not in one]
                     payload = base64.b64encode("\n".join(links).encode()).decode()
@@ -5471,10 +6790,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 if sub_name:
                     pt = "base64:" + base64.b64encode(sub_name.encode("utf-8")).decode()
                     self.send_header("profile-title", pt)
-                self.send_header("profile-update-interval", "24")
+                try:
+                    pui = str(max(1, min(168, int(CFG_CACHE.get("sub_update_hours") or 24))))
+                except Exception:
+                    pui = "24"
+                self.send_header("profile-update-interval", pui)
                 self.send_header("profile-web-page-url",
-                                 f"https://{host}:{panel_port}/p/{sub_path}" if sub_path
-                                 else f"https://{host}:{panel_port}/")
+                                 f"{_pb(host, panel_port)}/p/{sub_path}" if sub_path
+                                 else f"{_pb(host, panel_port)}/")
                 self.end_headers(); self.wfile.write(b)
                 return None
             except Exception as e:
@@ -5548,9 +6871,10 @@ class H(http.server.BaseHTTPRequestHandler):
             host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
-            sub_url = f"https://{host}:{panel_port}/sub/{u['sub_token']}"
+            sub_url = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
             html = _sub_page_html(u, sub_url, host, panel_port,
-                                  self.headers.get("User-Agent", "") or "")
+                                  self.headers.get("User-Agent", "") or "",
+                                  devs=_subdev_list(tok))
             b = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -5685,6 +7009,13 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"current": _proto_of(st),
                                     "configured": _client_count(st) > 0,
                                     "protocols": PROTOCOLS})
+        if p == "/api/inbound/get":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            proto = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                     .get("proto") or [""])[0].strip()
+            inb = (_load(STATE) or {}).get("inbounds", {}).get(proto)
+            if not inb: return self._send(404, {"error": "inbound не найден"})
+            return self._send(200, _inbound_public(proto, inb))
         if p == "/api/clients":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
@@ -5702,17 +7033,19 @@ class H(http.server.BaseHTTPRequestHandler):
                         c["sub_token"] = secrets.token_urlsafe(16)
                         state_changed = True
                     sub_token = c["sub_token"]
-                    sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+                    sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
                     cu = int(c.get("up") or 0); cdn = int(c.get("down") or 0)
                     item = {"uuid": c["uuid"], "name": c["name"],
                             "link": _link(inb, host, c, proto),
                             "sub_token": sub_token,
                             "sub_url": sub_url,
-                            "sb_url": f"https://{host}:{panel_port}/sb/{sub_token}",
+                            "sb_url": f"{_pb(host, panel_port)}/sb/{sub_token}",
                             "up": cu, "down": cdn,
                             "limit_gb": float(c.get("limit_gb") or 0),
                             "expiry": int(c.get("expiry") or 0),
                             "reset_cycle": c.get("reset_cycle") or "",
+                            "tg_proxy": c.get("tg_proxy") or "",
+                            "tg_user": c.get("tg_user") or "",
                             "cycle": c.get("cycle") or "lifetime",
                             "max_devices": int(c.get("max_devices") or 0),
                             "used_gb": round((cu + cdn) / (1024**3), 3),
@@ -5731,11 +7064,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     if proto == "wireguard" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
-                        item["conf_url"] = f"https://{host}:{panel_port}/api/wgconf/{sub_token}"
+                        item["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{sub_token}"
                     if proto == "amneziawg" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
-                        item["conf_url"] = f"https://{host}:{panel_port}/api/awgconf/{sub_token}"
+                        item["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{sub_token}"
                     if len(out) < 16:
                         item["online"] = _online_count(c["uuid"])
                     out.append(item)
@@ -5752,8 +7085,45 @@ class H(http.server.BaseHTTPRequestHandler):
             if not st: return self._send(200, {"subs": [], "configured": False})
             if _migrate_state(st): _save(STATE, st)
             subs = _subs_summary(st)
+            try:
+                _subdev_prune({(u.get("sub_token") or "") for u in subs})
+            except Exception:
+                pass
+            for u in subs:
+                tok = u.get("sub_token") or ""
+                devs = _subdev_list(tok)
+                u["devices"] = devs
+                u["fmt"] = _subdev_pref(tok)
+                top = devs[0] if devs else {}
+                u["client"] = top.get("client", "")
+                u["client_version"] = top.get("version", "")
+                u["client_os"] = top.get("os", "")
+                u["client_device"] = top.get("type", "")
+                u["client_old"] = bool(top.get("old"))
+                u["last_seen"] = top.get("last_ts", "")
             return self._send(200, {"subs": subs, "configured": bool(subs),
                                     "active": _proto_of(st)})
+        if p == "/api/subs/export":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            fmt = ((qs.get("format") or ["json"])[0]).strip().lower()
+            st = _load(STATE) or {}
+            if _migrate_state(st): _save(STATE, st)
+            stamp = time.strftime("%Y%m%d-%H%M")
+            if fmt == "links":
+                b = _subs_export_links(st).encode("utf-8")
+                ctype, fname = "text/plain; charset=utf-8", "veil-subs-" + stamp + ".txt"
+            else:
+                b = json.dumps(_subs_export_json(st), ensure_ascii=False, indent=2).encode("utf-8")
+                ctype, fname = "application/json; charset=utf-8", "veil-subs-" + stamp + ".json"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", 'attachment; filename="' + fname + '"')
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+            return None
         if p == "/api/update":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -5801,6 +7171,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/versions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups(), "telemt": _tg_backups()})
+        if p == "/api/rotate/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _rot_status())
+            except Exception as e:
+                return self._send(200, {"error": str(e)[:200]})
         if p == "/api/dynv6/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             conf = _dynv6_conf()
@@ -6049,6 +7425,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/fix/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _fix_status())
+        if p == "/api/subscription/settings":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            out = _sub_settings()
+            out["users"] = [u["username"] for u in (_tg_status().get("users") or [])]
+            return self._send(200, out)
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
@@ -6154,8 +7535,67 @@ class H(http.server.BaseHTTPRequestHandler):
                 ma = 2592000 if rem else 259200
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
-            if not _authed(self) and p != "/api/bot/webhook" and not p.startswith("/api/ext/"):
+            if (not _authed(self) and p != "/api/bot/webhook"
+                    and not p.startswith("/api/ext/")
+                    and not (p.startswith("/p/") and p.endswith("/forget"))):
                 return self._send(401, {"error": "unauthorized"})
+            if p.startswith("/p/") and p.endswith("/forget"):
+                # Публичное «забыть устройство» со страницы подписки /p/<tok>.
+                # Токен сам является правом доступа: кто знает токен — видит и подписку.
+                tok = p[3:-len("/forget")].strip("/")
+                st = _load(STATE) or {}
+                if _migrate_state(st): _save(STATE, st)
+                ok_sub = any(x["sub_token"] == tok or x["uuid"] == tok
+                             for x in _subs_summary(st))
+                if not ok_sub:
+                    return self._send(404, {"error": "подписка не найдена"})
+                ip = (self._body().get("ip") or "")[:64]
+                if not ip:
+                    return self._send(400, {"error": "нужен ip"})
+                _subdev_remove(tok, ip)
+                return self._send(200, {"ok": True, "devices": _subdev_list(tok)})
+            if p == "/api/inbound/settings":
+                b = self._body()
+                proto = (b.get("proto") or "").strip()
+                if proto in ("wireguard", "amneziawg"):
+                    return self._send(400, {"error": "для WireGuard/AmneziaWG точечные настройки пока недоступны"})
+                st = _load(STATE) or {}
+                inb = (st.get("inbounds") or {}).get(proto)
+                if not inb:
+                    return self._send(404, {"error": "inbound не найден: " + proto})
+                def _put(key, val):
+                    if val in (None, "", [], {}):
+                        inb.pop(key, None)
+                    else:
+                        inb[key] = val
+                if "snis" in b: _put("snis", _as_list(b.get("snis")))
+                if "sids" in b: _put("sids", _as_list(b.get("sids")))
+                if "alpn" in b: _put("alpn", _as_list(b.get("alpn")))
+                for key in ("sni", "dest", "path", "host", "service", "mode", "flow"):
+                    if key in b: _put(key, (str(b.get(key) or "")).strip()[:200])
+                if "sniff" in b:
+                    sv = b.get("sniff")
+                    if isinstance(sv, dict): _put("sniff", sv)
+                    elif sv in (False, "false", 0, "0"): _put("sniff", False)
+                    elif sv in (True, "true", 1, "1"): _put("sniff", True)
+                    else: _put("sniff", None)
+                for key in ("_adv", "_adv_ib"):
+                    if key in b:
+                        ov = b.get(key)
+                        if ov in (None, "", {}, "null"):
+                            inb.pop(key, None); continue
+                        if not isinstance(ov, dict):
+                            return self._send(400, {"error": key + " должен быть JSON-объектом"})
+                        if len(json.dumps(ov)) > 8000:
+                            return self._send(400, {"error": key + ": слишком большой overriding"})
+                        if key == "_adv_ib":
+                            ov = {k: v for k, v in ov.items()
+                                  if k not in ("protocol", "settings", "port", "tag", "clients")}
+                        inb[key] = ov
+                ok, err = _validate_and_apply(st, force_proto=proto)
+                if not ok:
+                    return self._send(400, {"error": err or "конфиг не прошёл проверку"})
+                return self._send(200, {"ok": True, "inbound": _inbound_public(proto, inb)})
             if p == "/api/bot/webhook":
                 # Telegram webhook endpoint (no auth needed - called by Telegram)
                 if self.command != "POST":
@@ -6277,7 +7717,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 _write_xray(st); _save(STATE, st)
                 _restart_xray()
                 
-                sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+                sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
                 first_link = added_links[0] if added_links else ""
                 return self._send(200, {"ok": True, "link": first_link,
                                         "port": inb["port"], "proto": proto,
@@ -6377,12 +7817,19 @@ class H(http.server.BaseHTTPRequestHandler):
                 b = self._body()
                 host = (b.get("host") or "").strip()
                 nodes = get_nodes()
+                node = next((n for n in nodes
+                             if (n.get("host") or "").strip().lower() == host.lower()), None)
                 out = [n for n in nodes
                        if (n.get("host") or "").strip().lower() != host.lower()]
                 if len(out) == len(nodes):
                     return self._send(404, {"error": "нода не найдена"})
+                purge_note = None
+                if node and b.get("purge", True):
+                    pok, pmsg = _node_agent_purge(node)
+                    purge_note = pmsg if pok is not None else None
                 save_nodes(out)
-                return self._send(200, {"ok": True, "nodes": _nodes_public()})
+                return self._send(200, {"ok": True, "nodes": _nodes_public(),
+                                        "purge": purge_note})
             if p == "/api/nodes/bootstrap":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
@@ -6412,6 +7859,44 @@ class H(http.server.BaseHTTPRequestHandler):
                 threading.Thread(target=_node_bootstrap_worker, args=(jid,), daemon=True).start()
                 _audit("node_bootstrap_start", host=host, user=user)
                 return self._send(200, {"id": jid})
+            if p == "/api/subs/import":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                fmt = (b.get("format") or "json").strip().lower()
+                st = _load(STATE)
+                if st is None:
+                    st = _new_state()
+                _migrate_state(st)
+                try:
+                    if fmt == "json":
+                        data = b.get("data")
+                        if isinstance(data, str):
+                            data = json.loads(data)
+                        if not isinstance(data, dict):
+                            return self._send(400, {"error": "ожидаю объект JSON"})
+                        imported, warnings = _import_from_json(st, data)
+                    else:
+                        text = b.get("text") or ""
+                        if not text.strip():
+                            return self._send(400, {"error": "пустой текст ссылок"})
+                        imported, warnings = _import_from_links(st, text)
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+                except Exception as e:
+                    return self._send(400, {"error": "разбор не удался: " + str(e)[:160]})
+                if not imported:
+                    return self._send(400, {"error": "ничего не найдено для импорта",
+                                            "warnings": warnings})
+                _awg_sync(st); _wg_sync(st)
+                ok, err = _validate_and_apply(st)
+                if not ok:
+                    return self._send(400, {"error": "конфиг не принят: " + str(err)[:200],
+                                            "warnings": warnings})
+                _audit("subs_import", format=fmt, subs=imported)
+                return self._send(200, {"ok": True, "imported": imported,
+                                        "warnings": warnings,
+                                        "subs": _subs_summary(st)})
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"
@@ -6429,6 +7914,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 reset_cycle = (b.get("reset_cycle") or "").strip().lower()
                 try: max_devices = max(0, int(b.get("max_devices") or 0))
                 except Exception: max_devices = 0
+                # Telegram-прокси в подписке: отдельная (персональная) ссылка, общая или не надо
+                tg_mode = (b.get("tg_proxy") or "").strip().lower()
+                if tg_mode not in ("off", "shared", "personal"):
+                    tg_mode = ""
+                tg_user = (_tg_slug(name, "client") + "-" + sub_token[:6]) if tg_mode == "personal" else ""
 
                 host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
@@ -6446,6 +7936,10 @@ class H(http.server.BaseHTTPRequestHandler):
                                     reset_cycle=reset_cycle, max_devices=max_devices)
                     c["uuid"] = client_uuid
                     c["sub_token"] = sub_token
+                    if tg_mode:
+                        c["tg_proxy"] = tg_mode
+                        if tg_user:
+                            c["tg_user"] = tg_user
                     inb.setdefault("clients", []).append(c)
                     lnk = _link(inb, host, c, target_proto)
                     added_links.append({"proto": target_proto, "link": lnk})
@@ -6465,6 +7959,10 @@ class H(http.server.BaseHTTPRequestHandler):
                                         reset_cycle=reset_cycle, max_devices=max_devices)
                         c["uuid"] = client_uuid
                         c["sub_token"] = sub_token
+                        if tg_mode:
+                            c["tg_proxy"] = tg_mode
+                            if tg_user:
+                                c["tg_user"] = tg_user
                         inb.setdefault("clients", []).append(c)
                         lnk = _link(inb, host, c, proto)
                         added_links.append({"proto": proto, "link": lnk})
@@ -6483,11 +7981,18 @@ class H(http.server.BaseHTTPRequestHandler):
                         nodes_res = {"deployed": dep, "skipped": skip}
                     except Exception as e:
                         nodes_res = {"error": str(e)[:120]}
-                sub_url = f"https://{host}:{panel_port}/sub/{sub_token}"
+                sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
+                tg_preview = []
+                try:
+                    tg_preview = _tg_sub_links({"tg_proxy": tg_mode, "tg_user": tg_user,
+                                                "name": name, "sub_token": sub_token})
+                except Exception:
+                    pass
                 return self._send(200, {"ok": True, "client": {
                     "uuid": client_uuid, "name": name,
                     "sub_token": sub_token, "sub_url": sub_url,
-                    "link": first_link, "links": added_links},
+                    "link": first_link, "links": added_links,
+                    "tg_user": tg_user, "tg_links": tg_preview},
                     "nodes": nodes_res})
 
             if p == "/api/clients/deploy":
@@ -6646,6 +8151,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     try: md = max(0, int(b.get("max_devices") or 0))
                     except Exception: return self._send(400, {"error": "max_devices не число"})
                     for c in group: c["max_devices"] = md
+                if "tg_proxy" in b:
+                    tm = (b.get("tg_proxy") or "").strip().lower()
+                    if tm not in ("off", "shared", "personal"):
+                        return self._send(400, {"error": "tg_proxy: off|shared|personal"})
+                    for c in group:
+                        c["tg_proxy"] = tm
+                        if tm == "personal" and not c.get("tg_user"):
+                            c["tg_user"] = _tg_slug(c.get("name"), "client") + "-" + (c.get("sub_token") or "x")[:6]
                 if b.get("unblock"):
                     for c in group:
                         c.pop("blocked", None); c.pop("blocked_reason", None)
@@ -6733,6 +8246,126 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(200, {"ok": False, "error": str(e), "saved": True})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/rotate/settings":
+                b = self._body()
+                if "enabled" in b:
+                    CFG_CACHE["rot_enabled"] = bool(b.get("enabled"))
+                for key, lo, hi in (("rot_threshold", 1, 100), ("rot_window_min", 0, 180),
+                                    ("rot_check_min", 5, 240), ("rot_cooldown_min", 1, 1440),
+                                    ("rot_port", 1, 65535)):
+                    if key not in b:
+                        continue
+                    try:
+                        v = int(float(b.get(key)))
+                    except Exception:
+                        return self._send(400, {"error": "%s: не число" % key})
+                    if not lo <= v <= hi:
+                        return self._send(400, {"error": "%s: %s…%s" % (key, lo, hi)})
+                    CFG_CACHE[key] = v
+                if "provider" in b:
+                    pv = (b.get("provider") or "").strip().lower()
+                    if pv not in ("off", "dynv6", "cloudflare", "both"):
+                        return self._send(400, {"error": "provider: off|dynv6|cloudflare|both"})
+                    CFG_CACHE["rot_provider"] = pv
+                if "use_iface" in b:
+                    CFG_CACHE["rot_use_iface"] = bool(b.get("use_iface"))
+                if "pool" in b:
+                    raw = b.get("pool")
+                    if isinstance(raw, str):
+                        raw = re.split(r"[,\s]+", raw)
+                    ips = []
+                    for x in raw or []:
+                        x = (x or "").strip()
+                        if not x:
+                            continue
+                        if not _is_ip4(x):
+                            return self._send(400, {"error": "не верный IPv4 в пуле: %s" % x[:40]})
+                        if x not in ips:
+                            ips.append(x)
+                    CFG_CACHE["rot_pool"] = ips
+                if "target" in b:
+                    t0 = (b.get("target") or "").strip()
+                    if t0 and (t0.startswith("http") or "/" in t0 or " " in t0 or ":" in t0):
+                        return self._send(400, {"error": "адрес проверки: только имя хоста или IPv4"})
+                    CFG_CACHE["rot_target"] = t0
+                if "path" in b:
+                    pth = (b.get("path") or "/").strip()
+                    if not pth.startswith("/"):
+                        pth = "/" + pth
+                    CFG_CACHE["rot_path"] = pth[:200]
+                if "cf_token" in b:
+                    tk = (b.get("cf_token") or "").strip()
+                    if tk:
+                        CFG_CACHE["cf_token"] = tk
+                        CFG_CACHE.pop("cf_zone_id", None)
+                    else:
+                        CFG_CACHE.pop("cf_token", None)
+                        CFG_CACHE.pop("cf_zone_id", None)
+                if "cf_zone" in b:
+                    z = (b.get("cf_zone") or "").strip().lower()
+                    if z and not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", z):
+                        return self._send(400, {"error": "зона: имя домена"})
+                    CFG_CACHE["cf_zone"] = z
+                    CFG_CACHE.pop("cf_zone_id", None)
+                if "cf_records" in b:
+                    raw = b.get("cf_records")
+                    if isinstance(raw, str):
+                        raw = re.split(r"[,\s]+", raw)
+                    rec = []
+                    for x in raw or []:
+                        x = (x or "").strip().strip(".").lower()
+                        if not x:
+                            continue
+                        if not re.fullmatch(r"(?i)@?[a-z0-9][a-z0-9.-]*|@|apex", x):
+                            return self._send(400, {"error": "имя записи: некорректное %s" % x[:40]})
+                        if x not in rec:
+                            rec.append(x)
+                    CFG_CACHE["cf_records"] = rec
+                _save(CFG, CFG_CACHE)
+                _audit("rotate_settings", enabled=bool(CFG_CACHE.get("rot_enabled")),
+                       provider=CFG_CACHE.get("rot_provider"),
+                       threshold=CFG_CACHE.get("rot_threshold"),
+                       window=CFG_CACHE.get("rot_window_min"))
+                return self._send(200, {"ok": True, **_rot_status()})
+            if p == "/api/rotate/check":
+                th = threading.Thread(target=_rot_tick, daemon=True)
+                th.start()
+                _audit("rotate_check")
+                return self._send(200, {"ok": True, "message": "проверка запущена (до 3–4 минут)"})
+            if p == "/api/rotate/swap":
+                b = self._body()
+                ip = (b.get("ip") or "").strip()
+                if ip and not _is_ip4(ip):
+                    return self._send(400, {"error": "не верный IPv4"})
+                if ip:
+                    cfg = _rot_conf()
+                    if cfg["provider"] == "off":
+                        return self._send(400, {"error": "провайдер смены не выбран"})
+                    rep = _rot_apply(ip)
+                    CFG_CACHE["rot_last_ip"] = ip
+                    _save(CFG, CFG_CACHE)
+                    with _ROT_LOCK:
+                        _ROT["last_swap"] = time.time()
+                        _ROT["ip"] = ip
+                    _rot_event("ручная замена → %s: %s" % (ip, "; ".join(rep)), "swap")
+                    _audit("ip_rotate_manual", to=ip, provider=cfg["provider"])
+                    return self._send(200, {"ok": True, "applied": rep, "ip": ip})
+                ok, msg = _rotate_ip("вручную из панели")
+                return self._send(200 if ok else 400, {"ok": ok, "message": msg[:400]})
+            if p == "/api/rotate/cloudflare/test":
+                try:
+                    zid, zone = _cf_zone()
+                    recs = []
+                    res = _cf_api("GET", "/zones/%s/dns_records?type=A&per_page=50" % urllib.parse.quote(zid)) or []
+                    names = _cf_record_names()
+                    for r0 in res:
+                        if r0.get("name") in names or not names:
+                            recs.append({"name": r0.get("name"), "content": r0.get("content"),
+                                         "ttl": r0.get("ttl"), "proxied": bool(r0.get("proxied"))})
+                    return self._send(200, {"ok": True, "zone": zone, "zone_id": zid,
+                                            "records": recs, "wanted": names})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:250]})
             if p == "/api/dynv6/create-zone":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
@@ -7031,6 +8664,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 if changed: out["restarted"] = True
                 return self._send(200, out)
             if p == "/api/theme":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
                 n = int(self.headers.get("Content-Length", "0") or 0)
                 raw = self.rfile.read(n) if n else b""
                 try: body = json.loads(raw.decode() or "{}")
@@ -7042,6 +8677,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/wallpaper":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 n = int(self.headers.get("Content-Length", "0") or 0)
                 data = b""; rem = n
                 while rem > 0:
@@ -7065,6 +8701,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/wallpaper/delete":
+                if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try: os.remove(WALL)
                 except FileNotFoundError: pass
                 t = _load(THEME, {}) or {}; t.pop("wall_mime", None); _save(THEME, t)
@@ -7234,8 +8871,73 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/tg/user/add":
                 b = self._body()
                 try:
-                    res = _tg_add(b.get("name", ""))
+                    res = _tg_add(b.get("name", ""), (b.get("mode") or "both"))
                     return self._send(200, {"ok": True, "user": res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/user/adtag":
+                b = self._body()
+                try:
+                    res = _tg_set_adtag(b.get("username", ""), b.get("ad_tag", ""))
+                    _audit("tg_adtag", username=res["username"], set=bool(res["ad_tag"]))
+                    return self._send(200, {"ok": True, **res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/user/rotate":
+                b = self._body()
+                try:
+                    res = _tg_rotate_secret(b.get("username", ""), b.get("secret", ""))
+                    _audit("tg_rotate", username=res["username"])
+                    return self._send(200, {"ok": True, "user": res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/subscription/settings":
+                b = self._body()
+                if "update_hours" in b:
+                    try:
+                        h = int(b.get("update_hours"))
+                    except Exception:
+                        return self._send(400, {"error": "update_hours не число"})
+                    if not 1 <= h <= 168:
+                        return self._send(400, {"error": "update_hours: 1..168"})
+                    CFG_CACHE["sub_update_hours"] = h
+                if "tg_mode" in b:
+                    m = (b.get("tg_mode") or "").strip().lower()
+                    if m not in ("off", "shared", "personal"):
+                        return self._send(400, {"error": "tg_mode: off|shared|personal"})
+                    CFG_CACHE["sub_tg_mode"] = m
+                if "tg_shared_user" in b:
+                    su = _tg_slug(b.get("tg_shared_user"), "")
+                    if not su:
+                        return self._send(400, {"error": "имя общего прокси пустое"})
+                    CFG_CACHE["tg_shared_user"] = su
+                _save(CFG, CFG_CACHE)
+                _audit("sub_settings", **_sub_settings())
+                return self._send(200, {"ok": True, **_sub_settings()})
+            if p == "/api/sub/format":
+                b = self._body()
+                tok = (b.get("sub_token") or "").strip()
+                fmt = (b.get("fmt") or "auto").strip().lower()
+                if not tok:
+                    return self._send(400, {"error": "нужен sub_token"})
+                if not _subdev_set_pref(tok, fmt):
+                    return self._send(400, {"error": "fmt: auto|base64|singbox"})
+                _audit("sub_format", sub=tok, fmt=fmt)
+                return self._send(200, {"ok": True, "fmt": fmt})
+            if p == "/api/sub/devices/del":
+                b = self._body()
+                tok = (b.get("sub_token") or "").strip()
+                ip = (b.get("ip") or "").strip()
+                if not (tok and ip):
+                    return self._send(400, {"error": "нужны sub_token и ip"})
+                _subdev_remove(tok, ip)
+                _audit("sub_device_del", sub=tok, ip=ip)
+                return self._send(200, {"ok": True, "devices": _subdev_list(tok)})
+            if p == "/api/tg/sni":
+                b = self._body()
+                try:
+                    res = _tg_sni_set(b.get("tls_domain"), b.get("tls_domains"))
+                    return self._send(200, {"ok": True, "sni": res})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/tg/user/remove":
