@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.5"
+VERSION = "2.7.6"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -1178,7 +1178,7 @@ def _stream_settings(proto, inb):
 
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
-    ib = {"listen": "0.0.0.0", "port": inb["port"], "tag": proto}
+    ib = {"listen": inb.get("listen") or "0.0.0.0", "port": inb["port"], "tag": proto}
     if proto == "hysteria2":
         ib["protocol"] = "hysteria"
         ib["settings"] = {"version": 2, "clients": [
@@ -1282,7 +1282,7 @@ def _build_xray_cfg(st, force_proto=None):
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
             continue
-        if inb.get("clients") or proto == force_proto:
+        if inb.get("clients") or inb.get("_mux_enabled") or proto == force_proto:
             inbounds.append(_inbound(proto, inb))
     inbounds.append({
         "listen": "127.0.0.1", "port": _STATS_PORT, "protocol": "dokodemo-door",
@@ -4847,7 +4847,7 @@ def _mux_status():
     can_mux = bool(ng["installed"] and ng["stream"] and ng["ssl_preread"])
     our_nginx_443 = (not o443["free"] and "nginx" in (o443.get("proc") or "")
                      and ng["active"] and os.path.exists(_NG_CONF))
-    applied = bool(ng["active"] and os.path.exists(_NG_CONF))
+    applied = bool((_load(_MUX_STATE, {}) or {}).get("applied"))
     plan = []
     if not o443["free"]:
         if our_nginx_443:
@@ -4872,6 +4872,300 @@ def _mux_status():
             "reality_port": reality_port, "tls_ports": tls_ports, "domain": domain,
             "has_cert": has_cert, "cert_dns": cert_dns, "applied": applied,
             "plan": plan, "warnings": warnings}
+
+# ─────────────────────────── #56 slice 2: opt-in SNI-mux (:443) ───────────────────────────
+# Модель (решение пользователя): разные SNI-домены. Веб-фронт остаётся на домене панели,
+# cert-TLS VPN получает собственный SNI-поддомен. nginx stream/ssl_preread на :443 разводит:
+#   <vpn-sni>   → 127.0.0.1:<tls_port>  (xray cert-TLS inbound, слушает только loopback)
+#   <веб-sni> / default → 127.0.0.1:<web_port> (веб-фронт / decoy, TLS-терминация у nginx)
+# Reality НЕ mux-ится (общий SNI с реальным сайтом) — остаётся на своём порту.
+_MUX_STATE = f"{BASE}/mux_state.json"
+_NG_MAIN = "/etc/nginx/nginx.conf"
+_NG_STREAM_INC = "/etc/nginx/veil-mux-stream.conf"
+_NG_MUX_DEFAULT = "/etc/nginx/conf.d/veil-mux-default.conf"
+_NG_MAIN_BAK = _NG_MAIN + ".veil-mux.bak"
+_NG_WEB_BAK = _NG_CONF + ".veil-mux.bak"
+_MUX_INBOUND = "vless-xhttp-tls"   # cert-TLS inbound, который мюкс переводит на loopback
+
+_MUX_STREAM_TMPL = """# VEIL-MUX (generated) — не редактируйте вручную
+stream {
+    map $ssl_preread_server_name $veil_mux_backend {
+        {vpn_domain}      127.0.0.1:{tls_port};
+        {web_domain}      127.0.0.1:{web_port};
+        default           127.0.0.1:{web_port};
+    }
+    server {
+        listen 443 reuseport;
+        proxy_protocol off;
+        ssl_preread on;
+        proxy_timeout 3600s;
+        proxy_pass $veil_mux_backend;
+    }
+}
+"""
+
+_MUX_DEFAULT_TMPL = """# VEIL-MUX default backend (generated)
+server {
+    listen 127.0.0.1:{web_port} ssl;
+    server_name {web_domain};
+    ssl_certificate     {cert};
+    ssl_certificate_key {key};
+    root /opt/vpnpanel/decoy;
+    index index.html;
+    location / { try_files $uri $uri/ /index.html; }
+}
+"""
+
+def _mux_cert(web_domain, vpn_domain):
+    """Сертификат для обеих сторон мюкса: рабочий LE-сертификат, иначе self-signed с SAN на
+    оба SNI-имени. Возвращает (cert, key, kind)."""
+    cp = _cert_pathes()
+    if cp["cert"] and cp["key"] and os.path.exists(cp["cert"]) and os.path.exists(cp["key"]):
+        exp = _cert_expire(cp["cert"])
+        if exp and exp > time.time() + 86400:
+            return cp["cert"], cp["key"], "le"
+    names = []
+    for n in (web_domain, vpn_domain):
+        if n and n not in names:
+            names.append(n)
+    crt = f"{CERT_DIR}/veil-mux.crt"; key = f"{CERT_DIR}/veil-mux.key"
+    san = ",".join("DNS:" + n for n in names)
+    os.makedirs(CERT_DIR, exist_ok=True)
+    r = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+         "-keyout", key, "-out", crt, "-days", "825",
+         "-subj", "/CN=" + (names[0] if names else "veil-mux"),
+         "-addext", "subjectAltName=" + (san or "DNS:localhost")],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("openssl self-signed: " + (r.stderr or r.stdout)[-300:])
+    os.chmod(key, 0o600)
+    return crt, key, "self-signed"
+
+def _mux_stream_module_state():
+    """Можно ли nginx этого хоста реально использовать stream, и нужен ли явный load_module.
+    Динамическая сборка (--with-stream=dynamic) НЕ гарантирует, что модуль установлен:
+    на Ubuntu его даёт пакет libnginx-mod-stream, подключаемый через modules-enabled/*.conf.
+    Возвращает (available, directive): directive=="" — грузится сам (built-in или modules-enabled);
+    иначе — строка load_module для вставки."""
+    try:
+        v = subprocess.run(["nginx", "-V"], capture_output=True, text=True).stderr or ""
+    except Exception:
+        v = ""
+    built_in = ("--with-stream" in v) and ("--with-stream=dynamic" not in v)
+    if built_in:
+        return True, ""
+    try:
+        linked = subprocess.run(
+            ["grep", "-RliE", r"stream", "/etc/nginx/modules-enabled/"],
+            capture_output=True, text=True).stdout.strip()
+    except Exception:
+        linked = ""
+    if linked:
+        return True, ""
+    for nm in ("ngx_stream_module.so", "ngx_stream.so"):
+        p = "/usr/lib/nginx/modules/" + nm
+        if os.path.exists(p):
+            return True, "load_module %s;" % p
+    return False, ""
+
+def _mux_ports_in_use():
+    used = set()
+    st = _load(STATE, {}) or {}
+    for inb in (st.get("inbounds") or {}).values():
+        if isinstance(inb, dict) and isinstance(inb.get("port"), int):
+            used.add(inb["port"])
+    return used
+
+def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain):
+    return (_MUX_STREAM_TMPL.replace("{vpn_domain}", vpn_domain)
+            .replace("{web_domain}", web_domain)
+            .replace("{tls_port}", str(tls_port)).replace("{web_port}", str(web_port)))
+
+def _mux_nginx_block_installed():
+    try:
+        return "veil-mux-stream.conf" in open(_NG_MAIN).read()
+    except Exception:
+        return False
+
+def _mux_preview(vpn_domain=None):
+    web_domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    vpn_domain = (vpn_domain or (("vpn." + web_domain) if web_domain else "")).strip().lower()
+    ms = _mux_status()
+    ng = ms["nginx"]
+    blockers = []
+    if not ng["installed"]:
+        blockers.append("nginx не установлен")
+    elif not (ng["stream"] and ng["ssl_preread"]):
+        blockers.append("nginx собран без stream/ssl_preread — SNI-mux невозможен")
+    elif not _mux_stream_module_state()[0]:
+        blockers.append("stream-модуль не установлен (сборка динамическая): выполните apt-get install -y libnginx-mod-stream")
+    if not web_domain:
+        blockers.append("не задан домен панели (веб-SNI)")
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?", vpn_domain or ""):
+        blockers.append("некорректный SNI-домен VPN")
+    st = _load(STATE, {}) or {}
+    inb = (st.get("inbounds") or {}).get(_MUX_INBOUND)
+    if inb is None:
+        blockers.append("нет inbound «%s» — включите любой cert-TLS inbound" % _MUX_INBOUND)
+    if ms["reality_port"] == 443 or (ms["xray_holds_443"] and not ms["our_nginx_443"]):
+        blockers.append("xray/Reality держит :443 — сначала перенесите Reality на другой порт (мюкс не трогает Reality)")
+    web_held = ms["our_nginx_443"]
+    foreign = (not ms["free443"]) and (not web_held) and ("xray" not in (ms["occupant443"].get("proc") or ""))
+    if ms["applied"]:
+        note = "Мюкс уже применён — apply перепишет конфигурацию (идемпотентно)."
+    else:
+        note = ("nginx stream на :443 разведёт SNI: %s→xray(loopback :%s), %s/default→веб(:%s). "
+                "Reality остаётся на :%s. Сертификат: %s."
+                % (vpn_domain or "?", 4443, web_domain or "?", 8445,
+                   ms["reality_port"] or "—", "LE" if ms["has_cert"] else "self-signed (SAN на оба имени)"))
+    return {"web_domain": web_domain, "vpn_domain": vpn_domain, "can_apply": not blockers,
+            "blockers": blockers, "reality_port": ms["reality_port"],
+            "web_front_on443": web_held, "foreign443": (ms["occupant443"] if foreign else None),
+            "cert_kind": ("le" if ms["has_cert"] else "self-signed"), "note": note}
+
+def _mux_apply(vpn_domain=None, confirm=False, force=False):
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm): apply меняет nginx.conf и xray")
+    pv = _mux_preview(vpn_domain)
+    if not pv["can_apply"]:
+        raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"]))
+    web_domain, vpn_domain = pv["web_domain"], pv["vpn_domain"]
+    occ = _sock_occupant(443)
+    web_held = ("nginx" in (occ.get("proc") or "")) and os.path.exists(_NG_CONF)
+    if not occ["free"] and not web_held:
+        if not force:
+            raise RuntimeError("на :443 процесс %s — передайте force, чтобы остановить (с бэкапом unit)"
+                               % (occ.get("proc") or "?"))
+        for pid in occ.get("pids") or []:
+            try:
+                unit = _proc_unit(pid)
+                if unit and unit not in ("nginx.service", "xray.service", "vpnpanel.service"):
+                    subprocess.run(["systemctl", "stop", unit], capture_output=True, timeout=30)
+            except Exception:
+                pass
+    cert, key, kind = _mux_cert(web_domain, vpn_domain)
+    avail, mod_directive = _mux_stream_module_state()
+    if not avail:
+        raise RuntimeError("stream-модуль nginx не установлен — выполните apt-get install -y libnginx-mod-stream")
+    used = _mux_ports_in_use()
+    web_port = _find_free_port(pref=[8445], avoid=used)
+    tls_port = _find_free_port(pref=[4443], avoid=used | {web_port})
+
+    if not os.path.exists(_NG_MAIN_BAK):
+        shutil.copy2(_NG_MAIN, _NG_MAIN_BAK)
+    with open(_NG_STREAM_INC, "w") as f:
+        f.write(_mux_stream_conf(web_port, tls_port, web_domain, vpn_domain))
+    # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
+    main = open(_NG_MAIN_BAK).read()
+    changed = False
+    if mod_directive and mod_directive not in main:
+        main = mod_directive + "\n" + main
+        changed = True
+    if "veil-mux-stream.conf" not in main:
+        main = main.rstrip("\n") + "\n\n# VEIL-MUX BEGIN\ninclude %s;\n# VEIL-MUX END\n" % _NG_STREAM_INC
+        changed = True
+    if changed:
+        with open(_NG_MAIN, "w") as f:
+            f.write(main)
+
+    moved_web = False
+    if web_held:
+        if not os.path.exists(_NG_WEB_BAK):
+            shutil.copy2(_NG_CONF, _NG_WEB_BAK)
+        conf = open(_NG_WEB_BAK).read()
+        conf = re.sub(r"(?m)^(\s*listen\s+)443(\s+ssl\b)", r"\g<1>%d\g<2>" % web_port, conf)
+        conf = re.sub(r"(?m)^(\s*listen\s+)\[::\]:443(\s+ssl\b)", lambda m: m.group(0), conf)
+        with open(_NG_CONF, "w") as f:
+            f.write(conf)
+        moved_web = True
+    else:
+        with open(_NG_MUX_DEFAULT, "w") as f:
+            f.write(_MUX_DEFAULT_TMPL.replace("{web_port}", str(web_port))
+                    .replace("{web_domain}", web_domain).replace("{cert}", cert).replace("{key}", key))
+
+    # xray: переводим cert-TLS inbound на loopback:tls_port с нашим сертификатом
+    st = _load(STATE, {}) or {}
+    inb = st["inbounds"][_MUX_INBOUND]
+    prev = {k: inb.get(k) for k in ("listen", "port", "cert", "key")}
+    inb["listen"] = "127.0.0.1"; inb["port"] = tls_port; inb["cert"] = cert; inb["key"] = key
+    inb["_mux_enabled"] = True
+    ok, err = _validate_and_apply(st)
+    if not ok:
+        inb.update(prev); inb.pop("_mux_enabled", None)
+        _revert_nginx_files(web_held)
+        _save(STATE, st)
+        raise RuntimeError("xray-валидация не пройдена, откатили: " + (err or ""))
+
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=25)
+    if t.returncode != 0:
+        inb.update(prev); inb.pop("_mux_enabled", None)
+        _save(STATE, st)
+        _save(XRAY, _build_xray_cfg(st), 0o644); subprocess.run(["systemctl", "restart", "xray"], capture_output=True)
+        _revert_nginx_files(web_held)
+        raise RuntimeError("nginx -t упал, откатили: " + (t.stderr or t.stdout)[-400:])
+    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
+    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
+    else:
+        subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
+
+    _save(_MUX_STATE, {"applied": True, "web_domain": web_domain, "vpn_domain": vpn_domain,
+                       "web_port": web_port, "tls_port": tls_port, "cert_kind": kind,
+                       "inbound": _MUX_INBOUND, "prev": prev, "moved_web": moved_web,
+                       "ts": _now_iso()}, 0o600)
+    return {"ok": True, "vpn_domain": vpn_domain, "web_domain": web_domain,
+            "web_port": web_port, "tls_port": tls_port, "cert_kind": kind}
+
+def _revert_nginx_files(web_held):
+    try: os.remove(_NG_STREAM_INC)
+    except Exception: pass
+    try: os.remove(_NG_MUX_DEFAULT)
+    except Exception: pass
+    if os.path.exists(_NG_MAIN_BAK):
+        shutil.copy2(_NG_MAIN_BAK, _NG_MAIN)
+    if web_held and os.path.exists(_NG_WEB_BAK):
+        shutil.copy2(_NG_WEB_BAK, _NG_CONF)
+
+def _proc_unit(pid):
+    try:
+        c = open("/proc/%d/cgroup" % int(pid)).read()
+    except Exception:
+        return ""
+    m = re.search(r"/([^/]+\.service)", c)
+    return m.group(1) if m else ""
+
+def _mux_revert(confirm=False):
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    ms = _load(_MUX_STATE, {}) or {}
+    if not ms.get("applied"):
+        return {"ok": True, "already": True, "message": "Мюкс не применён — откатывать нечего"}
+    web_held = bool(ms.get("moved_web"))
+    st = _load(STATE, {}) or {}
+    inb = (st.get("inbounds") or {}).get(ms.get("inbound") or _MUX_INBOUND)
+    if inb is not None:
+        for k, v in (ms.get("prev") or {}).items():
+            if v is None:
+                inb.pop(k, None)
+            else:
+                inb[k] = v
+        inb.pop("_mux_enabled", None)
+        ok, err = _validate_and_apply(st)
+        if not ok:
+            return {"ok": False, "message": "xray после отката невалиден: " + (err or "")}
+    _revert_nginx_files(web_held)
+    subprocess.run(["nginx", "-t"], capture_output=True, timeout=25)
+    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
+    else:
+        subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
+    for p in (_NG_MAIN_BAK, _NG_WEB_BAK):
+        try: os.remove(p)
+        except Exception: pass
+    _save(_MUX_STATE, {"applied": False, "ts": _now_iso()}, 0o600)
+    return {"ok": True, "message": "Мюкс откачен: nginx и xray возвращены к прежнему виду"}
+
 
 def _find_free_port(pref=None, avoid=()):
     import socket
@@ -7721,6 +8015,10 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/webmux":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _mux_status())
+        if p == "/api/webmux/preview":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(200, _mux_preview((q.get("vpn_domain") or [""])[0] or None))
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
@@ -8673,6 +8971,19 @@ class H(http.server.BaseHTTPRequestHandler):
                                                        (b or {}).get("mode") or "auto"))
                 except urllib.error.HTTPError as e:
                     return self._send(502, {"error": f"HTTP {e.code}"})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/webmux/apply":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _mux_apply(b.get("vpn_domain"),
+                                                      bool(b.get("confirm")), bool(b.get("force"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/webmux/revert":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _mux_revert(bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/cert/config":
