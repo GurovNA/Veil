@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.8"
+VERSION = "2.7.9"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -5137,7 +5137,11 @@ def _mux_status():
     if not ng["stream"] or not ng["ssl_preread"]:
         warnings.append("nginx не собран со stream_ssl_preread_module — SNI-mux через этот nginx невозможен.")
     elif ng["stream_dynamic"]:
-        warnings.append("stream-модуль динамический (--with-stream=dynamic) — потребуется load_module в nginx.conf (это будет сделано во 2-м срезе).")
+        avail, directive = _mux_stream_module_state()
+        if not avail:
+            warnings.append("stream-модуль динамический и НЕ установлен — выполните apt-get install -y libnginx-mod-stream (панель сама допишет load_module при применении).")
+        elif directive:
+            warnings.append("stream-модуль динамический (--with-stream=dynamic) — при применении панель автоматически добавит «%s» в nginx.conf (с бэкапом и авто-откатом)." % directive)
     return {"free443": o443["free"], "occupant443": o443, "free80": o80["free"], "occupant80": o80,
             "nginx": ng, "can_mux": can_mux, "xray_holds_443": xray_holds_443, "our_nginx_443": our_nginx_443,
             "reality_port": reality_port, "tls_ports": tls_ports, "domain": domain,
@@ -5267,6 +5271,7 @@ def _mux_nginx_block_installed():
 # hops.json (nodes.json предполагает агентский токен у каждой записи).
 
 HOPS_FILE = f"{BASE}/hops.json"
+_HOP_MAX_PORTS = 64   # предельное число портов на один фронт (и потолок автозаполнения)
 HOP_LOCK = threading.Lock()
 HOP_JOBS = {}   # состояние SSH-буста; пароли SSH живут только в памяти воркера
 
@@ -5306,7 +5311,7 @@ def _hop_valid_ports(ports):
         if not (1 <= p <= 65535) or p in out:
             return None
         out.append(p)
-    if not out or len(out) > 16:
+    if not out or len(out) > _HOP_MAX_PORTS:
         return None
     return out
 
@@ -5315,6 +5320,12 @@ def _hop_back_ip():
 
 def _hop_suggest_ports():
     ports = []
+    try:
+        pp = int(CFG_CACHE.get("panel_port", 8444) or 8444)
+        if pp:
+            ports.append(pp)   #否则 подписки /sub по адресу фронта не откроются
+    except Exception:
+        pass
     try:
         mp = _tg_mtproto_info()
         if mp.get("up") and mp.get("port"):
@@ -5331,7 +5342,7 @@ def _hop_suggest_ports():
             pass
     if 443 not in ports:
         ports.append(443)
-    return sorted(ports)
+    return sorted(ports)[:_HOP_MAX_PORTS]
 
 _RELAY_APPLY_SH = """#!/bin/bash
 # Veil double-hop: применяет nft-правила релея (идемпотентно).
@@ -5389,11 +5400,17 @@ if ! command -v nft >/dev/null 2>&1; then
   fi
 fi
 command -v nft >/dev/null 2>&1 || { echo "VEILERR: nftables не установлен и ставить нечем — установите вручную (apt/dnf install nftables)"; exit 2; }
+busy=""
 for p in __PORTS_SP__; do
   if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$p$"; then
-    echo "VEILERR: порт :$p уже СЛУШАЕТСЯ этим сервером — релей не сработает; сначала освободите его"; exit 3
+    owner=$(ss -H -ltnp "sport = :$p" 2>/dev/null | grep -oE '\\("[a-zA-Z0-9_.-]+' | head -1 | tr -d '("')
+    busy="${busy:+$busy, }:$p${owner:+ ($owner)}"
   fi
 done
+if [ -n "$busy" ]; then
+  echo "VEILERR: на этом сервере уже СЛУШАЮТСЯ порты$busy — релей по ним не сработает. Останови их держателей (например: systemctl stop xray nginx telemt) или укажи в панели только свободные порты, и запусти установку снова"
+  exit 3
+fi
 mkdir -p /etc/veil-relay
 printf 'BACK_IP=%s\\nRELAY_PORTS="%s"\\n' "__BACK_IP__" "__PORTS_SP__" > /etc/veil-relay/relay.env
 cat > /usr/local/bin/veil-relay-apply.sh <<'VEILEOF'
@@ -5452,7 +5469,7 @@ def _hop_preview(front_ip, ports):
     if not _hop_is_ip4(front_ip):
         blockers.append("адрес ФРОНТа — не IPv4 (релей работает по IPv4)")
     if pl is None:
-        blockers.append("порты: от 1 до 16 значений 1..65535, без повторов")
+        blockers.append("порты: от 1 до %d значений 1..65535, без повторов" % _HOP_MAX_PORTS)
         pl = []
     if not _hop_is_ip4(back or ""):
         blockers.append("не удаётся определить публичный IPv4 этого сервера (БЭКа)")

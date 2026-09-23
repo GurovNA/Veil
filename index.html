@@ -328,8 +328,9 @@ body.ui-new .qact span{font-size:15px;flex:none}
 /* — полировка новых вкладок на широком экране — */
 body.ui-new #loginCard{max-width:430px;margin:8vh auto 0}
 body.ui-new input:not([type=checkbox]):not([type=color]),body.ui-new select{max-width:560px}
+body.ui-new .card label>input:not([type=checkbox]):not([type=color]),body.ui-new .card label>select{max-width:none}
 body.ui-new .card>button:not(.tiny){max-width:560px}
-body.ui-new .card>p.mut{max-width:72ch}
+body.ui-new .card>p.mut{max-width:96ch}
 body.ui-new .sidebar{scrollbar-color:var(--br) transparent}
 body.ui-new table.data th:first-child,body.ui-new table.data td:first-child{padding-left:16px}
 body.ui-new table.data th:last-child,body.ui-new table.data td:last-child{padding-right:16px}
@@ -1384,8 +1385,8 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
             <input id=hopName placeholder="Имя (например: Москва-1)" maxlength=40 style="flex:1;min-width:170px">
             <input id=hopIp placeholder="IPv4 фронта (без порта)" maxlength=64 style="flex:1;min-width:170px">
           </div>
-          <label class=fldlbl for=hopPorts>Порты ретрансляции (через запятую; фронтов должен слушать то же, что и ссылки)</label>
-          <input id=hopPorts placeholder="443, 7443" maxlength=128 autocomplete=off>
+          <label class=fldlbl for=hopPorts>Порты ретрансляции (через запятую; до 64; фронтов должен слушать то же, что и ссылки — подставлены автоматически)</label>
+          <input id=hopPorts placeholder="443, 7443" maxlength=512 autocomplete=off>
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=hopPreview()>Предпросмотр</button>
             <button class=sec onclick=hopAdd()>Создать фронт</button>
@@ -1914,7 +1915,8 @@ async function hopCheck(id){
   catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
   await loadHop();
   const h=(d.hops||[])[0]||{};
-  const up=(h.last_check&&h.last_check.tcp_up)||[], dn=(h.last_check&&h.last_check.tcp_down)||[];
+  const chk=h.check||[];
+  const up=chk.filter(r=>r.tcp).map(r=>r.port), dn=chk.filter(r=>!r.tcp).map(r=>r.port);
   setMsg('hopMsg','TCP на фронте: '+(up.length?('открыт '+up.join(', ')):'ни один порт не отвечает')+(dn.length?(' · закрыт '+dn.join(', ')):'')+'.'+(d.note?(' '+d.note):''), up.length?'ok':'err', true);
 }
 async function hopDel(id,ip){
