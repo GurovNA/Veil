@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.7"
+VERSION = "2.7.8"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -1516,7 +1516,7 @@ def _subs_summary(st, for_display=False):
     """Агрегированный список подписчиков (как в 3x-ui): по одному на sub_token/uuid,
     со ссылками на ВСЕ протоколы и суммарным трафиком."""
     if not st: return []
-    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
     ipv6 = _my_ipv6()
@@ -1748,7 +1748,7 @@ def _subs_export_json(st):
 
 def _subs_export_links(st):
     """Текст ссылок для переноса/распространения: по блоку на подписчика."""
-    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
     out = ["# Veil — экспорт подписчиков " + time.strftime("%Y-%m-%d %H:%M"), ""]
@@ -3022,7 +3022,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
     sub_token = secrets.token_urlsafe(16)
     client_uuid = str(uuidlib.uuid4())
     expiry = (int(time.time()) + int(expiry_days) * 86400) if int(expiry_days) > 0 else 0
-    host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+    host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
     inbounds = st.setdefault("inbounds", {})
@@ -4127,7 +4127,8 @@ def _tg_status():
 
 
 def _tg_host_ok(link):
-    host = (CFG_CACHE.get("panel_domain") or "").strip()
+    host = (CFG_CACHE.get("hop_public_host") or "").strip() or \
+           (CFG_CACHE.get("panel_domain") or "").strip()
     if not host or not link:
         return link
     return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
@@ -4876,7 +4877,7 @@ def _tg_web_ensure():
                  "\n[web.vhosts.decoy]\n"
                  'mode = "static_directory"\n'
                  'directory = "/opt/vpnpanel/decoy"\n'
-                 'index = "index.html"\n' % (domain, ip4))
+                 'index = "index.html"\n' % (domain, (CFG_CACHE.get("hop_public_host") or "").strip() or ip4))
     for u in users:
         web_block += ('\n[[web.vhosts.profiles]]\n'
                       'user = "%s"\n'
@@ -5259,6 +5260,526 @@ def _mux_nginx_block_installed():
         return "veil-mux-stream.conf" in open(_NG_MAIN).read()
     except Exception:
         return False
+
+# ========== ДВОЙНОЙ ПРЫЖОК: RU-фронт (nft-релей) + зарубежный бэк ==========
+# ФРОНТ — тонкий L4-релей: DNAT портов на БЭК + MASQUERADE (бэк видит IP фронта,
+# клиенту наружу отдаётся IP бэка). Агент на фронте не ставится — поэтому отдельный
+# hops.json (nodes.json предполагает агентский токен у каждой записи).
+
+HOPS_FILE = f"{BASE}/hops.json"
+HOP_LOCK = threading.Lock()
+HOP_JOBS = {}   # состояние SSH-буста; пароли SSH живут только в памяти воркера
+
+def _hop_load():
+    try:
+        v = _load(HOPS_FILE, [])
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+def _hop_save(hops):
+    _save(HOPS_FILE, hops)  # содержит токены регистрации — 0600
+
+def _hop_pub_host():
+    """Хост для пользовательских ссылок: ФРОНТ (если двойной прыжок включён),
+    иначе домен/IP бэка. SNI/server_name/сертификаты здесь НЕ меняются —
+    TLS по-прежнему терминируется на бэке."""
+    h = (CFG_CACHE.get("hop_public_host") or "").strip()
+    if h and ":" not in h and "/" not in h:
+        return h
+    return (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+
+def _hop_is_ip4(s):
+    try:
+        socket.inet_pton(socket.AF_INET, s)
+        return True
+    except Exception:
+        return False
+
+def _hop_valid_ports(ports):
+    out = []
+    for x in (ports or []):
+        try:
+            p = int(x)
+        except Exception:
+            return None
+        if not (1 <= p <= 65535) or p in out:
+            return None
+        out.append(p)
+    if not out or len(out) > 16:
+        return None
+    return out
+
+def _hop_back_ip():
+    return _pub_ip4() or (_my_ip() or "")
+
+def _hop_suggest_ports():
+    ports = []
+    try:
+        mp = _tg_mtproto_info()
+        if mp.get("up") and mp.get("port"):
+            ports.append(int(mp["port"]))
+    except Exception:
+        pass
+    st = _load(STATE, {}) or {}
+    for _proto, inb in (st.get("inbounds") or {}).items():
+        try:
+            pt = int(inb.get("port") or 0)
+            if pt and pt not in ports:
+                ports.append(pt)
+        except Exception:
+            pass
+    if 443 not in ports:
+        ports.append(443)
+    return sorted(ports)
+
+_RELAY_APPLY_SH = """#!/bin/bash
+# Veil double-hop: применяет nft-правила релея (идемпотентно).
+set -euo pipefail
+. /etc/veil-relay/relay.env
+els=$(printf '%s ' $RELAY_PORTS | tr ' ' ','); els=${els%,}
+cat > /etc/veil-relay/relay.nft <<EOF
+table ip veil_relay {
+  set ports {
+    type inet_service
+    elements = { $els }
+  }
+  chain pr {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname != "lo" fib daddr type local tcp dport @ports dnat to $BACK_IP
+    iifname != "lo" fib daddr type local udp dport @ports dnat to $BACK_IP
+  }
+  chain po {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip daddr $BACK_IP masquerade
+  }
+}
+EOF
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+nft delete table ip veil_relay 2>/dev/null || true
+nft -f /etc/veil-relay/relay.nft
+"""
+
+_RELAY_UNIT = """[Unit]
+Description=Veil double-hop relay (DNAT to BACK)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/veil-relay-apply.sh
+ExecStop=-/bin/sh -c 'nft delete table ip veil_relay 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# Универсальный установщик фронта: одинаково исполняется по SSH и через curl|sh.
+_RELAY_INSTALL_TMPL = """#!/bin/bash
+# Veil double-hop FRONT: L4-релей (nft DNAT+MASQUERADE) на __BACK_IP__. Повторно запускаемо.
+set -euo pipefail
+[ "$(id -u)" = 0 ] || { echo "VEILERR: нужен root (sudo -s или curl ... | sudo bash)"; exit 1; }
+if ! command -v nft >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then dnf -y -q install nftables >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then yum -y -q install nftables >/dev/null 2>&1 || true
+  fi
+fi
+command -v nft >/dev/null 2>&1 || { echo "VEILERR: nftables не установлен и ставить нечем — установите вручную (apt/dnf install nftables)"; exit 2; }
+for p in __PORTS_SP__; do
+  if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$p$"; then
+    echo "VEILERR: порт :$p уже СЛУШАЕТСЯ этим сервером — релей не сработает; сначала освободите его"; exit 3
+  fi
+done
+mkdir -p /etc/veil-relay
+printf 'BACK_IP=%s\\nRELAY_PORTS="%s"\\n' "__BACK_IP__" "__PORTS_SP__" > /etc/veil-relay/relay.env
+cat > /usr/local/bin/veil-relay-apply.sh <<'VEILEOF'
+__APPLY_SH__VEILEOF
+chmod 0755 /usr/local/bin/veil-relay-apply.sh
+printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-veil-relay.conf
+sysctl -p /etc/sysctl.d/99-veil-relay.conf >/dev/null 2>&1 || true
+cat > /etc/systemd/system/veil-relay.service <<'VEILEOF'
+__UNIT__VEILEOF
+systemctl daemon-reload
+systemctl enable veil-relay >/dev/null 2>&1 || true
+systemctl restart veil-relay
+sleep 1
+systemctl is-active --quiet veil-relay || { echo "VEILERR: служба veil-relay не активна"; exit 4; }
+nft list table ip veil_relay >/dev/null 2>&1 || { echo "VEILERR: таблица veil_relay не видна в nft"; exit 5; }
+echo "VEILOK: релей активен, порты __PORTS_SP__ -> __BACK_IP__"
+if [ -n "__TOK__" ]; then
+  RESP=$(curl -sk -m 20 -X POST "__REG_URL__" -H 'Content-Type: application/json' \\
+         -d '{"tok":"__TOK__"}' 2>/dev/null || true)
+  case "$RESP" in
+    *'"ok": true'*|*'"ok":true'*) echo "VEILREG: фронт зарегистрирован в панели" ;;
+    *) echo "VEILREGW: правила работают, но панель не приняла регистрацию: ${RESP:-нет ответа} (открой порт панели в фаерволе фронта)" ;;
+  esac
+fi
+exit 0
+"""
+
+def _relay_installer(hop, with_register=False):
+    ports = " ".join(str(p) for p in hop["ports"])
+    panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
+    reg_url = "https://%s:%d/api/hop/register" % (hop.get("back_ip"), panel_port)
+    tok = (hop.get("tok") or "") if with_register else ""
+    body = (_RELAY_INSTALL_TMPL
+            .replace("__APPLY_SH__", _RELAY_APPLY_SH)
+            .replace("__UNIT__", _RELAY_UNIT)
+            .replace("__BACK_IP__", hop["back_ip"])
+            .replace("__PORTS_SP__", ports)
+            .replace("__TOK__", tok)
+            .replace("__REG_URL__", reg_url))
+    return body
+
+def _hop_find_tok(tok):
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{10,64}", tok or ""):
+        return None
+    for h in _hop_load():
+        if (h.get("tok") or "") == tok:
+            return h
+    return None
+
+def _hop_preview(front_ip, ports):
+    front_ip = (front_ip or "").strip()
+    ports = [x for x in re.split(r"[,\s]+", str(ports or "").strip()) if x] if isinstance(ports, str) else list(ports or [])
+    blockers = []
+    back = _hop_back_ip()
+    pl = _hop_valid_ports(ports)
+    if not _hop_is_ip4(front_ip):
+        blockers.append("адрес ФРОНТа — не IPv4 (релей работает по IPv4)")
+    if pl is None:
+        blockers.append("порты: от 1 до 16 значений 1..65535, без повторов")
+        pl = []
+    if not _hop_is_ip4(back or ""):
+        blockers.append("не удаётся определить публичный IPv4 этого сервера (БЭКа)")
+    elif front_ip and front_ip == back:
+        blockers.append("адрес ФРОНТа совпадает с этим сервером — бэк не может релеежить сам себя")
+    panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
+    if 22 in pl:
+        blockers.append("порт 22 не релееят — отключи SSH фронта от бэка")
+    note = ("На ФРОНТе будет создана nft-таблица veil_relay: DNAT портов [%s] на %s и "
+            "MASQUERADE. Бэк будет видеть IP фронта вместо IP клиента (учёт по IP "
+            "устройств на бэке перестанет различать подписчиков фронта — это ожидаемо). "
+            "Установка обратима: кнопка «Удалить» снимает службу и правила."
+            % (", ".join(map(str, pl)) or "—", back or "?"))
+    return {"front_ip": front_ip, "ports": pl, "back_ip": back,
+            "blockers": blockers, "can_apply": not blockers,
+            "panel_port": panel_port, "note": note}
+
+def _hop_add(name, front_ip, ports):
+    pv = _hop_preview(front_ip, ports)
+    if not pv["can_apply"]:
+        raise RuntimeError("; ".join(pv["blockers"]))
+    hops = _hop_load()
+    if any((h.get("front_ip") == pv["front_ip"]) for h in hops):
+        raise RuntimeError("фронт с таким адресом уже добавлен — обнови его или удали")
+    hid = uuidlib.uuid4().hex[:12]
+    hop = {"id": hid, "name": (name or "Фронт")[:40], "front_ip": pv["front_ip"],
+           "ports": pv["ports"], "back_ip": pv["back_ip"], "state": "pending",
+           "tok": secrets.token_urlsafe(24), "tok_exp": int(time.time()) + 1800,
+           "added": int(time.time()), "last_check": None}
+    hops.append(hop)
+    _hop_save(hops)
+    _audit("hop_add", id=hid, front_ip=pv["front_ip"], ports=pv["ports"])
+    panel_port = pv["panel_port"]
+    curl = ("curl -sk https://%s:%s/relay.sh?tok=%s | sudo bash"
+            % (pv["back_ip"], panel_port, hop["tok"]))
+    return {"id": hid, "state": "pending", "curl": curl, "ttl_sec": 1800}
+
+def _hop_public(ip, port, timeout=1.6):
+    try:
+        s = socket.create_connection((ip, int(port)), timeout=timeout)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+def _hop_check(hid=None):
+    hops = _hop_load()
+    targets = [h for h in hops if (hid is None or h.get("id") == hid)]
+    if hid is not None and not targets:
+        raise RuntimeError("хоп не найден")
+    out = []
+    for h in targets:
+        res = [{"port": p, "tcp": _hop_public(h["front_ip"], p)} for p in (h.get("ports") or [])]
+        h["last_check"] = {"ts": int(time.time()), "tcp_up": [r["port"] for r in res if r["tcp"]],
+                           "tcp_down": [r["port"] for r in res if not r["tcp"]]}
+        if h["state"] == "pending" and not any(r["tcp"] for r in res):
+            pass
+        out.append({"id": h["id"], "front_ip": h["front_ip"], "state": h["state"], "check": res})
+    _hop_save(hops)
+    return {"hops": out,
+            "note": "Проба идёт с бэка через фронт: успех = весь путь DNAT+MASQUERADE работает "
+                    "(для портов, где сам бэк что-то слушает, это кольцо бэк→фронт→бэк). "
+                    "UDP-порты (WireGuard/Hysteria2) этой пробой не проверяются. "
+                    "Не забудь открыть порты в security group облака фронта."}
+
+def _hop_ssh_job(hid, user, password, ssh_port):
+    jid = uuidlib.uuid4().hex[:12]
+    steps = ["SSH-доступ", "Права root", "Установка релея", "Проверка"]
+    job = {"id": jid, "hop": hid,
+           "steps": [{"name": s, "state": "pending", "detail": ""} for s in steps],
+           "done": False, "ok": False, "error": None, "created": int(time.time()),
+           "params": {"user": user, "password": password, "ssh_port": ssh_port}}
+    with HOP_LOCK:
+        HOP_JOBS[jid] = job
+        if len(HOP_JOBS) > 30:
+            old = sorted(HOP_JOBS, key=lambda k: HOP_JOBS[k]["created"])[:-20]
+            for k in [x for x in old if HOP_JOBS[x]["done"]]:
+                HOP_JOBS.pop(k, None)
+    threading.Thread(target=_hop_ssh_worker, args=(jid,), daemon=True).start()
+    return jid
+
+def _hop_ssh_worker(jid):
+    import shlex
+    with HOP_LOCK:
+        job = HOP_JOBS.get(jid) or {}
+        prm = dict(job.get("params") or {})
+    def st(i, s, d=""):
+        with HOP_LOCK:
+            j = HOP_JOBS.get(jid)
+            if j:
+                j["steps"][i]["state"] = s
+                if d:
+                    j["steps"][i]["detail"] = str(d)[:300]
+    def finish(ok, err=None):
+        with HOP_LOCK:
+            job["done"] = True
+            job["ok"] = bool(ok)
+            job["error"] = err
+            jp = job.get("params") or {}
+            jp["password"] = ""
+    def fail(i, msg):
+        st(i, "failed", msg)
+        finish(False, msg)
+        try:
+            _audit("hop_bootstrap_fail", id=job.get("hop"), step=i, error=str(msg)[:200])
+        except Exception:
+            pass
+    hid = job.get("hop") or ""
+    hop = next((h for h in _hop_load() if h.get("id") == hid), None)
+    if not hop:
+        return fail(0, "хоп не найден")
+    host = hop.get("front_ip") or ""
+    user = prm.get("user") or "root"
+    password = prm.get("password") or ""
+    sport = int(prm.get("ssh_port") or 22)
+    try:
+        st(0, "running")
+        keyfile, pubkey = _boot_host_key("hop:" + host + ":" + str(sport))
+        base = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(keyfile)
+        target = "%s@%s" % (user, host)
+
+        def key_run(cmd, timeout=60, input=None):
+            return subprocess.run(base + [target, cmd], capture_output=True, text=True,
+                                  timeout=timeout, input=input,
+                                  stdin=subprocess.DEVNULL if input is None else None)
+        try:
+            ok_key = key_run("true", timeout=20).returncode == 0
+        except Exception:
+            ok_key = False
+        if not ok_key:
+            if not password:
+                return fail(0, "нет доступа по ключу панели, а пароль не задан")
+            r = _boot_askpass_run(password, base + [target, "echo VPOK"], timeout=45)
+            if r.returncode != 0 or b"VPOK" not in (r.stdout or b""):
+                etxt = (r.stderr or b"").decode("utf-8", "ignore")
+                if "denied" in etxt.lower() or "permission" in etxt.lower():
+                    etxt = "SSH отклонил логин/пароль"
+                return fail(0, etxt[:200])
+            try:
+                pubtxt = open(pubkey).read().strip().replace("'", "'\\''")
+            except Exception:
+                pubtxt = ""
+            if not pubtxt:
+                return fail(0, "не читается публичный ключ панели")
+            r = _boot_askpass_run(password, base + [target,
+                  "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; "
+                  "grep -qxF '%s' ~/.ssh/authorized_keys || printf '%%s\\n' '%s' "
+                  ">> ~/.ssh/authorized_keys" % (pubtxt, pubtxt)], timeout=45)
+            if r.returncode != 0:
+                return fail(0, "установка ключа: " + (r.stderr or b"").decode("utf-8", "ignore")[:200])
+            try:
+                ok_key = key_run("true", timeout=20).returncode == 0
+            except Exception:
+                ok_key = False
+            if not ok_key:
+                return fail(0, "ключ панели не принимается после установки")
+        st(0, "done", "вход по ключу панели")
+
+        st(1, "running")
+        r = key_run('u=$(id -u); p=$(command -v sudo || true); '
+                    'if [ "$u" = 0 ]; then m=root; elif [ -n "$p" ] && sudo -n true 2>/dev/null; '
+                    'then m=sudo_n; elif [ -n "$p" ]; then m=s_s; else m=none; fi; '
+                    'if command -v ss >/dev/null 2>&1; then s=ss; else s=noss; fi; echo "$m $s"', timeout=30)
+        if r.returncode != 0:
+            return fail(1, "SSH-команда не прошла: " + (r.stderr or r.stdout or "")[:150])
+        parts = (r.stdout or "").split()
+        mode = parts[0] if parts else "none"
+        if len(parts) > 1 and parts[1] == "noss":
+            return fail(1, "на фронте нет ss (iproute2) — не проверить занятость портов")
+        if mode == "s_s":
+            try:
+                if key_run("sudo -S -p '' true", timeout=30,
+                           input=password.rstrip("\n") + "\n").returncode == 0:
+                    mode = "sudo_s"
+            except Exception:
+                pass
+        if mode not in ("root", "sudo_n", "sudo_s"):
+            return fail(1, "нужны root или sudo (парольный или без пароля)")
+        st(1, "done", {"root": "root", "sudo_n": "sudo без пароля", "sudo_s": "sudo с паролем"}[mode])
+
+        st(2, "running")
+        script = _relay_installer(hop, with_register=True)
+        shell = "bash -euo pipefail -s"
+        stdin_txt = script
+        if mode == "sudo_n":
+            shell = "sudo -n bash -euo pipefail -s"
+        elif mode == "sudo_s":
+            shell = "sudo -S -p '' bash -euo pipefail -s"
+            stdin_txt = password.rstrip("\n") + "\n" + script
+        r = subprocess.run(base + [target, shell], capture_output=True, text=True,
+                           timeout=240, input=stdin_txt)
+        out = (r.stdout or "") + (r.stderr or "")
+        errline = ""
+        for ln in out.splitlines():
+            if ln.startswith("VEILERR:"):
+                errline = ln[len("VEILERR:"):].strip()
+        if r.returncode != 0 or "VEILOK" not in out:
+            return fail(2, errline or ("установка не подтверждена: " + out[-200:]))
+        st(2, "done", errline or "veil-relay: active")
+
+        st(3, "running")
+        hops = _hop_load()
+        h = next((x for x in hops if x.get("id") == hid), None)
+        if h is None:
+            return fail(3, "хоп исчез из hops.json")
+        h["state"] = "active"
+        h["ssh_user"] = user
+        h["ssh_port"] = sport
+        h["ssh_key"] = keyfile
+        registered = "VEILREG:" in out
+        h["registered"] = registered
+        _hop_save(hops)
+        tcp = [{"port": p, "tcp": _hop_public(host, p)} for p in hop["ports"]]
+        h["last_check"] = {"ts": int(time.time()),
+                           "tcp_up": [c["port"] for c in tcp if c["tcp"]],
+                           "tcp_down": [c["port"] for c in tcp if not c["tcp"]]}
+        _hop_save(hops)
+        st(3, "done", "TCP открыт: " + (", ".join(str(c["port"]) for c in tcp if c["tcp"]) or "нет (проверь security group)"))
+        finish(True)
+        _audit("hop_bootstrap_ok", id=hid, front_ip=host, ports=hop["ports"])
+    except Exception as e:
+        fail(2, "исключение: " + str(e)[:200])
+
+def _hop_register(tok, peer_ip):
+    hop = _hop_find_tok(tok)
+    if hop is None:
+        raise RuntimeError("ссылка не найдена или уже использована")
+    if int(hop.get("tok_exp") or 0) < time.time():
+        raise RuntimeError("срок жизни токена истёк — создай фронт заново")
+    hops = _hop_load()
+    h = next((x for x in hops if x.get("id") == hop["id"]), None)
+    if h is None:
+        raise RuntimeError("хоп удалён из панели")
+    already = h.get("state") == "active"
+    h["state"] = "active"
+    h["peer_seen"] = peer_ip
+    h["registered_ts"] = int(time.time())
+    _hop_save(hops)
+    if not already:
+        _audit("hop_register", id=h["id"], front_ip=h.get("front_ip"), peer=peer_ip)
+    return {"ok": True, "note": "уже было активно" if already else "фронт активирован"}
+
+def _hop_remove(hid, confirm=False):
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm): удаляет релей с ФРОНТа и запись")
+    hops = _hop_load()
+    h = next((x for x in hops if x.get("id") == hid), None)
+    if not h:
+        raise RuntimeError("хоп не найден")
+    note = ""
+    key = h.get("ssh_key") or ""
+    if key and os.path.exists(key):
+        try:
+            base = ["/usr/bin/ssh", "-p", str(int(h.get("ssh_port") or 22))] + _ssh_opts(key)
+            target = "%s@%s" % (h.get("ssh_user") or "root", h.get("front_ip"))
+            r = subprocess.run(base + [target,
+                "systemctl disable --now veil-relay >/dev/null 2>&1 || true; "
+                "nft delete table ip veil_relay 2>/dev/null || true; "
+                "rm -f /etc/veil-relay/relay.env /etc/veil-relay/relay.nft "
+                "/etc/veil-relay/relay.nft /etc/systemd/system/veil-relay.service "
+                "/usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf; "
+                "systemctl daemon-reload; rmdir /etc/veil-relay 2>/dev/null || true; echo VEILPURGED"],
+                capture_output=True, text=True, timeout=45, stdin=subprocess.DEVNULL)
+            note = ("очистка на фронте выполнена" if "VEILPURGED" in (r.stdout or "")
+                    else "фронт не ответил на очистку — удалил только запись")
+        except Exception:
+            note = "фронт недоступен по SSH — удалил только запись"
+    else:
+        note = ("ключа SSH нет (установка была через curl) — на фронте останься: "
+                "systemctl disable --now veil-relay && nft delete table ip veil_relay && "
+                "rm -rf /etc/veil-relay /usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf")
+    hops = [x for x in hops if x.get("id") != hid]
+    _hop_save(hops)
+    if (CFG_CACHE.get("hop_public_host") or "").strip() == (h.get("front_ip") or ""):
+        CFG_CACHE.pop("hop_public_host", None)
+        _save(CFG, CFG_CACHE)
+        note += "; публичный адрес сброшен (он принадлежал этому фронту)"
+    _audit("hop_remove", id=hid, front_ip=h.get("front_ip"))
+    return {"ok": True, "note": note}
+
+def _hop_set_public(host):
+    host = (host or "").strip().lower()
+    warn = ""
+    if host:
+        if any(c in host for c in ":/ @\\") or len(host) > 253 or not re.fullmatch(r"[a-z0-9._\-]+", host):
+            raise RuntimeError("адрес — домен или IPv4, без протокола, слэшей и порта")
+        hops = _hop_load()
+        known = [x.get("front_ip") for x in hops if x.get("front_ip")]
+        if host not in known:
+            warn = "ни один добавленный фронт не имеет этот адрес — ссылки могут вести в никуда"
+        CFG_CACHE["hop_public_host"] = host
+    else:
+        CFG_CACHE.pop("hop_public_host", None)
+    _save(CFG, CFG_CACHE)
+    _audit("hop_public_set", host=host or "(reset)")
+    return {"hop_public_host": host, "warn": warn,
+            "note": "ссылки подписок и прокси пересоберутся на новый адрес; экспортируй подписки заново"}
+
+def _hop_relink(hid):
+    hops = _hop_load()
+    h = next((x for x in hops if x.get("id") == hid), None)
+    if not h:
+        raise RuntimeError("хоп не найден")
+    if h.get("state") == "active":
+        raise RuntimeError("фронт уже активен — новая ссылка не требуется")
+    h["tok"] = secrets.token_urlsafe(24)
+    h["tok_exp"] = int(time.time()) + 1800
+    _hop_save(hops)
+    _audit("hop_relink", id=hid, front_ip=h.get("front_ip"))
+    return {"curl": "curl -sk https://%s:%s/relay.sh?tok=%s | sudo bash"
+                    % (h.get("back_ip"), int(CFG_CACHE.get("panel_port", 8444) or 8444), h["tok"]),
+            "ttl_sec": 1800}
+
+def _hop_public_view():
+    hops = []
+    now = int(time.time())
+    for h in _hop_load():
+        d = {k: v for k, v in h.items() if k not in ("tok", "tok_exp")}
+        alive = h.get("state") == "pending" and int(h.get("tok_exp") or 0) > now
+        d["tok_alive"] = alive
+        d["tok_left"] = max(0, int(h.get("tok_exp") or 0) - now) if h.get("state") == "pending" else 0
+        hops.append(d)
+    return {"hops": hops,
+            "hop_public_host": (CFG_CACHE.get("hop_public_host") or "").strip(),
+            "back_ip": _hop_back_ip(),
+            "panel_port": int(CFG_CACHE.get("panel_port", 8444) or 8444),
+            "suggest_ports": _hop_suggest_ports()}
 
 def _mux_preview(vpn_domain=None):
     web_domain = (CFG_CACHE.get("panel_domain") or "").strip()
@@ -7427,7 +7948,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             reset_cycle=reset_cycle, max_devices=max_devices)
             c["ext_owner"] = tid
             inb.setdefault("clients", []).append(c)
-            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             _awg_sync(st); _wg_sync(st)
@@ -7506,7 +8027,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 import base64
                 sub_path = p[5:].strip("/") if p.startswith("/sub/") else ""
                 st = _load(STATE) or {}
-                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = _hop_pub_host()
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
 
@@ -7691,7 +8212,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if not tok:
                 return self._send(400, {"error": "нужен токен подписки"})
             st = _load(STATE) or {}
-            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             cfgj = _sb_config(st, tok, host, panel_port)
@@ -7710,7 +8231,7 @@ class H(http.server.BaseHTTPRequestHandler):
                       if x["sub_token"] == tok or x["uuid"] == tok), None)
             if not u:
                 return self._send(404, {"error": "подписка не найдена"})
-            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             sub_url = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
@@ -7731,7 +8252,7 @@ class H(http.server.BaseHTTPRequestHandler):
             only_proto = "wireguard" if p.startswith("/api/wgconf/") else "amneziawg"
             tok = p[len("/api/wgconf/"):].strip("/") or p[len("/api/awgconf/"):].strip("/")
             st = _load(STATE, {}) or {}
-            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             conf = ""
             name = "client"
@@ -7863,7 +8384,7 @@ class H(http.server.BaseHTTPRequestHandler):
             st = _load(STATE)
             if not st: return self._send(200, {"clients": [], "configured": False})
             if _migrate_state(st): _save(STATE, st)
-            host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+            host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             ipv6 = _my_ipv6()
@@ -8294,6 +8815,34 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/mtproto/preview":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_mp_preview())
+        if p == "/api/hop/list":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _hop_public_view())
+        if p == "/api/hop/preview":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(200, _hop_preview((q.get("ip") or [""])[0],
+                                                (q.get("ports") or [""])[0]))
+        if p == "/api/hop/bootstatus":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            jid = (q.get("id") or [""])[0]
+            with HOP_LOCK:
+                j = HOP_JOBS.get(jid)
+                return self._send(200, json.loads(json.dumps(j, default=str)) if j
+                                  else {"error": "задание не найдено"})
+        if p == "/relay.sh":
+            # Публичный одноразовый установщик фронта: токен в query = право установки.
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            hop = _hop_find_tok((q.get("tok") or [""])[0])
+            if hop is None or hop.get("state") != "pending":
+                return self._send(404, "# ссылка неверна или уже использована — создай фронт в панели заново\n".encode(),
+                                  "text/plain; charset=utf-8")
+            if int(hop.get("tok_exp") or 0) < time.time():
+                return self._send(404, "# срок жизни ссылки истёк — создай фронт в панели заново\n".encode(),
+                                  "text/plain; charset=utf-8")
+            return self._send(200, _relay_installer(hop, with_register=True).encode(),
+                              "text/x-shellscript; charset=utf-8")
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
@@ -8387,7 +8936,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 ma = 2592000 if rem else 259200
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
-            if (not _authed(self) and p != "/api/bot/webhook"
+            if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
                     and not p.startswith("/api/ext/")
                     and not (p.startswith("/p/") and p.endswith("/forget"))):
                 return self._send(401, {"error": "unauthorized"})
@@ -8554,7 +9103,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 sub_token = secrets.token_urlsafe(16)
                 client_uuid = str(uuidlib.uuid4())
                 
-                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = _hop_pub_host()
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
                 
@@ -8772,7 +9321,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     tg_mode = ""
                 tg_user = (_tg_slug(name, "client") + "-" + sub_token[:6]) if tg_mode == "personal" else ""
 
-                host = (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
+                host = _hop_pub_host()
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
 
@@ -9271,6 +9820,70 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     b = self._body() or {}
                     return self._send(200, _tg_mp_revert(bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            # ---- двойной прыжок (RU-фронт + зарубежный бэк) ----
+            if p == "/api/hop/add":
+                try:
+                    b = self._body() or {}
+                    ports = b.get("ports") or []
+                    if isinstance(ports, str):
+                        ports = [x for x in re.split(r"[,\s]+", ports) if x]
+                    return self._send(200, _hop_add(b.get("name"), b.get("front_ip"), ports))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/ssh":
+                try:
+                    b = self._body() or {}
+                    hid = (b.get("id") or "").strip()
+                    hop = next((h for h in _hop_load() if h.get("id") == hid), None)
+                    if not hop:
+                        raise RuntimeError("хоп не найден")
+                    user = (b.get("user") or "root").strip()
+                    sport = int(b.get("ssh_port") or 22)
+                    if not (1 <= sport <= 65535):
+                        raise RuntimeError("неверный SSH-порт")
+                    with HOP_LOCK:
+                        busy = any((not j["done"]) and j.get("hop") == hid for j in HOP_JOBS.values())
+                    if busy:
+                        raise RuntimeError("установка на этот фронт уже идёт")
+                    jid = _hop_ssh_job(hid, user, str(b.get("password") or ""), sport)
+                    _audit("hop_bootstrap_start", id=hid, front_ip=hop.get("front_ip"))
+                    return self._send(200, {"id": jid})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/relink":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _hop_relink((b.get("id") or "").strip()))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/status":
+                try:
+                    b = self._body() or {}
+                    hid = (b.get("id") or "").strip() or None
+                    return self._send(200, _hop_check(hid))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/remove":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _hop_remove((b.get("id") or "").strip(),
+                                                       bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/public":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _hop_set_public(b.get("host")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/hop/register":
+                # Публичный, но только по одноразовому токену фронт-скрипта.
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _hop_register((b.get("tok") or "").strip(),
+                                                         self.client_address[0]))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/cert/config":

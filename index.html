@@ -414,7 +414,7 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
-    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🪜 Двойной прыжок</button><button data-tab=security>🔑 Безопасность</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
   </nav>
 
   <div id=tab-dashboard class="tab-pane">
@@ -1370,6 +1370,34 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     </div>
   </div>
 
+  <div id=tab-hop class="tab-pane">
+    <div class=card>
+      <h3>🪜 Двойной прыжок (RU-фронт → зарубежный бэк)</h3>
+      <p class=mut style="line-height:1.7">Клиенты подключаются к дешёвому VPS <b>в России</b> (фронт), а он на уровне ядра (nft DNAT+MASQUERADE) пересылает трафик на этот сервер (бэк). Наружу подписчик видит «чистый» российский адрес входа, а работает через бэк. Ни xray, ни telemt, ни Reality не трогаются — фронт ничего не расшифровывает.<br>
+      <b>Что нужно:</b> любой чистый RU-VPS с root-SSH (или умением вставить одну команду). Установка обратима: «Удалить» снимает службу и правила с фронта.</p>
+      <div id=hopPubBox></div>
+      <div id=hopListBox style="margin-top:12px"></div>
+      <details id=hopAddBox style="margin:14px 0 0">
+        <summary style="cursor:pointer;font-weight:600;padding:10px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:8px;color:var(--acc)">➕ Добавить фронт</summary>
+        <div style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id=hopName placeholder="Имя (например: Москва-1)" maxlength=40 style="flex:1;min-width:170px">
+            <input id=hopIp placeholder="IPv4 фронта (без порта)" maxlength=64 style="flex:1;min-width:170px">
+          </div>
+          <label class=fldlbl for=hopPorts>Порты ретрансляции (через запятую; фронтов должен слушать то же, что и ссылки)</label>
+          <input id=hopPorts placeholder="443, 7443" maxlength=128 autocomplete=off>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick=hopPreview()>Предпросмотр</button>
+            <button class=sec onclick=hopAdd()>Создать фронт</button>
+          </div>
+          <div id=hopPrevBox style="margin-top:10px"></div>
+          <div class=msg id=hopAddMsg></div>
+        </div>
+      </details>
+      <div class="msg" id=hopMsg></div>
+    </div>
+  </div>
+
 
       <div id=nodeAddBox class="dialog hidden">
         <div class=dcard>
@@ -1751,6 +1779,161 @@ function renderBoot(d){
     '<div style="display:flex;gap:8px;align-items:baseline;padding:2px 0">'+(ic[s.state]||'▫️')+
     '<span style="'+(s.state==='pending'?'opacity:.5':'')+'">'+esc(s.name)+'</span>'+
     (s.detail?'<span class=mut style="font-size:11.5px">'+esc(s.detail)+'</span>':'')+'</div>').join('');
+}
+
+// ---- Двойной прыжок (RU-фронт → зарубежный бэк) ----
+let hopData=null, hopBootTimer=null;
+async function loadHop(){
+  try{ hopData = await api('/api/hop/list'); }
+  catch(e){ hopData = null; }
+  renderHop();
+  const p=$('hopPorts');
+  if(p && !p.value && hopData && hopData.suggest_ports) p.value=hopData.suggest_ports.join(', ');
+}
+function hopBadge(state,tokLeft,tokAlive){
+  if(state==='active') return '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(46,160,67,.15)">🟢 активен</span>';
+  if(state==='pending') return '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(227,179,65,.15)">⏳ ждёт установки'+(tokAlive?(' · ссылка ~'+Math.max(1,Math.round(tokLeft/60))+' мин'):(tokLeft===0?' · ссылка истекла':''))+'</span>';
+  return '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(248,81,73,.15)">'+esc(state)+'</span>';
+}
+function hopPendingBox(x){
+  return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;color:var(--acc)">⚙ установить фронт: SSH в один клик или одна команда на фронте</summary>'
+    +'<div style="padding:8px 4px 0">'
+    +'<div id="hopAct_'+x.id+'"><button class="sec tiny" onclick="hopRelink(\''+x.id+'\')">🔗 Выдать команду установки (curl | sh)</button> <span class=mut style="font-size:12px">— или через SSH:</span></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
+    +'<input id="hopU_'+x.id+'" value="root" placeholder="SSH-логин" style="width:110px" autocomplete=off>'
+    +'<input id="hopSP_'+x.id+'" type=number min=1 max=65535 value=22 style="width:80px" title="SSH-порт">'
+    +'<input id="hopP_'+x.id+'" type=password placeholder="SSH-пароль" style="width:170px" autocomplete=new-password>'
+    +'<button class=tiny onclick="hopSsh(\''+x.id+'\')">⚡ Установить по SSH</button></div>'
+    +'<div id="hopBoot_'+x.id+'" style="margin-top:8px;font-size:13px"></div>'
+    +'<div class=mut style="font-size:12px;margin-top:6px">SSH-пароль нужен однократно (для установки ключа панели), нигде не сохраняется. Не забудь открыть порты ['+esc((x.ports||[]).join(', '))+'] в security group облака фронта.</div>'
+    +'</div></details>';
+}
+function renderHop(){
+  const pub=$('hopPubBox'), lb=$('hopListBox');
+  if(!pub||!lb) return;
+  if(!hopData){ lb.innerHTML='<span class=mut>не удалось загрузить список фронтов</span>'; return; }
+  const cur = hopData.hop_public_host||'';
+  pub.innerHTML='<div style="margin-top:12px;border:1px solid var(--br);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--card2) 30%,transparent)">'
+    +'<div style="font-weight:600;margin-bottom:4px">🌍 Публичный адрес для ссылок</div>'
+    +'<div class=mut style="font-size:12.5px;margin-bottom:8px;max-width:820px">Все ссылки подписчикам (vless/reality-ссылки, tg://proxy, страницы /sub) будут указывать на этот адрес вместо домена бэка. SNI, сертификаты и прикрытия НЕ меняются — TLS по-прежнему терминируется на бэке, фронт только пересылает пакеты. Сейчас: '+(cur?('ссылки идут на <b>'+esc(cur)+'</b>'):'одиночный хоп (домен/IP этого сервера)')+'.</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<input id=hopPubHost placeholder="IPv4 или домен фронта" value="'+esc(cur)+'" maxlength=200 style="flex:1;min-width:220px" autocomplete=off>'
+    +'<button onclick=hopSetPublic()>Применить</button>'
+    +(cur?'<button class=sec onclick=\'hopSetPublic("")\'>Сбросить</button>':'')
+    +'</div><div class=msg id=hopPubMsg></div></div>';
+  const hops = hopData.hops||[];
+  let h='';
+  if(!hops.length){
+    h='<div class=mut style="margin-top:12px">Фронтов пока нет — добавь ниже. Без фронтов панель работает как обычно.</div>';
+  } else {
+    h='<div style="font-weight:600;margin-top:14px;margin-bottom:4px">Фронты</div>';
+    h+=hops.map(x=>{
+      const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">TCP-проба '+new Date(x.last_check.ts*1000).toLocaleTimeString()+': открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+'</div>'):'';
+      return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        +'<b>'+esc(x.name||'Фронт')+'</b><code style="font-size:13px">'+esc(x.front_ip)+'</code>'
+        +hopBadge(x.state,x.tok_left||0,x.tok_alive)
+        +'<span class=mut style="font-size:12.5px">порты: '+esc((x.ports||[]).join(', '))+'</span>'
+        +'<span style="margin-left:auto;display:flex;gap:6px">'
+        +'<button class="sec tiny" onclick="hopCheck(\''+x.id+'\')">Проверить</button>'
+        +'<button class="sec tiny" onclick="hopDel(\''+x.id+'\',\''+esc(x.front_ip)+'\')">Удалить</button></span></div>'
+        +lc+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
+    }).join('');
+  }
+  lb.innerHTML=h;
+}
+async function hopPreview(){
+  const ip=$('hopIp').value.trim(), ports=$('hopPorts').value, b=$('hopPrevBox');
+  if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
+  let d;
+  try{ d=await api('/api/hop/preview?ip='+encodeURIComponent(ip)+'&ports='+encodeURIComponent(ports)); }
+  catch(e){ b.innerHTML=''; setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
+  let h='<div style="border:1px solid var(--br);border-radius:10px;padding:10px;font-size:13px;line-height:1.6;margin-top:4px">';
+  h+= d.can_apply
+    ? '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(46,160,67,.15)">✅ можно применять — бэк '+esc(d.back_ip)+' ← фронт '+esc(d.front_ip)+', порты '+esc((d.ports||[]).join(', '))+'</span>'
+    : '<span style="color:var(--err)">❌ '+esc((d.blockers||[]).join('; '))+'</span>';
+  h+='<div class=mut style="margin-top:6px">'+esc(d.note||'')+'</div></div>';
+  b.innerHTML=h;
+  setMsg('hopAddMsg','','');
+}
+async function hopAdd(){
+  const name=$('hopName').value.trim(), ip=$('hopIp').value.trim();
+  const ports=($('hopPorts').value||'').split(/[,\s]+/).filter(Boolean);
+  if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
+  setMsg('hopAddMsg','создаю…','');
+  let d;
+  try{ d=await api('/api/hop/add',{method:'POST',body:JSON.stringify({name,front_ip:ip,ports})}); }
+  catch(e){ setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
+  $('hopIp').value=''; $('hopName').value=''; $('hopPrevBox').innerHTML='';
+  await loadHop();
+  setMsg('hopAddMsg','фронт создан ✓ — разверни его в списке ниже: SSH-форма или «Выдать команду установки».','ok',true);
+}
+async function hopRelink(id){
+  let d;
+  try{ d=await api('/api/hop/relink',{method:'POST',body:JSON.stringify({id})}); }
+  catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
+  const box=$('hopAct_'+id); if(!box) return;
+  box.innerHTML='<div class=mut style="font-size:12.5px;line-height:1.5">Выполни одной строкой на фронте от root (ссылка живёт ~30 мин и одноразовая):</div>'
+    +'<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><input readonly id=hopCurl_'+id+' value="'+esc(d.curl)+'" style="flex:1;min-width:280px;font-family:monospace;font-size:12px">'
+    +'<button class=tiny onclick=\'var i=document.getElementById("hopCurl_'+id+'");i.select();try{document.execCommand("copy")}catch(e){};this.textContent="Готово"\'>Копировать</button></div>';
+}
+async function hopSsh(id){
+  const u=$('hopU_'+id), pp=$('hopP_'+id), sp=$('hopSP_'+id);
+  const user=(u&&u.value.trim())||'root';
+  const sport=parseInt((sp&&sp.value)||'22',10)||22;
+  if(!pp||!pp.value){ setMsg('hopMsg','введи SSH-пароль фронта (однократно)','err',true); return; }
+  let d;
+  try{ d=await api('/api/hop/ssh',{method:'POST',body:JSON.stringify({id,user,password:pp.value,ssh_port:sport})}); }
+  catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
+  pp.value='';
+  pollHopBoot(d.id,id);
+}
+function pollHopBoot(jid,hid){
+  if(hopBootTimer) clearTimeout(hopBootTimer);
+  async function tick(){
+    let d;
+    try{ d=await api('/api/hop/bootstatus?id='+encodeURIComponent(jid)); }
+    catch(e){ setMsg('hopMsg','потерян статус установки','err',true); hopBootTimer=null; return; }
+    const el=$('hopBoot_'+hid);
+    if(el){
+      const ic={done:'✅',failed:'❌',running:'⏳'};
+      el.innerHTML=(d.steps||[]).map(s=>'<div>'+(ic[s.state]||'▫️')+' '+esc(s.name)+' <span class=mut style="font-size:11.5px">'+esc(s.detail||'')+'</span></div>').join('');
+    }
+    if(d.done){
+      hopBootTimer=null;
+      await loadHop();
+      setMsg('hopMsg', d.ok?'фронт установлен и активен ✓ — можно включать публичный адрес':('сбой: '+(d.error||'неизвестно')), d.ok?'ok':'err', true);
+    } else hopBootTimer=setTimeout(tick,2000);
+  }
+  tick();
+}
+async function hopCheck(id){
+  setMsg('hopMsg','TCP-проба с бэка на фронт…','');
+  let d;
+  try{ d=await api('/api/hop/status',{method:'POST',body:JSON.stringify({id})}); }
+  catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  const h=(d.hops||[])[0]||{};
+  const up=(h.last_check&&h.last_check.tcp_up)||[], dn=(h.last_check&&h.last_check.tcp_down)||[];
+  setMsg('hopMsg','TCP на фронте: '+(up.length?('открыт '+up.join(', ')):'ни один порт не отвечает')+(dn.length?(' · закрыт '+dn.join(', ')):'')+'.'+(d.note?(' '+d.note):''), up.length?'ok':'err', true);
+}
+async function hopDel(id,ip){
+  if(!confirm('Удалить фронт '+ip+'?\n\nЕсли сохранился SSH-ключ панели — с фронта будут сняты служба veil-relay, nft-правила и файлы. Если установка была через curl — удаление только из списка, почисти на фронте вручную (команда будет в сообщении).')) return;
+  let d;
+  try{ d=await api('/api/hop/remove',{method:'POST',body:JSON.stringify({id,confirm:true})}); }
+  catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopMsg','фронт удалён. '+(d.note||''),'ok',true);
+}
+async function hopSetPublic(v){
+  const el=$('hopPubHost');
+  const host=(v!==undefined)?String(v).trim():(el?el.value.trim():'');
+  if(host && !confirm('Все ссылки подписчикам будут указывать на '+host+'. Убедись, что релей на этот адрес установлен и порты открыты. Продолжить?')) return;
+  let d;
+  try{ d=await api('/api/hop/public',{method:'POST',body:JSON.stringify({host})}); }
+  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopPubMsg',(d.warn?('⚠ '+d.warn+'. '):'')+(host?('адрес = '+host):'сброшен на домен/IP бэка')+'. '+(d.note||''), 'ok', true);
 }
 async function doDeploy(c){
   toast('Размещаю на нодах…');
@@ -4013,6 +4196,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
        if(b.dataset.tab==='site'){loadMyIps();loadWebmux();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
+       if(b.dataset.tab==='hop')loadHop();
        if(b.dataset.tab==='diagnostics')loadDiagnostics();
        if(b.dataset.tab==='dashboard')loadDashboard();
 
