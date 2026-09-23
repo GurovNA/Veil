@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.0"
+VERSION = "2.7.1"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -2791,6 +2791,361 @@ def _nodes_poll_loop():
                 pass
         time.sleep(45)
 
+# ========== АВТОПОДКЛЮЧЕНИЕ НОДЫ ПО SSH (бустрап) ==========
+# Пароль SSH используется однократно (через SSH_ASKPASS, только в env процесса),
+# нигде не сохраняется и не пишется в логи; дальше — ed25519-ключ панели.
+
+NODE_KEYS_DIR = f"{BASE}/node_keys"
+BOOT_JOBS = {}
+BOOT_LOCK = threading.Lock()
+
+def _boot_host_key(host):
+    os.makedirs(NODE_KEYS_DIR, 0o700, exist_ok=True)
+    slug = hashlib.sha1(host.encode()).hexdigest()[:16]
+    base = f"{NODE_KEYS_DIR}/{slug}"
+    if not os.path.exists(base):
+        subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "",
+                        "-C", f"veil-panel@{socket.gethostname()}", "-f", base, "-q"],
+                       capture_output=True, timeout=30)
+    try:
+        os.chmod(base, 0o600)
+    except Exception:
+        pass
+    return base, base + ".pub"
+
+def _ssh_opts(keyfile):
+    return ["-o", f"UserKnownHostsFile={NODE_KEYS_DIR}/known_hosts",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"IdentityFile={keyfile}", "-o", "IdentitiesOnly=yes",
+            "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15"]
+
+def _boot_askpass_run(password, argv, timeout=60):
+    """Запуск ssh/ssh-copy-id с вводом пароля через SSH_ASKPASS (пароль — только в env)."""
+    fd, script = tempfile.mkstemp(prefix=".vpw")
+    try:
+        os.write(fd, b"#!/bin/sh\nprintf '%s\\n' \"$VP_SSH_PASS\"\n")
+    finally:
+        os.close(fd)
+    os.chmod(script, 0o700)
+    env = dict(os.environ)
+    env.update(VP_SSH_PASS=password, SSH_ASKPASS=script, SSH_ASKPASS_REQUIRE="force",
+               TMPDIR=os.path.dirname(script))
+    env.pop("SSH_ASKPASS_DELAY", None)
+    try:
+        return subprocess.run(argv, capture_output=True, timeout=timeout, env=env,
+                              stdin=subprocess.DEVNULL)
+    finally:
+        try:
+            os.unlink(script)
+        except Exception:
+            pass
+
+def _boot_new_job(params):
+    jid = uuidlib.uuid4().hex[:12]
+    steps = ["Подключение по SSH", "Права root", "Xray", "Файлы агента",
+             "Конфиг и порты", "Служба veil-agent", "Файрвол",
+             "Токен ноды", "Регистрация"]
+    job = {"id": jid,
+           "steps": [{"name": s, "state": "pending", "detail": ""} for s in steps],
+           "done": False, "ok": False, "error": None,
+           "created": int(time.time()), "params": params}
+    with BOOT_LOCK:
+        BOOT_JOBS[jid] = job
+        if len(BOOT_JOBS) > 50:
+            old = sorted(BOOT_JOBS, key=lambda k: BOOT_JOBS[k]["created"])[:-40]
+            for k in [x for x in old if BOOT_JOBS[x]["done"]]:
+                BOOT_JOBS.pop(k, None)
+    return jid
+
+def _boot_step(jid, idx, state, detail=""):
+    with BOOT_LOCK:
+        job = BOOT_JOBS.get(jid)
+        if job:
+            job["steps"][idx]["state"] = state
+            if detail:
+                job["steps"][idx]["detail"] = str(detail)[:300]
+
+def _node_bootstrap_worker(jid):
+    import traceback, shlex
+    with BOOT_LOCK:
+        job = BOOT_JOBS.get(jid) or {}
+        prm = dict(job.get("params") or {})
+    host = prm.get("host")
+    sport = int(prm.get("ssh_port") or 22)
+    user = prm.get("user") or "root"
+    password = prm.get("password") or ""
+    name = prm.get("name") or "Veil node"
+    sni = prm.get("sni") or "www.samsung.com"
+
+    def st(i, s, d=""):
+        _boot_step(jid, i, s, d)
+
+    def finish(ok, err=None):
+        with BOOT_LOCK:
+            job["done"] = True
+            job["ok"] = ok
+            job["error"] = err
+            jp = job.get("params") or {}
+            jp["password"] = ""
+
+    def fail(i, msg):
+        st(i, "failed", msg)
+        finish(False, msg)
+        try:
+            _audit("node_bootstrap_fail", host=host, step=i, error=str(msg)[:200])
+        except Exception:
+            pass
+
+    try:
+        # --- 0. SSH-доступ: своим ключом, при отказе — пароль однократно + ssh-copy-id
+        st(0, "running")
+        keyfile, pubkey = _boot_host_key(host)
+        base = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(keyfile)
+        target = f"{user}@{host}"
+
+        def key_run(cmd, timeout=60, input=None, text=True):
+            return subprocess.run(base + [target, cmd], capture_output=True, text=text,
+                                  timeout=timeout, input=input,
+                                  stdin=subprocess.DEVNULL if input is None else None)
+
+        try:
+            r = key_run("true", timeout=20)
+            ok_key = r.returncode == 0
+        except Exception:
+            ok_key = False
+        if not ok_key:
+            if not password:
+                return fail(0, "нет доступа по ключу панели, а пароль не задан")
+            r = _boot_askpass_run(password, base + [target, "echo VPOK"], timeout=45)
+            if r.returncode != 0 or b"VPOK" not in (r.stdout or b""):
+                etxt = (r.stderr or b"").decode("utf-8", "ignore")
+                if "denied" in etxt.lower() or "permission" in etxt.lower():
+                    etxt = "SSH отклонил логин/пароль"
+                return fail(0, etxt[:200])
+            # ssh-copy-id в OpenSSH 10.2 сломан (литерал ~ в mktemp) — ставим ключ напрямую
+            try:
+                pubtxt = open(pubkey).read().strip()
+            except Exception:
+                pubtxt = ""
+            pubtxt = pubtxt.replace("'", "'\\''")
+            if not pubtxt:
+                return fail(0, "не читается публичный ключ панели")
+            r = _boot_askpass_run(password, base + [target,
+                                  "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; "
+                                  "grep -qxF '%s' ~/.ssh/authorized_keys || printf '%%s\\n' '%s' "
+                                  ">> ~/.ssh/authorized_keys" % (pubtxt, pubtxt)],
+                                  timeout=45)
+            if r.returncode != 0:
+                return fail(0, "установка ключа: " + (r.stderr or b"").decode("utf-8", "ignore")[:200])
+            try:
+                ok_key = key_run("true", timeout=20).returncode == 0
+            except Exception:
+                ok_key = False
+            if not ok_key:
+                return fail(0, "ключ панели не принимается после установки")
+        st(0, "done", "вход по ключу панели")
+
+        # --- 1. root/sudo
+        st(1, "running")
+        r = key_run('u=$(id -u); p=$(command -v sudo || true); py=$(command -v python3 || true); '
+                    'if [ "$u" = 0 ]; then m=root; elif [ -n "$p" ] && sudo -n true 2>/dev/null; '
+                    'then m=sudo_n; elif [ -n "$p" ]; then m=s_s; else m=none; fi; '
+                    'echo "$m $(uname -m) ${py:-nopy}"', timeout=30)
+        if r.returncode != 0:
+            return fail(1, "SSH-команда не прошла: " + (r.stderr or r.stdout or "")[:150])
+        parts = (r.stdout or "").split()
+        mode = parts[0] if parts else "none"
+        arch = parts[1] if len(parts) > 1 else "?"
+        haspy = len(parts) > 2 and parts[2] != "nopy"
+        if mode == "s_s":
+            try:
+                if key_run("sudo -S -p '' true", timeout=30,
+                           input=password.rstrip("\n") + "\n").returncode == 0:
+                    mode = "sudo_s"
+            except Exception:
+                pass
+        if mode not in ("root", "sudo_n", "sudo_s"):
+            return fail(1, "нужны root или sudo (парольный или без пароля)")
+        if not haspy:
+            return fail(1, "на ноде нет python3 — агент не запустится")
+        st(1, "done", {"root": "root", "sudo_n": "sudo без пароля",
+                       "sudo_s": "sudo с паролем"}[mode])
+
+        def rscript(script, args=(), timeout=180):
+            shell = "bash -euo pipefail -s --"
+            if mode == "sudo_n":
+                shell = "sudo -n bash -euo pipefail -s --"
+            elif mode == "sudo_s":
+                script = password.rstrip("\n") + "\n" + script
+                shell = "sudo -S -p '' bash -euo pipefail -s --"
+            return subprocess.run(base + [target, shell] + [shlex.quote(str(a)) for a in args],
+                                  capture_output=True, text=True, timeout=timeout, input=script)
+
+        def rput(local_path, remote_tmp, timeout=600):
+            with open(local_path, "rb") as f:
+                return subprocess.run(base + [target, f"cat > {shlex.quote(remote_tmp)}"],
+                                      stdin=f, capture_output=True, timeout=timeout)
+
+        # --- 2. xray
+        st(2, "running")
+        r = rscript('command -v xray >/dev/null 2>&1 || [ -x /usr/local/bin/xray ] '
+                    '&& echo have || echo need')
+        if r.returncode != 0:
+            return fail(2, (r.stderr or "")[:200])
+        if "have" in (r.stdout or ""):
+            st(2, "done", "xray уже есть")
+        else:
+            local_xray = shutil.which("xray") or (XRAY_BIN if os.path.exists(XRAY_BIN) else None)
+            try:
+                larch = socket.uname().machine
+            except Exception:
+                larch = ""
+            if arch == "x86_64" and larch == "x86_64" and local_xray:
+                if rput(local_xray, f"/tmp/.veil_xray_{jid}").returncode != 0:
+                    return fail(2, "не удалось передать бинарник xray")
+                r = rscript(f'install -m 0755 /tmp/.veil_xray_{jid} /usr/local/bin/xray '
+                            f'&& rm -f /tmp/.veil_xray_{jid} && /usr/local/bin/xray version | head -1')
+                if r.returncode != 0:
+                    return fail(2, "установка локального xray: " + (r.stderr or "")[:150])
+                st(2, "done", "скопирован xray с панели")
+            else:
+                r = rscript('curl -fsSL https://github.com/XTLS/Xray-install/raw/main/scripts/install-release.sh '
+                            '-o /tmp/.veil_xi.sh || wget -qO /tmp/.veil_xi.sh '
+                            'https://github.com/XTLS/Xray-install/raw/main/scripts/install-release.sh; '
+                            'bash /tmp/.veil_xi.sh install >/dev/null 2>&1; rm -f /tmp/.veil_xi.sh; '
+                            'xray version | head -1', timeout=300)
+                if r.returncode != 0 or "Xray" not in (r.stdout or ""):
+                    return fail(2, "не удалось установить xray (на ноде нужен интернет и curl/wget)")
+                st(2, "done", "установлен xray из официального репозитория")
+
+        # --- 3. файлы агента
+        st(3, "running")
+        agent_src = f"{BASE}/agent.py"
+        if not os.path.exists(agent_src):
+            return fail(3, "в каталоге панели нет agent.py")
+        if rput(agent_src, f"/tmp/.veil_agent_{jid}", timeout=120).returncode != 0:
+            return fail(3, "передача agent.py не удалась")
+        r = rscript(f'mkdir -p /opt/veil-agent && install -m 0644 /tmp/.veil_agent_{jid} '
+                    f'/opt/veil-agent/agent.py && rm -f /tmp/.veil_agent_{jid}')
+        if r.returncode != 0:
+            return fail(3, (r.stderr or "")[:200])
+        st(3, "done", "/opt/veil-agent/agent.py")
+
+        # --- 4. конфиг: свободные порты, имена
+        st(4, "running")
+        r = rscript('''set -e
+freep() { for p in "$@"; do ss -H -ltnu 2>/dev/null | awk '{print $5}' | sed 's/.*://' | grep -qx "$p" || { echo "$p"; return 0; }; done; return 1; }
+API=$(freep 9444 9445 19444 29444) || exit 21
+XP=$(freep 8444 8445 14444 24444) || exit 22
+SP=$(freep 10090 10091 10099 10199) || exit 23
+XB=$(command -v xray || echo /usr/local/bin/xray)
+python3 -c 'import json,sys; json.dump({"api_port": int(sys.argv[1]), "xport": int(sys.argv[2]), "stats_port": int(sys.argv[3]), "xray_bin": sys.argv[4], "name": sys.argv[5], "sni": sys.argv[6]}, open("/opt/veil-agent/agent.conf.json", "w"), ensure_ascii=False, indent=2)' "$API" "$XP" "$SP" "$XB" "$1" "$2"
+echo "$API $XP $SP"
+''', args=(name, sni), timeout=60)
+        if r.returncode != 0:
+            return fail(4, "конфиг не записан" +
+                        (" (все кандидаты портов заняты)" if r.returncode in (21, 22, 23) else
+                         ": " + (r.stderr or "")[:150]))
+        try:
+            api_port, x_port, sp_port = (r.stdout or "").split()[:3]
+            api_port, x_port, sp_port = int(api_port), int(x_port), int(sp_port)
+        except Exception:
+            return fail(4, "не разобраны порты из конфига: " + (r.stdout or "")[:80])
+        st(4, "done", f"API {api_port}, вход {x_port}")
+
+        # --- 5. systemd-юнит
+        st(5, "running")
+        r = rscript('''set -e
+cat > /etc/systemd/system/veil-agent.service <<'EOS'
+[Unit]
+Description=Veil node agent
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/veil-agent
+ExecStart=/usr/bin/env python3 /opt/veil-agent/agent.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOS
+systemctl daemon-reload
+systemctl enable veil-agent >/dev/null 2>&1 || true
+systemctl restart veil-agent
+sleep 2
+systemctl is-active veil-agent
+''', timeout=90)
+        if r.returncode != 0 or "active" not in (r.stdout or ""):
+            return fail(5, "служба не запустилась: " + ((r.stderr or "") + (r.stdout or ""))[:200])
+        st(5, "done", "veil-agent: active")
+
+        # --- 6. файрвол (best-effort)
+        st(6, "running")
+        r = rscript(f'''ok=""
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw allow {x_port}/tcp >/dev/null 2>&1 && ok=ufw
+  ufw allow {api_port}/tcp >/dev/null 2>&1 || true
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port={x_port}/tcp >/dev/null 2>&1 || true
+  firewall-cmd --permanent --add-port={api_port}/tcp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 && ok="firewalld $ok"
+fi
+echo "${{ok:-не активно}}"
+''', timeout=60)
+        st(6, "done", ("открыты порты: " + (r.stdout or "").strip()) if r.returncode == 0
+           else "файрвол не трогали (best-effort)")
+
+        # --- 7. токен агента
+        st(7, "running")
+        r = rscript("cd /opt/veil-agent && python3 agent.py --token", timeout=60)
+        token = ((r.stdout or "").strip().splitlines() or [""])[-1].strip()
+        if r.returncode != 0 or not (30 <= len(token) <= 80) or not re.fullmatch(r"[A-Za-z0-9_\-]+", token):
+            return fail(7, "не удалось прочитать токен агента: " + (r.stderr or "")[:150])
+        st(7, "done", "получен")
+
+        # --- 8. регистрация ноды + TOFU
+        st(8, "running")
+        nodes = get_nodes()
+        entry = next((n for n in nodes
+                      if (n.get("host") or "").strip().lower() == host.lower()), None)
+        if entry is None:
+            entry = {"added": int(time.time())}
+            nodes.append(entry)
+        entry.update({"name": name, "host": host, "port": api_port, "type": "agent",
+                      "token": token, "online": False,
+                      "ssh_user": user, "ssh_port": sport, "ssh_key": keyfile,
+                      "ssh_sudo": mode})
+        save_nodes(nodes)
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            _node_poll_one(entry)
+            if entry.get("online"):
+                break
+            time.sleep(2)
+        save_nodes(nodes)
+        if entry.get("online"):
+            st(8, "done", f"нода онлайн, отпечаток {str(entry.get('pin') or '')[:12]}… закреплён")
+        else:
+            st(8, "done", "нода добавлена, API ещё не отвечает — слежение включено")
+        finish(True)
+        _audit("node_bootstrap", host=host, name=name, api_port=api_port, x_port=x_port)
+    except subprocess.TimeoutExpired:
+        with BOOT_LOCK:
+            cur = next((s["name"] for s in job["steps"] if s["state"] == "running"), "?")
+        finish(False, f"таймаут на шаге «{cur}»")
+    except Exception:
+        try:
+            with open(f"{BASE}/logs/panel.err", "a") as f:
+                f.write("node_bootstrap: " + traceback.format_exc() + "\n")
+        except Exception:
+            pass
+        with BOOT_LOCK:
+            cur = next((s["name"] for s in job["steps"] if s["state"] == "running"), "?")
+        finish(False, f"сбой на шаге «{cur}» (см. logs/panel.err)")
+
 def _node_expiry_days(c):
     ex = int(c.get("expiry") or 0)
     if ex <= 0:
@@ -3116,6 +3471,44 @@ def _tg_web_secret(username):
         if mm and mm.group(1) == username:
             return mm.group(2)
     return ""
+
+def _tg_dcs():
+    """Покрытие дата-центров Telegram движком telemt (ME-writers): таблица по DC,
+    итоги и порог fresh-покрытия. Источник — /v1/stats/dcs + /v1/config."""
+    d = _tg_api("GET", "/v1/stats/dcs").get("data") or {}
+    rows = []
+    for x in (d.get("dcs") or []):
+        req = int(x.get("required_writers") or 0)
+        alive = int(x.get("alive_writers") or 0)
+        rows.append({
+            "dc": x.get("dc"),
+            "rtt": round(float(x.get("rtt_ms") or 0), 1),
+            "alive": alive, "required": req,
+            "coverage": round(float(x.get("coverage_pct") or 0), 1),
+            "fresh": round(float(x.get("fresh_coverage_pct") or 0), 1),
+            "endpoints": int(x.get("available_endpoints") or 0),
+            "endpoints_pct": round(float(x.get("available_pct") or 0), 1)})
+    req = sum(r["required"] for r in rows)
+    counted = sum(min(r["alive"], r["required"]) for r in rows)
+    alive = sum(r["alive"] for r in rows)
+    thr = None
+    try:
+        g = (_tg_api("GET", "/v1/config").get("data") or {}).get("general") or {}
+        thr = round(float(g.get("me_pool_min_fresh_ratio") or 0.9) * 100)
+    except Exception:
+        pass
+    return {"dcs": rows, "generated": int(d.get("generated_at_epoch_secs") or 0),
+            "totals": {"required": req, "counted": counted, "alive": alive,
+                       "coverage": round(counted / req * 100, 1) if req else 0.0},
+            "threshold": thr}
+
+def _tg_set_fresh_ratio(pct):
+    pct = float(pct)
+    if not (10 <= pct <= 100):
+        raise RuntimeError("порог должен быть 10–100 %")
+    _tg_api("PATCH", "/v1/config", {"general": {"me_pool_min_fresh_ratio": pct / 100.0}})
+    _audit("tg_fresh_ratio", pct=pct)
+    return {"ok": True, "pct": pct}
 
 def _tg_web_link(username):
     """tg://webproxy?server=HOST&secret=dd<secret> для пользователя."""
@@ -5227,6 +5620,19 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self):
                 return self._send(401, {"error": "unauthorized"})
             return self._send(200, _nodes_public())
+        if p == "/api/nodes/bootstrap/status":
+            if not _authed(self):
+                return self._send(401, {"error": "unauthorized"})
+            jid = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                   .get("id") or [""])[0].strip()[:12]
+            with BOOT_LOCK:
+                job = BOOT_JOBS.get(jid)
+                out = None if not job else {
+                    "id": jid, "done": job["done"], "ok": job["ok"], "error": job["error"],
+                    "steps": [dict(s) for s in job["steps"]]}
+            if out is None:
+                return self._send(404, {"error": "задача не найдена (перезапуск панели?)"})
+            return self._send(200, out)
         if p == "/api/nodes/tokens":
             if not _authed(self):
                 return self._send(401, {"error": "unauthorized"})
@@ -5646,6 +6052,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
+        if p == "/api/tg/dcs":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _tg_dcs())
+            except Exception as e:
+                return self._send(200, {"error": str(e)[:200], "dcs": []})
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
@@ -5971,6 +6383,35 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "нода не найдена"})
                 save_nodes(out)
                 return self._send(200, {"ok": True, "nodes": _nodes_public()})
+            if p == "/api/nodes/bootstrap":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                host = (b.get("host") or "").strip()
+                user = (b.get("user") or "").strip()
+                password = str(b.get("password") or "")
+                name = ((b.get("name") or "").strip() or "Veil node")[:40]
+                sni = (b.get("sni") or "").strip()[:80]
+                try:
+                    sport = int(b.get("ssh_port") or 22)
+                except Exception:
+                    return self._send(400, {"error": "неверный SSH-порт"})
+                if not host or not user:
+                    return self._send(400, {"error": "укажи адрес ноды и SSH-логин"})
+                if host in ("0.0.0.0", "::", "localhost"):
+                    return self._send(400, {"error": "этот адрес — не внешняя нода"})
+                if not (1 <= sport <= 65535):
+                    return self._send(400, {"error": "SSH-порт должен быть от 1 до 65535"})
+                with BOOT_LOCK:
+                    busy = any((not j["done"]) and (j.get("params") or {}).get("host") == host
+                               for j in BOOT_JOBS.values())
+                if busy:
+                    return self._send(400, {"error": "для этого адреса подключение уже идёт"})
+                jid = _boot_new_job({"host": host, "ssh_port": sport, "user": user,
+                                     "password": password, "name": name, "sni": sni})
+                threading.Thread(target=_node_bootstrap_worker, args=(jid,), daemon=True).start()
+                _audit("node_bootstrap_start", host=host, user=user)
+                return self._send(200, {"id": jid})
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"
@@ -6809,6 +7250,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     return self._send(200, {"ok": True, "web": _tg_web_set(
                         b.get("carrier"), b.get("enabled"))})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/threshold":
+                b = self._body()
+                try:
+                    return self._send(200, _tg_set_fresh_ratio(b.get("pct")))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/port80/free":

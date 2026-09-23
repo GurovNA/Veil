@@ -27,3 +27,4 @@ sessions.json
 manual-backup-*/
 restore-backup-*/
 .release-tmp/
+node_keys/
