@@ -71,6 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - Update center: panel / Xray / telemt with rollback to previous version; state export/import (backup)
 - PWA; themes, wallpapers and logo configurable from the UI
 - **Node federation**: accept other Veil panels' clients over a scoped Node API (`/api/ext/*`, rate-limited, audited, revocable tokens) and place your own clients on remote nodes — either a Veil panel or the standalone `agent.py` (vless+reality, traffic accounting, autoblock, same-uuid mirrors added to the subscription; TLS pin TOFU)
+- **⚡ SSH node bootstrap**: enter IP/login/password of a clean VPS — the panel installs xray and `agent.py`, enables the systemd service, opens firewall ports and registers the node (password used once for key install, never stored). **Telegram DC coverage** in the Proxy tab: RTT, writers and coverage % via telemt API with an adjustable threshold
 
 ## Documentation
 
