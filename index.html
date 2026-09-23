@@ -664,6 +664,7 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
     <div id=tgMpStatus class="msg" style="margin:6px 0"></div>
+    <div id=tgMpFix></div>
     <div class="row" style="margin:10px 0;gap:8px">
       <span class=mut>Fix (zapret2): <b id=fixStatus>—</b></span>
       <button class="tiny sec" id=fixBtn onclick=toggleFix()>—</button>
@@ -3648,7 +3649,7 @@ async function doWebSetCarrier(k){
 function renderTgMp(){
   const el = document.getElementById('tgMpStatus'); if(!el) return;
   const mp = window.tgMp;
-  if(!mp || !mp.port){ el.style.display='none'; el.textContent=''; return; }
+  if(!mp || !mp.port){ el.style.display='none'; el.textContent=''; const f=document.getElementById('tgMpFix'); if(f) f.innerHTML=''; return; }
   el.style.display='';
   if(mp.up){
     el.className='msg ok';
@@ -3656,9 +3657,68 @@ function renderTgMp(){
   } else {
     el.className='msg err';
     el.innerHTML='⚠ Сервер MTProto сейчас <b>недоступен</b>: '+esc(mp.note||'')
-      +'. Ссылку tg://proxy клиент не сможет открыть, пока порт не займёт telemt.'
-      +'<br><span class=mut style="font-size:12px">Чаще всего :443 занят веб-прокси nginx — тогда используйте веб-прокси (tg://webproxy) либо настройте SNI-мюкс во вкладке «Сайт».</span>';
+      +'. Клиент не сможет открыть tg://proxy, пока telemt не займёт порт.'
+      +'<br><span class=mut style="font-size:12px">Ниже — чиним это добавлением публичного MTProto-листенера в [[server.listeners]] (nginx/Reality на :443 не трогаем). Либо используйте веб-прокси (tg://webproxy).</span>';
   }
+  loadTgMpFix();
+}
+
+async function loadTgMpFix(){
+  const f = document.getElementById('tgMpFix'); if(!f) return;
+  let d;
+  try { d = await (await api('/api/tg/mtproto/preview')).json(); }
+  catch(e){ f.innerHTML=''; return; }
+  if(!d || d.ok===false){ f.innerHTML=''; return; }
+  const bd = (t,c)=>'<span class="badge" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:'+c+'">'+t+'</span>';
+  let h='<div style="margin-top:10px;border:1px solid var(--br);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--card2) 30%,transparent)">';
+  h+='<div style="font-weight:600;margin-bottom:6px">🔌 Публичный MTProto listener</div>';
+  h+='<div class=mut style="font-size:13px;line-height:1.6">'
+    +'[server] port: <b>:'+(d.server_port||'—')+'</b> · '
+    +(d.has_public_listener
+        ? bd('публичный listener: :'+(d.public_port||'?'),'rgba(46,160,67,.15)')
+        : bd('публичный listener отсутствует','rgba(248,81,73,.15)'))
+    +' · '
+    +(d.up
+        ? bd('telemt слушает :'+d.public_port,'rgba(46,160,67,.15)')
+        : ('порт :'+(d.public_port||'?')+' '+(d.proc?('занят '+d.proc):'никто не слушает')))
+    +'</div>';
+  if(!d.can_apply){
+    if(d.marked || d.applied){
+      h+='<div style="margin-top:8px"><button class="sec tiny" onclick=tgMpRevert()>⟲ Откатить listener, добавленный панелью</button> <span class=mut style="font-size:12px">сейчас MTProto на :'+(d.public_port||'?')+'</span></div>';
+    } else {
+      h+='<div style="margin-top:8px;color:var(--mut);font-size:12px">'+esc((d.blockers||[]).join('; ')||'Действия не требуются')+'</div>';
+    }
+  } else {
+    h+='<div style="margin-top:8px"><button class="sec tiny" onclick=tgMpApply('+d.candidate_port+')>⚡ Оживить MTProto на :'+d.candidate_port+'</button></div>';
+    h+='<div class=mut style="font-size:12px;margin-top:4px">В telemt.toml будет добавлен блок <code>[[server.listeners]] ip=0.0.0.0 port='+d.candidate_port+' transport=mtproxy</code>, telemt перезапустится. nginx/Reality и fake-TLS фронт не трогаем. Если в облаке security group — откройте этот порт.</div>';
+  }
+  h+='<div class=msg id=tgMpFixMsg style="margin-top:8px"></div>';
+  h+='</div>';
+  f.innerHTML=h;
+}
+
+async function tgMpApply(port){
+  if(!confirm('Добавить публичный MTProto listener на :'+port+' и перезапустить telemt?\n\nnginx (:443), Reality и декойт-сайт не затрагиваются. Изменение обратимо.')) return;
+  setMsg('tgMpFixMsg','Применяю…','');
+  try{
+    const r = await api('/api/tg/mtproto/apply',{method:'POST',body:JSON.stringify({port:port,confirm:true})});
+    const d = await r.json();
+    if(!r.ok || d.error){ setMsg('tgMpFixMsg','❌ '+(d.error||'ошибка'),'err'); return; }
+    setMsg('tgMpFixMsg','✅ MTProto активен на :'+d.port+'. Обновляю список…','ok');
+    await loadTg();
+  }catch(e){ setMsg('tgMpFixMsg','❌ '+e,'err'); }
+}
+
+async function tgMpRevert(){
+  if(!confirm('Убрать MTProto listener, добавленный панелью? Telemt перезапустится и вернётся к прежнему виду конфига.')) return;
+  setMsg('tgMpFixMsg','Откатываю…','');
+  try{
+    const r = await api('/api/tg/mtproto/revert',{method:'POST',body:JSON.stringify({confirm:true})});
+    const d = await r.json();
+    if(!r.ok || d.error){ setMsg('tgMpFixMsg','❌ '+(d.error||'ошибка'),'err'); return; }
+    setMsg('tgMpFixMsg','⟲ '+(d.message||d.note||'откат выполнен'),'ok');
+    await loadTg();
+  }catch(e){ setMsg('tgMpFixMsg','❌ '+e,'err'); }
 }
 
 function renderTg(){

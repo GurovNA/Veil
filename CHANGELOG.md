@@ -2,6 +2,17 @@
 
 All notable changes to Veil Panel will be documented in this file.
 
+## [2.7.7] - 2026-09-23
+
+**MTProto «из коробки» на хостах с включённым web-прокси — честная починка публичного listener'а вместо переноса fake-TLS фронта.**
+
+- **Корень проблемы** (по докам telemt `docs/Architecture/Fronting-splitting/TLS-F-TCP-S.ru.md`): маскировочный fake-TLS (`censorship.mask`+`mask_port`) — это **TCP-splitting upstream**, куда telemt **перенаправляет non-MTProto** соединения; а сам MTProto слушает `[server] port` **через `[[server.listeners]]`**. С telemt 3.5+ массив listeners — **исчерпывающий**: если в файле есть хоть один `[[server.listeners]]` (например, `ip=127.0.0.1 transport="web" port=18080`, который добавляет панель при включении web-прокси), и среди них нет публичного `transport="mtproxy"`, — telemt **не биндит `[server] port` вообще**, и `tg://proxy`-ссылка ведёт в никуда. Именно это ломалось на «грязных» хостах после включения веб-прокси (панельный баг, который мы до этой версии пытались лечить переносом `mask_port` — этот путь был принципиально неверным).
+- **Панельная фича «Оживить MTProto» переписана под listeners**: `_tg_mp_preview/_tg_mp_apply/_tg_mp_revert` теперь читают и правят блок `[[server.listeners]] ip="0.0.0.0" port=<[server] port> transport="mtproxy"`, а не `censorship.mask_port`. Вставка — сразу после последнего существующего listeners-блока; при удалении — вырезается ровно по маркеру `# Veil:MTProtoListener`. apply: пишет блок → systemctl restart telemt → ждёт, пока `_tg_mtproto_info` покажет `up=true` на нужном порту → при неудаче **полный откат конфига** (backup toml + restart). revert: вырезает блок, возвращает `[server] port`, перезапускает, честно говорит, кто теперь держит порт.
+- **Панель больше не ломает MTProto при включении web-прокси** (`_tg_web_enable`): если `[[server.listeners]]` ещё нет, и мы его добавляем для `transport="web"`, тут же добавляем и публичный MTProto-listener на `[server] port` (или `7443`), иначе он «исчезает» по той же исчерпывающей семантике массива.
+- **Честная диагностика**: `_tg_mtproto_info` возвращает `{port, mask, mask_port, server_port, up, proc, has_public_listener, note}`; панель больше не путает «порт, на который смотрит fake-TLS» с «портом, на который должен подключаться MTProto-клиент». Ссылка `tg://proxy` в UI/JSON строится вокруг реального публичного MTProto listener'а (`port=<real>`).
+- **UI вкладки «Proxy»**: карточка «🔌 Публичный MTProto listener» вместо «Порт MTProto (fake-TLS фронт)» — показывает отдельно `[server] port` и наличие публичного listener'а, кнопку «⚡ Оживить MTProto на :PORT» с честным описанием того, что именно будет добавлено (`[[server.listeners]] ip=0.0.0.0 port=N transport=mtproxy`), и «⟲ Откатить listener, добавленный панелью».
+- **Проверено на живом хосте A** (dynv6 `926923.v6.navy`, nginx на :443, telemt 3.5.7 с `mask=true mask_port=443 tls_domain=my.aeza.ru`, `[server] port=7443`): до фикса — `ss` пуст на :7443, ссылки вели в никуда; после apply — `LISTEN 0.0.0.0:7443 users:(("telemt"...))`, `openssl s_client -connect 212.113.102.6:7443 -servername my.aeza.ru` отвечает фронтом `CN=*.aeza.net` (корректный fake-TLS), панель выдаёт рабочие `tg://proxy?server=926923.v6.navy&port=7443&secret=ee...`. Полный цикл preview → apply → revert → apply отработал без артефактов.
+
 ## [2.7.6] - 2026-09-23
 
 **Второй срез мюкса :443 — разрушительный «включить/откатить» для cert-TLS VPN на «грязном» хосте, где :443 уже занят.**
