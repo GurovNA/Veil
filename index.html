@@ -2590,7 +2590,7 @@ async function loadGlobalpingHistory(){
           <span>${icon} ${ok}/${total} зондов</span>
         </div>
         <div style="font-size:11px;color:var(--mut);margin-top:4px">
-          ${(h.details||[]).map(d=>`${d.country} ${d.city}: ${d.success?'✅':'❌'} ${d.rtt||'—'}`).join(' | ')}
+          ${(h.details||[]).map(d=>`${escapeHtml(d.country)} ${escapeHtml(d.city)}: ${d.success?'✅':'❌'} ${escapeHtml(d.rtt||'—')}`).join(' | ')}
         </div>
       </div>`;
     }).join('');
@@ -2757,14 +2757,16 @@ async function testBotConnection(){
   }catch(e){ setMsg('botMsg','Ошибка: '+e.message,'err'); }
 }
 
-async function toast(html, cls){
+async function toast(text, cls){
   const c=document.createElement('div'); c.className='toast '+(cls||'');
-  c.innerHTML=html;
+  c.textContent=text;
   $('toasts').appendChild(c);
   c.onclick=()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);};
   setTimeout(()=>{c.classList.add('out');setTimeout(()=>c.remove(),400);},3600);
 }
-function setMsg(id,msg,cls,stick){
+function setMsg(id,msg,cls,stick){setMsgHtml(id,escapeHtml(msg==null?'':msg),cls,stick);}
+// setMsgHtml — ТОЛЬКО для строк, контролируемых разработчиком (разметка своя); чужие данные экранировать escapeHtml/esc до вызова
+function setMsgHtml(id,msg,cls,stick){
   const el=$(id);
   if(!el)return;
   el.innerHTML=msg||'';
@@ -2812,7 +2814,7 @@ async function savePanelPort(){
   setMsg('pnlPortMsg','Проверяю порт...','');
   try{
     const r=await api('/api/panel/port',{method:'POST',body:JSON.stringify({port:p})});
-    if(r.restarting)setMsg('pnlPortMsg','Порт изменён, панель перезапускается. Открой <b>'+location.protocol+'//'+location.hostname+':'+p+'</b> через несколько секунд.','ok');
+    if(r.restarting)setMsgHtml('pnlPortMsg','Порт изменён, панель перезапускается. Открой <b>'+escapeHtml(location.protocol+'//'+location.hostname+':'+p)+'</b> через несколько секунд.','ok');
     else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
   }catch(e){setMsg('pnlPortMsg',e.message,'err');}
 }
@@ -2826,19 +2828,19 @@ function renderRotateStatus(s){
   const box=$('rotStatus'); if(!box||!s)return;
   const c=s.conf||{};
   const pct=(s.pct==null||s.pct==='')?'—':(Math.round(s.pct*10)/10+'%');
-  let h='Статус: <b>'+(s.state||'idle')+'</b>';
+  let h='Статус: <b>'+escapeHtml(s.state||'idle')+'</b>';
   if(s.busy) h+=' · <span style="color:#e0b341">идёт проверка / замена…</span>';
   h+=' · доступность из РФ: <b>'+pct+'</b>'+(s.total?(' ('+s.ok+'/'+s.total+')'):'');
-  h+=' · текущий IP: <b>'+(s.now_ip4||'—')+'</b>';
-  if(c.provider&&c.provider!=='off'&&s.cf_ip!==undefined) h+=' · Cloudflare A: '+(s.cf_ip||'—');
+  h+=' · текущий IP: <b>'+escapeHtml(s.now_ip4||'—')+'</b>';
+  if(c.provider&&c.provider!=='off'&&s.cf_ip!==undefined) h+=' · Cloudflare A: '+escapeHtml(s.cf_ip||'—');
   h+=' · свободных IP в пуле: '+((s.pool||[]).length);
   h+='<br>последняя замена: '+_rotFmtTs(s.last_swap);
-  if(s.error) h+='<br><span style="color:#ff6b6b">ошибка: '+s.error+'</span>';
+  if(s.error) h+='<br><span style="color:#ff6b6b">ошибка: '+escapeHtml(s.error)+'</span>';
   box.innerHTML=h;
   const ev=$('rotEvents');
   if(ev){
     const list=(s.events||[]).slice().reverse();
-    ev.innerHTML=list.length?('<b>Журнал:</b><br>'+list.map(e=>e.ts+' · '+e.text).join('<br>')):'';
+    ev.innerHTML=list.length?('<b>Журнал:</b><br>'+list.map(e=>escapeHtml(e.ts)+' · '+escapeHtml(e.text)).join('<br>')):'';
   }
 }
 async function loadRotate(){
@@ -3327,7 +3329,7 @@ async function createDynv6Zone(){
   setMsg('ztMsg','Создаю зону: '+$h(nm)+'...');
   try{
     const r=await api('/api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
-    setMsg('ztMsg','Зона успешно создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok',true);
+    setMsgHtml('ztMsg','Зона успешно создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok',true);
     toast('Зона успешно создана: ' + r.host, 'ok');
     $('dvHost').value=r.host; $('dvToken').value=r.token||'';
     if($('setDomain')){
@@ -3544,7 +3546,7 @@ async function loadTg(){
     loadTgDcs();
     if (!d.installed){
       document.getElementById('tgList').innerHTML='';
-      setMsg('tgMsg','MTProto-прокси не установлен. Установи пакет <b>telemt</b> и перезапусти панель.','');
+      setMsgHtml('tgMsg','MTProto-прокси не установлен. Установи пакет <b>telemt</b> и перезапусти панель.','');
       return;
     }
     tgUsers = d.users || [];
@@ -4665,7 +4667,7 @@ async function searchCerts(){
       row.appendChild(sp);row.appendChild(bt);box.appendChild(row);
     });
   }catch(e){
-    box.innerHTML='<span class=mut style="font-size:12px">Ошибка: '+e.message+'</span>';
+    box.innerHTML='<span class=mut style="font-size:12px">Ошибка: '+esc(e.message)+'</span>';
   }
 }
 async function startXray(){

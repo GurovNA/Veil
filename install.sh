@@ -298,9 +298,9 @@ CFG = "/opt/vpnpanel/config.json"
 LOG = "/opt/vpnpanel/FIRST-LOGIN.txt"
 panel_port = int(sys.argv[1])
 login = "admin"
-pw    = secrets.token_urlsafe(12)
 salt  = secrets.token_hex(16)
-h     = hashlib.sha256((salt + pw).encode()).hexdigest()
+pw    = secrets.token_urlsafe(12)
+h     = "pbkdf2_sha256$300000$" + hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 300000).hex()
 with open(CFG, "w") as f:
     json.dump({"login": login, "salt": salt, "pass_hash": h, "panel_port": panel_port}, f, indent=2)
 os.chmod(CFG, 0o600)
