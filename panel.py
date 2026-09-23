@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.9"
+VERSION = "2.7.10"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -269,10 +269,15 @@ def _save_audit():
     except Exception:
         pass
 
+def _audit_redact(v):
+    if isinstance(v, str) and ("tok=" in v or "token=" in v):
+        v = re.sub(r"(tok|token)=[A-Za-z0-9_.\-]{8,}", r"\1=***", v)
+    return v
+
 def _audit(ev, **kw):
     """Запись в аудит-журнал. ev — событие, kw — детали (имя клиента, uuid, ip и т.п.)."""
     entry = {"ts": _now_iso(), "ev": ev}
-    entry.update({k: v for k, v in kw.items() if v is not None})
+    entry.update({k: _audit_redact(v) for k, v in kw.items() if v is not None})
     AUDIT.append(entry)
     if len(AUDIT) > AUDIT_LIMIT + 64:
         del AUDIT[: len(AUDIT) - AUDIT_LIMIT]
@@ -487,7 +492,30 @@ def _save(p, o, mode=0o600):
     os.chmod(p, mode)
 
 def _hash(salt, pw):
+    # старый формат (sha256 за проход) — нужен только для проверки унаследованных hash'ей
     return hashlib.sha256((salt + pw).encode()).hexdigest()
+
+def _hash2(salt, pw, iters=300000):
+    dk = hashlib.pbkdf2_hmac("sha256", str(pw).encode(), str(salt).encode(), iters)
+    return "pbkdf2_sha256$%d$%s" % (iters, dk.hex())
+
+def _pw_match(salt, pw, stored):
+    stored = str(stored or "")
+    if stored.startswith("pbkdf2_sha256$"):
+        parts = stored.split("$", 2)
+        try:
+            cand = _hash2(salt, pw, int(parts[1]))
+        except Exception:
+            return False
+        return secrets.compare_digest(cand, stored)
+    ok = secrets.compare_digest(_hash(salt, pw), stored)
+    if ok:  # прозрачная миграция старого формата — установку не ломаем, пароль не теряем
+        try:
+            CFG_CACHE["pass_hash"] = _hash2(salt, pw)
+            _save(CFG, CFG_CACHE)
+        except Exception:
+            pass
+    return ok
 
 def _totp_verify(secret_base32, code, window=1):
     try:
@@ -1038,7 +1066,7 @@ def _gen_selfsigned(proto):
         if r.returncode != 0:
             raise RuntimeError("openssl: " + (r.stderr or r.stdout))
     os.chmod(crt, 0o644)
-    os.chmod(key, 0o644)
+    os.chmod(key, 0o600)   # xray и панель работают от root — приватный ключ не должен читаться всеми
     return crt, key
 
 def _new_inbound(proto):
@@ -1915,17 +1943,42 @@ def _parse_subscription_blob(blob):
             out.append(it)
     return out
 
+def _url_host_is_public(url):
+    """SSRF-guard: http(s) на публичный хост; запрещаем loopback/RFC1918/link-local/CGNAT/metadata
+    и прямые IP-обходы. Хост резолвится; если резолв не нужен (уже IP) — проверяется напрямую."""
+    import ipaddress
+    try:
+        u = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    if u.scheme not in ("http", "https"):
+        return False
+    host = (u.hostname or "").strip()
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    addrs = {i[4][0] for i in infos}
+    if not addrs:
+        return False
+    for a in addrs:
+        try:
+            ip = ipaddress.ip_address(a)
+        except Exception:
+            return False
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
+                or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
 def _fetch_subscription(url):
     """Бounded server-side GET подписки по URL администратора (для импорта ссылок)."""
-    u = urllib.parse.urlparse(url)
-    if u.scheme not in ("http", "https"):
-        raise ValueError("только http/https")
-    ctx = None
-    if u.scheme == "https":
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    if not _url_host_is_public(url):
+        raise ValueError("разрешены только внешние http/https адреса")
     req = urllib.request.Request(url, headers={"User-Agent": "veil-panel-import"})
+    ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=12, context=ctx) as r:
         raw = r.read(2 * 1024 * 1024)
     return raw.decode("utf-8", "replace")
@@ -3537,6 +3590,13 @@ def _ssh_opts(keyfile):
             "-o", f"IdentityFile={keyfile}", "-o", "IdentitiesOnly=yes",
             "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15"]
 
+_SSH_USER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}")
+_SSH_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,252}")
+
+def _ssh_target_ok(user, host):
+    # «-» в начале уехал бы в getopt ssh как опция (-oProxyCommand=...) = RCE на бэке
+    return bool(_SSH_USER_RE.fullmatch(user or "") and _SSH_HOST_RE.fullmatch(host or ""))
+
 def _boot_askpass_run(password, argv, timeout=60):
     """Запуск ssh/ssh-copy-id с вводом пароля через SSH_ASKPASS (пароль — только в env)."""
     fd, script = tempfile.mkstemp(prefix=".vpw")
@@ -3616,6 +3676,8 @@ def _node_bootstrap_worker(jid):
 
     try:
         # --- 0. SSH-доступ: своим ключом, при отказе — пароль однократно + ssh-copy-id
+        if not _ssh_target_ok(user, host):
+            return fail(0, "недопустимые SSH-логин или адрес")
         st(0, "running")
         keyfile, pubkey = _boot_host_key(host)
         base = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(keyfile)
@@ -5721,7 +5783,7 @@ def _hop_remove(hid, confirm=False):
         raise RuntimeError("хоп не найден")
     note = ""
     key = h.get("ssh_key") or ""
-    if key and os.path.exists(key):
+    if key and os.path.exists(key) and _ssh_target_ok(h.get("ssh_user") or "root", h.get("front_ip")):
         try:
             base = ["/usr/bin/ssh", "-p", str(int(h.get("ssh_port") or 22))] + _ssh_opts(key)
             target = "%s@%s" % (h.get("ssh_user") or "root", h.get("front_ip"))
@@ -6738,6 +6800,8 @@ def _panel_restore(version):
     raise RuntimeError("бэкап панели v" + version + " не найден")
 
 def _xray_restore(version):
+    if not re.fullmatch(r"[0-9][0-9.]*", str(version or "")):
+        raise RuntimeError("недопустимое имя версии")
     src = os.path.join(BASE, "backups", "xray", version, "xray")
     if not os.path.isfile(src):
         raise RuntimeError("бэкап xray v" + version + " не найден")
@@ -6831,6 +6895,8 @@ def _tg_backups():
     return res
 
 def _tg_restore(version):
+    if not re.fullmatch(r"[0-9][0-9.]*", str(version or "")):
+        raise RuntimeError("недопустимое имя версии")
     src = os.path.join(BASE, "backups", "telemt", version, "telemt")
     if not os.path.isfile(src):
         raise RuntimeError("бэкап telemt v" + version + " не найден")
@@ -7543,6 +7609,11 @@ def _cert_issue(email=None, mode="auto"):
         subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
         if not (os.path.exists(certp) and os.path.exists(keyp)):
             raise RuntimeError("certbot завершился, но no fullchain/privkey")
+        # nginx читает ключ в master (root) — приватному ключу не нужен o+r, оставим только каталог проходимым
+        try:
+            os.chmod(keyp, 0o600)
+        except Exception:
+            pass
         if email:
             CFG_CACHE["cert_email"] = email
         CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
@@ -7836,7 +7907,7 @@ def _restore(data):
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "wb") as f:
                 f.write(base64.b64decode(b64))
-            os.chmod(p, 0o644)
+            os.chmod(p, 0o600 if fname.endswith(".key") else 0o644)
         except Exception:
             pass
     global CFG_CACHE
@@ -7858,6 +7929,19 @@ class H(http.server.BaseHTTPRequestHandler):
             return
         super().handle_error(request, client_address)
 
+    def _is_tls(self):
+        try:
+            return isinstance(self.request, ssl.SSLSocket)
+        except Exception:
+            return False
+
+    def _sec_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        if self._is_tls():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+
     def _send(self, code, obj, ctype="application/json"):
         if code == 200 and isinstance(obj, dict) and "ok" not in obj:
             obj = dict(obj)
@@ -7867,16 +7951,19 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self._sec_headers()
         for c in getattr(self, "_cookies", []):
             self.send_header("Set-Cookie", c)
         self.end_headers(); self.wfile.write(b)
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
+        if n < 0 or n > 8 * 1024 * 1024:
+            raise ValueError("тело запроса слишком большое")
         return json.loads(self.rfile.read(n) or b"{}")
 
     def _is_cur_pw(self, cur):
-        return _hash(CFG_CACHE.get("salt", ""), cur) == CFG_CACHE.get("pass_hash")
+        return _pw_match(CFG_CACHE.get("salt", ""), cur, CFG_CACHE.get("pass_hash"))
 
     # ----.ext: входящий API для внешних панелей/узлов----
     def _ext_get(self, p):
@@ -8319,6 +8406,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/metrics":
             return self._send(200, get_system_metrics())
         if p == "/api/selftest":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, run_protocol_self_test())
         if p == "/api/nodes":
             if not _authed(self):
@@ -8346,6 +8434,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 for t in _node_tokens()]})
 
         if p == "/test_links.txt":
+            # отладочный артефакт: файл остаётся на диске, но наружу — только авторизованной сессии
+            if not _authed(self):
+                return self._send(404, {"error": "not found"})
             try:
                 with open(f"{BASE}/test_links.txt", "rb") as f:
                     content = f.read()
@@ -8369,6 +8460,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
+            self._sec_headers()
             self.end_headers()
             self.wfile.write(content)
             return None
@@ -8951,7 +9043,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 _audit("login", ip=cip, ua=ua_h, user=b.get("login"), ok=True)
                 _save_sessions()
                 ma = 2592000 if rem else 259200
-                self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"]
+                self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"
+                                 + ("; Secure" if self._is_tls() else "")]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
             if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
                     and not p.startswith("/api/ext/")
@@ -9018,6 +9111,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Telegram webhook endpoint (no auth needed - called by Telegram)
                 if self.command != "POST":
                     return self._send(405, {"error": "Method not allowed"})
+                secret = CFG_CACHE.get("bot_webhook_secret") or ""
+                if secret:
+                    got = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
+                    if not hmac.compare_digest(got, secret):
+                        return self._send(403, {"error": "bad secret token"})
                 try:
                     b = self._body()
                     if not b:
@@ -9263,6 +9361,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "неверный SSH-порт"})
                 if not host or not user:
                     return self._send(400, {"error": "укажи адрес ноды и SSH-логин"})
+                if not _ssh_target_ok(user, host):
+                    return self._send(400, {"error": "SSH-логин или адрес содержат недопустимые символы (разрешены буквы, цифры, . _ - :)"})
                 if host in ("0.0.0.0", "::", "localhost"):
                     return self._send(400, {"error": "этот адрес — не внешняя нода"})
                 if not (1 <= sport <= 65535):
@@ -9857,6 +9957,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not hop:
                         raise RuntimeError("хоп не найден")
                     user = (b.get("user") or "root").strip()
+                    if not _SSH_USER_RE.fullmatch(user):
+                        raise RuntimeError("SSH-логин содержит недопустимые символы")
                     sport = int(b.get("ssh_port") or 22)
                     if not (1 <= sport <= 65535):
                         raise RuntimeError("неверный SSH-порт")
@@ -10011,9 +10113,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not token:
                     return self._send(400, {"error": "бот не настроен"})
                 url = b.get("url") or (f"https://{CFG_CACHE.get('panel_domain', '').strip()}:{CFG_CACHE.get('panel_port', 8444)}/api/bot/webhook")
+                secret = CFG_CACHE.get("bot_webhook_secret") or secrets.token_urlsafe(24)
+                CFG_CACHE["bot_webhook_secret"] = secret
                 try:
-                    url = f"https://api.telegram.org/bot{token}/setWebhook?url={urllib.parse.quote(url)}"
-                    with urllib.request.urlopen(url, timeout=10) as resp:
+                    q = urllib.parse.urlencode({"url": url, "secret_token": secret,
+                                                "drop_pending_updates": "false"})
+                    api = f"https://api.telegram.org/bot{token}/setWebhook?{q}"
+                    with urllib.request.urlopen(api, timeout=10) as resp:
                         data = json.load(resp)
                     if data.get("ok"):
                         CFG_CACHE["bot_webhook_url"] = url
@@ -10054,7 +10160,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if len(np_) < 8:
                         return self._send(400, {"error": "пароль короче 8 символов"})
                     CFG_CACHE["salt"] = secrets.token_hex(16)
-                    CFG_CACHE["pass_hash"] = _hash(CFG_CACHE["salt"], np_)
+                    CFG_CACHE["pass_hash"] = _hash2(CFG_CACHE["salt"], np_)
                     changed = True
                 if not changed: return self._send(400, {"error": "нечего менять"})
                 _save(CFG, CFG_CACHE)
@@ -10097,6 +10203,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 sni = (body.get("sni") or "").strip()
                 proto = (body.get("proto") or "").strip()
                 domain = (body.get("domain") or "").strip()
+                if domain and not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?", domain):
+                    return self._send(400, {"error": "недопустимый домен (разрешены буквы, цифры, точка и дефис)"})
                 port = body.get("port")
                 if port is not None:
                     try: port = int(port)
