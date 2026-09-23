@@ -2,7 +2,7 @@
 import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket, hmac, struct
 import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
-import shutil, tarfile, tempfile, datetime
+import shutil, tarfile, tempfile, datetime, gzip
 import html as _html
 import zipfile
 
@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.10"
+VERSION = "2.7.11"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -2114,6 +2114,226 @@ def _import_from_json(st, data):
         else:
             warnings.append(name + ": ни один клиент не импортирован")
     return imported, warnings
+
+# ---------- импорт баз 3x-ui / x-ui / Marzban (sqlite, только чтение) ----------
+# Файл базы присылает браузер (b64) или читается путь на этом сервере; разбор — в
+# staging-память (30 мин), применится отдельной кнопкой, чтобы человек видел список
+# до записи. Исходные uuid/пароли сохраняем — подписчики уцелеют при переносе.
+
+EXTIMPORT = {}
+EXTIMPORT_LOCK = threading.Lock()
+_EXTIMP_MAX_DB = 16 * 1024 * 1024
+
+_EXTIMP_PROTO_MAP = {
+    "vless": {
+        "reality|tcp": "reality", "reality|xhttp": "vless-xhttp-reality",
+        "reality|ws": "reality", "reality|grpc": "reality", "reality|*": "reality",
+        "tls|ws": "vless-ws-tls", "tls|tcp": "vless-tcp-tls", "tls|grpc": "vless-grpc-tls",
+        "tls|xhttp": "vless-xhttp-tls", "tls|*": "vless-ws-tls",
+        "none|ws": "vless-ws",
+    },
+    "vmess": {"tls|ws": "vmess-ws-tls", "tls|tcp": "vmess-tcp-tls", "tls|grpc": "vmess-grpc-tls",
+              "tls|xhttp": "vmess-ws-tls", "none|ws": "vmess-ws", "none|*": "vmess-ws"},
+    "trojan": {"tls|ws": "trojan-ws-tls", "tls|tcp": "trojan-tcp-tls", "tls|grpc": "trojan-grpc-tls",
+               "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-tcp-tls", "reality|*": "trojan-tcp-tls",
+               "tls|*": "trojan-tcp-tls"},
+    "shadowsocks": {"*|*": "shadowsocks"},
+    "hysteria2": {"*|*": "hysteria2"},
+}
+
+def _xui_proto_key(protocol, stream):
+    """(protocol, streamSettings) → veil inbound id или None (не маппится)."""
+    p = str(protocol or "").lower()
+    table = _EXTIMP_PROTO_MAP.get(p)
+    if not table:
+        return None
+    net = str((stream or {}).get("network") or "tcp").lower()
+    if net in ("http", "xhttp"): net = "xhttp"
+    if net in ("raw", "mrpb"): net = "tcp"
+    sec = str((stream or {}).get("security") or "none").lower() or "none"
+    return table.get(sec + "|" + net) or table.get(sec + "|*") or table.get("*|*")
+
+def _xui_expiry(v):
+    """x-ui хранит срок в миллисекундах (0/-1 = без ограничения); marzban — в секундах."""
+    try: v = int(v or 0)
+    except Exception: return 0
+    if v <= 0: return 0
+    if v >= 10**11: return v // 1000
+    if v >= 10**8: return v
+    return 0
+
+def _bytes_to_gb(v):
+    try: v = float(v or 0)
+    except Exception: return 0.0
+    if v <= 0: return 0.0
+    if v > 1024 ** 2:  # явно байты (в x-ui поле totalGB хранит байты)
+        return round(v / (1024 ** 3), 2)
+    return round(v, 2)
+
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+def _jload(v):
+    if isinstance(v, dict): return v
+    if isinstance(v, (bytes, bytearray)): v = v.decode("utf-8", "replace")
+    try: return json.loads(v or "{}")
+    except Exception: return {}
+
+def _xui_parse_items(con, warnings):
+    cols = {r[1] for r in con.execute("PRAGMA table_info(inbounds)")}
+    if "protocol" not in cols:
+        raise RuntimeError("в таблице inbounds нет колонки protocol")
+    scol = "settings" if "settings" in cols else ("protocol_settings" if "protocol_settings" in cols else None)
+    tcol = "streamSettings" if "streamSettings" in cols else ("stream_settings" if "stream_settings" in cols else None)
+    if not scol:
+        raise RuntimeError("не вижу колонок настроек inbound")
+    ecol = ", enable" if "enable" in cols else ""
+    ncol = ", name" if "name" in cols else ""
+    cur = con.execute("SELECT id, protocol, port, %s%s%s%s FROM inbounds" % (
+        scol, (", " + tcol) if tcol else "", ecol, ncol))
+    names = [d[0] for d in cur.description]
+    items = []
+    for r in cur.fetchall():
+        row = dict(zip(names, r))
+        protocol, port = row.get("protocol"), row.get("port")
+        stream = _jload(row.get(tcol) if tcol else "{}")
+        enable = bool(row.get("enable")) if "enable" in row else True
+        inb_name = str(row.get("name") or "") or (str(protocol) + ":" + str(port))
+        s = _jload(row.get(scol))
+        veil_proto = _xui_proto_key(protocol, stream)
+        if str(protocol).lower() == "shadowsocks":
+            warnings.append("пропуск «%s»: в Veil Shadowsocks — один общий пароль на порт, перенеси вручную" % inb_name)
+            continue
+        if not veil_proto:
+            warnings.append("пропуск «%s»: %s+%s+%s Veil не поддерживается (можно перенести ссылками)" %
+                            (inb_name, protocol, stream.get("network"), stream.get("security")))
+            continue
+        if str(protocol).lower() in ("vless", "trojan") and str(stream.get("security") or "") == "reality":
+            warnings.append("«%s»: Reality-ключей перенос нет — %s импортируется со своими ключами (ссылки подписчикам обновятся)" %
+                            (inb_name, "reality-группа" if protocol == "vless" else "trojan-tcp-tls"))
+        for c in (s.get("clients") or []):
+            if not isinstance(c, dict): continue
+            name = (str(c.get("email") or c.get("remark") or "").strip() or inb_name or "Кент")[:40]
+            it = {"name": name, "veil_proto": veil_proto, "uuid": None, "password": None,
+                  "limit_gb": _bytes_to_gb(c.get("totalGB")), "expiry": _xui_expiry(c.get("expiryTime")),
+                  "blocked": not (enable and c.get("enable", True)), "flow": str(c.get("flow") or "")}
+            if str(protocol).lower() in ("vless", "vmess"):
+                u = str(c.get("id") or "")
+                if _UUID_RE.fullmatch(u): it["uuid"] = u
+                else: continue
+            elif str(protocol).lower() == "trojan":
+                pw = str(c.get("password") or "").strip()
+                if 4 <= len(pw) <= 128: it["password"] = pw
+                else: continue
+            else:
+                continue
+            if it["blocked"]: it["blocked_reason"] = "неактивен в источнике"
+            items.append(it)
+    return items
+
+def _marzban_parse_items(con, warnings):
+    cols = {r[1] for r in con.execute("PRAGMA table_info(users)")}
+    if "proxy_protocol" not in cols:
+        raise RuntimeError("это не база Marzban (у users нет proxy_protocol)")
+    sel = "SELECT username, status, data_limit, expire, proxy_protocol, proxy_settings" + \
+          (", key" if "key" in cols else "") + " FROM users"
+    items = []
+    for row in con.execute(sel):
+        username, status, data_limit, expire = row[0], row[1], row[2], row[3]
+        proxy_protocol, proxy_settings = str(row[4] or "").lower(), _jload(row[5])
+        key = str(row[6]) if len(row) > 6 and row[6] else ""
+        proto_map = {"vless": "reality", "trojan": "trojan-tcp-tls", "shadowsocks": "shadowsocks",
+                     "hysteria2": "hysteria2"}
+        veil_proto = proto_map.get(proxy_protocol)
+        if not veil_proto:
+            warnings.append("пропуск пользователя %s: протокол %s не маппится" % (username, proxy_protocol))
+            continue
+        it = {"name": (str(username or "Кент").strip() or "Кент")[:40], "veil_proto": veil_proto,
+              "uuid": None, "password": None, "limit_gb": _bytes_to_gb(data_limit),
+              "expiry": _xui_expiry(expire), "blocked": str(status or "active") != "active",
+              "flow": str(proxy_settings.get("flow") or "")}
+        if it["blocked"]: it["blocked_reason"] = "статус в источнике: " + str(status)
+        u = str(proxy_settings.get("id") or "")
+        pw = str(proxy_settings.get("password") or key or "").strip()
+        if _UUID_RE.fullmatch(u): it["uuid"] = u
+        elif key and _UUID_RE.fullmatch(key): it["uuid"] = key
+        elif proxy_protocol == "vless": continue
+        if not it["uuid"] and 4 <= len(pw) <= 128:
+            it["password"] = pw
+        if not it["uuid"] and not it["password"]: continue
+        items.append(it)
+    return items
+
+def _extimport_parse(raw):
+    """bytes sqlite-файла → (source, items, warnings). Файл открывается строго read-only."""
+    import sqlite3
+    fd, tmp = tempfile.mkstemp(prefix=".veilimport", suffix=".db")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        con = sqlite3.connect("file:%s?mode=ro&immutable=1" % tmp, uri=True, timeout=5)
+        try:
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "users" in tables:
+                cols = {r[1] for r in con.execute("PRAGMA table_info(users)")}
+                if "proxy_protocol" in cols:
+                    source, items = "Marzban", _marzban_parse_items(con, warnings := [])
+                else:
+                    source, items = "x-ui/3x-ui", _xui_parse_items(con, warnings := [])
+            elif "inbounds" in tables:
+                source, items = "x-ui/3x-ui", _xui_parse_items(con, warnings := [])
+            else:
+                raise RuntimeError("не узнаю базу: нет таблиц inbounds/users")
+            return source, items, warnings
+        finally:
+            try: con.close()
+            except Exception: pass
+    finally:
+        try: os.unlink(tmp)
+        except Exception: pass
+
+def _extimport_apply(st, items):
+    """Пишем нормализованные items в state.inbounds (inbound создаём при необходимости)."""
+    warnings, imported = [], 0
+    per = {}
+    by_uuid = {c.get("uuid") for inb in (st.get("inbounds") or {}).values()
+               for c in inb.get("clients", []) if c.get("uuid")}
+    for it in items:
+        proto = it.get("veil_proto")
+        if proto not in _VALID_PROTOCOLS:
+            warnings.append(it.get("name", "?") + ": неизвестный протокол " + str(proto))
+            continue
+        inb = (st.get("inbounds") or {}).get(proto)
+        if inb is None:
+            try:
+                inb = _alloc_inbound(st, proto)
+                st.setdefault("inbounds", {})[proto] = inb
+                warnings.append("создан новый inbound %s (порт %s) — проверь его точечные настройки" % (proto, inb.get("port")))
+            except Exception as e:
+                warnings.append(it.get("name", "?") + ": inbound " + proto + ": " + str(e)[:70])
+                continue
+        u = it.get("uuid")
+        if u and u in by_uuid:
+            c = _new_client(it.get("name") or "Кент", proto, inb)
+            warnings.append("дубликат uuid у «%s» — выдан новый (ссылка изменится)" % (it.get("name") or "?"))
+        else:
+            c = _new_client(it.get("name") or "Кент", proto, inb)
+            if u: c["uuid"] = u
+        if proto.startswith("trojan") and it.get("password"):
+            c["password"] = it["password"]
+        if proto == "hysteria2" and it.get("password"):
+            c["auth"] = it["password"]
+        if it.get("limit_gb"): c["limit_gb"] = it["limit_gb"]
+        if it.get("expiry"): c["expiry"] = int(it["expiry"])
+        if it.get("blocked"):
+            c["blocked"] = True
+            c["blocked_reason"] = it.get("blocked_reason") or "импорт: неактивен в источнике"
+        if proto in ("reality", "vless-xhttp-reality") and it.get("flow"):
+            inb["flow"] = it["flow"]
+        inb.setdefault("clients", []).append(c)
+        if u: by_uuid.add(u)
+        imported += 1
+        per[proto] = per.get(proto, 0) + 1
+    return imported, warnings, per
 
 # ---------- sing-box JSON-подписка ----------
 # INCY, Happ+, Streisand, SFI/SFA/SFM и другие sing-box клиенты импортируют
@@ -7918,6 +8138,102 @@ def _restore(data):
         pass
     return {"ok": True, "restored_at": ts, "clients": _client_count(st)}
 
+# ---------- авто-резервные копии ----------
+_AUTOBK_DIR = os.path.join(BASE, "backups", "auto")
+_AUTOBK_RE = re.compile(r"veil-backup-\d{8}-\d{6}\.json\.gz")
+
+def _autobk_settings():
+    s = CFG_CACHE.get("auto_backup")
+    if not isinstance(s, dict):
+        s = {}
+    try:
+        every_h = int(s.get("every_h") or 24)
+    except (TypeError, ValueError):
+        every_h = 24
+    try:
+        keep = int(s.get("keep") or 7)
+    except (TypeError, ValueError):
+        keep = 7
+    return {"enabled": bool(s.get("enabled")), "every_h": min(max(every_h, 1), 720),
+            "keep": min(max(keep, 1), 60), "send_tg": bool(s.get("send_tg")),
+            "last": int(s.get("last") or 0)}
+
+def _autobk_files():
+    try:
+        names = [n for n in os.listdir(_AUTOBK_DIR) if _AUTOBK_RE.fullmatch(n)]
+    except FileNotFoundError:
+        return []
+    out = []
+    for n in names:
+        try:
+            fst = os.stat(os.path.join(_AUTOBK_DIR, n))
+        except OSError:
+            continue
+        out.append({"name": n, "size": fst.st_size, "ts": int(fst.st_mtime)})
+    out.sort(key=lambda x: x["name"], reverse=True)
+    return out
+
+def _autobk_make():
+    data = _backup()
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    fname = f"veil-backup-{ts}.json.gz"
+    os.makedirs(_AUTOBK_DIR, exist_ok=True)
+    raw = gzip.compress(json.dumps(data, ensure_ascii=False).encode())
+    fd = os.open(os.path.join(_AUTOBK_DIR, fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(raw)
+    keep = _autobk_settings()["keep"]
+    for old in _autobk_files()[keep:]:
+        try:
+            os.remove(os.path.join(_AUTOBK_DIR, old["name"]))
+        except OSError:
+            pass
+    return fname, raw
+
+def _tg_send_document(chat_id, fname, raw, caption=""):
+    token = CFG_CACHE.get("bot_token", "")
+    if not token:
+        return False
+    boundary = "veilbk" + secrets.token_hex(8)
+    def field(name, value):
+        return (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").encode()
+    body = field("chat_id", str(chat_id))
+    if caption:
+        body += field("caption", caption)
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{fname}\"\r\n"
+             "Content-Type: application/gzip\r\n\r\n").encode()
+    body += raw + f"\r\n--{boundary}--\r\n".encode()
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument",
+                                     data=body,
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return bool(json.loads(r.read() or b"{}").get("ok"))
+    except Exception as e:
+        print("[autobk] sendDocument error: " + str(e), flush=True)
+        return False
+
+def _autobk_loop():
+    while True:
+        try:
+            s = _autobk_settings()
+            if s["enabled"] and time.time() - s["last"] >= s["every_h"] * 3600:
+                CFG_CACHE["auto_backup"] = dict(CFG_CACHE.get("auto_backup") or {}, last=int(time.time()))
+                _save(CFG, CFG_CACHE)
+                fname, raw = _autobk_make()
+                ids = CFG_CACHE.get("bot_chat_ids") or []
+                if s["send_tg"] and ids:
+                    if _tg_send_document(ids[0], fname, raw,
+                                         caption=f"Автобэкап Veil v{VERSION} · клиентов: {_client_count(_load(STATE) or {})}"):
+                        print("[autobk] отправлен в Telegram: " + fname, flush=True)
+                    else:
+                        print("[autobk] не удалось отправить в Telegram: " + fname, flush=True)
+        except Exception as e:
+            print("[autobk] " + str(e), flush=True)
+        time.sleep(120)
+
+threading.Thread(target=_autobk_loop, daemon=True).start()
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -7956,9 +8272,9 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", c)
         self.end_headers(); self.wfile.write(b)
 
-    def _body(self):
+    def _body(self, maxb=8 * 1024 * 1024):
         n = int(self.headers.get("Content-Length") or 0)
-        if n < 0 or n > 8 * 1024 * 1024:
+        if n < 0 or n > maxb:
             raise ValueError("тело запроса слишком большое")
         return json.loads(self.rfile.read(n) or b"{}")
 
@@ -8958,6 +9274,25 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/backup":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _backup())
+        if p == "/api/backups":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            s = _autobk_settings()
+            nxt = s["last"] + s["every_h"] * 3600
+            return self._send(200, {
+                "settings": s, "files": _autobk_files(),
+                "next_in": max(0, nxt - int(time.time())) if s["enabled"] else None,
+                "tg_ready": bool(CFG_CACHE.get("bot_token") and (CFG_CACHE.get("bot_chat_ids") or []))})
+        if p == "/api/backups/download":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            name = (qs.get("name") or [""])[0]
+            if not _AUTOBK_RE.fullmatch(name):
+                return self._send(400, {"error": "недопустимое имя файла"})
+            try:
+                with open(os.path.join(_AUTOBK_DIR, name), "rb") as f:
+                    return self._send(200, f.read(), "application/gzip")
+            except FileNotFoundError:
+                return self._send(404, {"error": "файл не найден"})
         if p == "/api/2fa/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             enabled = bool(CFG_CACHE.get("totp_enabled"))
@@ -9415,6 +9750,87 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "imported": imported,
                                         "warnings": warnings,
                                         "subs": _subs_summary(st)})
+            if p == "/api/extimport/preview":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                try:
+                    b = self._body(maxb=40 * 1024 * 1024)
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+                raw = None
+                b64 = str(b.get("db_b64") or "")
+                if b64:
+                    try:
+                        raw = base64.b64decode(b64, validate=True)
+                    except Exception:
+                        return self._send(400, {"error": "файл повреждён (не корректный base64)"})
+                else:
+                    path = (b.get("db_path") or "").strip()
+                    if not path:
+                        return self._send(400, {"error": "не прислан файл базы"})
+                    if not re.fullmatch(r"[A-Za-z0-9/_.\-]{2,512}", path) \
+                            or not re.search(r"\.(db|sqlite3?|database)$", path, re.I):
+                        return self._send(400, {"error": "разрешён только путь к файлу .db/.sqlite без специальных символов"})
+                    try:
+                        if not os.path.isfile(path) or os.path.getsize(path) > _EXTIMP_MAX_DB:
+                            return self._send(400, {"error": "файл не найден или больше 16 МБ"})
+                        with open(path, "rb") as f:
+                            raw = f.read()
+                    except Exception:
+                        return self._send(400, {"error": "не могу прочитать файл"})
+                if not raw or len(raw) > _EXTIMP_MAX_DB:
+                    return self._send(400, {"error": "пустой файл или больше 16 МБ"})
+                if raw[:16] != b"SQLite format 3\x00":
+                    return self._send(400, {"error": "это не sqlite-база (ожидается файл .db панели)"})
+                try:
+                    source, items, warnings = _extimport_parse(raw)
+                except Exception as e:
+                    return self._send(400, {"error": "разбор базы не удался: " + str(e)[:160]})
+                if not items:
+                    return self._send(400, {"error": "подходящих клиентов не найдено" +
+                                                   ("; " + "; ".join(warnings[:3]) if warnings else "")})
+                groups = {}
+                for it in items:
+                    g = groups.setdefault(it["veil_proto"], {"proto": it["veil_proto"], "count": 0, "names": []})
+                    g["count"] += 1
+                    if len(g["names"]) < 8:
+                        g["names"].append(it["name"])
+                iid = uuidlib.uuid4().hex[:12]
+                with EXTIMPORT_LOCK:
+                    now = time.time()
+                    for k in [k for k, v in EXTIMPORT.items() if now - v["created"] > 1800]:
+                        EXTIMPORT.pop(k, None)
+                    EXTIMPORT[iid] = {"created": int(now), "source": source,
+                                      "items": items, "warnings": warnings}
+                _audit("ext_import_preview", source=source, clients=len(items))
+                return self._send(200, {"import_id": iid, "source": source, "total": len(items),
+                                        "groups": sorted(groups.values(), key=lambda g: -g["count"]),
+                                        "warnings": warnings[:50]})
+            if p == "/api/extimport/apply":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                iid = (b.get("import_id") or "").strip()[:12]
+                with EXTIMPORT_LOCK:
+                    job = EXTIMPORT.get(iid)
+                if not job:
+                    return self._send(400, {"error": "превью устарело (30 минут) — приложи файл заново"})
+                st = _load(STATE)
+                if st is None:
+                    st = _new_state()
+                _migrate_state(st)
+                imported, warns, per = _extimport_apply(st, job["items"])
+                if not imported:
+                    return self._send(400, {"error": "импортировать нечего (все дубликаты?)", "warnings": warns})
+                _awg_sync(st); _wg_sync(st)
+                ok, err = _validate_and_apply(st)
+                if not ok:
+                    return self._send(400, {"error": "конфиг не принят: " + str(err)[:200], "warnings": warns})
+                with EXTIMPORT_LOCK:
+                    EXTIMPORT.pop(iid, None)
+                _audit("ext_import_apply", source=job.get("source"), imported=imported, per=per)
+                return self._send(200, {"ok": True, "imported": imported, "per": per,
+                                        "warnings": warns[:60], "subs": _subs_summary(st)})
             if p == "/api/clients/add":
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Клиент"
@@ -10608,6 +11024,60 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _restore(self._body()))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+
+            if p == "/api/backups/config":
+                b = self._body()
+                try:
+                    every_h = int(b.get("every_h") or 24)
+                    keep = int(b.get("keep") or 7)
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "интервал и количество копий — целые числа"})
+                if not 1 <= every_h <= 720:
+                    return self._send(400, {"error": "интервал: от 1 до 720 часов"})
+                if not 1 <= keep <= 60:
+                    return self._send(400, {"error": "хранить: от 1 до 60 копий"})
+                cur = CFG_CACHE.get("auto_backup")
+                cur = cur if isinstance(cur, dict) else {}
+                CFG_CACHE["auto_backup"] = {"enabled": bool(b.get("enabled")), "every_h": every_h,
+                                            "keep": keep, "send_tg": bool(b.get("send_tg")),
+                                            "last": int(cur.get("last") or 0)}
+                _save(CFG, CFG_CACHE)
+                _audit("auto_backup_config", enabled=CFG_CACHE["auto_backup"]["enabled"],
+                       every_h=every_h, keep=keep, send_tg=CFG_CACHE["auto_backup"]["send_tg"])
+                return self._send(200, {"settings": _autobk_settings()})
+
+            if p == "/api/backups/run":
+                fname, _raw = _autobk_make()
+                _audit("auto_backup_make", file=fname)
+                return self._send(200, {"name": fname, "files": _autobk_files()})
+
+            if p == "/api/backups/restore":
+                b = self._body()
+                name = b.get("name") or ""
+                if not _AUTOBK_RE.fullmatch(name):
+                    return self._send(400, {"error": "недопустимое имя файла"})
+                try:
+                    with open(os.path.join(_AUTOBK_DIR, name), "rb") as f:
+                        data = json.loads(gzip.decompress(f.read()))
+                except FileNotFoundError:
+                    return self._send(404, {"error": "файл не найден"})
+                except Exception:
+                    return self._send(400, {"error": "файл повреждён или это не бэкап Veil"})
+                res = _restore(data)
+                _audit("auto_backup_restore", file=name, clients=res.get("clients"))
+                return self._send(200, res)
+
+            if p == "/api/backups/delete":
+                b = self._body()
+                name = b.get("name") or ""
+                if not _AUTOBK_RE.fullmatch(name):
+                    return self._send(400, {"error": "недопустимое имя файла"})
+                try:
+                    os.remove(os.path.join(_AUTOBK_DIR, name))
+                except FileNotFoundError:
+                    return self._send(404, {"error": "файл не найден"})
+                _audit("auto_backup_delete", file=name)
+                return self._send(200, {"files": _autobk_files()})
 
             return self._send(404, {"error": "not found"})
         except Exception as e:

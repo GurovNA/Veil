@@ -393,6 +393,15 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
 @media(max-width:520px){
  #toasts{left:10px;right:10px;max-width:none}
 }
+.expl{margin:4px 0 12px;border-left:3px solid var(--acc);background:rgba(127,127,127,.08);border-radius:0 10px 10px 0;padding:0 14px}
+.expl summary{cursor:pointer;padding:8px 0;font-size:13px;color:var(--mut);list-style:none;user-select:none}
+.expl summary::-webkit-details-marker{display:none}
+.expl summary::before{content:'▸ '}
+.expl[open] summary::before{content:'▾ '}
+.expl>div{font-size:13.5px;line-height:1.6;padding:2px 0 12px;max-width:96ch;color:var(--fg)}
+.expl>div p{margin:6px 0}
+.expl>div b{color:var(--acc2)}
+@media (prefers-color-scheme:light){.expl>div{color:inherit}}
 </style></head><body class="ui-__UI_STYLE__"><div class=wrap>
 <div id=bgFx aria-hidden=true><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 
@@ -536,8 +545,21 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
 
     <div class=card>
       <div class=row><h2>Ссылки VPN</h2></div>
+      <details class=expl open id=bkStartHint style="border-left-color:var(--ok)" ontoggle="if(!this.open)localStorage.setItem('veil_starter','1')"><summary>🚀 Я тут впервые — с чего начать?</summary><div>
+        <p><b>Хорошая новость: уже всё работает.</b> Панель при установке сама подняла VPN-протоколы и сертификаты. Тебе осталось только выдать первую ссылку — три шага:</p>
+        <p>1️⃣ Ниже найди строку <b>Reality</b> (самый стойкий к блокировкам протокол) и нажми <b>+</b>, а потом <b>⋯ → Добавить клиента</b>. Дай имя — например «Себе».</p>
+        <p>2️⃣ Скопируй получившуюся ссылку (кнопка копирования у клиента).</p>
+        <p>3️⃣ Открой ссылку в VPN-приложении на телефоне: <b>Streisand</b> (iOS), <b>v2rayNG</b> или <b>Happ</b> (Android) — «Добавить по ссылке», и пользуйся. 🎉</p>
+        <p>Дальше по вкусу: <b>🔗 Подписка</b> — одна ссылка вместо всех; <b>🌐 Сайт</b> — свой домен, чтобы ссылки не сгорали при смене IP; <b>🤖 Telegram Bot</b> — управление с телефона. Красным горит «недоступно из РФ»? Смотри <b>🪜 Двойной прыжок</b>. Везде есть сворачиваемые пояснения «Объяснить простым языком» — не стесняйся тыкать.</p>
+      </div></details>
 
       <p class=mut style="margin:0 0 12px;font-size:12px">Протоколы — по строкам: <b>+</b> раскрывает клиентов протокола, <b>⋯</b> — добавить клиента. TLS-протоколы получают самоподписной сертификат — в приложении включи allow-insecure. Каждая новая ссылка — отдельный клиент, уже выданные не меняются.</p>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что это?</b> Здесь лежат все твои VPN-ссылки. Ссылку ты отдаёшь человеку (или вставляешь в своё приложение), а он по ней подключается к интернету через твой сервер.</p>
+        <p><b>Что такое протокол?</b> Это «способ разговора» с сервером. VLESS и Trojan — самые современные, VMess — старый, но тоже рабочий. Hysteria2 и WireGuard — очень быстрые, но их сложнее «прятать» от блокировок. Reality — самый стойкий к блокировкам протокол: для стороннего глаза твое соединение выглядит как обычный визит на microsoft.com.</p>
+        <p><b>С чего начать?</b> Если не знаешь, что выбирать — бери <b>Reality</b>: нажми «+» у строки Reality, потом «⋯» → «Добавить клиента», скопируй ссылку и отправь. Ссылку можно открыть в приложении (v2rayNG, Streisand, happ) или просто переслать человеку — он сам вставит.</p>
+        <p><b>Важно:</b> каждая ссылка отдельная. Удалишь ссылку — человек потеряет доступ, а остальные останутся работать. Меняя протоколы и порты, уже выданные ссылки ты не трогаешь.</p>
+      </div></details>
 
       <div id=emptyState class=hidden>
         <p class=mut>Клиентов пока нет. Раскрой протокол (кнопка <b>+</b>) и через <b>⋯</b> добавь первого клиента.</p>
@@ -643,10 +665,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <div id=impBox class="dialog hidden">
       <div class=dcard>
       <div class=row><b>Импорт подписчиков</b><button class=tiny onclick=hideImp()>Отмена</button></div>
-      <p class=mut style="font-size:12px;margin:6px 0">Перенос подписчиков с другой панели. Veil→Veil — через внутренний JSON (без потерь); 3x-ui / marzban / Hiddify / Remnawave — вставкой ссылок vless/trojan/vmess/ss/hy2 или URL подписки. Клиенты пересоздаются против <b>этого</b> сервера.</p>
-      <div class="row" style="gap:10px;margin:6px 0 10px">
-        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=json checked onclick=$('impJsonWrap').style.display='';$('impLinksWrap').style.display='none'> внутренний JSON</label>
-        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=links onclick=$('impJsonWrap').style.display='none';$('impLinksWrap').style.display=''> ссылки / URL подписки</label>
+      <p class=mut style="font-size:12px;margin:6px 0">Перенос подписчиков с другой панели. Veil→Veil — через внутренний JSON (без потерь); <b>3x-ui / x-ui / Marzban — файлом базы .db</b> (сохраняются uuid/пароли, лимиты и сроки); Hiddify / Remnawave и прочие — вставкой ссылок vless/trojan/vmess/ss/hy2 или URL подписки. Клиенты пересоздаются против <b>этого</b> сервера.</p>
+      <div class="row" style="gap:10px;margin:6px 0 10px;flex-wrap:wrap">
+        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=json checked onclick=impFmtPick()> внутренний JSON</label>
+        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=links onclick=impFmtPick()> ссылки / URL подписки</label>
+        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=db onclick=impFmtPick()> база 3x-ui / x-ui / Marzban (.db)</label>
       </div>
       <div id=impJsonWrap>
         <input type=file id=impFile accept=".json,application/json" style="margin-bottom:8px">
@@ -654,6 +677,13 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       </div>
       <div id=impLinksWrap style="display:none">
         <textarea id=impLinksText placeholder="vless://…#Имя&#10;trojan://…#Имя&#10;https://host:port/sub/… (ссылка подписки)" style="width:100%;min-height:150px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
+      </div>
+      <div id=impDbWrap style="display:none">
+        <p class=mut style="font-size:12px;margin:2px 0 6px">Файл базы с другой панели: <b>3x-ui/x-ui</b> — <code>/etc/x-ui/x-ui.db</code> (или <code>/opt/x-ui/x-ui.db</code>), <b>Marzban</b> — <code>/opt/marzban/db.sqlite3</code>. Скачай его с того сервера (например <code>scp root@хост:/etc/x-ui/x-ui.db .</code>) и выбери здесь. Пароли и ключи из базы никуда не отправляются — разбирается только список клиентов.</p>
+        <input type=file id=impDbFile accept=".db,.sqlite,.sqlite3,.database,application/vnd.sqlite3" style="margin-bottom:6px">
+        <div><button class=tiny onclick=extImpPreview()>Распознать базу</button></div>
+        <div id=impDbPrev style="margin-top:6px"></div>
+        <div><button id=impDbApply style="display:none;margin-top:8px" onclick=extImpApply()>Применить импорт</button></div>
       </div>
       <button onclick=doImport() id=impBtn style="margin-top:10px">Импортировать</button>
       <div class=msg id=impMsg></div>
@@ -664,6 +694,12 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
   <div id=tab-proxy class="tab-pane"><div class=card>
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что это?</b> Это прокси именно для Telegram — чтобы сам мессенджер работал, когда его режут. Не путай с VPN-ссылками: VPN для браузера и приложений здесь ни при чём, это отдельная «дорожка» только для Telegram.</p>
+      <p><b>Как пользоваться?</b> Нажми «Добавить» — панель создаст прокси и ссылку вида <code>tg://proxy?...</code>. Эту ссылку открывают в Telegram: Настройки → Данные и память → Прокси. Человек видит «подключено» — и мессенджер снова работает.</p>
+      <p><b>Зачем несколько дата-центров?</b> Telegram сидит в 5 дата-центрах (DC1–DC5). Аккаунт пользователя «живёт» в одном из них. Прокси работает быстрее и стабильнее, когда его DC совпадает с DC аккаунта. Панель может выдать по ссылке под каждый DC — пользователь сам выберёт подходящий, или ты скажешь ему его номер (видно в @spambot).</p>
+      <p><b>Совсем чайнику:</b> одна ссылка-прокси на несколько человек — это нормально, они ею пользуются молча и годами. Если доступ к твоему серверу «задушат», панель подскажет вариант через веб-прокси (ниже на этой вкладке).</p>
+    </div></details>
     <div id=tgMpStatus class="msg" style="margin:6px 0"></div>
     <div id=tgMpFix></div>
     <div class="row" style="margin:10px 0;gap:8px">
@@ -731,6 +767,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <div class=row style="margin-top:12px"><h3 style=margin:0>Веб-прокси (https:// → :443)</h3><span class=mut id=webStatus>—</span></div>
     <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram Desktop/iOS через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Зачем это нужно?</b> Обычный MTProto-прокси иногда блокируют, потому что он «говорит» на нестандартном языке. Веб-прокси притворяется обычным сайтом: трафик идёт по HTTPS на порту 443 — тому самому, по которому работает весь интернет. Отличить его от посещения сайта почти невозможно.</p>
+      <p><b>Минус:</b> такой прокси понимают не все клиенты Telegram (Desktop и iOS поддерживают, на Android — с оговорками), и ему нужен рабочий nginx с сертификатом на 443.</p>
+      <p><b>Как пользоваться?</b> Добавь клиента кнопкой ниже — панель выдаст ссылку <code>tg://webproxy?...</code>. Ссылку открывают в Telegram так же, как обычный прокси.</p>
+    </div></details>
     <div id=webBox class=clients></div>
     <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
       <button class="tiny sec" onclick=showTgAdd('web')>＋ Добавить клиента веб-прокси</button>
@@ -770,6 +811,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <h3 style="margin:0 0 8px">🇷🇺 Доступность из России (Globalping)</h3>
     <p class=mut style="margin:0 0 10px">Проверка доступности веб-прокси (ссылки подписки) из России через 20 зондов Globalping. Проверка каждые 15 минут.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Зачем?</b> Тебе важно знать не «работает ли сервер вообще», а <b>доступен ли он из России</b> — откуда приходят твои пользователи. Эта проверка как бы «звонит» на твой сервер из 20 точек по всему миру (включая российские) и показывает, откуда проходит, а откуда нет.</p>
+      <p><b>Что делать, если видишь красное?</b> Если из РФ не проходит — скорее всего протокол/порт заблокирован. Помогает: включить SNI-маскировку (вверху этой вкладки), добавить веб-прокси на 443, либо включить «Двойной прыжок» через российский фронт (вкладка «Двойной прыжок»).</p>
+      <p><b>Ничего не ломается:</b> это только проверка-термометр, на работу сервера она никак не влияет. Можно жать «Запустить проверку сейчас» спокойно.</p>
+    </div></details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
       <button class="sec ok" id=gpRunBtn onclick=runGlobalpingCheck()>▶ Запустить проверку сейчас</button>
       <span class=mut id=gpStatus style="flex:1">—</span>
@@ -854,6 +900,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <h3 style="margin:0 0 8px">Домен и DDNS (dynv6)</h3>
     <p class=mut style="margin:0 0 10px">Сервер сам обновляет A/AAAA домена при смене IP. Когда записи актуальны, домен автоматически подставляется в ссылки клиентов.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Проблема:</b> у VPS-сервера иногда меняется IP-адрес (перезапустил, провайдер «понервничал»). Все ссылки клиентов привязаны к адресу — без домена они сгорят при каждой смене IP.</p>
+      <p><b>Решение:</b> домен + DDNS. Ты один раз даёшь клиентам ссылку на домен (например <code>vpn.мой-домен.ру</code>), а панель сама, как только заметит новый IP сервера, «перетыкает» домен на него. Клиенты ничего не замечают.</p>
+      <p><b>dynv6 что это?</b> бесплатный сервис динамического DNS: регистрируешься на dynv6.com, создаёшь имя, копируешь токен сюда — и всё работает без покупок. Хочешь «из коробки» без затрат — это твой вариант.</p>
+    </div></details>
     <label class=mut style="display:block">Host:
       <input id=dvHost maxlength=80 placeholder="имя.dynv6.net" style="margin-top:4px"></label>
     <label class=mut style="display:block;margin-top:8px">Token:
@@ -908,6 +959,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <h3 style="margin:0 0 8px">🔀 SNI-мюкс на :443 <span class=mut style="font-weight:400;font-size:12px">(диагностика + точное применение)</span></h3>
     <p class=mut style="margin:0 0 10px">Сколько TLS-протоколов с сертификатом на своём домене можно привести на один общий порт 443 через nginx (stream + ssl_preread по SNI). Ниже — кто сейчас держит :443/:80, готов ли nginx и что произойдёт при включении. <b>Reality через SNI не мюксится</b> (общий SNI с реальным сайтом) и останется на отдельном порту.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Зачем это продвинутым?</b> Порт 443 — «золотой»: это порт обычного HTTPS, открыт почти везде. Но по умолчанию он один, и заняв его VPN-протоколом, туда уже ничего не поставить. SNI-мюкс — умная развилка: по имени домена, которое клиент шепчет в начале handshake (SNI), nginx понимает, куда отправить соединение — на веб-фронт, на прокси или на VPN. Несколько сервисов на одном 443.</p>
+      <p><b>Новичку:</b> это не обязательная и довольно тонкая настройка. Если всё работает на разных портах — можешь пропустить. Reality (твой основной защищённый протокол) тут не участвует и останется на своём порту.</p>
+      <p><b>Кнопка «Предпросмотр»</b> ничего не меняет — просто показывает, что произойдёт. Жми её смело. «Применить» уже правит nginx и xray (с бэкапом и авто-откатом, если конфиг не пройдёт проверку).</p>
+    </div></details>
     <div style="margin-bottom:10px"><button class="tiny sec" onclick=loadWebmux()>&#x27F3; Обновить диагностику</button></div>
     <div id=webmuxBox class=mut style="font-size:13px;line-height:1.6"></div>
     <div style="margin-top:12px;border:1px solid var(--br);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--card2) 30%,transparent)">
@@ -930,6 +986,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <h2>Настройки</h2>
     <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
     <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что здесь?</b> Это системные настройки самой панели — не VPN-ссылок, а «пульта». Тут меняют порт входа в панель, ставят автообновление, настраивают защиту от подбора пароля (fail2ban), режим split-tunnel и покупаются резервные копии.</p>
+      <p><b>Новичку:</b> почти всё можно не трогать — панель работает из коробки по умолчанию. Полезное на первое время: «Проверить обновления» (кнопка выше — ставит свежие исправления в один клик) и раздел «Резервное копирование» ниже (включи авто-копии, чтобы не потерять клиентов при поломке сервера).</p>
+      <p><b>Кнопка «Установить»</b> появится, когда доступно обновление. Она ничего страшного не делает: старые версии сохраняются, откатиться можно кнопкой ниже.</p>
+    </div></details>
     <button id=installBtn class="hidden" onclick=installUpdate()>Установить</button>
     <div class=msg id=setMsg></div>
     <hr>
@@ -963,11 +1024,21 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
         <option value="ru">РФ напрямую (geosite/geoip: ru) — для России</option>
         <option value="ir">Сервисы Ирана через VPN, остальное напрямую</option>
       </select>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что такое split-tunnel?</b> Обычно VPN гонит ВЕСЬ трафик через сервер. Но российские сайты и банки (Госуслуги, Сбер, VK) через зарубежный VPN часто не работают или тормозят. Split-tunnel («раздельный туннель») разделяет поток: что надо — идёт через VPN, а остальное — напрямую, как без VPN.</p>
+        <p><b>Для России</b> выбирают режим «РФ напрямую»: отечественные сайты открываются без VPN (быстро и без блокировок банками), а всё зарубежное идёт через сервер. Это самый частый выбор для бытовых пользователей.</p>
+        <p><b>Влияет ли на ссылки?</b> Это правило зашито в полные конфиги sing-box (ссылки <code>/sb/…</code>), которые панель раздаёт клиентам. Меняя режим, пересылать ссылки заново не нужно — они подтянут новое правило.</p>
+      </div></details>
       <p class=mut style="margin:4px 0 0;font-size:12px">Rule-set'ы зеркалируются с upstream раз в сутки и раздаются панелью из <code>/rulesets/</code>.</p>
       <p class=mut id=rsState style="margin:4px 0 0;font-size:12px">—</p>
     </div>
     <div style="margin:12px 0">
       <label><input type=checkbox id=f2bEnabled> fail2ban-lite — бан IP в nftables после серии неудачных входов в панель</label>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Проблема:</b> панель торчит в интернет, и роботы со всего мира круглосуточно пытаются угадать твой пароль, перебирая варианты. Каждый неверный вход — заявка на взлом.</p>
+        <p><b>Что делает эта функция:</b> после нескольких подряд неудачных входов с одного адреса панель «банит» этот IP — блокирует ему доступ. Робот упирается в закрытую дверь и отступает.</p>
+        <p><b>Не бойся заблокировать себя:</b> панель не банит адрес, с которого ты сейчас сидишь, и локальные адреса. Можно смело оставлять включённой. Значения по умолчанию (5 промахов за 10 минут → бан на сутки) — разумные.</p>
+      </div></details>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;align-items:center">
         <label>входов<input id=f2bThreshold type=number min=1 max=1000 value=5 style="width:64px;margin-left:4px"></label>
         <label>окно, мин<input id=f2bWindow type=number min=1 max=1440 value=10 style="width:64px;margin-left:4px"></label>
@@ -996,6 +1067,12 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <h3 style="margin:0 0 8px">Автозамена IP при падении доступности из РФ</h3>
     <p class=mut style="margin:0 0 10px">Панель периодически проверяет доступность сервера из России (через Globalping). Если доля успешных откликов ≤ порога и повторная проверка через выбранное окно подтверждает деградацию — свободный IP VPS подменяется в dynv6 и/или в A-записи Cloudflare.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Какую боль лечит?</b> Иногда провайдер начинает блокировать конкретный IP-адрес сервера — и для всех клиентов VPN «падает», хотя сервер живой. Обычно ты узнаёшь об этом от недовольных пользователей через несколько часов. Эта функция замечает сама.</p>
+      <p><b>Что делает:</b> панель периодически «звонит» на сервер из России. Если доступность резко упала и подтвердилась повторно — она автоматически переключает домен на другой (свободный) IP твоего VPS. Клиенты даже не заметят подмены, потому что у них в ссылке — домен, а не IP.</p>
+      <p><b>Что нужно, чтобы работало:</b> домен через dynv6 или Cloudflare (настройка выше) и несколько свободных IP у VPS-провайдера. Без этого включать смысла нет — переключать будет не на что.</p>
+      <p><b>Новичку:</b> можно оставить выключенной и вернуться к ней, когда появятся стабильные клиенты и несколько IP. Это защита «на вырост».</p>
+    </div></details>
     <div style="margin:8px 0">
       <label><input type=checkbox id=rotEnabled> Включить автозамену</label>
     </div>
@@ -1061,9 +1138,34 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <button class=sec onclick=restorePick() id=restoreBtn style="margin-left:8px">⬆ Восстановить из файла</button>
     <input type=file id=fold-backup accept=".json,.backup" class=hidden onchange=restoreFile(this)>
     <div class=msg id=backupMsg></div>
+    <div style="margin-top:10px;border:1px solid rgba(128,128,128,.3);border-radius:10px;padding:10px 12px">
+      <label style="display:flex;gap:8px;align-items:center;font-weight:600;cursor:pointer"><input type=checkbox id=bkEnabled onchange=bkToggle()> 🤖 Автоматические бэкапы</label>
+      <p class=mut style="margin:6px 0 0;font-size:12px">Панель сама сохранит копию всех клиентов, настроек и сертификатов в папку на этом сервере. Если сервер или диск умрёт — восстановишь всё в два клика по кнопке «Восстановить» у нужной копии. Лучше хотя бы раз в неделю скачивать копию к себе на компьютер. Копия содержит настройки доступа — считай её секретным файлом, не раздавай никому.</p>
+      <div id=bkCfg style="display:none;margin-top:8px">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label style="min-width:150px">Интервал<select id=bkEvery style="width:100%;margin-top:4px"><option value=6>каждые 6 часов</option><option value=12>каждые 12 часов</option><option value=24>раз в сутки</option><option value=168>раз в неделю</option></select></label>
+          <label style="min-width:120px">Хранить копий<input id=bkKeep type=number min=1 max=60 value=7 style="width:100%;margin-top:4px"></label>
+          <label style="display:flex;gap:6px;align-items:center;min-width:230px;cursor:pointer;font-weight:normal"><input type=checkbox id=bkTg onchange=bkToggle()> присылать копию в Telegram</label>
+        </div>
+        <div id=bkTgHint class=mut style="font-size:12px;margin-top:4px"></div>
+        <div style="margin-top:8px"><button class="tiny sec" onclick=bkSave()>Сохранить расписание</button></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+        <button class="tiny sec" onclick=bkRun() id=bkRunBtn>Создать сейчас</button>
+        <button class="tiny sec" onclick=loadAutoBk()>&#x27F3; Обновить</button>
+        <span class=mut id=bkNext style="font-size:12px"></span>
+      </div>
+      <div class=msg id=bkMsg></div>
+      <div id=bkList style="margin-top:8px;font-size:13px"></div>
+    </div>
     <hr>
     <h3 style="margin:0 0 8px">Ядро Xray</h3>
     <p class=mut style="margin:0 0 10px">Смена версии ядра. Старые приложения клиентов остаются совместимыми; для reality+xhttp нужен xray &ge; v24.9. Текущий бинарь перед сменой сохраняется для отката.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что такое «ядро Xray»?</b> Это движок, который и делает всю VPN-работу — шифрует и пропускает трафик. Панель — это пульт управления, а Xray — сам мотор. Время от времени выходят новые версии с исправлениями и новыми протоколами.</p>
+      <p><b>Надо ли это трогать новичку?</b> Нет. Работает — не трогай. Менять версию стоит, если: нужен свежий протокол (например xhttp+reality требует v24.9+), вышла важная безопасность-правка, или что-то сломалось и поддержка посоветовала.</p>
+      <p><b>Безопасно?</b> Да. Перед сменой текущая версия сохраняется — если новая не заведётся, откатываешься кнопкой ниже в пару кликов. Сами ссылки клиентов от смены версии не меняются.</p>
+    </div></details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <span class=mut>Сейчас: <b id=xvCur>—</b></span>
       <select id=xvSel aria-label="версия xray" style="flex:1;min-width:220px"></select>
@@ -1244,6 +1346,12 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
          </div>
        </div>
        <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список всех активных протоколов и нод.</p>
+       <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что такое «ссылка подписки»?</b> Это одна волшебная ссылка вместо десятка отдельных. Ты даёшь человеку ЭТУ ссылку один раз — а все твои протоколы и серверы сами подтягиваются к нему в приложение и сами обновляются. Добавил новый протокол или сервер — у человека он появится сам, пересылать ничего не надо.</p>
+        <p><b>Чем это лучше отдельных ссылок?</b> Не надо каждый раз бегать и пересылать обновления. Удалил клиента — доступ пропадёт при ближайшем обновлении подписки. Короче: дал одну ссылку — и дальше всё живёт само.</p>
+        <p><b>Как пользоваться?</b> Скопируй ссылку справа (кнопка «Копировать») или покажи QR-код — человек открывает её в своём приложении (v2rayNG, Hiddify, Streisand…) через «Добавить подписку / Add subscription». Готово.</p>
+        <p><b>Про экспорт/импорт:</b> «Экспорт JSON» — полный снимок всех клиентов, чтобы перенести на такую же панель без потерь. «Импорт» — загрузка: можно вставить ссылки, JSON или даже файл базы от 3x-ui / x-ui / Marzban (перенесёт людей с их лимитами и сроками).</p>
+      </div></details>
        <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
          <input type=text id=subUrlInput readonly style="flex:1;min-width:260px;background:var(--bg2);border:1px solid var(--brd);padding:10px;border-radius:6px;font-family:monospace">
          <button class="sec" onclick="copyText($('subUrlInput').value, 'Ссылка подписки скопирована')">📋 Копировать</button>
@@ -1423,6 +1531,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
 <div id=tab-security class="tab-pane"><div class=card>
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Это твой главный замок.</b> Здесь ты меняешь логин и пароль от самой панели (от того, что ты вводишь на экране входа). Тот пароль, что был задан при установке, лучше сменить первым делом.</p>
+      <p><b>Как пользоваться?</b> Вверху — текущий пароль (обязательно, чтобы случайный человек не сменил его). Ниже — новое имя и новый пароль (дважды, от опечатки). Пустые поля не меняются. Сохранил — панель выкинет тебя на экран входа, войди с новым паролем.</p>
+      <p><b>Важно:</b> не забудь новый пароль! Без него вход в панель теряется (придётся восстанавливать через SSH на сервере). Придумай пароль подлиннее — панель торчит в интернет, её подбирают роботы.</p>
+    </div></details>
     <input id=curPass type=password placeholder="текущий пароль (обязательно)" autocomplete=current-password>
     <hr>
     <input id=nLogin placeholder="новый логин (пусто — не менять)" autocomplete=off>
@@ -1433,6 +1546,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <hr>
     <h3 style="margin:0 0 8px">Двухфакторная аутентификация (2FA)</h3>
     <p class=mut style="margin:0 0 10px">Защита входа через Google Authenticator, Яндекс Ключ или Authy.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что это даёт?</b> Второй замок на двери. Даже если кто-то украдёт твой пароль, он не зайдёт без одноразового 6-значного кода, который каждые 30 секунд показывает приложение на телефоне.</p>
+      <p><b>Как настроить?</b> Поставь на телефон приложение-аутентификатор (Google Authenticator, Яндекс Ключ или Authy), отсканируй QR-код ниже, введи увиденный код — готово. Теперь при каждом входе панель просит и пароль, и код.</p>
+      <p><b>Осторожно:</b> сохрани резервные коды, которые покажет панель. Потеряешь телефон — они единственное, что вернёт тебе доступ.</p>
+    </div></details>
     <div id=faStatusBlock class=mut style="margin-bottom:10px">Статус: <b id=faStatusTxt>—</b></div>
     <div id=faSetupZone style="display:none;margin-top:10px;padding:14px;border:1px solid var(--br);border-radius:12px;background:color-mix(in srgb,var(--card2) 50%,transparent)">
       <p class=mut style="margin:0 0 8px">1. Отсканируй QR-код или введи секрет в приложении:</p>
@@ -1452,6 +1570,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
   <div id=tab-journal class="tab-pane"><div class=card>
     <h2>📋 Журналы безопасности</h2>
     <p class=mut>Аудит действий и история входов в панель (хранение 7 дней).</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что это?</b> Бортовой журнал панели. Здесь видно: кто и когда входил в панель (IP, устройство), что менял (добавил/удалил клиента, сменил настройку), сколько активных сессий открыто.</p>
+      <p><b>Когда заглядывать?</b> Если что-то пошло не так или появились подозрения: «заходил ли кто-то без меня?». Раздел «История входов» покажет все попытки (включая неудачные с чужих IP), а «Сессии» — с каких устройств ты сейчас залогинен. Лишнюю сессию можно тут же сбросить.</p>
+      <p><b>Хранение:</b> записи живут 7 дней и стираются сами — место на сервере не забивают.</p>
+    </div></details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 16px">
       <button class="tiny journal-sub-btn active" id="jbtn-audit" onclick="jumpTab('audit')">🛡 Аудит</button>
       <button class="tiny journal-sub-btn" id="jbtn-loginhistory" onclick="jumpTab('loginhistory')">🔐 История входов</button>
@@ -1502,6 +1625,11 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
   <div id=tab-diagnostics class="tab-pane"><div class=card>
     <h2>🩺 Центр диагностики</h2>
     <p class=mut>Проверка состояния служб, портов, системных ресурсов и самотестирование.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Когда нужен?</b> Когда «что-то не работает» и непонятно что. Это как чек-ап у врача: панель сама прогонит диагностику и покажет зелёным/красным, что живо, а что нет — служба xray, открытые порты, сертификаты, нагрузка сервера, место на диске.</p>
+      <p><b>Что делать с результатом?</b> Читаешь красные строки — там и проблема. «Самотестирование» дополнительно пытается пройти свой же трафик и находит тонкие места. Если сам не разбираешься — скриншот этой страницы легко скинуть в поддержку или знакомому админу, сразу видно картину.</p>
+      <p><b>Это безопасно:</b> диагностика только смотрит, ничего не меняет. Жми «Запросить диагностику» спокойно.</p>
+    </div></details>
     <div style="display:flex;gap:8px;margin:12px 0 16px">
       <button class=tiny onclick="loadDiagnostics()">🔄 Запросить диагностику</button>
     </div>
@@ -2086,6 +2214,81 @@ async function restoreFile(file){
     $('backupMsg').textContent=e.message;$('backupMsg').className='msg err';
   }finally{if(btn)btn.disabled=false;file.value='';}
 }
+let _bkFiles=[];
+async function loadAutoBk(){
+  try{
+    const d=await api('/api/backups');
+    const s=d.settings||{};
+    $('bkEnabled').checked=s.enabled;$('bkTg').checked=s.send_tg;
+    $('bkEvery').value=String(s.every_h||24);$('bkKeep').value=s.keep||7;
+    $('bkCfg').style.display=s.enabled?'':'none';
+    $('bkTgHint').textContent=s.send_tg&&!d.tg_ready?'бот в Telegram сейчас не подключён — включи его во вкладке «Telegram Bot», иначе копии туда не уйдут':'';
+    $('bkNext').textContent=s.enabled?(d.next_in!=null?'следующий через '+Math.max(1,Math.round(d.next_in/60))+' мин.':''):'';
+    _bkFiles=d.files||[];
+    if(!_bkFiles.length){$('bkList').innerHTML='<span class=mut>Готовых автоматических копий пока нет — нажми «Создать сейчас» или включи расписание.</span>';return;}
+    $('bkList').innerHTML=_bkFiles.map((f,i)=>{
+      const dt=new Date(f.ts*1000).toLocaleString();
+      return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;border-bottom:1px solid rgba(128,128,128,.15)">'+
+        '<span style="min-width:210px">'+dt+'</span><span class=mut>'+fmtBytes(f.size)+'</span>'+
+        '<button class="tiny sec" onclick=bkDownload('+i+')>Скачать</button>'+
+        '<button class="tiny sec" onclick=bkRestore('+i+')>Восстановить</button>'+
+        '<button class="tiny sec" onclick=bkDelete('+i+')>Удалить</button></div>';
+    }).join('');
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+}
+function bkToggle(){
+  $('bkCfg').style.display=$('bkEnabled').checked?'':'none';
+}
+async function bkSave(){
+  setMsg('bkMsg','Сохраняю...');
+  try{
+    const body={enabled:$('bkEnabled').checked,every_h:parseInt($('bkEvery').value)||24,keep:parseInt($('bkKeep').value)||7,send_tg:$('bkTg').checked};
+    await api('/api/backups/config',{method:'POST',body:JSON.stringify(body)});
+    setMsg('bkMsg',body.enabled?'Расписание сохранено — первая копия появится в течение пары минут':'Автобэкапы выключены','ok');
+    await loadAutoBk();
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+}
+async function bkRun(){
+  const btn=$('bkRunBtn');if(btn)btn.disabled=true;
+  setMsg('bkMsg','Создаю копию...');
+  try{
+    await api('/api/backups/run',{method:'POST',body:'{}'});
+    setMsg('bkMsg','Копия создана','ok');
+    await loadAutoBk();
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+  finally{if(btn)btn.disabled=false;}
+}
+async function bkDownload(i){
+  const f=_bkFiles[i];if(!f)return;
+  try{
+    const h={};if(!document.cookie.match(/(^|;)\s*sid=/)){const x=localStorage.getItem('veil_sid');if(x)h['X-Sid']=x;}
+    const r=await fetch('/api/backups/download?name='+encodeURIComponent(f.name),{credentials:'same-origin',headers:h});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;
+    document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);document.body.removeChild(a);
+    toast('Копия скачана','ok');
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+}
+async function bkRestore(i){
+  const f=_bkFiles[i];if(!f)return;
+  if(!confirm('Восстановить панель из копии от '+new Date(f.ts*1000).toLocaleString()+'? Текущие клиенты и настройки будут заменены содержимым копии.'))return;
+  setMsg('bkMsg','Восстанавливаю...');
+  try{
+    const r=await api('/api/backups/restore',{method:'POST',body:JSON.stringify({name:f.name})});
+    setMsg('bkMsg','Восстановлено. Клиентов в копии: '+(r.clients!=null?r.clients:'?'),'ok',true);
+    toast('Панель восстановлена из копии','ok');
+    setTimeout(()=>{try{refresh();}catch(e){}},1500);
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+}
+async function bkDelete(i){
+  const f=_bkFiles[i];if(!f)return;
+  if(!confirm('Удалить копию от '+new Date(f.ts*1000).toLocaleString()+'?'))return;
+  try{
+    await api('/api/backups/delete',{method:'POST',body:JSON.stringify({name:f.name})});
+    await loadAutoBk();
+  }catch(e){setMsg('bkMsg',e.message,'err');}
+}
 async function autoCheckForUpdate(){
   try{
     const u=await api('/api/update');
@@ -2301,6 +2504,7 @@ function renderClients(){
   const map={};
   clients.forEach(c=>{(map[c.proto]=map[c.proto]||[]).push(c);});
   $('emptyState').classList.toggle('hidden',clients.length>0);
+  const _st=document.querySelector('#tab-vpn details.expl');if(_st&&clients.length>0&&localStorage.getItem('veil_starter')!=='1')_st.open=false;
   $('protoCards').querySelectorAll('.pcard').forEach(card=>{
     const proto=card.dataset.proto;
     const list=map[proto]||[];
@@ -2954,6 +3158,7 @@ async function refresh(){
     await loadDynv6();
     await loadCert();
     await loadXrayInfo();
+    await loadAutoBk();
     await loadVersions();
     await loadTheme();
     if(document.body.classList.contains('ui-new'))loadDashboard();
@@ -3182,8 +3387,52 @@ function exportSubs(fmt){
 function showImp(){
   $('impMsg').textContent='';$('impMsg').className='msg';
   $('impJsonText').value='';$('impLinksText').value='';try{$('impFile').value='';}catch(e){}
+  try{$('impDbFile').value='';}catch(e){}
+  $('impDbPrev').innerHTML='';$('impDbApply').style.display='none';window._extImpId=null;
   $('impBtn').disabled=false;
+  impFmtPick();
   showModal('impBox');
+}
+function impFmtPick(){
+  const r=document.querySelector('input[name=impFmt]:checked');const v=r?r.value:'json';
+  $('impJsonWrap').style.display=v==='json'?'':'none';
+  $('impLinksWrap').style.display=v==='links'?'':'none';
+  $('impDbWrap').style.display=v==='db'?'':'none';
+  $('impBtn').style.display=v==='db'?'none':'';
+}
+async function extImpPreview(){
+  const f=$('impDbFile').files&&$('impDbFile').files[0];
+  if(!f){setMsg('impMsg','выбери файл базы (.db)','err');return;}
+  if(f.size>16*1024*1024){setMsg('impMsg','файл больше 16 МБ — это точно база панели?','err');return;}
+  setMsg('impMsg','читаю файл…','');$('impDbApply').style.display='none';window._extImpId=null;
+  let buf;try{buf=await f.arrayBuffer();}catch(e){setMsg('impMsg','не удалось прочитать файл','err');return;}
+  let bin='';const u8=new Uint8Array(buf);for(let i=0;i<u8.length;i+=0x8000){bin+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));}
+  let d;try{d=await api('/api/extimport/preview',{method:'POST',body:JSON.stringify({db_b64:btoa(bin)})});}
+  catch(e){setMsg('impMsg',(e&&e.message)||'ошибка','err');$('impDbPrev').innerHTML='';return;}
+  window._extImpId=d.import_id||null;
+  let h='<div style="border:1px solid var(--br);border-radius:10px;padding:10px;font-size:13px;line-height:1.5">';
+  h+='<b>Распознано:</b> '+esc(d.source||'')+' · клиентов: <b>'+(d.total||0)+'</b>';
+  h+='<div style="margin:6px 0">';
+  (d.groups||[]).forEach(g=>{h+='<div>• '+esc(g.proto)+': '+g.count+' <span class=mut>('+esc((g.names||[]).join(', '))+((g.count>(g.names||[]).length)?'…':'')+')</span></div>';});
+  h+='</div>';
+  const wn=(d.warnings||[]);
+  if(wn.length){h+='<details style="margin-top:4px"><summary class=mut style="cursor:pointer">предупреждения ('+wn.length+')</summary><div class=mut style="font-size:12px;margin-top:4px">'+wn.map(esc).join('<br>')+'</div></details>';}
+  h+='<div class=mut style="font-size:12px;margin-top:6px">uuid/пароли переносятся как есть — ссылки подписчиков продолжают работать после смены адреса сервера.</div>';
+  h+='</div>';
+  $('impDbPrev').innerHTML=h;
+  $('impDbApply').style.display=window._extImpId?'':'none';
+  setMsg('impMsg','проверь список и нажми «Применить импорт»','ok',true);
+}
+async function extImpApply(){
+  if(!window._extImpId){setMsg('impMsg','сначала распознай базу','err');return;}
+  setMsg('impMsg','импортирую…','');$('impDbApply').disabled=true;
+  let d;try{d=await api('/api/extimport/apply',{method:'POST',body:JSON.stringify({import_id:window._extImpId})});}
+  catch(e){$('impDbApply').disabled=false;setMsg('impMsg',(e&&e.message)||'ошибка','err');return;}
+  $('impDbApply').disabled=false;window._extImpId=null;
+  hideImp();
+  let wn=(d.warnings&&d.warnings.length)?(' · предупр. '+d.warnings.length):'';
+  toast('Импортировано из базы: '+(d.imported||0)+wn,'ok');
+  await loadSub();
 }
 function hideImp(){hideModal();}
 async function doImport(){
