@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.3"
+VERSION = "2.7.4"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -4714,6 +4714,111 @@ def _webproxy_install():
     _webproxy_apply(domain)
     return {"ok": True, "status": _webproxy_status()}
 
+def _sock_occupant(port):
+    """Кто держит TCP-листнер на :port. Вернуть {free, proc, pids}.
+    Панель работает под root, поэтому ss показывает имена чужих процессов."""
+    res = {"free": True, "proc": "", "pids": []}
+    if not (isinstance(port, int) and 0 < port < 65536):
+        return res
+    try:
+        out = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=8).stdout
+    except Exception:
+        return res
+    names, pids = [], []
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) < 4:
+            continue
+        local = cols[3]
+        if not local.endswith(":" + str(port)):
+            continue
+        for nm, pid in re.findall(r'\("([^"]+)",pid=(\d+)', line):
+            names.append(nm)
+            pids.append(int(pid))
+    if names:
+        res["free"] = False
+        res["proc"] = ",".join(sorted(set(names)))
+        res["pids"] = sorted(set(pids))
+    elif not _port_free(port):
+        res["free"] = False   # занято, но процесс не виден (не root / чужое ns)
+        res["proc"] = "?"
+    return res
+
+def _nginx_stream_info():
+    info = {"installed": False, "active": False, "stream": False, "stream_dynamic": False,
+            "ssl_preread": False, "version": ""}
+    binp = shutil.which("nginx")
+    if not binp:
+        return info
+    info["installed"] = True
+    try:
+        info["active"] = subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([binp, "-V"], capture_output=True, text=True, timeout=10)
+        v = (r.stderr or "") + (r.stdout or "")
+    except Exception:
+        v = ""
+    info["stream"] = "--with-stream" in v
+    info["stream_dynamic"] = "--with-stream=dynamic" in v
+    info["ssl_preread"] = "--with-stream_ssl_preread_module" in v
+    m = re.search(r"nginx/([0-9][0-9.]*)", v)
+    info["version"] = m.group(1) if m else ""
+    return info
+
+def _mux_status():
+    """ТОЛЬКО диагностика (без изменений): кто занял :443/:80, готов ли nginx к SNI-mux,
+    что произойдёт при включении мюкса и какие красные предупреждения."""
+    o443 = _sock_occupant(443)
+    o80 = _sock_occupant(80)
+    ng = _nginx_stream_info()
+    cp = _cert_pathes()
+    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    has_cert = bool(cp["cert"] and os.path.exists(cp["cert"]))
+    cert_dns = _cert_renewal_is_dns(cp["domain"] or domain)
+    st = _load(STATE, {}) or {}
+    reality_port = None
+    tls_ports = []
+    for proto, inb in (st.get("inbounds") or {}).items():
+        p = inb.get("port")
+        if not p:
+            continue
+        meta = _proto_meta(proto) or {}
+        if meta.get("group") == "reality":
+            reality_port = p
+        if meta.get("tls"):
+            tls_ports.append(p)
+    xray_holds_443 = ("xray" in (o443.get("proc") or "")) or (reality_port == 443)
+    can_mux = bool(ng["installed"] and ng["stream"] and ng["ssl_preread"])
+    our_nginx_443 = (not o443["free"] and "nginx" in (o443.get("proc") or "")
+                     and ng["active"] and os.path.exists(_NG_CONF))
+    applied = bool(ng["active"] and os.path.exists(_NG_CONF))
+    plan = []
+    if not o443["free"]:
+        if our_nginx_443:
+            plan.append("перенастроить НАШ веб-прокси nginx на :443 в stream/ssl_preread-мюкс (это тот же nginx, ничего чужого не трогаем)")
+        else:
+            plan.append("остановить текущий сервис на :443 (%s) — он будет отключён" % (o443["proc"] or "?"))
+    plan.append("поднять наш stream/ssl_preread nginx на :443 (SNI-развилка по сертификату домена)")
+    plan.append("cert-TLS inbound'ы (%s) завести на общий :443 через SNI" % (",".join(map(str, tls_ports)) or "—"))
+    if reality_port:
+        plan.append("Reality (: %s) через ssl_preread НЕ mux-ится (общий SNI с реальным сайтом) — оставить на отдельном порту" % reality_port)
+    warnings = []
+    if not o443["free"] and not our_nginx_443:
+        warnings.append("На :443 сейчас чужой сервис (%s). При включении мюкса панель ОСТАНОВИТ его и не несёт ответственности за его работу после." % (o443["proc"] or "?"))
+    if not o80["free"] and not has_cert and not cert_dns:
+        warnings.append("Порт :80 занят (%s) и сертификата нет — HTTP-01 недоступен; выпустите сертификат через DNS-01 (Cloudflare)." % (o80["proc"] or "?"))
+    if not ng["stream"] or not ng["ssl_preread"]:
+        warnings.append("nginx не собран со stream_ssl_preread_module — SNI-mux через этот nginx невозможен.")
+    elif ng["stream_dynamic"]:
+        warnings.append("stream-модуль динамический (--with-stream=dynamic) — потребуется load_module в nginx.conf (это будет сделано во 2-м срезе).")
+    return {"free443": o443["free"], "occupant443": o443, "free80": o80["free"], "occupant80": o80,
+            "nginx": ng, "can_mux": can_mux, "xray_holds_443": xray_holds_443, "our_nginx_443": our_nginx_443,
+            "reality_port": reality_port, "tls_ports": tls_ports, "domain": domain,
+            "has_cert": has_cert, "cert_dns": cert_dns, "applied": applied,
+            "plan": plan, "warnings": warnings}
+
 def _find_free_port(pref=None, avoid=()):
     import socket
     avoid = set(avoid or ())
@@ -6168,40 +6273,113 @@ def _domain_points(domain, cands):
         time.sleep(12)
     return False
 
-def _cert_issue(email=None):
+def _cf_txt_upsert(name, content, ttl=120):
+    """Создать/обновить TXT-запись в зоне Cloudflare (для DNS-01)."""
+    zid, _ = _cf_zone()
+    base = "/zones/%s/dns_records" % urllib.parse.quote(zid)
+    q = urllib.parse.urlencode({"type": "TXT", "name": name})
+    found = _cf_api("GET", base + "?" + q) or []
+    body = {"type": "TXT", "name": name, "content": content, "ttl": int(ttl)}
+    if found:
+        return _cf_api("PUT", base + "/" + urllib.parse.quote(found[0].get("id") or ""), body)
+    return _cf_api("POST", base, body)
+
+
+def _cf_txt_delete(name):
+    """Удалить все TXT-записи с таким именем в зоне Cloudflare."""
+    zid, _ = _cf_zone()
+    base = "/zones/%s/dns_records" % urllib.parse.quote(zid)
+    q = urllib.parse.urlencode({"type": "TXT", "name": name})
+    for rec in (_cf_api("GET", base + "?" + q) or []):
+        rid = rec.get("id")
+        if rid:
+            _cf_api("DELETE", base + "/" + urllib.parse.quote(rid))
+
+
+def _dns01_provider():
+    """Провайдер DNS-01 по настройкам: cloudflare | '' (dynv6 DNS-01 не поддерживает)."""
+    c = CFG_CACHE or {}
+    if (c.get("cf_token") or "").strip():
+        return "cloudflare"
+    return ""
+
+
+def _dns01_hook_main(argv=None):
+    """Режим хука certbot DNS-01: `python3 panel.py --dns01-hook auth|cleanup`.
+    Читает CERTBOT_DOMAIN / CERTBOT_VALIDATION из окружения и обновляет TXT
+    _acme-challenge.<domain> через API DNS-провайдера. Запускается certbot отдельным
+    процессом, поэтому перечитывает config.json при импорте."""
+    import sys
+    argv = argv if argv is not None else sys.argv
+    action = (argv[2] if len(argv) > 2 else "").strip().lower()
+    domain = (os.environ.get("CERTBOT_DOMAIN") or "").strip().rstrip(".").lower()
+    value = (os.environ.get("CERTBOT_VALIDATION") or "").strip()
+    if not domain:
+        raise RuntimeError("CERTBOT_DOMAIN не задан")
+    name = "_acme-challenge." + domain
+    prov = _dns01_provider()
+    if prov != "cloudflare":
+        raise RuntimeError("DNS-01 доступен только при настроенном Cloudflare (токен Zone→DNS:Edit + зона)")
+    if action == "auth":
+        _cf_txt_upsert(name, value)
+        time.sleep(8)   # даём записи распространиться, прежде чем ACME проверит
+    elif action == "cleanup":
+        _cf_txt_delete(name)
+    else:
+        raise RuntimeError("неизвестное действие хука DNS-01: " + (action or "?"))
+
+
+def _cert_issue(email=None, mode="auto"):
     if _CERT_STATE.get("busy"):
         raise RuntimeError("выпуск сертификата уже идёт")
     domain = (CFG_CACHE.get("panel_domain") or "").strip()
     if not domain or re.fullmatch(r"[0-9.]+", domain) or ":" in domain or "//" in domain:
         raise RuntimeError("сначала задай домен (не IP) — в поле ниже или через DDNS")
+    mode = (mode or "auto").strip().lower()
+    if mode not in ("auto", "http01", "dns01"):
+        mode = "auto"
+    free80 = _port_free(80)
+    if mode == "auto":
+        mode = "http01" if free80 else "dns01"
+    if mode == "http01":
+        if not free80:
+            raise RuntimeError("порт 80 занят — HTTP-01 невозможен; используйте DNS-01 (нужен Cloudflare)")
+    else:  # dns01
+        if _dns01_provider() != "cloudflare":
+            raise RuntimeError("DNS-01 требует Cloudflare (токен Zone→DNS:Edit + зона). "
+                               "dynv6 не умеет выпускать TXT для ACME своим update-токеном. "
+                               + ("Порт :80 занят — освободите его для HTTP-01. " if not free80 else "")
+                               + "Настройте Cloudflare во вкладке Сайт.")
     cur = _pub_ip4()
-    if cur:
-        ok = False
-        last = set()
+    if cur and mode == "http01":
         point = _domain_points(domain, {cur})
-        ok = point
-        last = set()
-        if not ok:
+        if not point:
             raise RuntimeError("домен " + domain + " сейчас не указывает на этот сервер (" +
-                               cur + ") — сначала DDNS / A-запись (DoH: " +
-                               ",".join(sorted(last)) + ")")
-    if not _port_free(80):
-        raise RuntimeError("порт 80 занят — Let's Encrypt (HTTP-01) невозможен")
+                               cur + ") — сначала DDNS / A-запись")
     os.makedirs(CERT_DIR, exist_ok=True)
     live = f"{CERT_DIR}/live/veil-{domain}"
     certp = f"{live}/fullchain.pem"; keyp = f"{live}/privkey.pem"
     _CERT_STATE["busy"] = True
     try:
         email = (email or CFG_CACHE.get("cert_email") or "").strip()
-        args = ["certbot", "certonly", "--standalone", "--preferred-challenges", "http",
-                "-d", domain, "--non-interactive", "--agree-tos"]
+        if mode == "http01":
+            args = ["certbot", "certonly", "--standalone", "--preferred-challenges", "http",
+                    "-d", domain, "--non-interactive", "--agree-tos"]
+        else:
+            import sys
+            me = os.path.abspath(__file__)
+            py = sys.executable or "python3"
+            args = ["certbot", "certonly", "--manual", "--preferred-challenges", "dns",
+                    "--manual-auth-hook", "%s %s --dns01-hook auth" % (py, me),
+                    "--manual-cleanup-hook", "%s %s --dns01-hook cleanup" % (py, me),
+                    "-d", domain, "--non-interactive", "--agree-tos"]
         if email:
             args += ["--email", email]
         else:
             args += ["--register-unsafely-without-email"]
         args += ["--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
                  "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
-        r = subprocess.run(args, capture_output=True, text=True, timeout=280)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=320)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
         subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
@@ -6255,6 +6433,18 @@ def _reload_cert_runtime():
     except Exception:
         pass
 
+def _cert_renewal_is_dns(domain):
+    """True, если сертификат создан через DNS-01 (manual-auth-hook) — тогда продление
+    не требует свободного :80 и certbot renew сам перезапустит хуки."""
+    if not domain:
+        return False
+    try:
+        with open(f"{CERT_DIR}/renewal/veil-{domain}.conf") as f:
+            t = f.read()
+    except Exception:
+        return False
+    return "manual-auth-hook" in t or "dns-cloudflare" in t
+
 def _cert_maybe_renew():
     if not CFG_CACHE.get("cert_auto", True):
         return
@@ -6264,12 +6454,12 @@ def _cert_maybe_renew():
     exp = _cert_expire(cp["cert"])
     if exp and exp > time.time() + 30 * 86400:
         return
-    if not _port_free(80):
-        _CERT_STATE["error"] = "порт 80 занят — автопродление сейчас невозможно"
+    if not _port_free(80) and not _cert_renewal_is_dns(cp["domain"]):
+        _CERT_STATE["error"] = "порт 80 занят — автопродление (HTTP-01) сейчас невозможно"
         return
     r = subprocess.run(["certbot", "renew", "--config-dir", CERT_DIR,
                         "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                        "--non-interactive"], capture_output=True, text=True, timeout=280)
+                        "--non-interactive"], capture_output=True, text=True, timeout=320)
     if r.returncode == 0:
         _cert_status()
         _reload_cert_runtime()
@@ -6282,14 +6472,14 @@ def _cert_renew_now():
         raise RuntimeError("нет выпущенного сертификата — сначала выпусти")
     if _CERT_STATE.get("busy"):
         raise RuntimeError("операция с сертификатом уже идёт")
-    if not _port_free(80):
-        raise RuntimeError("порт 80 занят — продление (HTTP-01) невозможно")
+    if not _port_free(80) and not _cert_renewal_is_dns(cp["domain"]):
+        raise RuntimeError("порт 80 занят — продление (HTTP-01) невозможно; перевыпустите сертификат через DNS-01 (Cloudflare)")
     _CERT_STATE["busy"] = True
     try:
         r = subprocess.run(["certbot", "renew", "--force-renewal",
                             "--config-dir", CERT_DIR,
                             "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                            "--non-interactive"], capture_output=True, text=True, timeout=280)
+                            "--non-interactive"], capture_output=True, text=True, timeout=320)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
         _cert_status()
@@ -7474,6 +7664,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
+        if p == "/api/webmux":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _mux_status())
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
@@ -8422,7 +8615,8 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/cert/issue":
                 try:
                     b = self._body()
-                    return self._send(200, _cert_issue((b or {}).get("email") or CFG_CACHE.get("cert_email")))
+                    return self._send(200, _cert_issue((b or {}).get("email") or CFG_CACHE.get("cert_email"),
+                                                       (b or {}).get("mode") or "auto"))
                 except urllib.error.HTTPError as e:
                     return self._send(502, {"error": f"HTTP {e.code}"})
                 except Exception as e:
@@ -9065,6 +9259,14 @@ class S(socketserver.ThreadingTCPServer):
         return sock, addr
 
 if __name__ == "__main__":
+    import sys
+    if "--dns01-hook" in sys.argv:
+        try:
+            _dns01_hook_main()
+            sys.exit(0)
+        except Exception as e:
+            print("dns01-hook: " + str(e), file=sys.stderr)
+            sys.exit(1)
     port = CFG_CACHE.get("panel_port", 8443)
     bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
     print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
