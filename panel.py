@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.6"
+VERSION = "2.7.7"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -4133,22 +4133,18 @@ def _tg_host_ok(link):
     return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
 
 def _tg_toml_server_port():
-    """Порт нативного MTProto-сервера из [server] port telemt.toml (API /v1/config его не отдаёт)."""
+    """Устарело: см. _tg_toml_get_server_port. Оставлено как алиас для внешних потребителей."""
+    return _tg_toml_get_server_port()
+
+def _tg_mtproto_info():
+    """Реальный публичный MTProto listener: тот порт, куда должны приходить tg://proxy-клиенты.
+    В telemt 3.5+ массив [[server.listeners]] исчерпывающий: если в нём нет публичного
+    transport=mtproxy блока, telemt не слушает [server] port, даже когда тот задан."""
     try:
         with open(TELEMT_CONF, "r", encoding="utf-8") as f:
             text = f.read()
     except Exception:
-        return 0
-    m = re.search(r"(?ms)^\s*\[server\]\s*$(.+?)(?=^\s*\[|\Z)", text)
-    if not m:
-        return 0
-    pm = re.search(r"(?m)^\s*port\s*=\s*(\d+)", m.group(1))
-    return int(pm.group(1)) if pm else 0
-
-def _tg_mtproto_info():
-    """Реальный публичный порт MTProto и слушает ли его именно telemt.
-    При включённом FakeTLS (censorship.mask) клиенты идут на mask_port, иначе на [server] port.
-    Возвращает {port, mask, up, proc, note}."""
+        text = ""
     try:
         c = _tg_api("GET", "/v1/config").get("data", {}).get("censorship") or {}
     except Exception:
@@ -4158,20 +4154,31 @@ def _tg_mtproto_info():
         mask_port = int(c.get("mask_port") or 0)
     except (TypeError, ValueError):
         mask_port = 0
-    port = mask_port if (mask and mask_port) else _tg_toml_server_port()
-    info = {"port": port, "mask": mask, "up": False, "proc": "", "note": ""}
+    server_port = _tg_toml_get_server_port(text) if text else 0
+    listeners = _tg_toml_listeners(text) if text else []
+    pub = _tg_toml_public_mp_listener(text) if text else None
+    if pub:
+        port = pub["port"] or server_port
+    elif not listeners:
+        # Классический конфиг без listeners-массива — telemt сам биндит [server] port
+        port = server_port
+    else:
+        # Listeners объявлены, но публичного mtproxy среди них нет — telemt MTProto не слушает
+        port = server_port
     if not port:
-        info["note"] = "не удалось определить порт MTProto"
-        return info
+        port = 443
+    info = {"port": port, "mask": mask, "mask_port": mask_port, "server_port": server_port,
+            "up": False, "proc": "", "note": "", "has_public_listener": bool(pub)}
     occ = _sock_occupant(port)
     info["proc"] = occ.get("proc", "")
     if occ.get("free"):
-        info["note"] = "на :%d никто не слушает — MTProto недоступен" % port
+        info["note"] = ("на :%d никто не слушает — публичный MTProto listener не объявлен в "
+                        "[[server.listeners]]" % port)
     elif "telemt" in (occ.get("proc") or ""):
         info["up"] = True
         info["note"] = "MTProto активен на :%d" % port
     else:
-        info["note"] = ("порт :%d занят %s — не telemt, MTProto FakeTLS его не слушает"
+        info["note"] = ("порт :%d занят %s — не telemt; MTProto-клиенты туда не попадут"
                         % (port, occ.get("proc") or "другим процессом"))
     return info
 
@@ -4182,6 +4189,261 @@ def _tg_fix_mtproto_link(link, port):
     if link and port:
         link = re.sub(r"(?i)(port=)\d+", lambda m: m.group(1)+str(port), link)
     return link
+
+_TG_MP_MARK = "Veil:MTProtoListener"
+
+def _tg_toml_get_server_port(text=None):
+    """[server] port из telemt.toml (0 если не задан)."""
+    if text is None:
+        try:
+            with open(TELEMT_CONF, "r", encoding="utf-8") as f: text = f.read()
+        except Exception:
+            return 0
+    m = re.search(r"(?ms)^\s*\[server\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text)
+    if not m:
+        return 0
+    pm = re.search(r"(?m)^\s*port\s*=\s*(\d+)", m.group(1))
+    return int(pm.group(1)) if pm else 0
+
+def _tg_toml_set_server_port(text, port):
+    """Вернуть текст с [server] port = port (вставить секцию, если её нет)."""
+    port = int(port)
+    m = re.search(r"(?ms)(^\s*\[server\]\s*$)(.+?)(?=^\s*\[\[?|\Z)", text)
+    if not m:
+        return text.rstrip("\n") + "\n\n[server]\nport = %d\n" % port
+    body = m.group(2)
+    if re.search(r"(?m)^\s*port\s*=", body):
+        nb = re.sub(r"(?m)^(\s*port\s*=\s*)\d+", lambda mm: mm.group(1)+str(port), body, count=1)
+    else:
+        nb = body.rstrip("\n") + "\nport = %d\n" % port
+    return text[:m.start(2)] + nb + text[m.end(2):]
+
+def _tg_toml_listeners(text):
+    """Список всех [[server.listeners]] блоков: [{ip, port, transport, span}].
+    Transport по умолчанию — mtproxy; port по умолчанию наследует [server] port."""
+    default_port = _tg_toml_get_server_port(text)
+    out = []
+    for m in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
+        body = m.group(1)
+        ipm = re.search(r"(?m)^\s*ip\s*=\s*\"([^\"]*)\"", body)
+        ptm = re.search(r"(?m)^\s*port\s*=\s*(\d+)", body)
+        trm = re.search(r"(?m)^\s*transport\s*=\s*\"([^\"]*)\"", body)
+        out.append({
+            "ip": (ipm.group(1) if ipm else ""),
+            "port": int(ptm.group(1)) if ptm else int(default_port or 0),
+            "transport": (trm.group(1) if trm else "mtproxy").lower(),
+            "span": (m.start(), m.end()),
+        })
+    return out
+
+def _tg_toml_public_mp_listener(text):
+    """True если в [[server.listeners]] есть mtproxy-блок, слушающий не-loopback IP."""
+    for L in _tg_toml_listeners(text):
+        if L["transport"] != "mtproxy":
+            continue
+        ip = L["ip"] or "0.0.0.0"
+        if ip.startswith("127.") or ip in ("::1", ""):
+            # ""=не задан; по доке это тоже любой интерфейс — считаем публичным
+            if ip == "":
+                return L
+            continue
+        return L
+    return None
+
+def _tg_toml_has_any_listener(text):
+    return bool(_tg_toml_listeners(text))
+
+def _tg_toml_add_mp_listener(text, port):
+    """Добавить публичный MTProto-listener на port; вернуть (новый_текст, блок).
+    Вставляем сразу после последнего существующего [[server.listeners]] (если есть) —
+    тогда все listeners сгруппированы; иначе — в конец файла."""
+    if _TG_MP_MARK in text:
+        raise RuntimeError("VEIL-MTProto-listener уже добавлен — сначала откат")
+    block = (
+        "# "+_TG_MP_MARK+"\n"
+        "[[server.listeners]]\n"
+        "ip = \"0.0.0.0\"\n"
+        "port = "+str(int(port))+"\n"
+        "transport = \"mtproxy\"\n"
+    )
+    last = None
+    for m in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
+        last = m
+    if last:
+        ins = last.end()
+        return text[:ins].rstrip("\n") + "\n\n" + block + text[ins:].lstrip("\n"), block
+    return text.rstrip("\n") + "\n\n" + block, block
+
+def _tg_toml_remove_mp_listener(text):
+    """Вырезать блок-маркер + последующий [[server.listeners]] до следующей секции."""
+    pat = re.compile(r"(?ms)^#\s*"+re.escape(_TG_MP_MARK)+r"\s*\n\[\[server\.listeners\]\][^\[]*?(?=^\s*\[|\Z)")
+    new, n = pat.subn("", text, count=1)
+    if n == 0:
+        raise RuntimeError("наш MTProto-listener не найден в telemt.toml — откатывать нечего")
+    return new
+
+def _tg_mp_preview():
+    """Можно ли оживить MTProto: добавив публичный [[server.listeners]] (transport=mtproxy).
+    Telemt 3.5+ рассматривает массив listeners как исчерпывающий: если задан только web-loopback,
+    публичного MTProto-входа нет даже при корректном [server] port. Чиним это декларативно."""
+    info = _tg_mtproto_info()
+    telemt_up = _tg_available()
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        text = ""
+    cur_public = _tg_toml_public_mp_listener(text) if text else None
+    any_listener = _tg_toml_has_any_listener(text) if text else False
+    server_port = _tg_toml_get_server_port(text) if text else 0
+    # Публичный порт, куда должны приходить MTProto-клиенты:
+    public_port = (cur_public or {}).get("port") or info.get("port") or server_port or 0
+    already_up = bool(info.get("up"))
+    blockers, can_apply, cand = [], False, 0
+    if not os.path.exists(TELEMT_CONF):
+        blockers.append("нет %s — MTProto-прокси не установлен" % TELEMT_CONF)
+    if not telemt_up:
+        blockers.append("telemt не отвечает по API (не запущен?)")
+    if already_up:
+        blockers.append("MTProto уже активен на :%d — ничего делать не нужно" % public_port)
+    elif cur_public is not None:
+        # Публичный listener есть, но порт занят чужим или telemt не смог связаться
+        occ = _sock_occupant(public_port)
+        if not occ.get("free") and "telemt" not in (occ.get("proc") or ""):
+            cand = _find_free_port(pref=[7443, 2443, 8843, 6443, 9443], avoid={public_port})
+            if cand:
+                can_apply = False   # перенос порта публичного listener'а — отдельная фича, не v2.7.7
+                blockers.append("наш MTProto listener на :%d, но порт занят %s — освободите :%d или включите мюкс"
+                                % (public_port, occ.get("proc") or "?", public_port))
+            else:
+                blockers.append("порт :%d занят и свободных альтернатив нет" % public_port)
+        else:
+            blockers.append("listener есть на :%d, но telemt его не слушает — перезапустите телеmt" % public_port)
+    else:
+        # Нет публичного MTProto listener'а → можно добавить на [server] port (или на free)
+        want = server_port or 0
+        occ = _sock_occupant(want) if want else {"free": True}
+        if want and not occ.get("free") and "telemt" not in (occ.get("proc") or ""):
+            cand = _find_free_port(pref=[7443, 2443, 8843, 6443, 9443], avoid={want})
+        else:
+            cand = want or _find_free_port(pref=[7443, 2443, 8843, 6443, 9443])
+        if not cand:
+            blockers.append("не нашёл свободный порт для MTProto listener'а")
+        else:
+            can_apply = bool(telemt_up)
+    note = ""
+    if can_apply:
+        note = (" telemt держит массив [[server.listeners]] как исчерпывающий — добавим публичный "
+                "MTProto-listener на :%d (nginx/Reality не трогаем). После применения ссылка tg://proxy "
+                "указывает на :%d, fake-TLS-фронт работает как раньше." % (cand, cand))
+    elif already_up:
+        note = "MTProto активен на :%d — ничего делать не нужно." % public_port
+    else:
+        note = info.get("note") or ""
+    return {"mask": bool(info.get("mask")), "public_port": public_port, "server_port": server_port,
+            "up": already_up, "proc": info.get("proc") or "",
+            "has_public_listener": bool(cur_public), "has_any_listener": any_listener,
+            "candidate_port": cand, "can_apply": can_apply, "blockers": blockers, "note": note,
+            "marked": bool(_TG_MP_MARK in text),
+            "applied": bool((_load(_TGBP_STATE, {}) or {}).get("applied"))}
+
+def _tg_mp_firewall_open(port):
+    """Best-effort: открыть порт в firewalld, если он активен. Молча игнорируем отсутствие."""
+    try:
+        if subprocess.run(["bash", "-c",
+                           "command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1"],
+                          capture_output=True, timeout=10).returncode == 0:
+            subprocess.run(["firewall-cmd", "--permanent", "--add-port=%d/tcp" % port], capture_output=True, timeout=15)
+            subprocess.run(["firewall-cmd", "--reload"], capture_output=True, timeout=15)
+            return True
+    except Exception:
+        pass
+    return False
+
+def _tg_mp_apply(port=None, confirm=False):
+    """Добавить публичный MTProto [[server.listeners]] в telemt.toml и перезапустить telemt."""
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    pv = _tg_mp_preview()
+    if not pv["can_apply"]:
+        raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"] or ["неизвестно"]))
+    try:
+        new_port = int(port) if port else int(pv["candidate_port"])
+    except (TypeError, ValueError):
+        new_port = int(pv["candidate_port"])
+    if not (0 < new_port < 65536):
+        raise RuntimeError("некорректный порт")
+    occ = _sock_occupant(new_port)
+    if not occ.get("free") and "telemt" not in (occ.get("proc") or ""):
+        raise RuntimeError("порт :%d уже занят %s — выберите другой" % (new_port, occ.get("proc") or "?"))
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            backup = f.read()
+    except Exception as e:
+        raise RuntimeError("не смог прочитать telemt.toml: %s" % e)
+    prev_server_port = _tg_toml_get_server_port(backup)
+    text = backup
+    if prev_server_port != new_port:
+        # Меняем [server] port, чтобы у ссылки и listener'а был один источник истины
+        text = _tg_toml_set_server_port(text, new_port)
+    text, block = _tg_toml_add_mp_listener(text, new_port)
+    with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+        f.write(text)
+    r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, text=True, timeout=120)
+    import time as _t
+    up = False
+    for _ in range(10):
+        _t.sleep(1)
+        ni = _tg_mtproto_info()
+        if ni.get("up") and ni.get("port") == new_port:
+            up = True
+            break
+    if not up:
+        with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+            f.write(backup)
+        subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        raise RuntimeError("MTProto не поднялся на :%d (restart rc=%d) — конфиг откачен" % (new_port, r.returncode))
+    selfw = _tg_mp_firewall_open(new_port)
+    _save(_TGBP_STATE, {"applied": True, "port": new_port, "prev_server_port": prev_server_port,
+                        "ts": _now_iso()}, 0o600)
+    _audit("tg_mtproto_listen", port=new_port, prev=prev_server_port)
+    return {"ok": True, "port": new_port, "prev_port": prev_server_port,
+            "firewall": "open" if selfw else "skip",
+            "note": "MTProto активен на :%d. Убедитесь, что облачный security group пропускает :%d." % (new_port, new_port)}
+
+def _tg_mp_revert(confirm=False):
+    """Убрать наш MTProto-listener (и вернуть прежний [server] port, если меняли)."""
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    st = _load(_TGBP_STATE, {}) or {}
+    if not st.get("applied"):
+        return {"ok": True, "already": True, "message": "VEIL-MTProto-listener не добавляли — откатывать нечего"}
+    prev = int(st.get("prev_server_port") or 0)
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            backup = f.read()
+    except Exception as e:
+        raise RuntimeError("не смог прочитать telemt.toml: %s" % e)
+    try:
+        text = _tg_toml_remove_mp_listener(backup)
+    except Exception as e:
+        raise RuntimeError(str(e))
+    if prev:
+        text = _tg_toml_set_server_port(text, prev)
+    with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+        f.write(text)
+    subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+    _save(_TGBP_STATE, {"applied": False, "port": prev, "ts": _now_iso()}, 0o600)
+    ni = _tg_mtproto_info()
+    _audit("tg_mtproto_revert", port=prev)
+    if ni.get("up"):
+        note = "VEIL-MTProto listener убран, но telemt всё ещё слушает :%s (значит у вас был свой публичный listener)." % prev
+    elif not ni.get("proc"):
+        note = "VEIL-MTProto listener убран; MTProto больше неактивен (никто не слушает :%s)." % prev
+    else:
+        note = "VEIL-MTProto listener убран; на :%s теперь сидит %s — MTProto-клиенты туда не попадут." % (prev, ni.get("proc"))
+    return {"ok": True, "port": prev, "up": bool(ni.get("up")), "message": note, "note": note}
+
 
 def _tg_ensure_secret_in_toml(username, secret):
     """Добавить секрет пользователя в [access.users] telemt.toml (если его там нет)."""
@@ -4596,6 +4858,14 @@ def _tg_web_ensure():
                  'web_client_ip_source = "x_forwarded_for"\n'
                  'web_trusted_proxy_cidrs = ["127.0.0.1/32"]\n')
         changed = True
+        # Раз мы завели listeners-массив, telemt перестанет сам биндить [server] port на 0.0.0.0 —
+        # явно добавим публичный MTProto listener, иначе ссылка tg://proxy умрёт.
+        if _tg_toml_public_mp_listener(text) is None:
+            mp_port = _tg_toml_get_server_port(text) or 7443
+            try:
+                text, _ = _tg_toml_add_mp_listener(text, mp_port)
+            except RuntimeError:
+                pass
 
     web_block = ('[web]\n'
                  "enabled = true\n"
@@ -4886,6 +5156,8 @@ _NG_MUX_DEFAULT = "/etc/nginx/conf.d/veil-mux-default.conf"
 _NG_MAIN_BAK = _NG_MAIN + ".veil-mux.bak"
 _NG_WEB_BAK = _NG_CONF + ".veil-mux.bak"
 _MUX_INBOUND = "vless-xhttp-tls"   # cert-TLS inbound, который мюкс переводит на loopback
+
+_TGBP_STATE = f"{BASE}/tg_mp_port.json"   # помнит, на какой порт мы перенесли mask-фронт MTProto и прежний порт
 
 _MUX_STREAM_TMPL = """# VEIL-MUX (generated) — не редактируйте вручную
 stream {
@@ -8019,6 +8291,9 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, _mux_preview((q.get("vpn_domain") or [""])[0] or None))
+        if p == "/api/tg/mtproto/preview":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _tg_mp_preview())
         if p == "/api/stats":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _stats())
@@ -8984,6 +9259,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     b = self._body() or {}
                     return self._send(200, _mux_revert(bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/mtproto/apply":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _tg_mp_apply(b.get("port"), bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/mtproto/revert":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _tg_mp_revert(bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/cert/config":
