@@ -18,7 +18,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.7.2"
+VERSION = "2.7.3"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -3409,6 +3409,32 @@ def _node_call(node, path, body=None, timeout=8, need_token=True):
         except Exception:
             pass
 
+def _veil_plain_http_hint(node):
+    """Диагностика «нода офлайн» для veil-нод: если HTTPS-рукопожатие упало, проверим,
+    не отвечает ли этот порт обычным HTTP. Это типично для свежей панели без сертификата —
+    Node API намеренно требует HTTPS, токен не поедет в открытом виде. Возвращаем
+    подсказку или None. Сам транспорт это не ослабляет: связь с нодой по-прежнему только HTTPS."""
+    import http.client
+    host = (node.get("host") or "").strip()
+    port = int(node.get("port") or 8443)
+    if not host:
+        return None
+    try:
+        c = http.client.HTTPConnection(host, port, timeout=6)
+        c.request("GET", "/api/version", headers={"User-Agent": f"VeilPanel/{VERSION}"})
+        r = c.getresponse(); raw = r.read(); c.close()
+    except Exception:
+        return None
+    try:
+        j = json.loads(raw or b"null")
+    except Exception:
+        j = None
+    if isinstance(j, dict):
+        return ("нода отвечает по HTTP, а Node API требует HTTPS (шифрование токена). "
+                "Выпустите сертификат на панели-ноде: вкладка «Сайт» → Let's Encrypt, "
+                "затем переподключите ноду.")
+    return None
+
 def _veil_nodes(nodes=None):
     nodes = nodes if nodes is not None else get_nodes()
     return [n for n in (nodes or []) if (n.get("type") or "agent") == "veil"]
@@ -3435,7 +3461,13 @@ def _node_poll_one(n):
                                  "at": int(time.time())}
         else:
             n["online"] = False
-            n["err"] = err
+            e = (err or "")
+            if ("SSL" in e or "record layer" in e.lower() or "handshake" in e.lower()
+                    or "wrong version" in e.lower() or "decrypt" in e.lower()
+                    or "tlsv" in e.lower() or "eof occurred" in e.lower()):
+                n["err"] = _veil_plain_http_hint(n) or err
+            else:
+                n["err"] = err
     else:
         data, err, fp = _node_call(n, "/agent/status")
         if data is None:
