@@ -885,18 +885,28 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
 
     <hr>
     <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
-    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена (нужен свободный порт 80). Он автоматически подключается к TLS-протоколам (ws/grpc/xhttp) вместо самоподписанного. Автопродление раз в сутки.</p>
+    <p class=mut style="margin:0 0 10px">Реальный сертификат для домена. Панель сама выберет способ: если порт 80 свободен — HTTP-01; если занят — DNS-01 через Cloudflare (нужен API-токен Zone→DNS:Edit во вкладке «Настройки»/DDNS). dynv6 DNS-01 не поддерживает — при занятом :80 освободите порт или настройте Cloudflare. Сертификат автоматически подключается к TLS-протоколам (ws/grpc/xhttp). Автопродление раз в сутки (для DNS-01 работает и при занятом :80).</p>
     <div class=mut>Статус: <b id=certStatus>—</b></div>
     <label class=mut style="display:block;margin-top:8px">Email для Let&rsquo;s Encrypt (уведомления об истечении, необязательно):
       <input id=certEmail type=email maxlength=120 style="margin-top:4px" placeholder="you@example.com"></label>
     <label class=mut style="display:block;margin-top:8px"><input id=certAuto type=checkbox> Автопродление за 30 дней до истечения</label>
-    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <label class=mut style="font-size:12px">Способ: <select id=certMode style="margin-left:4px">
+        <option value=auto>Авто (HTTP-01, иначе DNS-01)</option>
+        <option value=http01>Только HTTP-01 (:80)</option>
+        <option value=dns01>Только DNS-01 (Cloudflare)</option>
+      </select></label>
       <button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button>
       <button class="tiny sec" onclick=freePort80()>🔓 Освободить порт 80</button>
       <button class=tiny onclick=saveCertCfg()>&#x1F4CE; Сохранить email/авто</button>
       <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
     </div>
     <div class=msg id=certMsg></div>
+    <hr>
+    <h3 style="margin:0 0 8px">🔀 SNI-мюкс на :443 — диагностика <span class=mut style="font-weight:400;font-size:12px">(только просмотр, ничего не меняется)</span></h3>
+    <p class=mut style="margin:0 0 10px">Сколько TLS-протоколов с сертификатом на своём домене можно привести на один общий порт 443 через nginx (stream + ssl_preread по SNI). Ниже — кто сейчас держит :443/:80, готов ли nginx и что произойдёт при включении. <b>Reality через SNI не мюксится</b> (общий SNI с реальным сайтом) и останется на отдельном порту.</p>
+    <div style="margin-bottom:10px"><button class="tiny sec" onclick=loadWebmux()>&#x27F3; Обновить диагностику</button></div>
+    <div id=webmuxBox class=mut style="font-size:13px;line-height:1.6"></div>
   </div></div>
 
   <div id=tab-settings class="tab-pane"><div class=card>
@@ -3164,11 +3174,13 @@ async function renewCert(){
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('renBtn').disabled=false;}
 }
 async function issueCert(){
-  if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? (нужен свободный порт 80)'))return;
-  const s=$('certMsg');s.textContent='Выпускаю... Может занять до минуты. Порт 80 временно занят сертификатом.';s.className='msg';
+  const mode=($('certMode')&&$('certMode').value)||'auto';
+  const mtxt=mode==='dns01'?'DNS-01 через Cloudflare':(mode==='http01'?'HTTP-01 (порт 80)':'авто: HTTP-01, если :80 занят — DNS-01/Cloudflare');
+  if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? Способ: '+mtxt+'. Выпуск может занять до минуты.'))return;
+  const s=$('certMsg');s.textContent='Выпускаю ('+mtxt+')... Может занять до минуты.';s.className='msg';
   $('certBtn').disabled=true;
   try{
-    const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim()})});
+    const d=await api('/api/cert/issue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('certEmail').value.trim(),mode:mode})});
     setMsg('certMsg','Сертификат успешно выпущен и применен для домена: '+d.domain,'ok');
     if($('panelCertPath')) $('panelCertPath').value = d.cert;
     if($('panelKeyPath')) $('panelKeyPath').value = d.key;
@@ -3395,6 +3407,34 @@ async function installWebproxy(){
   }finally{
     btn.disabled = false;
   }
+}
+
+async function loadWebmux(){
+  const box = $('webmuxBox'); if(!box) return;
+  box.innerHTML = '<span class=mut>Загружаю диагностику…</span>';
+  let d;
+  try{ d = await api('/api/webmux'); }
+  catch(e){ box.innerHTML = '<span style="color:var(--err)">Ошибка: '+esc(e.message)+'</span>'; return; }
+  const okc='var(--ok)', errc='var(--err)', mutc='var(--mut)', wnc='var(--warn)';
+  const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
+  const o4=d.occupant443||{}, o8=d.occupant80||{}, ng=d.nginx||{};
+  let h='';
+  h+='<div>Порт <b>:443</b> — '+(d.free443?bd('свободен',okc):bd('занят: '+(o4.proc||'?'),wnc))+'</div>';
+  h+='<div>Порт <b>:80</b> — '+(d.free80?bd('свободен',okc):bd('занят: '+(o8.proc||'?'),wnc))+'</div>';
+  h+='<div>nginx — '+(ng.installed?bd('установлен '+(ng.version||''),okc):bd('не установлен',errc))
+    +', stream: '+(ng.stream?bd('есть',okc):bd('нет',errc))
+    +', ssl_preread: '+(ng.ssl_preread?bd('есть',okc):bd('нет',errc))
+    +(ng.stream_dynamic?' <span class=mut>(динамический модуль)</span>':'')+'</div>';
+  h+='<div>Сертификат — '+(d.has_cert?bd('есть'+(d.cert_dns?' (DNS-01)':''),okc):bd('нет',mutc))
+    +', домен: '+(d.domain?esc(d.domain):'<span class=mut>не задан</span>')+'</div>';
+  h+='<div>Reality на :'+(d.reality_port||'—')+' · TLS-inbound\u2019ы: '+((d.tls_ports&&d.tls_ports.length)?d.tls_ports.join(', '):'—')+'</div>';
+  h+='<div style="margin-top:6px">'+(d.can_mux?bd('✅ nginx готов к SNI-мюксу',okc):bd('❌ SNI-мюкс через этот nginx невозможен',errc))+'</div>';
+  if(d.plan&&d.plan.length)
+    h+='<div style="margin-top:8px"><b>Что сделает включение мюкса (появится во 2-м срезе):</b><ul style="margin:4px 0 0 18px;padding:0">'+d.plan.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+  if(d.warnings&&d.warnings.length)
+    h+='<div style="margin-top:8px;color:'+errc+'"><b>⚠ Важно:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.warnings.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+  h+='<div class=mut style="margin-top:8px;font-size:12px">Сейчас это только просмотр — изменения не применяются.</div>';
+  box.innerHTML=h;
 }
 
 async function loadTgVerInfo(){
@@ -3819,7 +3859,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
        if(b.dataset.tab==='vpn')loadStats();
        if(b.dataset.tab==='proxy'){loadTgVerInfo();loadTgDcs();}
        if(b.dataset.tab==='security')load2faStatus();
-       if(b.dataset.tab==='site')loadMyIps();
+       if(b.dataset.tab==='site'){loadMyIps();loadWebmux();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
        if(b.dataset.tab==='diagnostics')loadDiagnostics();
