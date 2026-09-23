@@ -564,6 +564,13 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       </select>
       <label for="newDevs">Макс. устройств (0=без лимита)</label>
 <input id=newDevs type=number min=0 step=1 value="0">
+      <label for="newTg">Telegram-прокси в подписке</label>
+<select id="newTg">
+        <option value="">как в настройках подписки</option>
+        <option value="shared">общая ссылка прокси</option>
+        <option value="personal">персональная ссылка прокси</option>
+        <option value="off">не добавлять</option>
+      </select>
       <label class="fldlbl" style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0" for="newToNodes"><input type=checkbox id=newToNodes> разместить также на Veil-нодах</label>
       <button onclick=doAdd()>Создать</button>
       <div class=msg id=addMsg></div>
@@ -586,6 +593,13 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       </select>
       <label for="editDevs">Макс. устройств (0=без лимита)</label>
       <input id=editDevs type=number min=0 step=1>
+      <label for="editTg">Telegram-прокси в подписке</label>
+      <select id=editTg>
+        <option value="">не задано (как в настройках подписки)</option>
+        <option value="shared">общая ссылка прокси</option>
+        <option value="personal">персональная ссылка прокси</option>
+        <option value="off">не добавлять</option>
+      </select>
       <button onclick=doEdit()>Сохранить</button>
       <div class=msg id=editMsg></div>
       </div>
@@ -619,8 +633,29 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
           <option value=random>random</option>
         </select>
       </label>
+      <div id=inbAdvToggle onclick="var b=$('inbAdv');b.hidden=!b.hidden;this.textContent=(b.hidden?'⚙ Точечные настройки (эксперт) ▾':'⚙ Точечные настройки (эксперт) ▴');" style="margin-top:12px;cursor:pointer;color:var(--acc);font-size:13px;user-select:none">⚙ Точечные настройки (эксперт) ▾</div>
+      <div id=inbAdv hidden style="margin-top:6px;padding-top:8px;border-top:1px dashed var(--brd)"></div>
       <button onclick=saveInb() id=inbSaveBtn style="margin-top:10px">Сохранить</button>
       <div class=msg id=inbMsg></div>
+      </div>
+    </div>
+    <div id=impBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Импорт подписчиков</b><button class=tiny onclick=hideImp()>Отмена</button></div>
+      <p class=mut style="font-size:12px;margin:6px 0">Перенос подписчиков с другой панели. Veil→Veil — через внутренний JSON (без потерь); 3x-ui / marzban / Hiddify / Remnawave — вставкой ссылок vless/trojan/vmess/ss/hy2 или URL подписки. Клиенты пересоздаются против <b>этого</b> сервера.</p>
+      <div class="row" style="gap:10px;margin:6px 0 10px">
+        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=json checked onclick=$('impJsonWrap').style.display='';$('impLinksWrap').style.display='none'> внутренний JSON</label>
+        <label class=fldlbl style="margin:0"><input type=radio name=impFmt value=links onclick=$('impJsonWrap').style.display='none';$('impLinksWrap').style.display=''> ссылки / URL подписки</label>
+      </div>
+      <div id=impJsonWrap>
+        <input type=file id=impFile accept=".json,application/json" style="margin-bottom:8px">
+        <textarea id=impJsonText placeholder='…или вставьте JSON: {"format":"veil-subs-v1","subs":[…]}' style="width:100%;min-height:120px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
+      </div>
+      <div id=impLinksWrap style="display:none">
+        <textarea id=impLinksText placeholder="vless://…#Имя&#10;trojan://…#Имя&#10;https://host:port/sub/… (ссылка подписки)" style="width:100%;min-height:150px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
+      </div>
+      <button onclick=doImport() id=impBtn style="margin-top:10px">Импортировать</button>
+      <div class=msg id=impMsg></div>
       </div>
     </div>
   </div>
@@ -648,13 +683,45 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
       </div>
     </details>
     <div class=clients id=tgList></div>
-    <button class="sec ok" style="margin-top:12px" onclick=showTgAdd()>＋ Добавить пользователя Tg</button>
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="sec ok" onclick=showTgAdd('mtproto')>＋ Клиент MTProto</button>
+      <button class="sec" onclick=showTgAdd('web')>＋ Клиент веб-прокси</button>
+      <button class="tiny sec" onclick=showTgAdd('both')>＋ Оба сразу</button>
+    </div>
     <div id=tgAddBox class="dialog hidden">
       <div class=dcard>
-      <div class=row><b>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
+      <div class=row><b id=tgAddTitle>Новый пользователь</b><button class=tiny onclick=hideTgAdd()>Отмена</button></div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin:6px 0 10px">
+        <label class=fldlbl style="margin:0"><input type=radio name=tgAddMode value=mtproto> только MTProto (tg://proxy)</label>
+        <label class=fldlbl style="margin:0"><input type=radio name=tgAddMode value=web> только веб-прокси (tg://webproxy)</label>
+        <label class=fldlbl style="margin:0"><input type=radio name=tgAddMode value=both> оба</label>
+      </div>
       <input id=tgNewName placeholder="Имя (латиница, напр. mama)" maxlength=32>
       <button onclick=doTgAdd()>Создать</button>
       <div class=msg id=tgAddMsg></div>
+      </div>
+    </div>
+    <div id=tgTagBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Спонсорский канал (ad_tag)</b><button class=tiny onclick=hideTgEdit()>Отмена</button></div>
+      <p class=mut style="font-size:12px;margin:4px 0 8px">Тег из <b>@MTProxybot</b> — 32 hex-символа. Ссылка клиента при этом не меняется: Telegram показывает рекламный канал сам. Пусто — снять тег.</p>
+      <input id=tgTagName readonly style="margin-bottom:8px">
+      <input id=tgTagVal placeholder="1234567890abcdef1234567890abcdef" maxlength=32 spellcheck=false>
+      <div class="row" style="gap:8px">
+        <button onclick=doTgAdtag()>Сохранить</button>
+        <button class=tiny sec onclick=doTgAdtag('')>Снять тег</button>
+      </div>
+      <div class=msg id=tgTagMsg></div>
+      </div>
+    </div>
+    <div id=tgRotBox class="dialog hidden">
+      <div class=dcard>
+      <div class=row><b>Смена секрета</b><button class=tiny onclick=hideTgEdit()>Отмена</button></div>
+      <p class=mut style="font-size:12px;margin:4px 0 8px">Секрет меняется, старая ссылка перестает работать — нужно выдать клиенту новую (и MTProto, и веб-прокси).</p>
+      <input id=tgRotName readonly style="margin-bottom:8px">
+      <input id=tgRotVal placeholder="новый секрет, 32 hex (или пусто — сгенерировать)" maxlength=32 spellcheck=false>
+      <button onclick=doTgRotate()>Сменить секрет</button>
+      <div class=msg id=tgRotMsg></div>
       </div>
     </div>
     <div class=msg id=tgMsg></div>
@@ -662,6 +729,17 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <div class=row style="margin-top:12px"><h3 style=margin:0>Веб-прокси (https:// → :443)</h3><span class=mut id=webStatus>—</span></div>
     <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram Desktop/iOS через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
     <div id=webBox class=clients></div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <button class="tiny sec" onclick=showTgAdd('web')>＋ Добавить клиента веб-прокси</button>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin:16px 0 4px">
+      <b>Маскировка прокси (SNI)</b>
+      <input id=tgSniMain placeholder="домен, напр. my.aeza.ru" style="max-width:260px">
+      <button class="tiny sec" onclick=saveTgSni()>Применить</button>
+    </div>
+    <textarea id=tgSniExtra rows=2 placeholder="дополнительные домены, по одному в строку" style="width:100%"></textarea>
+    <p class=mut style="font-size:12px;margin:6px 0 0">Смена домена ломает ранее выданные ссылки — клиентам надо выдать новые. Значение пишется в <code>censorship.tls_domain</code> / <code>tls_domains</code> telemt (hot-reload).</p>
+    <div class=msg id=tgSniMsg></div>
     <div class=msg id=webMsg></div>
     <hr>
     <div class=row style="margin-top:12px"><h3 style=margin:0>Web Proxy (nginx :443 → telemt)</h3><span class=mut id=wpStatus>—</span></div>
@@ -889,6 +967,67 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     <p class=mut style="margin:0 0 10px">Все адреса, привязанные к интерфейсам сервера (включая локальные), и публичные адреса, которые отдают панель и подписки.</p>
     <div id=vpsIps class=mut style="font-size:12px;line-height:1.7">—</div>
     <hr>
+    <h3 style="margin:0 0 8px">Автозамена IP при падении доступности из РФ</h3>
+    <p class=mut style="margin:0 0 10px">Панель периодически проверяет доступность сервера из России (через Globalping). Если доля успешных откликов ≤ порога и повторная проверка через выбранное окно подтверждает деградацию — свободный IP VPS подменяется в dynv6 и/или в A-записи Cloudflare.</p>
+    <div style="margin:8px 0">
+      <label><input type=checkbox id=rotEnabled> Включить автозамену</label>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;align-items:center">
+      <label>Порог доступности, %<input id=rotThresh type=number min=1 max=100 value=50 style="width:80px;margin-left:6px"></label>
+      <label>Окно подтверждения
+        <select id=rotWindow style="margin-left:6px">
+          <option value="0">нет — сразу</option>
+          <option value="5" selected>5 мин</option>
+          <option value="10">10 мин</option>
+          <option value="15">15 мин</option>
+          <option value="30">30 мин</option>
+        </select>
+      </label>
+      <label>Интервал проверки, мин<input id=rotCheck type=number min=5 max=240 value=15 style="width:70px;margin-left:6px"></label>
+      <label>Пауза между заменами, мин<input id=rotCooldown type=number min=1 max=1440 value=30 style="width:80px;margin-left:6px"></label>
+    </div>
+    <div style="margin:12px 0">
+      <label>Куда менять адрес
+        <select id=rotProvider style="margin-left:6px">
+          <option value="off">не менять (только проверка)</option>
+          <option value="dynv6" selected>dynv6 (DDNS)</option>
+          <option value="cloudflare">Cloudflare A-запись</option>
+          <option value="both">dynv6 + Cloudflare</option>
+        </select>
+      </label>
+    </div>
+    <div style="margin:12px 0">
+      <label>Запасные IPv4 VPS (по одному в строке)</label>
+      <textarea id=rotPool rows=3 style="width:100%;margin-top:4px;font-family:monospace" placeholder="203.0.113.10&#10;203.0.113.11"></textarea>
+      <label style="display:block;margin-top:6px"><input type=checkbox id=rotUseIface checked> добавлять адреса интерфейсов сервера в пул автоматически</label>
+      <div id=rotIfaceHint class=mut style="margin-top:4px;font-size:12px"></div>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin:10px 0;align-items:flex-end">
+      <label style="flex:1;min-width:180px">Адрес проверки (хост или IPv4)<input id=rotTarget type=text style="width:100%;margin-top:4px" placeholder="домен панели"></label>
+      <label>Порт<input id=rotPort type=number min=1 max=65535 value=443 style="width:90px;margin-left:6px"></label>
+      <label>Путь<input id=rotPath type=text value="/" style="width:80px;margin-left:6px"></label>
+    </div>
+    <div style="margin:12px 0;padding:10px;border:1px solid rgba(255,255,255,.08);border-radius:8px">
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+        <label style="flex:1;min-width:220px">Cloudflare API-токен (Zone → DNS:Edit)<input id=cfToken type=password style="width:100%;margin-top:4px" placeholder="пусто — не менять" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label style="min-width:170px">Зона (домен)<input id=cfZone type=text style="width:100%;margin-top:4px" placeholder="example.com"></label>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+        <label style="flex:1;min-width:220px">Имена A-записей (через запятую; @ = apex)<input id=cfRecords type=text style="width:100%;margin-top:4px" placeholder="vpn, @"></label>
+        <button class="tiny sec" onclick=cfTest()>Проверить Cloudflare</button>
+      </div>
+      <div id=cfTestRes class=mut style="margin-top:6px;font-size:12px"></div>
+      <p class=mut style="margin:6px 0 0;font-size:12px">Оранжевое облако (proxied) для VPN-портов бесполезно — Cloudflare фронтит только HTTP/HTTPS на фиксированных портах. Для ротации IP запись должна быть серой (DNS only).</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+      <button class=sec onclick=saveRotateSettings()>Сохранить</button>
+      <button class="tiny sec" onclick=rotateCheckNow()>Проверить сейчас</button>
+      <button class="tiny sec" onclick=rotateSwapNow()>Поменять IP сейчас</button>
+    </div>
+    <div class=msg id=rotMsg></div>
+    <div id=rotStatus class=mut style="font-size:12px;line-height:1.6"></div>
+    <div id=rotEvents class=mut style="font-size:12px;line-height:1.6;margin-top:6px"></div>
+    <hr>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
     <p class=mut style="margin:0 0 10px">Скачай файл бэкапа (клиенты, тема, обои, конфиг) или восстанови панель из него.</p>
     <button class=sec onclick=makeBackup() id=backupBtn>💾 Скачать бэкап</button>
@@ -936,34 +1075,6 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     </div>
 
     <div style="margin:4px 0 14px">
-      <span class=mut style="display:block;margin-bottom:8px">Дизайн панели:</span>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button type=button class=desSel onclick=applyThemePreset('Тёмная') id=desCur>
-          <span class=desPrev style="--pbg:linear-gradient(135deg,#0b1023,#0d1230);--pcard:#151c3d;--pacc:#6d5df6;--pacc2:#22d3ee"></span>
-          <span><b>Текущий дизайн</b><span class=mut style="display:block">Глубокая тёмная палитра с градиентными элементами</span></span>
-        </button>
-        <button type=button class=desSel onclick=applyThemePreset('Неон-Глубина') id=desNew>
-          <span class=desPrev style="--pbg:linear-gradient(135deg,#081226,#0a1b2f);--pcard:#0d1f3a;--pacc:#0080f0;--pacc2:#22d3ee"></span>
-          <span><b>Неон-Глубина</b><span class=mut style="display:block">Тёмно-синий неон со стеклянными карточками</span></span>
-        </button>
-      </div>
-    </div>
-    
-    <div style="margin:12px 0 4px">
-      <span class=mut style="display:block;margin-bottom:6px">Готовые темы:</span>
-      <div id=thPresets style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
-        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">🌑🟣 Сирень</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Хакер')">🖥 Хакер</button>
-        <button type=button class="tiny sec" onclick="applyThemePreset('Киберпанк')">🌆 Киберпанк</button>
-      </div>
-    </div>
-
-    <div style="margin:16px 0 4px">
       <span class=mut style="display:block;margin-bottom:6px">Раскладка панели:</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button type=button class="tiny sec" id=lyAuto onclick="setLayout('auto')">🔄 Авто</button>
@@ -974,8 +1085,17 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     </div>
 
     <div style="margin:16px 0 4px">
-      <span class=mut style="display:block;margin-bottom:6px">Элегантные темы:</span>
-      <div id=thPresetsNew style="display:flex;gap:8px;flex-wrap:wrap;max-width:420px">
+      <span class=mut style="display:block;margin-bottom:8px">Готовые темы:</span>
+      <div id=thPresets>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная')">🌑 Тёмная</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Неон-Глубина')">🔷 Неон-Глубина</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Тёмная-сирень')">💜 Сирень</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Изумруд')">🌲 Изумруд</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Океан')">🌊 Океан</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Светлая')">☀️ Светлая</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Неон')">⚡ Неон</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Хакер')">🖥 Хакер</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Киберпанк')">🌆 Киберпанк</button>
         <button type=button class="tiny sec" onclick="applyThemePreset('Сакура')">🌸 Сакура</button>
         <button type=button class="tiny sec" onclick="applyThemePreset('Матча')">🍃 Матча</button>
         <button type=button class="tiny sec" onclick="applyThemePreset('Закат')">🌅 Закат</button>
@@ -1089,7 +1209,12 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
      <div class=card>
        <div class=row style="margin-bottom:10px">
          <h3>Универсальная подписка (Subscription URL)</h3>
-         <button class="sec" onclick="showAdd()">+ Добавить пользователя</button>
+         <div style="display:flex;gap:6px;flex-wrap:wrap">
+           <button class="sec" onclick="showAdd()">+ Добавить пользователя</button>
+           <button class="tiny sec" onclick="exportSubs('json')" title="Снимок Veil→Veil без потерь">⬇ Экспорт JSON</button>
+           <button class="tiny sec" onclick="exportSubs('links')" title="Текст ссылок для других панелей">⬇ Экспорт ссылок</button>
+           <button class="tiny sec" onclick="showImp()">⬆ Импорт</button>
+         </div>
        </div>
        <p class=mut>Единая ссылка для клиентов v2rayNG, Hiddify, Streisand, NekoBox и др. Клиенты автоматически обновляют список всех активных протоколов и нод.</p>
        <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
@@ -1111,6 +1236,31 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
         </details>
        </div>
        
+       <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
+         <h4 style="margin-bottom:8px">⚙ Настройки подписки</h4>
+         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+           <div>
+             <label for="subUpdHours">Период автообновления, часов</label>
+             <input id=subUpdHours type=number min=1 max=168 step=1 value=24 style="width:110px">
+           </div>
+           <div style="min-width:220px">
+             <label for="subTgMode">Telegram-прокси в подписке</label>
+             <select id=subTgMode>
+               <option value="off">не добавлять</option>
+               <option value="shared">общая ссылка (одна на всех)</option>
+               <option value="personal">персональная каждому</option>
+             </select>
+           </div>
+           <div>
+             <label for="subTgUser">Имя общего прокси-юзера</label>
+             <input id=subTgUser style="width:150px" placeholder="common" maxlength=32 spellcheck=false>
+           </div>
+           <button class=sec onclick=saveSubSettings()>Сохранить</button>
+         </div>
+         <p class=mut style="font-size:12px;margin:8px 0 0">Период уходит в заголовок <code>profile-update-interval</code> — клиенты сами подтягивают обновлённый список. Прокси-ссылки (<code>tg://proxy</code> и <code>tg://webproxy</code>) добавляются в base64-выдачу; для персонального режима при создании подписчика спрашивается отдельная или общая ссылка.</p>
+         <div class=msg id=subSetMsg></div>
+       </div>
+
        <div style="margin-top:20px;border-top:1px solid var(--brd);padding-top:16px">
          <h4 style="margin-bottom:8px">📲 Поддерживаемые клиенты и импорт</h4>
          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:10px">
@@ -1338,52 +1488,82 @@ function escapeHtml(s){
 
 function subCard(c){
   const _su = c.sub_url || (location.origin + '/sub/' + c.sub_token);
-  const _prots = (c.protos||[]).map(p=>protoLabels[p.proto]||p.label||p.proto).join(', ') || '—';
-  let lim = '';
-  if(c.limit_gb>0 || c.expiry){
-    lim += '<div class="limitrow" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
-    if(c.limit_gb>0){
-      const _pct=Math.min(100,Math.round((c.used_gb||0)/c.limit_gb*100));
-      lim += '<div class="limbar" style="flex:1;min-width:90px"><div class="limfill" style="width:'+_pct+'%"></div></div>';
-      lim += '<span class="limtxt" style="font-size:12px">Лимит: '+fmtBytes(c.limit_gb*1e9)+' — израсходовано '+fmtBytes((c.used_gb||0)*1e9)+' ('+_pct+'%)</span>';
-    }
-    if(c.expiry){
-      const _left=c.expiry*1000-Date.now();
-      const _d=Math.ceil(_left/86400000);
-      lim += '<span class="limdate'+( _left<=0?' bad':'')+'" style="font-size:12px">'+( _left<=0?'⛔ истёк':'осталось '+_d+' дн.')+'</span>';
-    }
-    lim += '</div>';
-  }
-  const _blk = c.blocked ? '<span style="color:var(--err);font-size:11px">🚫 Заблокирован</span>' : '';
-  const _links = (c.links && typeof c.links==='object' && Object.keys(c.links).length)
-    ? '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">'
-      + Object.entries(c.links).map(([proto, link])=>{
-          if((proto==='wireguard'||proto==='amneziawg')&&c.conf_url){
+  const protos = (c.protos||[]).map(p=>protoLabels[p.proto]||p.label||p.proto);
+  const chipStyle='display:inline-block;font-size:11px;padding:1px 7px;margin:3px 4px 0 0;border-radius:10px;background:color-mix(in srgb,var(--acc) 16%,transparent);border:1px solid var(--brd)';
+  const chips=protos.length?protos.map(t=>'<span style="'+chipStyle+'">'+escapeHtml(t)+'</span>').join(''):'<span class=mut style="font-size:11px">нет протоколов</span>';
+  const badge=b=>'<span style="display:inline-block;font-size:11px;padding:1px 7px;margin:3px 4px 0 0;border-radius:10px;border:1px solid var(--brd)">'+b+'</span>';
+  let meta='';
+  if(c.blocked) meta+=badge('🚫 заблокирован');
+  if(c.expiry){const left=c.expiry*1000-Date.now();meta+=badge(left<=0?'⛔ истёк':'⏳ осталось '+Math.ceil(left/86400000)+' дн.');}
+  if(c.limit_gb>0){const pct=Math.min(100,Math.round((c.used_gb||0)/c.limit_gb*100));meta+=badge('📊 '+pct+'% · '+fmtBytes((c.used_gb||0)*1e9)+' / '+fmtBytes(c.limit_gb*1e9));}
+  const links=(c.links&&typeof c.links==='object'&&Object.keys(c.links).length)
+    ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'
+      + Object.entries(c.links).map(([proto,link])=>{
+          if((proto==='wireguard'||proto==='amneziawg')&&c.conf_url)
             return '<a class="tiny sec" href="'+escapeHtml(c.conf_url)+'" download style="text-decoration:none;display:inline-block">⬇ '+escapeHtml(protoLabels[proto]||proto)+'</a>';
-          }
           return '<button class="tiny sec" onclick="copyText(\''+escapeHtml(link)+'\',\'Ссылка '+escapeHtml(protoLabels[proto]||proto)+' скопирована\')">'+escapeHtml(protoLabels[proto]||proto)+'</button>';
         }).join('')
       + '</div>'
     : '';
-  return `
-    <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--brd);margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-        <div style="min-width:0;flex:1">
-          <b>${escapeHtml(c.name)}</b> <span class=mut style="font-size:11px">(${(c.protos||[]).length} протокола: ${escapeHtml(_prots)})</span>
-          <div style="font-size:12px;color:var(--mut)">${c.online>0?'<span class="dot on" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:middle"></span>онлайн':'<span style="color:var(--mut)">офлайн</span>'}</div>
-          ${_blk}
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="tiny sec" onclick="copyText('${escapeHtml(_su)}', 'Ссылка подписки скопирована')">📋 Копировать</button>
-          <button class="tiny sec" onclick="showQR('${escapeHtml(_su)}', 'Подписка: ${escapeHtml(c.name)}')">📷 QR</button>
-          <button class="tiny sec" onclick="window.open('${escapeHtml(_su)}')" title="Открыть сырую подписку">🌐</button>
-          <button class="tiny danger" onclick="doSubDelete('${escapeHtml(c.sub_token)}')" title="Удалить подписчика">🗑</button>
-        </div>
-      </div>
-      <div style="font-family:monospace;font-size:12px;color:var(--mut);word-break:break-all;margin-top:6px">${escapeHtml(_su)}</div>
-      ${lim}
-      ${_links}
-    </div>`;
+  const online=c.online>0;
+  const dot='<span title="'+(online?'онлайн':'офлайн')+'" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:6px;vertical-align:middle;background:'+(online?'var(--ok)':'var(--mut)')+'"></span>';
+  const tok=escapeHtml(c.sub_token||'');
+  const cliChip=c.client
+    ? '<span style="display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid '+(c.client_old?'#e0b341':'var(--brd)')+'">👤 '+escapeHtml(c.client)+(c.client_version?' '+escapeHtml(c.client_version):'')+((c.client_device||c.client_os)?' · '+escapeHtml(c.client_device||c.client_os):'')+(c.client_old?' ⚠ старое ядро':'')+'</span>'
+    : '<span class=mut style="font-size:11px">клиент не определялся</span>';
+  const fmtSel='<select onchange="setSubFmt(\''+tok+'\', this.value)" title="Формат выдачи подписки" style="font-size:11px;background:var(--bg2);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:2px 4px">'
+    +'<option value="auto"'+((c.fmt==='auto'||!c.fmt)?' selected':'')+'>формат: авто</option>'
+    +'<option value="base64"'+(c.fmt==='base64'?' selected':'')+'>v2ray/base64</option>'
+    +'<option value="singbox"'+(c.fmt==='singbox'?' selected':'')+'>sing-box</option></select>';
+  const devs=c.devices||[];
+  const devRows=devs.map(function(d){
+    const who=(d.client||'?')+(d.version?' '+d.version:'')+((d.type||d.os)?' · '+(d.type||d.os):'');
+    return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;padding:2px 0">'
+      +'<span style="flex:1;min-width:120px">'+escapeHtml(who)+'</span>'
+      +'<code style="font-size:11px">'+escapeHtml(d.ip||'')+'</code>'
+      +'<span class=mut>'+escapeHtml(_ago(d.last_ts))+' · '+(d.n||1)+'</span>'
+      +'<button class="tiny" title="Забыть это устройство" onclick="delSubDevice(\''+tok+'\',\''+escapeHtml(d.ip||'')+'\')">🗑</button></div>';
+  }).join('');
+  const devBlock='<details style="margin-top:6px"><summary class=mut style="cursor:pointer;font-size:12px">🖥 Устройства: '+devs.length+'</summary>'
+    +(devRows||'<p class=mut style="font-size:12px;margin:6px 0">Ещё не запрашивал подписку — устройства появятся после первого обновления.</p>')
+    +'</details>';
+  return '<div style="background:var(--bg2);padding:10px 12px;border-radius:8px;border:1px solid var(--brd);margin-bottom:8px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">'
+      + '<div style="min-width:0"><b>'+escapeHtml(c.name)+'</b>'+dot+' <span class=mut style="font-size:11px">'+protos.length+' прот.</span></div>'
+      + '<div style="display:flex;gap:5px;flex-wrap:wrap">'
+        + '<button class="tiny sec" onclick="copyText(\''+escapeHtml(_su)+'\',\'Ссылка подписки скопирована\')" title="Скопировать ссылку подписки">📋 ссылка</button>'
+        + '<button class="tiny sec" onclick="showQR(\''+escapeHtml(_su)+'\',\'Подписка: '+escapeHtml(c.name)+'\')" title="QR-код подписки">📷</button>'
+        + '<button class="tiny sec" onclick="window.open(\''+escapeHtml(_su)+'\')" title="Открыть сырую подписку">🌐</button>'
+        + '<button class="tiny danger" onclick="doSubDelete(\''+tok+'\')" title="Удалить подписчика">🗑</button>'
+      + '</div>'
+    + '</div>'
+    + '<div>'+chips+'</div>'
+    + (meta?'<div>'+meta+'</div>':'')
+    + links
+    + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">'+cliChip+fmtSel+'</div>'
+    + devBlock
+  + '</div>';
+}
+
+function _ago(iso){
+  if(!iso) return '';
+  try{
+    const s=(Date.now()-new Date(iso).getTime())/1000;
+    if(s<0) return 'сейчас';
+    if(s<60) return 'только что';
+    if(s<3600) return Math.floor(s/60)+' мин назад';
+    if(s<86400) return Math.floor(s/3600)+' ч назад';
+    return Math.floor(s/86400)+' дн назад';
+  }catch(e){ return ''; }
+}
+async function setSubFmt(tok,fmt){
+  try{ await api('/api/sub/format',{method:'POST',body:JSON.stringify({sub_token:tok,fmt:fmt})}); toast('Формат подписки: '+fmt,'ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function delSubDevice(tok,ip){
+  if(!confirm('Забыть устройство '+ip+'? Оно вернётся в список, если клиент снова запросит подписку с этого IP.')) return;
+  try{ await api('/api/sub/devices/del',{method:'POST',body:JSON.stringify({sub_token:tok,ip:ip})}); await loadSub(); toast('Устройство забыто','ok'); }
+  catch(e){ toast(e.message,'err'); }
 }
 
 async function loadSub(){
@@ -1401,6 +1581,7 @@ async function loadSub(){
   }catch(e){}
   inp.value = url;
   if(lnk) lnk.href = url;
+  loadSubSettings();
 
   const userListEl = $('subUsersList');
   if(userListEl){
@@ -1417,6 +1598,33 @@ async function loadSub(){
     }catch(e){
       userListEl.innerHTML = '<p class=mut>Не удалось загрузить список подписчиков.</p>';
     }
+  }
+}
+
+async function loadSubSettings(){
+  try{
+    const d = await api('/api/subscription/settings');
+    const h = $('subUpdHours'), m = $('subTgMode'), u = $('subTgUser');
+    if(h && document.activeElement !== h) h.value = d.update_hours || 24;
+    if(m && document.activeElement !== m) m.value = d.tg_mode || 'off';
+    if(u && document.activeElement !== u) u.value = d.tg_shared_user || 'common';
+  }catch(e){}
+}
+
+async function saveSubSettings(){
+  const msg = $('subSetMsg');
+  msg.textContent = 'Сохраняю…'; msg.className = 'msg';
+  try{
+    const d = await api('/api/subscription/settings', {method:'POST', body: JSON.stringify({
+      update_hours: parseInt($('subUpdHours').value, 10) || 24,
+      tg_mode: $('subTgMode').value,
+      tg_shared_user: $('subTgUser').value.trim()
+    })});
+    $('subUpdHours').value = d.update_hours;
+    $('subTgUser').value = d.tg_shared_user;
+    msg.textContent = 'Настройки подписки сохранены'; msg.className = 'msg ok';
+  }catch(e){
+    msg.textContent = e.message; msg.className = 'msg err';
   }
 }
 
@@ -1437,10 +1645,11 @@ function showAddNode(){
 }
 function hideAddNode(){hideModal();}
 async function delNode(host){
-  if(!confirm('Удалить ноду '+host+'?'))return;
+  if(!confirm('Удалить ноду '+host+'?\n\nДля агент-нод с сервера будет снят veil-agent (порт и токен закроются). Чужую Veil-панель это не затронет.'))return;
   try{
-    await api('/api/nodes/delete',{method:'POST',body:JSON.stringify({host})});
+    const d=await api('/api/nodes/delete',{method:'POST',body:JSON.stringify({host,purge:true})});
     await renderNodes();
+    if(d&&d.purge) toast('Нода удалена · '+d.purge,'ok');
   }catch(e){
     alert((e&&e.message)||'Ошибка удаления');
   }
@@ -1631,7 +1840,7 @@ function applyThemePreset(name){
     const v=p[map[id]];
     if(v)$(id).value='#'+v;
   });
-  saveTheme();
+  saveTheme(true);
   toast(name+'-тема применена','ok');
 }
 async function makeBackup(){
@@ -2396,6 +2605,110 @@ async function savePanelPort(){
     else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
   }catch(e){setMsg('pnlPortMsg',e.message,'err');}
 }
+function addRotIp(ip){
+  const ta=$('rotPool'); if(!ta||!ip)return;
+  const cur=ta.value.split(/\s+/).filter(Boolean);
+  if(!cur.includes(ip)){ cur.push(ip); ta.value=cur.join('\n'); }
+}
+function _rotFmtTs(t){ try{ return t? new Date(t*1000).toLocaleString('ru-RU') : '—'; }catch(e){ return '—'; } }
+function renderRotateStatus(s){
+  const box=$('rotStatus'); if(!box||!s)return;
+  const c=s.conf||{};
+  const pct=(s.pct==null||s.pct==='')?'—':(Math.round(s.pct*10)/10+'%');
+  let h='Статус: <b>'+(s.state||'idle')+'</b>';
+  if(s.busy) h+=' · <span style="color:#e0b341">идёт проверка / замена…</span>';
+  h+=' · доступность из РФ: <b>'+pct+'</b>'+(s.total?(' ('+s.ok+'/'+s.total+')'):'');
+  h+=' · текущий IP: <b>'+(s.now_ip4||'—')+'</b>';
+  if(c.provider&&c.provider!=='off'&&s.cf_ip!==undefined) h+=' · Cloudflare A: '+(s.cf_ip||'—');
+  h+=' · свободных IP в пуле: '+((s.pool||[]).length);
+  h+='<br>последняя замена: '+_rotFmtTs(s.last_swap);
+  if(s.error) h+='<br><span style="color:#ff6b6b">ошибка: '+s.error+'</span>';
+  box.innerHTML=h;
+  const ev=$('rotEvents');
+  if(ev){
+    const list=(s.events||[]).slice().reverse();
+    ev.innerHTML=list.length?('<b>Журнал:</b><br>'+list.map(e=>e.ts+' · '+e.text).join('<br>')):'';
+  }
+}
+async function loadRotate(){
+  try{
+    const s=await api('/api/rotate/status');
+    const c=s.conf||{};
+    const set=(id,v,fn)=>{const el=$(id); if(el&&document.activeElement!==el) fn(el,v);};
+    set('rotEnabled',!!c.enabled,(e,v)=>e.checked=v);
+    set('rotThresh',c.threshold,(e,v)=>e.value=v);
+    set('rotWindow',String(c.window_min!=null?c.window_min:5),(e,v)=>e.value=v);
+    set('rotCheck',c.check_min,(e,v)=>e.value=v);
+    set('rotCooldown',c.cooldown_min,(e,v)=>e.value=v);
+    set('rotProvider',c.provider||'dynv6',(e,v)=>e.value=v);
+    set('rotPool',(c.pool||[]).join('\n'),(e,v)=>e.value=v);
+    set('rotUseIface',!!c.use_iface,(e,v)=>e.checked=v);
+    set('rotTarget',c.target||'',(e,v)=>e.value=v);
+    set('rotPort',c.port,(e,v)=>e.value=v);
+    set('rotPath',c.path||'/',(e,v)=>e.value=v);
+    set('cfZone',c.cf_zone||'',(e,v)=>e.value=v);
+    set('cfRecords',(c.cf_records||[]).join(', '),(e,v)=>e.value=v);
+    const tok=$('cfToken'); if(tok) tok.value='';
+    const ih=$('rotIfaceHint');
+    if(ih){
+      const ips=[];
+      (s.iface||[]).forEach(a=>(a.ipv4||[]).forEach(ip=>{ if(ip&&!ip.startsWith('127.')&&!ips.includes(ip)) ips.push(ip); }));
+      ih.innerHTML=ips.length?('адреса интерфейсов (клик — добавить в пул): '+ips.map(x=>'<button class="tiny" style="margin:2px" onclick="addRotIp(\''+x+'\')">'+x+'</button>').join('')):'';
+    }
+    renderRotateStatus(s);
+  }catch(e){ setMsg('rotMsg','Не удалось загрузить статус: '+e.message,'err'); }
+}
+async function saveRotateSettings(){
+  const m=$('rotMsg'); m.textContent='Сохраняю…'; m.className='msg';
+  const body={
+    enabled:$('rotEnabled').checked,
+    rot_threshold:parseInt($('rotThresh').value,10)||50,
+    rot_window_min:parseInt($('rotWindow').value,10)||0,
+    rot_check_min:parseInt($('rotCheck').value,10)||15,
+    rot_cooldown_min:parseInt($('rotCooldown').value,10)||30,
+    provider:$('rotProvider').value,
+    use_iface:$('rotUseIface').checked,
+    pool:$('rotPool').value,
+    target:$('rotTarget').value.trim(),
+    rot_port:parseInt($('rotPort').value,10)||443,
+    path:$('rotPath').value.trim()||'/',
+    cf_zone:$('cfZone').value.trim(),
+    cf_records:$('cfRecords').value.trim()
+  };
+  const tok=$('cfToken').value.trim();
+  if(tok) body.cf_token=tok;
+  try{
+    const s=await api('/api/rotate/settings',{method:'POST',body:JSON.stringify(body)});
+    m.textContent='Сохранено'; m.className='msg ok';
+    if(tok) $('cfToken').value='';
+    renderRotateStatus(s);
+  }catch(e){ m.textContent=e.message; m.className='msg err'; }
+}
+async function rotateCheckNow(){
+  const m=$('rotMsg');
+  try{ const r=await api('/api/rotate/check',{method:'POST',body:'{}'}); m.textContent=r.message||'проверка запущена'; m.className='msg ok'; setTimeout(loadRotate,4000); }
+  catch(e){ m.textContent=e.message; m.className='msg err'; }
+}
+async function rotateSwapNow(){
+  if(!confirm('Сменить IP сейчас? Это изменит запись dynv6/Cloudflare и может кратковременно прервать соединения клиентов.')) return;
+  const m=$('rotMsg');
+  try{ const r=await api('/api/rotate/swap',{method:'POST',body:'{}'});
+    m.textContent=(r.ok?'Запущено: ':'')+ (r.message||(r.applied&&r.applied.join('; '))||''); m.className=r.ok?'msg ok':'msg err';
+    setTimeout(loadRotate,4000);
+  }catch(e){ m.textContent=e.message; m.className='msg err'; }
+}
+async function cfTest(){
+  const box=$('cfTestRes'); if(!box)return; box.textContent='Проверяю…';
+  const tok=$('cfToken').value.trim();
+  try{
+    if(tok){ await api('/api/rotate/settings',{method:'POST',body:JSON.stringify({cf_token:tok,cf_zone:$('cfZone').value.trim(),cf_records:$('cfRecords').value.trim()})}); $('cfToken').value=''; }
+    const r=await api('/api/rotate/cloudflare/test',{method:'POST',body:'{}'});
+    let h='Зона <b>'+(r.zone||'—')+'</b> · найдено A-записей: '+((r.records||[]).length);
+    (r.records||[]).forEach(rec=>{ h+='<br>· '+rec.name+' → '+rec.content+' ('+(rec.proxied?'🟠 оранжевое':'⚪ серое')+', ttl '+rec.ttl+')'; });
+    if(r.wanted&&r.wanted.length) h+='<br>цель ротации: '+r.wanted.join(', ');
+    box.innerHTML=h;
+  }catch(e){ box.textContent='Ошибка: '+e.message; }
+}
 async function checkDns(){
   const d=$('setDomain').value.trim();
   if(!d){setMsg('setMsg2','Введи домен','err');return;}
@@ -2450,7 +2763,8 @@ function showAdd(proto){
 function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').textContent='';
   const _l=$('newLimit');if(_l)_l.value='';const _e=$('newExpiry');if(_e)_e.value='0';
   const _c=$('newCycle');if(_c)_c.value='';const _d=$('newDevs');if(_d)_d.value='0';
-  const _n=$('newToNodes');if(_n)_n.checked=false;}
+  const _n=$('newToNodes');if(_n)_n.checked=false;
+  const _t=$('newTg');if(_t)_t.value='';}
 
 async function doAdd(){
   const name=$('newName').value.trim();
@@ -2469,6 +2783,8 @@ async function doAdd(){
     const _dv=parseInt($('newDevs').value,10);
     if(_dv>0)body.max_devices=_dv;
     if($('newToNodes')&&$('newToNodes').checked)body.to_nodes=true;
+    const _tp=$('newTg').value;
+    if(_tp)body.tg_proxy=_tp;
     const r=await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
     await refresh();
@@ -2489,6 +2805,7 @@ function showEdit(c){
   $('editExpiry').value=0;
   $('editCycle').value=c.reset_cycle||'';
   $('editDevs').value=c.max_devices||0;
+  const _et=$('editTg');if(_et)_et.value=c.tg_proxy||'';
   $('editMsg').textContent='';
   showModal('editBox');
 }
@@ -2501,6 +2818,8 @@ async function doEdit(){
       limit_gb:parseFloat($('editLimit').value)||0,
       reset_cycle:$('editCycle').value||'',
       max_devices:parseInt($('editDevs').value,10)||0};
+    const _tg=$('editTg').value;
+    if(_tg)body.tg_proxy=_tg;
     const _d=parseInt($('editExpiry').value,10);
     if(_d>0)body.expiry_days=_d;
     else if(_d===0&&confirm('Срок: снять ограничение (0=бессрочно)?'))body.expiry_days=0;
@@ -2514,13 +2833,15 @@ async function doEdit(){
 }
 
 let inbProto=null;
+let inbCur=null;
 function showInb(proto){
-  inbProto=proto;
+  inbProto=proto;inbCur=null;
   $('inbTitle').textContent='Настройки — '+(protoLabels[proto]||proto||'');
   $('inbMsg').textContent='';$('inbMsg').className='msg';
   const meta=protoGroups[proto]==='reality';
   $('inbSniBlock').style.display=meta?'':'none';
   $('inbSaveBtn').disabled=true;
+  $('inbAdv').hidden=true;$('inbAdv').innerHTML='';$('inbAdvToggle').textContent='⚙ Точечные настройки (эксперт) ▾';
   $('inbBox').classList.remove('hidden');
   api('/api/settings').then(s=>{
     const pmap={};(s.ports||[]).forEach(r=>pmap[r.proto]=r);
@@ -2532,9 +2853,56 @@ function showInb(proto){
     if(s.fp)$('inbFp').value=s.fp;
     $('inbSaveBtn').disabled=false;
   }).catch(e=>{$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';});
+  api('/api/inbound/get?proto='+encodeURIComponent(proto)).then(c=>{inbCur=c;renderInbAdv();}).catch(()=>{inbCur=null;});
   showModal('inbBox');
 }
-function hideInb(){inbProto=null;hideModal();$('inbPort').value='';$('inbSni').value='';$('inbMsg').textContent='';$('inbMsg').className='msg';}
+function hideInb(){inbProto=null;inbCur=null;hideModal();$('inbPort').value='';$('inbSni').value='';$('inbMsg').textContent='';$('inbMsg').className='msg';$('inbAdv').innerHTML='';}
+function _advInp(id,label,val,ph){return '<label class=mut style="display:block;margin-top:6px;font-size:12px">'+label+
+  '<input id="'+id+'" value="'+escapeHtml(val==null?'':val)+'" placeholder="'+escapeHtml(ph||'')+'" style="width:100%;margin-top:2px;background:var(--bg);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:4px 6px;font-size:12px">';}
+function _advSel(id,label,val,opts){let h='<label class=mut style="display:block;margin-top:6px;font-size:12px">'+label+'<select id="'+id+'" style="width:100%;margin-top:2px;background:var(--bg);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:4px 6px;font-size:12px">';
+  opts.forEach(o=>{h+='<option value="'+escapeHtml(o[0])+'"'+(o[0]===val?' selected':'')+'>'+escapeHtml(o[1])+'</option>';});return h+'</select></label>';}
+function renderInbAdv(){
+  const box=$('inbAdv');const c=inbCur;
+  if(!c){box.innerHTML='<p class=mut style="font-size:12px">Загрузка…</p>';return;}
+  if(c.proto in {wireguard:1,amneziawg:1}){box.innerHTML='<p class=mut style="font-size:12px">Для WireGuard/AmneziaWG точечные настройки пока не доступны.</p>';return;}
+  let r='';
+  if(c.reality){
+    r+=_advInp('adv_snis','SNI-список (через запятую)',(c.snis||[]).join(', ')||c.sni||'','www.samsung.com');
+    r+=_advInp('adv_dest','Dest (хост:порт маскировки)',c.dest||'','www.samsung.com:443');
+    r+=_advInp('adv_sids','ShortIds (через запятую)',(c.sids||[]).join(', ')||c.sid||'','e1362878');
+    r+=_advSel('adv_flow','Flow (xtls)',(c.flow===undefined||c.flow===null)?'xtls-rprx-vision':c.flow,[['xtls-rprx-vision','xtls-rprx-vision (рекоменд.)'],['','— пусто (без flow) —'],['xtls-rprx-direct','xtls-rprx-direct'],['xtls-rprx-splice','xtls-rprx-splice']]);
+  }
+  if(c.net==='ws'||c.net==='xhttp'||c.net==='splithttp') r+=_advInp('adv_path','Путь ('+c.net+')',c.path||'','/veil');
+  if(c.net==='ws'||c.net==='grpc') r+=_advInp('adv_host','Host / Authority',c.host||'','example.com');
+  if(c.net==='grpc') r+=_advInp('adv_service','serviceName',c.service||'','veil');
+  if(c.net==='xhttp'||c.net==='splithttp'||c.net==='grpc') r+=_advInp('adv_mode','mode',c.mode||'','auto / multi');
+  if(c.tls) r+=_advInp('adv_alpn','ALPN (через запятую)',(c.alpn||[]).join(', '),'h2, http/1.1');
+  const sniffVal=c.sniff===false?'off':(c.sniff===true?'on':'default');
+  r+=_advSel('adv_sniff','Sniffing',sniffVal,[['default','по умолчанию (вкл)'],['on','включить'],['off','выключить']]);
+  r+='<label class=mut style="display:block;margin-top:6px;font-size:12px">Доп. JSON в streamSettings (_adv)'+
+     '<textarea id="adv_json" rows="3" placeholder=\'{"tlsSettings":{"fingerprint":"chrome"}}\' style="width:100%;margin-top:2px;font-family:monospace;font-size:11px;background:var(--bg);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:4px 6px">'+
+     escapeHtml(c._adv?JSON.stringify(c._adv):'')+'</textarea></label>';
+  r+='<button class="sec ok" style="margin-top:8px" onclick="applyInbAdv()">Применить точечно (с проверкой xray)</button>';
+  r+='<p class=mut style="font-size:11px;margin-top:6px">Значения соответствуют текущему inbound. Очистите поле, чтобы вернуть системное значение по умолчанию. Перед применением конфиг проходит <code>xray -test</code>; при ошибке не применяется ничего.</p>';
+  box.innerHTML=r;
+}
+async function applyInbAdv(){
+  if(!inbCur)return;
+  const body={proto:inbCur.proto};
+  const g=id=>{const e=$(id);return e?e.value.trim():null;};
+  ['adv_snis','adv_dest','adv_sids','adv_path','adv_host','adv_service','adv_mode','adv_alpn'].forEach(id=>{
+    const e=$(id);if(e)body[id.replace('adv_','')]=e.value.trim();});
+  const fe=$('adv_flow');if(fe)body.flow=fe.value;
+  const se=$('adv_sniff');if(se)body.sniff=se.value;
+  const tj=$('adv_json');if(tj){const t=tj.value.trim();if(t){try{body._adv=JSON.parse(t);}catch(e){$('inbMsg').textContent='_adv: некорректный JSON — '+e.message;$('inbMsg').className='msg err';return;}}else body._adv={};}
+  $('inbMsg').textContent='Проверяю и применяю…';$('inbMsg').className='msg';
+  try{
+    const r=await api('/api/inbound/settings',{method:'POST',body:JSON.stringify(body)});
+    inbCur=r.inbound||inbCur;renderInbAdv();
+    $('inbMsg').textContent='Точечные настройки применены, xray перезапущен';$('inbMsg').className='msg ok';
+    toast('Точечные настройки применены','ok');
+  }catch(e){$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';}
+}
 async function saveInb(){
   if(!inbProto)return;
   const port=parseInt($('inbPort').value,10);
@@ -2581,12 +2949,57 @@ function closeModal(){
     if(id==='inbBox')hideInb();
     if(id==='renameBox')hideRename();
     if(id==='tgAddBox')hideTgAdd();
+    if(id==='tgTagBox'||id==='tgRotBox')hideTgEdit();
+    if(id==='impBox')hideImp();
   }
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 document.addEventListener('click',e=>{
   if(e.target.classList&&e.target.classList.contains('dialog')&&e.target.classList.contains('open'))closeModal();
 });
+
+// ---- экспорт / импорт подписчиков (B2) ----
+function exportSubs(fmt){
+  fmt=(fmt==='links')?'links':'json';
+  const a=document.createElement('a');
+  a.href='/api/subs/export?format='+fmt; a.rel='noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('Готовлю файл экспорта…','ok');
+}
+function showImp(){
+  $('impMsg').textContent='';$('impMsg').className='msg';
+  $('impJsonText').value='';$('impLinksText').value='';try{$('impFile').value='';}catch(e){}
+  $('impBtn').disabled=false;
+  showModal('impBox');
+}
+function hideImp(){hideModal();}
+async function doImport(){
+  const r=document.querySelector('input[name=impFmt]:checked');
+  const fmt=r?r.value:'json';
+  let body;
+  if(fmt==='json'){
+    let text=($('impJsonText').value||'').trim();
+    const f=$('impFile').files&&$('impFile').files[0];
+    if(f){try{text=await f.text();}catch(e){text='';}}
+    if(!text.trim()){$('impMsg').textContent='Прикрепите JSON-файл или вставьте текст.';$('impMsg').className='msg err';return;}
+    body={format:'json',data:text};
+  }else{
+    const text=($('impLinksText').value||'').trim();
+    if(!text){$('impMsg').textContent='Вставьте ссылки или URL подписки.';$('impMsg').className='msg err';return;}
+    body={format:'links',text:text};
+  }
+  $('impMsg').textContent='Импортирую…';$('impMsg').className='msg';$('impBtn').disabled=true;
+  try{
+    const d=await api('/api/subs/import',{method:'POST',body:JSON.stringify(body)});
+    hideImp();
+    const wn=(d.warnings&&d.warnings.length)?(' · предупр. '+d.warnings.length):'';
+    toast('Импортировано подписчиков: '+(d.imported||0)+wn,'ok');
+    if(d.warnings&&d.warnings.length){console.warn('импорт:',d.warnings);}
+    await loadSub();
+  }catch(e){
+    $('impMsg').textContent=e.message;$('impMsg').className='msg err';$('impBtn').disabled=false;
+  }
+}
 
 let renameUuid=null;
 function showRename(c){renameUuid=c.uuid;$('renameName').value=c.name;$('renameMsg').textContent='';$('renameMsg').className='msg';showModal('renameBox');$('renameName').select();}
@@ -2925,6 +3338,7 @@ async function loadTg(){
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTg();
     renderWeb(d.web);
+    renderTgSni(d.sni);
     loadWp();
   }catch(e){
     setMsg('tgMsg',e.message,'err');
@@ -3093,6 +3507,7 @@ function renderWeb(web){
       '<div class=actions>' +
         (link ? '<button class="tiny sec" data-act=open title="Открыть в Telegram">📱 Открыть</button>' + '<button class="tiny sec" data-act=qr>📷 QR</button>' +
                 '<button class="tiny sec" data-act=copy>📋 Копировать</button>' : '') +
+        '<button class="tiny sec" data-act=rot title="Сменить секрет (ссылка станет новой)">🔑 Секрет</button>' +
       '</div>' +
     '</div>' +
     '<div class="link-row"><code></code></div>';
@@ -3103,6 +3518,7 @@ function renderWeb(web){
       div.querySelector('[data-act=qr]').onclick = function(){ showQR(link, 'Web: ' + uu.username); };
       div.querySelector('[data-act=copy]').onclick = function(){ copyText(link, 'Web-ссылка скопирована'); };
     }
+    div.querySelector('[data-act=rot]').onclick = function(){ showTgRotate(uu); };
     box.appendChild(div);
   });
 }
@@ -3125,32 +3541,57 @@ function renderTg(){
   tgUsers.forEach(function(u){
     const div = document.createElement('div');
     div.className = 'client';
+    const hasWeb = !!u.web_link;
     div.innerHTML = '<div class=top>' +
       '<div style="flex:1;min-width:0">' +
         '<div class=name></div>' +
         '<div class=uuid></div>' +
       '</div>' +
       '<div class=actions>' +
-        '<button class="tiny sec" data-act=open title="Открыть этот прокси в приложении Telegram">📱 Открыть</button>' +
-        '<button class="tiny sec" data-act=qr title="Показать QR-код">📷 QR</button>' +
-        '<button class="tiny sec" data-act=copy title="Скопировать ссылку">📋 Копировать</button>' +
+        '<button class="tiny sec" data-act=open title="Открыть MTProto-прокси в приложении Telegram">📱 MTProto</button>' +
+        '<button class="tiny sec" data-act=qr title="QR-код MTProto">📷</button>' +
+        '<button class="tiny sec" data-act=copy title="Скопировать ссылку MTProto">📋</button>' +
+        (hasWeb ? '<button class="tiny sec" data-act=openweb title="Открыть веб-прокси в приложении Telegram">📱 Веб</button>' +
+                  '<button class="tiny sec" data-act=qrweb title="QR-код веб-прокси">📷w</button>' +
+                  '<button class="tiny sec" data-act=copyweb title="Скопировать веб-ссылку">📋w</button>' : '') +
+        '<button class="tiny sec" data-act=tag title="Спонсорский канал @MTProxybot">🏷 ad_tag</button>' +
+        '<button class="tiny sec" data-act=rot title="Сменить секрет (ссылка станет новой)">🔑 Секрет</button>' +
         '<button class="tiny sec" data-act=del title="Удалить пользователя">🗑 Удалить</button>' +
       '</div>' +
     '</div>' +
-    '<div class="link-row"><code></code></div>';
-    div.querySelector('.name').textContent = u.username;
+    '<div class="link-row"><code data-mp></code></div>' +
+    (hasWeb ? '<div class="link-row"><code data-web></code></div>' : '');
+    div.querySelector('.name').textContent = u.username + (u.ad_tag ? '  🏷' : '');
     const conns = u.connections || 0;
-    div.querySelector('.uuid').textContent = conns > 0 ? ('онлайн: ' + conns) : 'офлайн';
-    div.querySelector('code').textContent = u.link;
+    div.querySelector('.uuid').textContent = (conns > 0 ? ('онлайн: ' + conns) : 'офлайн')
+      + (hasWeb ? ' · веб-прокси' : '');
+    div.querySelector('[data-mp]').textContent = u.link;
+    if (hasWeb) div.querySelector('[data-web]').textContent = u.web_link;
     div.querySelector('[data-act=open]').onclick = function(){ openProxyInTg(u.link); };
-    div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'Tg: ' + u.username); };
-    div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка Tg скопирована'); };
+    div.querySelector('[data-act=qr]').onclick = function(){ showQR(u.link, 'MTProto: ' + u.username); };
+    div.querySelector('[data-act=copy]').onclick = function(){ copyText(u.link, 'Ссылка MTProto скопирована'); };
+    if (hasWeb){
+      div.querySelector('[data-act=openweb]').onclick = function(){ openProxyInTg(u.web_link); };
+      div.querySelector('[data-act=qrweb]').onclick = function(){ showQR(u.web_link, 'Web: ' + u.username); };
+      div.querySelector('[data-act=copyweb]').onclick = function(){ copyText(u.web_link, 'Веб-ссылка скопирована'); };
+    }
+    div.querySelector('[data-act=tag]').onclick = function(){ showTgAdtag(u); };
+    div.querySelector('[data-act=rot]').onclick = function(){ showTgRotate(u); };
     div.querySelector('[data-act=del]').onclick = function(){ doTgDelete(u); };
     box.appendChild(div);
   });
 }
 
-function showTgAdd(){
+const TG_ADD_TITLES = {mtproto: 'Новый клиент MTProto', web: 'Новый клиент веб-прокси', both: 'Новый пользователь (оба)'};
+let tgAddMode = 'both';
+
+function showTgAdd(mode){
+  tgAddMode = mode || 'both';
+  document.getElementById('tgAddTitle').textContent = TG_ADD_TITLES[tgAddMode];
+  document.querySelectorAll('input[name=tgAddMode]').forEach(function(r){
+    r.checked = (r.value === tgAddMode);
+    r.onchange = function(){ tgAddMode = r.value; document.getElementById('tgAddTitle').textContent = TG_ADD_TITLES[r.value]; };
+  });
   showModal('tgAddBox');
 }
 function hideTgAdd(){
@@ -3164,18 +3605,77 @@ async function doTgAdd(){
   if (!name){ document.getElementById('tgAddMsg').textContent = 'Введи имя'; return; }
   document.getElementById('tgAddMsg').textContent = 'Создаю...';
   try{
-    const r = await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name})});
+    const r = await api('/api/tg/user/add', {method:'POST', body: JSON.stringify({name:name, mode:tgAddMode})});
     hideTgAdd();
     await loadTg();
-    if (r && r.user && r.user.web_link){
-      document.getElementById('tgMsg').innerHTML = 'Пользователь «' + name + '» создан. <b>Веб-прокси:</b> <code style="word-break:break-all">' + r.user.web_link + '</code>';
-    } else {
-      document.getElementById('tgMsg').textContent = 'Пользователь «' + name + '» создан';
-    }
+    const u = (r && r.user) || {};
+    let html = 'Клиент «' + name + '» создан.';
+    if (u.web_link) html += ' <b>Веб-прокси:</b> <code style="word-break:break-all">' + u.web_link + '</code>';
+    document.getElementById('tgMsg').innerHTML = html;
     document.getElementById('tgMsg').className = 'msg ok';
   }catch(e){
     document.getElementById('tgAddMsg').textContent = e.message;
     document.getElementById('tgAddMsg').className = 'msg err';
+  }
+}
+
+let tgEditUser = null;
+
+function hideTgEdit(){
+  tgEditUser = null;
+  hideModal();
+  ['tgTagName','tgTagVal','tgRotName','tgRotVal'].forEach(function(id){ const el = document.getElementById(id); if (el) el.value = ''; });
+  ['tgTagMsg','tgRotMsg'].forEach(function(id){ const el = document.getElementById(id); if (el){ el.textContent=''; el.className='msg'; } });
+}
+
+function showTgAdtag(u){
+  tgEditUser = u.username;
+  document.getElementById('tgTagName').value = u.username;
+  document.getElementById('tgTagVal').value = u.ad_tag || '';
+  document.getElementById('tgTagMsg').textContent = '';
+  showModal('tgTagBox');
+}
+
+async function doTgAdtag(forceTag){
+  if (!tgEditUser) return;
+  const tag = (typeof forceTag === 'string') ? forceTag : document.getElementById('tgTagVal').value.trim();
+  const msg = document.getElementById('tgTagMsg');
+  msg.textContent = 'Сохраняю…'; msg.className = 'msg';
+  try{
+    const r = await api('/api/tg/user/adtag', {method:'POST', body: JSON.stringify({username: tgEditUser, ad_tag: tag})});
+    await loadTg();
+    hideTgEdit();
+    setMsg('tgMsg', tag ? ('ad_tag установлен для «' + r.username + '»') : ('ad_tag снят для «' + r.username + '»'), 'ok');
+    if (r.warning) setMsg('tgMsg', 'ad_tag сохранён, но ' + r.warning, 'err');
+  }catch(e){
+    msg.textContent = e.message; msg.className = 'msg err';
+  }
+}
+
+function showTgRotate(u){
+  tgEditUser = u.username;
+  document.getElementById('tgRotName').value = u.username;
+  document.getElementById('tgRotVal').value = '';
+  document.getElementById('tgRotMsg').textContent = '';
+  showModal('tgRotBox');
+}
+
+async function doTgRotate(){
+  if (!tgEditUser) return;
+  const secret = document.getElementById('tgRotVal').value.trim();
+  const msg = document.getElementById('tgRotMsg');
+  msg.textContent = 'Меняю секрет…'; msg.className = 'msg';
+  try{
+    const r = await api('/api/tg/user/rotate', {method:'POST', body: JSON.stringify({username: tgEditUser, secret: secret})});
+    const name = tgEditUser;
+    hideTgEdit();
+    await loadTg();
+    let html = 'Секрет «' + name + '» обновлён — прежние ссылки не работают. Новая: <code style="word-break:break-all">' + ((r.user||{}).link||'') + '</code>';
+    if ((r.user||{}).web_link) html += '<br>Веб: <code style="word-break:break-all">' + r.user.web_link + '</code>';
+    const out = document.getElementById('tgMsg');
+    out.innerHTML = html; out.className = 'msg ok';
+  }catch(e){
+    msg.textContent = e.message; msg.className = 'msg err';
   }
 }
 
@@ -3189,6 +3689,33 @@ async function doTgDelete(u){
   }catch(e){
     document.getElementById('tgMsg').textContent = e.message;
     document.getElementById('tgMsg').className = 'msg err';
+  }
+}
+
+function renderTgSni(s){
+  const main = document.getElementById('tgSniMain'), extra = document.getElementById('tgSniExtra');
+  if (!main || !extra) return;
+  const cur = s || {};
+  const list = (cur.tls_domains || []).filter(function(x){ return x && x !== cur.tls_domain; });
+  if (document.activeElement !== main) main.value = cur.tls_domain || '';
+  if (document.activeElement !== extra) extra.value = list.join('\n');
+}
+
+async function saveTgSni(){
+  const msg = document.getElementById('tgSniMsg');
+  const main = document.getElementById('tgSniMain').value.trim();
+  const extra = document.getElementById('tgSniExtra').value.split('\n')
+    .map(function(x){ return x.trim(); }).filter(Boolean);
+  if (!main && !extra.length){ msg.textContent = 'Пусто — нечего сохранять'; msg.className = 'msg err'; return; }
+  if (!confirm('Сменить SNI прокси? Клиенты со старыми ссылками отключатся.')) return;
+  msg.textContent = 'Применяю…'; msg.className = 'msg';
+  try{
+    const d = await api('/api/tg/sni', {method:'POST', body: JSON.stringify({tls_domain: main, tls_domains: extra})});
+    await loadTg();
+    renderTgSni(d.sni);
+    msg.textContent = 'SNI: ' + (d.sni.tls_domain || '—'); msg.className = 'msg ok';
+  }catch(e){
+    msg.textContent = e.message; msg.className = 'msg err';
   }
 }
 
@@ -3286,7 +3813,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     $('tab-'+b.dataset.tab).classList.add('active');
-    if(b.dataset.tab==='settings')autoCheckForUpdate()
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -3570,7 +4097,7 @@ if (window.matchMedia) window.matchMedia('(min-width:900px)').addEventListener('
 async function loadTheme(){
   try { const r = await fetch('/api/theme',{cache:'no-store'}); applyTheme(await r.json()); } catch(e){}
 }
-async function saveTheme(){
+async function saveTheme(quiet){
   const b = {
     bg:   document.getElementById('th-bg').value,
     bg2:  document.getElementById('th-bg2').value,
@@ -3585,7 +4112,7 @@ async function saveTheme(){
   };
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
   await loadTheme();
-  alert('Сохранено');
+  if(!quiet) alert('Сохранено');
 }
 async function resetTheme(){
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -3804,7 +4331,7 @@ function restartPanel(){
 }
 loadNetworkSettings();
 loadTheme();
-
+try{loadRotate();}catch(e){}
 function jumpTab(name){
   document.querySelectorAll('.sub-pane').forEach(el => el.classList.remove('active'));
   const target = $('tab-inner-' + name);

@@ -69,7 +69,9 @@ step_0_preflight() {
   msg "Шаг 0: pre-flight checks"
   [ "$(id -u)" = "0" ] || die "нужен запуск от root"
   ok "root"
-  . /etc/os-release 2>/dev/null || true
+  # os-release задаёт собственную VERSION/ID и т.п. — читаем в подоболочке,
+  # чтобы не перезатереть наш VERSION="..." (иначе меню и лог врют про версию).
+  (. /etc/os-release) 2>/dev/null || true
   SERVER_IP="$(curl -fsSL --max-time 8 "$IPIFY" 2>/dev/null || true)"
   [ -n "$SERVER_IP" ] || die "не удалось определить внешний IP — проверь сеть"
   ok "внешний IP: $SERVER_IP"
@@ -106,8 +108,11 @@ After=network.target nss-lookup.target
 
 [Service]
 User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+# CAP_DAC_OVERRIDE — панель отдаёт ключи/серты (hy2_key.pem и др.) с владельцем
+# nobody:0600; без этой capability root-xray не может их прочитать и падает в
+# crash-loop на чистом хосте (проверено на VPS).
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
 NoNewPrivileges=true
 ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
 Restart=on-failure
@@ -262,10 +267,23 @@ UNITEOF
 
 step_5_panel() {
   msg "Шаг 5: панель Veil v$VERSION"
+  local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
+  if [ "$DRY_RUN" = "1" ]; then
+    # Не трогаем диск: только показываем, что будет сделано.
+    printf "${C_Y}[dry]${C_N} mkdir -p /opt/vpnpanel\n"
+    printf "${C_Y}[dry]${C_N} curl -fsSL -o /tmp/veil.tar.gz '%s' && tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel\n" "$TARBALL_URL"
+    if [ ! -f /opt/vpnpanel/config.json ]; then
+      printf "${C_Y}[dry]${C_N} сгенерировать /opt/vpnpanel/config.json и FIRST-LOGIN.txt (порт из find_free_port %s)\n" "$PANEL_PORT"
+    fi
+    printf "${C_Y}[dry]${C_N} записать /etc/systemd/system/vpnpanel.service\n"
+    run "systemctl daemon-reload"
+    run "systemctl enable --now vpnpanel"
+    ok "панель активна (dry-run)"
+    return 0
+  fi
   if [ ! -f /opt/vpnpanel/config.json ]; then
     PANEL_PORT="$(find_free_port "$PANEL_PORT")"
   fi
-  local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   run "mkdir -p /opt/vpnpanel"
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
     tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
