@@ -904,10 +904,24 @@ body.ui-new .dialog{border-radius:16px;padding:16px;max-width:620px}
     </div>
     <div class=msg id=certMsg></div>
     <hr>
-    <h3 style="margin:0 0 8px">🔀 SNI-мюкс на :443 — диагностика <span class=mut style="font-weight:400;font-size:12px">(только просмотр, ничего не меняется)</span></h3>
+    <h3 style="margin:0 0 8px">🔀 SNI-мюкс на :443 <span class=mut style="font-weight:400;font-size:12px">(диагностика + точное применение)</span></h3>
     <p class=mut style="margin:0 0 10px">Сколько TLS-протоколов с сертификатом на своём домене можно привести на один общий порт 443 через nginx (stream + ssl_preread по SNI). Ниже — кто сейчас держит :443/:80, готов ли nginx и что произойдёт при включении. <b>Reality через SNI не мюксится</b> (общий SNI с реальным сайтом) и останется на отдельном порту.</p>
     <div style="margin-bottom:10px"><button class="tiny sec" onclick=loadWebmux()>&#x27F3; Обновить диагностику</button></div>
     <div id=webmuxBox class=mut style="font-size:13px;line-height:1.6"></div>
+    <div style="margin-top:12px;border:1px solid var(--br);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--card2) 30%,transparent)">
+      <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <label class=fldlbl for=muxVpnSni style="margin:0">SNI-домен VPN:</label>
+        <input id=muxVpnSni placeholder="напр. vpn.домен.ру (левый поддомен веб-SNI)" style="max-width:280px">
+        <button class="tiny sec" onclick=muxPreview()>🔍 Предпросмотр (без изменений)</button>
+      </div>
+      <div id=muxPreviewBox class=mut style="font-size:13px;line-height:1.6;margin-bottom:8px"></div>
+      <p class=mut style="font-size:12px;margin:0 0 8px;color:var(--warn)">⚠ Применение меняет <code>/etc/nginx/nginx.conf</code> и конфиг xray: веб-фронт переводится на внутренний порт, cert-TLS inbound — на loopback, на :443 поднимается nginx-stream. Делаются бэкапы, <code>nginx -t</code> и авто-откат при ошибке. Кнопка «Откатить» возвращает всё как было.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="sec" onclick=muxApply()>▶ Применить SNI-мюкс</button>
+        <button class="tiny sec" onclick=muxRevert()>⟲ Откатить мюкс</button>
+      </div>
+      <div class=msg id=muxMsg></div>
+    </div>
   </div></div>
 
   <div id=tab-settings class="tab-pane"><div class=card>
@@ -3436,9 +3450,62 @@ async function loadWebmux(){
     h+='<div style="margin-top:8px"><b>Что сделает включение мюкса (появится во 2-м срезе):</b><ul style="margin:4px 0 0 18px;padding:0">'+d.plan.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
   if(d.warnings&&d.warnings.length)
     h+='<div style="margin-top:8px;color:'+errc+'"><b>⚠ Важно:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.warnings.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
-  h+='<div class=mut style="margin-top:8px;font-size:12px">Сейчас это только просмотр — изменения не применяются.</div>';
+  h+='<div class=mut style="margin-top:8px;font-size:12px">Диагностика ничего не меняет. Применить/откатить — блок ниже.</div>';
   box.innerHTML=h;
 }
+
+function _muxRenderPrev(d){
+  const box=$('muxPreviewBox'); if(!box) return;
+  const okc='var(--ok)', errc='var(--err)', mutc='var(--mut)';
+  const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
+  if(!d){ box.innerHTML=''; return; }
+  let h='';
+  h+='<div>Веб-SNI: '+(d.web_domain?esc(d.web_domain):'<span class=mut>не задан</span>')
+    +' · VPN-SNI: '+(d.vpn_domain?esc(d.vpn_domain):'<span class=mut>—</span>')
+    +' · сертификат: '+esc(d.cert_kind||'—')+'</div>';
+  h+='<div>Reality: '+(d.reality_port?(':'+esc(String(d.reality_port))+' (не трогается)'):'—')+'</div>';
+  if(d.web_front_on443) h+='<div class=mut>Веб-фронт на :443 будет переведён на внутренний порт (внутри мюкса).</div>';
+  if(d.foreign443 && d.foreign443.proc) h+='<div style="color:'+errc+'">На :443 чужой процесс: '+esc(d.foreign443.proc)+' — потребуется force для остановки.</div>';
+  if(d.blockers&&d.blockers.length)
+    h+='<div style="color:'+errc+';margin-top:4px"><b>Нельзя применить:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+  else h+='<div style="color:'+okc+';margin-top:4px">'+bd('✅ Можно применять.',okc)+' '+esc(d.note||'')+'</div>';
+  box.innerHTML=h;
+}
+
+async function muxPreview(){
+  const box=$('muxPreviewBox'); box.innerHTML='<span class=mut>Считаю предпросмотр…</span>';
+  const vd=($('muxVpnSni').value||'').trim();
+  try{ const d=await api('/api/webmux/preview'+(vd?('?vpn_domain='+encodeURIComponent(vd)):'')); _muxRenderPrev(d); }
+  catch(e){ box.innerHTML='<span style="color:var(--err)">'+esc(e.message)+'</span>'; }
+}
+
+async function muxApply(){
+  const vd=($('muxVpnSni').value||'').trim();
+  const box=$('muxPreviewBox');
+  let d; try{ d=await api('/api/webmux/preview'+(vd?('?vpn_domain='+encodeURIComponent(vd)):'')); }
+  catch(e){ setMsg('muxMsg',e.message,'err'); return; }
+  _muxRenderPrev(d);
+  if(!d.can_apply){ setMsg('muxMsg','Есть блокировки — см. предпросмотр.','err'); return; }
+  const warn = d.foreign443 ? ('\n\n❗ На :443 чужой процесс ('+(d.foreign443.proc||'?')+'). Он будет ОСТАНОВЛЕН (с бэкапом unit). Veil не отвечает за его работу после.') : '';
+  if(!confirm('Применить SNI-мюкс :443?\n\nВеб-SNI: '+(d.web_domain||'—')+'\nVPN-SNI: '+(d.vpn_domain||'—')+warn+
+              '\n\nnginx.conf и xray будут изменены (с бэкапами и авто-откатом при ошибке nginx -t / xray -test).')) return;
+  setMsg('muxMsg','Применяю… (nginx -t, xray -test)','');
+  try{
+    const r=await api('/api/webmux/apply',{method:'POST',body:JSON.stringify({vpn_domain:vd||null,confirm:true,force:!!d.foreign443})});
+    setMsg('muxMsg','✅ Мюкс применён. VPN-SNI '+esc(r.vpn_domain)+' → xray(:'+esc(String(r.tls_port))+'), веб → :'+esc(String(r.web_port))+', cert: '+esc(r.cert_kind||'—')+'.','ok');
+    loadWebmux();
+  }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
+}
+
+async function muxRevert(){
+  if(!confirm('Откатить SNI-мюкс? nginx.conf и xray вернутся к прежнему виду из бэкапов.')) return;
+  setMsg('muxMsg','Откатываю…','');
+  try{
+    const r=await api('/api/webmux/revert',{method:'POST',body:JSON.stringify({confirm:true})});
+    setMsg('muxMsg','✅ '+(r.message||'Откачено'),'ok'); loadWebmux();
+  }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
+}
+
 
 async function loadTgVerInfo(){
   const cur=$('tvCur'), sel=$('tvSel'), btn=$('tvBtn');
