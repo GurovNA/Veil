@@ -19,7 +19,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.9.0"
+VERSION = "2.10.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -2574,6 +2574,22 @@ _SUB_APP_CATALOG = {
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
     ],
 }
+_SUB_APP_ICONS = {
+    "INCY": "incy.jpg", "Happ": "happ.jpg", "sing-box": "singbox.jpg",
+    "Streisand": "streisand.jpg", "Foxray": "foxray.jpg", "WireGuard": "wireguard.jpg",
+    "AmneziaWG": "amneziawg.jpg", "Shadowrocket": "shadowrocket.jpg",
+    "Stash": "stash.jpg", "Loon": "loon.jpg", "v2rayNG": "v2rayng.png",
+    "Hiddify": "hiddify.webp", "Karing": "karing.jpg", "NekoBox": "nekobox.png",
+    "FlClash": "flclash.png", "Hysteria2": "hy2.svg", "Amnezia VPN": "amneziavpn.webp",
+    "v2rayN": "v2rayn.ico", "Clash Verge Rev": "clashverge.png",
+    "sing-box (GUI)": "guisingbox.png",
+}
+
+def _sub_app_icon(name):
+    n = str(name or "")
+    f = _SUB_APP_ICONS.get(n) or _SUB_APP_ICONS.get(n.split(" (")[0])
+    return "/appicons/" + f if f else ""
+
 _SUB_PLATFORM_LABELS = {
     "ios": "iOS", "android": "Android", "windows": "Windows", "macos": "macOS",
     "apple_tv": "Apple TV", "android_tv": "Android TV", "linux": "Linux",
@@ -2639,6 +2655,8 @@ _SUB_TXT_RU = {
     "ago_now": "только что", "ago_min": "%d мин назад", "ago_hr": "%d ч назад",
     "ago_day": "%d дн назад",
     "conf_sb": "sing-box · полный конфиг",
+    "tg_mp": "MTProto · Telegram",
+    "tg_web": "Web-прокси · Telegram",
     "btn_add": "Добавить / Импортировать", "btn_install": "Установить конфиг",
     "btn_how": "Как подключиться", "btn_copy": "Скопировать подписку",
     "btn_share": "Поделиться",
@@ -2696,6 +2714,8 @@ _SUB_TXT = {
     "ago_now": "just now", "ago_min": "%d min ago", "ago_hr": "%d h ago",
     "ago_day": "%d d ago",
     "conf_sb": "sing-box · full config",
+    "tg_mp": "MTProto · Telegram",
+    "tg_web": "Web proxy · Telegram",
     "btn_add": "Add / Import", "btn_install": "Install config",
     "btn_how": "How to connect", "btn_copy": "Copy subscription",
     "btn_share": "Share",
@@ -2753,6 +2773,8 @@ _SUB_TXT = {
     "ago_now": "همین الان", "ago_min": "%d دقیقه پیش", "ago_hr": "%d ساعت پیش",
     "ago_day": "%d روز پیش",
     "conf_sb": "sing-box · کانفیگ کامل",
+    "tg_mp": "MTProto · تلگرام",
+    "tg_web": "پروکسی وب · تلگرام",
     "btn_add": "افزودن / وارد کردن", "btn_install": "نصب کانفیگ",
     "btn_how": "چگونه وصل شویم", "btn_copy": "کپی اشتراک",
     "btn_share": "اشتراک‌گذاری",
@@ -2810,6 +2832,8 @@ _SUB_TXT = {
     "ago_now": "刚刚", "ago_min": "%d 分钟前", "ago_hr": "%d 小时前",
     "ago_day": "%d 天前",
     "conf_sb": "sing-box · 完整配置",
+    "tg_mp": "MTProto · Telegram",
+    "tg_web": "网页代理 · Telegram",
     "btn_add": "添加 / 导入", "btn_install": "安装配置",
     "btn_how": "如何连接", "btn_copy": "复制订阅",
     "btn_share": "分享",
@@ -2937,6 +2961,19 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
         conf_blocks.append('<a class="btn-conf" href="' + u["sb_url"] + '">'
                            '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
                            + L["conf_sb"] + '</a>')
+    try:
+        _tgl = _tg_sub_links(u) or []
+    except Exception:
+        _tgl = []
+    _mp = next((l for l in _tgl if l.startswith("tg://proxy")), "")
+    _wb = next((l for l in _tgl if l.startswith("tg://webproxy")), "")
+    _tgsvg = ('<svg viewBox="0 0 24 24"><path d="M21 4L3 11l5 2 2 6 3-4 5 4 3-15z"/></svg>')
+    for _link, _lab in ((_mp, L["tg_mp"]), (_wb, L["tg_web"])):
+        if not _link:
+            continue
+        h = (_link.replace("&", "&amp;").replace('"', "&quot;")
+                  .replace("<", "&lt;").replace(">", "&gt;"))
+        conf_blocks.append('<a class="btn-conf" href="' + h + '">' + _tgsvg + _lab + '</a>')
     confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
     # Строка под именем: лимиты вместо дубля окончания срока (он есть в карточках).
     cyc_label = {"day": L["reset_day"], "week": L["reset_week"],
@@ -2966,6 +3003,9 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
                and not (a.get("awg") and not awg_conf)
                and not (a.get("hy2") and not hy2_conf)]
            for k, v in _SUB_APP_CATALOG.items()}
+    for _apps in cat.values():
+        for _a in _apps:
+            _a["img"] = _sub_app_icon(_a.get("name"))
     catalog_json = json.dumps(cat, ensure_ascii=False)
     plat_default = _sub_ua_platform(ua)
     if plat_default not in cat:
@@ -3126,6 +3166,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
 .ic{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   font-size:17px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 6px 14px -6px rgba(0,0,0,.6)}
+.ic img{width:100%;height:100%;object-fit:cover;border-radius:11px;display:block}
 .inf{min-width:0;flex:1}
 .inf b{display:block;font-size:13px;font-weight:700;color:#edf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tags{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
@@ -3251,8 +3292,10 @@ function app(a){
   const d=document.createElement('div');d.className='app fade';
   d.style.animationDelay=Math.min((CATALOG[lastK]||[]).indexOf(a)*.03,.3)+'s';
   const ic=document.createElement('span');ic.className='ic';
-  ic.textContent=String(a.ic||(a.name||'?')[0]).toUpperCase();
+  const _letter=String(a.ic||(a.name||'?')[0]).toUpperCase();
+  ic.textContent=_letter;
   ic.style.background='linear-gradient(135deg,'+(a.col||'#3b82f6')+' 0%,'+(a.col2||'#22d3ee')+' 100%)';
+  if(a.img){const im=document.createElement('img');im.src=a.img;im.alt='';im.onerror=function(){im.remove();ic.textContent=_letter;};ic.textContent='';ic.appendChild(im);}
   const inf=document.createElement('div');inf.className='inf';
   const b=document.createElement('b');b.textContent=a.name;
   const tg=document.createElement('div');tg.className='tags';
@@ -6563,6 +6606,20 @@ def _tg_slug(name, fallback="client"):
     s = re.sub(r"[^a-z0-9_.-]", "_", s).strip("._-")[:24]
     return s or fallback
 
+_TGPL_PORT = {"ts": 0.0, "port": None}
+
+def _tg_pub_port(ttl=30):
+    """Публичный MTProto-порт с коротким кэшем (для частых выдач подписок)."""
+    if time.time() - _TGPL_PORT["ts"] > ttl:
+        try:
+            p = _tg_mtproto_info().get("port")
+        except Exception:
+            p = None
+        if p:
+            _TGPL_PORT["ts"] = time.time()
+            _TGPL_PORT["port"] = p
+    return _TGPL_PORT["port"]
+
 def _tg_ensure_user(username, web=True):
     """Вернуть {username, link, web_link} для пользователя telemt, создав его при отсутствии.
 
@@ -6582,8 +6639,10 @@ def _tg_ensure_user(username, web=True):
         u = _tg_user_row(name)
     except Exception:
         return None
+    mp_port = _tg_pub_port()
     return {"username": name,
-            "link": _tg_host_ok(_tg_pick_tls_link((u.get("links") or {}).get("tls"))),
+            "link": _tg_fix_mtproto_link(
+                _tg_host_ok(_tg_pick_tls_link((u.get("links") or {}).get("tls"))), mp_port),
             "web_link": _tg_web_link(name) if web else ""}
 
 def _tg_sub_links(client=None):
@@ -6612,7 +6671,9 @@ def _sub_settings():
     if mode not in ("off", "shared", "personal"):
         mode = "off"
     return {"update_hours": h, "tg_mode": mode,
-            "tg_shared_user": CFG_CACHE.get("tg_shared_user") or "common"}
+            "tg_shared_user": CFG_CACHE.get("tg_shared_user") or "common",
+            "support_url": CFG_CACHE.get("sub_support_url") or "",
+            "brand": CFG_CACHE.get("sub_brand") or ""}
 
 def _tg_web_get():
     """WEB-конфиг telemt: enabled, carrier, vhosts-профили, host."""
@@ -8671,6 +8732,22 @@ def _xray_backups():
             res.append({"version": d})
     return res
 
+def _panel_backup_now():
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    bdir = os.path.join(BASE, "backup-v%s-%s" % (VERSION, ts))
+    os.makedirs(bdir, exist_ok=True)
+    for fn in ("panel.py", "index.html"):
+        src = os.path.join(BASE, fn)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(bdir, fn))
+    for b in _panel_backups()[7:]:
+        try:
+            shutil.rmtree(os.path.join(BASE, b["dir"]))
+        except Exception:
+            pass
+    _audit("panel_backup", version=VERSION)
+    return {"ok": True, "version": VERSION, "dir": os.path.basename(bdir)}
+
 def _panel_restore(version):
     for b in _panel_backups():
         if b["version"] == version:
@@ -10425,9 +10502,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     exp_val *= 1000  # миллисекунды
                 ui = f"upload={up}; download={down}; total={total}; expire={exp_val}"
                 self.send_header("subscription-userinfo", ui)
-                if sub_name:
-                    pt = "base64:" + base64.b64encode(sub_name.encode("utf-8")).decode()
+                _pt = ((CFG_CACHE.get("sub_brand") or "").strip() or sub_name)[:25]
+                if _pt:
+                    pt = "base64:" + base64.b64encode(_pt.encode("utf-8")).decode()
                     self.send_header("profile-title", pt)
+                _su = (CFG_CACHE.get("sub_support_url") or "").strip()
+                if _su:
+                    self.send_header("support-url", _su[:250])
                 try:
                     pui = str(max(1, min(168, int(CFG_CACHE.get("sub_update_hours") or 24))))
                 except Exception:
@@ -10568,6 +10649,42 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(b)
+            return None
+
+        if p.startswith("/appicons/"):
+            # Логотипы приложений в каталоге личного кабинета (файлы лежат в BASE/appicons)
+            fn = os.path.basename(p)
+            if not re.match(r"^[a-z0-9][a-z0-9._-]{0,63}\.(?:jpg|png|webp|ico|svg)$", fn):
+                return self._send(404, {"error": "not found"})
+            fp = os.path.join(BASE, "appicons", fn)
+            try:
+                with open(fp, "rb") as f:
+                    data = f.read()
+            except Exception:
+                return self._send(404, {"error": "not found"})
+            mime = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+                    "ico": "image/x-icon", "svg": "image/svg+xml"}[fn.rsplit(".", 1)[1]]
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Cache-Control", "public, max-age=604800")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return None
+
+        if p == "/favicon.ico":
+            # Happ и др. тянут логотип подписки из favicon-а домена подписки
+            try:
+                with open(_LOGO_PNG or os.path.join(BASE, "icon-veil.png"), "rb") as f:
+                    data = f.read()
+            except Exception:
+                return self._send(404, {"error": "not found"})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return None
 
         if p == "/logo.png":
@@ -10846,7 +10963,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": str(e)})
         if p == "/api/versions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups(), "telemt": _tg_backups()})
+            cur = {"panel": VERSION}
+            try: cur["xray"] = _xray_current_version()
+            except Exception: cur["xray"] = "unknown"
+            try: cur["telemt"] = _tg_current_version()
+            except Exception: cur["telemt"] = "unknown"
+            return self._send(200, {"panel": _panel_backups(), "xray": _xray_backups(),
+                                    "telemt": _tg_backups(), "current": cur})
         if p == "/api/rotate/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -11079,11 +11202,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     grp = _proto_meta(proto).get("group") or proto
                 except Exception:
                     grp = proto
-                a = agg.setdefault(grp, {"clients": 0, "port": inb.get("port")})
-                a["clients"] += n
-            for grp, a in agg.items():
+                key = (grp, inb.get("port"))
+                agg[key] = agg.get(key, 0) + n
+            for (grp, port), n in sorted(agg.items(), key=lambda kv: -kv[1]):
                 protos.append({"proto": grp, "label": _grp_lbl.get(grp, grp),
-                               "clients": a["clients"], "port": a["port"], "running": running})
+                               "clients": n, "port": port, "running": running})
             if tg_running:
                 protos.append({"proto": "mtproto", "label": "MTProto Proxy",
                                "clients": 0, "port": None, "running": True})
@@ -12252,6 +12375,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/versions/backup":
+                return self._send(200, _panel_backup_now())
             if p == "/api/versions/restore":
                 try:
                     b = self._body()
@@ -13048,6 +13173,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not su:
                         return self._send(400, {"error": "имя общего прокси пустое"})
                     CFG_CACHE["tg_shared_user"] = su
+                if "support_url" in b:
+                    su = (b.get("support_url") or "").strip()
+                    if su and not re.match(r"^(https?://|tg://)", su):
+                        return self._send(400, {"error": "support-url: нужен https:// или tg://"})
+                    CFG_CACHE["sub_support_url"] = su[:250]
+                if "brand" in b:
+                    CFG_CACHE["sub_brand"] = (b.get("brand") or "").strip()[:25]
                 _save(CFG, CFG_CACHE)
                 _audit("sub_settings", **_sub_settings())
                 return self._send(200, {"ok": True, **_sub_settings()})
