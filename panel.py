@@ -19,7 +19,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.10.0"
+VERSION = "2.11.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -1473,12 +1473,17 @@ def _maybe_traffic_alerts(st):
                     if c2["uuid"] == c["uuid"]:
                         group.append(c2)
             msgs = []
+            tgc = str(c.get("tg_chat") or "")
+            sub_msgs = []
             lim = float(c.get("limit_gb") or 0)
             if lim > 0 and not c.get("warned_80"):
                 if _user_traffic(c) >= lim * _GB * 0.8:
                     msgs.append(
                         f"⚠️ <b>80% лимита</b>\nКлиент: {c.get('name')}\n"
                         f"Использовано: {_user_traffic(c) / _GB:.2f} из {lim:g} ГБ")
+                    if tgc:
+                        sub_msgs.append(("a80", c.get("name") or "",
+                                         f"{_user_traffic(c) / _GB:.2f}", f"{lim:g}"))
                     for g in group: g["warned_80"] = True
                     changed = True
             ex = int(c.get("expiry") or 0)
@@ -1490,6 +1495,8 @@ def _maybe_traffic_alerts(st):
                         msgs.append(
                             f"⏳ <b>Срок истекает</b>\nКлиент: {c.get('name')}\n"
                             f"Осталось дней: {days_left}")
+                        if tgc:
+                            sub_msgs.append(("aexp", c.get("name") or "", days_left))
                         warned.append(d)
                         for g in group: g["warned_days"] = warned
                         changed = True
@@ -1499,6 +1506,19 @@ def _maybe_traffic_alerts(st):
                     _bot_send_message(ids[0], "\n".join(msgs), "HTML")
                 except Exception as e:
                     print("[alert] " + str(e), flush=True)
+            if tgc and sub_msgs:
+                try:
+                    Bs = _bot_B(tgc)
+                    lines = []
+                    for sm in sub_msgs:
+                        nm = _html.escape(sm[1])
+                        if sm[0] == "a80":
+                            lines.append(Bs["sub_a80"] % (nm, sm[2], sm[3]))
+                        else:
+                            lines.append(Bs["sub_aexp"] % (nm, sm[2]))
+                    _bot_send_message(tgc, "\n".join(lines), "HTML")
+                except Exception as e:
+                    print("[alert-sub] " + str(e), flush=True)
     return changed
 
 def _notify_blocked(bl):
@@ -1568,8 +1588,11 @@ def _subs_summary(st, for_display=False):
                      "max_devices": int(c.get("max_devices") or 0),
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
+                     "tg_chat": str(c.get("tg_chat") or ""),
                      "links": {}, "protos": [], "up": 0, "down": 0}
                 users[key] = u
+            elif not u.get("tg_chat") and c.get("tg_chat"):
+                u["tg_chat"] = str(c["tg_chat"])
             try:
                 u["links"][proto] = _link(inb, host, c, proto)
             except Exception:
@@ -2675,6 +2698,11 @@ _SUB_TXT_RU = {
     "js_forget_q": "Забыть это устройство?",
     "js_forgot": "Устройство забыто.",
     "js_forget_err": "Не удалось забыть устройство: %s",
+    "ava_tip": "Сменить фото профиля", "ava_rm_tip": "Убрать фото",
+    "ava_saved": "Фото обновлено", "ava_removed": "Фото убрано",
+    "ava_big": "Картинка слишком большая (максимум 5 МБ)",
+    "ava_bad": "Не получилось прочитать эту картинку",
+    "ava_err": "Не удалось сохранить фото",
     "js_err": "ошибка", "js_net": "Сеть недоступна.",
     "rt_ru": "<b>Российские сайты и приложения идут напрямую</b>, остальное — через туннель.<br>"
              "Готовые правила — в кнопке «sing-box · полный конфиг» выше (подходит для Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
@@ -2734,6 +2762,11 @@ _SUB_TXT = {
     "js_forget_q": "Forget this device?",
     "js_forgot": "Device forgotten.",
     "js_forget_err": "Could not forget the device: %s",
+    "ava_tip": "Change profile photo", "ava_rm_tip": "Remove photo",
+    "ava_saved": "Photo updated", "ava_removed": "Photo removed",
+    "ava_big": "Image is too large (max 5 MB)",
+    "ava_bad": "Could not read this image",
+    "ava_err": "Failed to save the photo",
     "js_err": "error", "js_net": "Network unavailable.",
     "exp_1": "%d day left", "exp_n": "%d days left",
     "rt_ru": "<b>Russian sites and apps go direct</b>, everything else through the tunnel.<br>"
@@ -2793,6 +2826,11 @@ _SUB_TXT = {
     "js_forget_q": "این دستگاه فراموش شود؟",
     "js_forgot": "دستگاه فراموش شد.",
     "js_forget_err": "فراموشی ممکن نشد: %s",
+    "ava_tip": "تغییر عکس پروفایل", "ava_rm_tip": "حذف عکس",
+    "ava_saved": "عکس به‌روزرسانی شد", "ava_removed": "عکس حذف شد",
+    "ava_big": "تصویر خیلی بزرگ است (حداکثر ۵ مگابایت)",
+    "ava_bad": "این تصویر خوانده نشد",
+    "ava_err": "ذخیره عکس ناموفق بود",
     "js_err": "خطا", "js_net": "شبکه در دسترس نیست.",
     "exp_n": "%d روز مانده",
     "rt_ru": "<b>سایت‌ها و اپ‌های روسی مستقیم می‌روند</b> و بقیه از تونل.<br>"
@@ -2852,6 +2890,11 @@ _SUB_TXT = {
     "js_forget_q": "忘记此设备？",
     "js_forgot": "已忘记该设备。",
     "js_forget_err": "无法忘记设备：%s",
+    "ava_tip": "更换头像", "ava_rm_tip": "移除头像",
+    "ava_saved": "头像已更新", "ava_removed": "头像已移除",
+    "ava_big": "图片太大（最大 5 MB）",
+    "ava_bad": "无法读取该图片",
+    "ava_err": "保存头像失败",
     "js_err": "错误", "js_net": "网络不可用。",
     "exp_n": "还剩 %d 天",
     "rt_ru": "<b>俄罗斯网站和应用直连</b>，其余走代理。<br>"
@@ -2900,6 +2943,68 @@ def _sub_days_left(L, lang, n):
     if lang == "en":
         return L.get("exp_1", "%d day left") % n if n == 1 else L["exp_n"] % n
     return L["exp_n"] % n
+
+_AVATAR_DIR = os.path.join(BASE, "avatars")
+
+def _avatar_path(tok):
+    """Путь к файлу аватара подписчика (токен — право доступа; на диске, не в state.json)."""
+    t = re.sub(r"[^A-Za-z0-9_-]", "", str(tok or ""))[:64]
+    if not t:
+        return ""
+    return os.path.join(_AVATAR_DIR, t + ".img")
+
+def _avatar_save(tok, data):
+    """Проверяет, что bytes — PNG/JPEG/GIF/WebP ≤ 160 КБ, и пишет в файл. Возвращает mime или None."""
+    if not data or len(data) > 160 * 1024:
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif data[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    elif data[:6] in (b"GIF87a", b"GIF89a"):
+        mime = "image/gif"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        return None
+    path = _avatar_path(tok)
+    if not path:
+        return None
+    try:
+        os.makedirs(_AVATAR_DIR, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        return mime
+    except Exception:
+        return None
+
+def _avatar_remove(tok):
+    try:
+        os.remove(_avatar_path(tok))
+    except OSError:
+        pass
+
+def _avatar_data_url(tok):
+    """data: URL для встраивания в <img>, или '' если аватара нет."""
+    path = _avatar_path(tok)
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif data[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    elif data[:6] in (b"GIF87a", b"GIF89a"):
+        mime = "image/gif"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        return ""
+    return "data:" + mime + ";base64," + base64.b64encode(data).decode()
 
 def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
     if lang not in _SUB_LANGS:
@@ -3096,6 +3201,12 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .ava{width:64px;height:64px;border-radius:20px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   font-size:30px;font-weight:800;color:#04101f;position:relative;
   background:linear-gradient(135deg,#3b82f6,#22d3ee);box-shadow:0 14px 30px -8px rgba(34,211,238,.5)}
+.ava img{width:100%;height:100%;object-fit:cover;display:block;position:relative;border-radius:20px}
+.avawrap{display:flex;flex-direction:column;align-items:center;gap:6px;flex:0 0 auto}
+.avactl{display:flex;gap:6px}
+.avabtn{width:26px;height:26px;border-radius:9px;border:1px solid rgba(255,255,255,.16);cursor:pointer;
+  background:rgba(255,255,255,.07);color:#c6cee6;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
+.avabtn:hover{background:rgba(255,255,255,.14)}
 .ava .ring{position:absolute;inset:-3px;border-radius:23px;border:2px solid transparent;pointer-events:none;
   border-top-color:rgba(125,211,252,.9);animation:spin 7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -3220,7 +3331,11 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
  </header>
  <main class="card fade" style="animation-delay:.08s">
   <div class="head">
-   <div class="ava"><span class="ring"></span>__AVA__</div>
+   <div class="avawrap">
+    <div class="ava" id="avaEl"><span class="ring"></span>__AVA__</div>
+    <div class="avactl">__AVABTN____AVARM__</div>
+    <input type="file" id="avaFile" accept="image/*" hidden>
+   </div>
    <div class="meta">
     <div class="name">__NAMEHT__</div>
     <div class="sub">__HEADLINE__</div>
@@ -3376,6 +3491,42 @@ document.addEventListener('DOMContentLoaded',function(){
         .catch(function(){hint(L.js_net,'#fb7185'); btn.disabled=false;});
     });
   });
+  (function(){
+    var f=document.getElementById('avaFile'),b=document.getElementById('avaBtn'),rb=document.getElementById('avaRm');
+    if(!f||!b)return;
+    function post(body,after){
+      b.disabled=true; if(rb)rb.disabled=true;
+      fetch('/p/'+encodeURIComponent(TOK)+'/avatar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(function(r){return r.json();})
+        .then(function(j){ b.disabled=false; if(rb)rb.disabled=false;
+          if(j&&j.ok){after&&after(j);}else{hint(j&&j.error||L.ava_err,'#fb7185');} })
+        .catch(function(){ b.disabled=false; if(rb)rb.disabled=false; hint(L.js_net,'#fb7185'); });
+    }
+    b.addEventListener('click',function(){f.click();});
+    f.addEventListener('change',function(){
+      var file=f.files&&f.files[0]; f.value='';
+      if(!file)return;
+      if(file.size>5*1024*1024){hint(L.ava_big,'#fb7185');return;}
+      var fr=new FileReader();
+      fr.onload=function(){
+        var im=new Image();
+        im.onload=function(){
+          try{
+            var s=Math.min(im.width,im.height)||1,cv=document.createElement('canvas');
+            cv.width=cv.height=192;
+            var x=cv.getContext('2d');
+            x.drawImage(im,(im.width-s)/2,(im.height-s)/2,s,s,0,0,192,192);
+            post({img:cv.toDataURL('image/png')},function(){location.reload();});
+          }catch(e){hint(L.ava_err,'#fb7185');}
+        };
+        im.onerror=function(){hint(L.ava_bad,'#fb7185');};
+        im.src=fr.result;
+      };
+      fr.onerror=function(){hint(L.ava_bad,'#fb7185');};
+      fr.readAsDataURL(file);
+    });
+    if(rb)rb.addEventListener('click',function(){ if(confirm(L.ava_rm_tip)) post({},function(){location.reload();}); });
+  })();
 });
 </script></body></html>"""
     payblock = ""
@@ -3383,10 +3534,21 @@ document.addEventListener('DOMContentLoaded',function(){
         payblock = _pay_block_html(u.get("sub_token") or "", L)
     except Exception:
         pass
+    ava_img = _avatar_data_url(tok)
+    avatar_html = ('<img src="' + ava_img + '" alt>' if ava_img else avatar)
+    _ava_cam = ('<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" '
+                'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>'
+                '<circle cx="12" cy="13" r="4"/></svg>')
+    ava_btn = ('<button type="button" class="avabtn" id="avaBtn" title="' + _esc(L["ava_tip"])
+               + '" aria-label="' + _esc(L["ava_tip"]) + '">' + _ava_cam + '</button>')
+    ava_rm = ('<button type="button" class="avabtn" id="avaRm" title="' + _esc(L["ava_rm_tip"])
+              + '" aria-label="' + _esc(L["ava_rm_tip"]) + '">&#10005;</button>') if ava_img else ''
     return (tpl.replace("__LANGS__", langnav)
                 .replace("__LANG__", lang).replace("__DIR__", "rtl" if lang == "fa" else "ltr")
                 .replace("__TTL__", L["ttl"]).replace("__TAG__", L["tagline"])
-                .replace("__AVA__", avatar)
+                .replace("__AVA__", avatar_html)
+                .replace("__AVABTN__", ava_btn).replace("__AVARM__", ava_rm)
                 .replace("__NAMEHT__", name_html)
                 .replace("__CLS__", cls).replace("__STATUS__", status_txt)
                 .replace("__EXP__", exp_txt).replace("__EXPSUB__", exp_sub)
@@ -3612,6 +3774,29 @@ _BOT_RU = {
     "lang_saved": "Готово: %s",
     "gp_low": "🚨 <b>Доступность из РФ упала ниже 50%%!</b>\nЗонды: %s/%s (%s%%)\nВремя: %s UTC\nПодробности проведи проверку в панели или нажми %s",
     "gp_recover": "✅ Доступность из РФ восстановилась: %s/%s (%s%%) · %s UTC",
+    "sub_welcome": ("👋 <b>Привет! Я помощник подписчиков Veil.</b>\n\n"
+                    "Отправь сюда <b>ссылку своей подписки</b> — она начинается на <code>https://…/sub/…</code> "
+                    "(была в сообщении, где тебе выдали подписку). После привязки я:\n"
+                    "• покажу статус, срок и трафик (кнопка «📊 Моя подписка»);\n"
+                    "• пришлю ссылку и подсказку по приложениям;\n"
+                    "• напомню, когда подписка будет заканчиваться.\n\n"
+                    "Никакого публичного доступа: по ссылке я вижу только ТВОЮ подписку. "
+                    "Отвязать Telegram можно кнопкой «🔗 Отвязать»."),
+    "sub_bound": "✅ Готово! Telegram привязан к подписке «<b>%s</b>». Выбери действие:",
+    "sub_badlink": ("🤔 Не нашёл в сообщении ссылку подписки.\n"
+                    "Нужна ссылка вида <code>https://…/sub/…</code> — скопируй её целиком и отправь одним сообщением.\n\n"
+                    "Команды: /start — помощь, /status — статус, /link — ссылка, /apps — приложения."),
+    "sub_none": "Подписка ещё не привязана. Как привязать — покажет /start.",
+    "sub_unbound": "🔓 Telegram отвязан от подписки. Привязать заново — /start.",
+    "sub_menu_q": "🤖 Меню подписчика:",
+    "m_sub_status": "📊 Моя подписка", "m_sub_link": "🔑 Ссылка",
+    "m_sub_apps": "📱 Приложения", "m_sub_unbind": "🔗 Отвязать",
+    "sub_hdr": "📊 <b>Мои подписки:</b>",
+    "sub_link_msg": ("🔑 Скопируй и вставь в приложение (Happ, v2rayNG, Streisand, NekoBox…) — "
+                     "все серверы импортируются сразу:\n<code>%s</code>"),
+    "sub_apps_msg": "📱 Твоя личная страница с приложениями и кнопками подключения:\n%s",
+    "sub_a80": "⚠️ Подписка «%s»: использовано 80%% трафика (%s из %s ГБ).",
+    "sub_aexp": "⏳ Подписка «%s» истекает через %d дн. Продлить можно на личной странице.",
 }
 _BOT_TXT = {
 "en": {
@@ -3670,6 +3855,29 @@ _BOT_TXT = {
     "lang_saved": "Done: %s",
     "gp_low": "🚨 <b>Access from Russia dropped below 50%%!</b>\nProbes: %s/%s (%s%%)\nTime: %s UTC\nCheck the panel or press %s",
     "gp_recover": "✅ Access from Russia recovered: %s/%s (%s%%) · %s UTC",
+    "sub_welcome": ("👋 <b>Hi! I am the Veil subscriber assistant.</b>\n\n"
+                    "Send here your <b>subscription link</b> — it starts with <code>https://…/sub/…</code> "
+                    "(it was in the message you received with the subscription). After binding I will:\n"
+                    "• show status, expiry and traffic (button «📊 My subscription»);\n"
+                    "• send your link and app hints;\n"
+                    "• remind you when the subscription is about to expire.\n\n"
+                    "No public access: a link shows me only YOUR subscription. "
+                    "Unbind Telegram any time with «🔗 Unbind»."),
+    "sub_bound": "✅ Done! Telegram is now bound to subscription «<b>%s</b>». Choose an action:",
+    "sub_badlink": ("🤔 I didn't find a subscription link in your message.\n"
+                    "I need a link like <code>https://…/sub/…</code> — copy it fully and send as one message.\n\n"
+                    "Commands: /start — help, /status — status, /link — link, /apps — apps."),
+    "sub_none": "Subscription is not bound yet. /start explains how.",
+    "sub_unbound": "🔓 Telegram unbound from the subscription. To bind again — /start.",
+    "sub_menu_q": "🤖 Subscriber menu:",
+    "m_sub_status": "📊 My subscription", "m_sub_link": "🔑 Link",
+    "m_sub_apps": "📱 Apps", "m_sub_unbind": "🔗 Unbind",
+    "sub_hdr": "📊 <b>My subscriptions:</b>",
+    "sub_link_msg": ("🔑 Copy and paste into your app (Happ, v2rayNG, Streisand, NekoBox…) — "
+                     "all servers are imported at once:\n<code>%s</code>"),
+    "sub_apps_msg": "📱 Your personal page with apps and connection buttons:\n%s",
+    "sub_a80": "⚠️ Subscription «%s»: 80%% of traffic used (%s of %s GB).",
+    "sub_aexp": "⏳ Subscription «%s» expires in %d day(s). Renew on your personal page.",
 },
 "fa": {
     "m_status": "📊 وضعیت", "m_clients": "👥 کاربران",
@@ -3727,6 +3935,29 @@ _BOT_TXT = {
     "lang_saved": "انجام شد: %s",
     "gp_low": "🚨 <b>دسترس‌پذیری از روسیه زیر ۵۰٪ افتاد!</b>\nکاوش‌ها: %s/%s (%s%%)\nزمان: %s UTC\nدر پنل بررسی کنید یا %s را بزنید",
     "gp_recover": "✅ دسترس‌پذیری از روسیه برگشت: %s/%s (%s%%) · %s UTC",
+    "sub_welcome": ("👋 <b>سلام! من دستیار مشترکان Veil هستم.</b>\n\n"
+                    "<b>لینک اشتراک</b> خود را اینجا بفرستید — با <code>https://…/sub/…</code> شروع می‌شود "
+                    "(در پیامی که اشتراک را تحویل گرفتید بود). پس از پیوند من:\n"
+                    "• وضعیت، مهلت و ترافیک را نشان می‌دهم (دکمه «📊 اشتراک من»);\n"
+                    "• لینک و راهنمای برنامه‌ها را می‌فرستم;\n"
+                    "• وقتی اشتراک نزدیک انقضا باشد یادآوری می‌کنم.\n\n"
+                    "دسترسی عمومی وجود ندارد: با لینک فقط اشتراک <b>شما</b> را می‌بینم. "
+                    "با دکمه «🔗 قطع پیوند» می‌توانید جدا کنید."),
+    "sub_bound": "✅ انجام شد! Telegram به اشتراک «<b>%s</b>» متصل شد. یک عملیات انتخاب کنید:",
+    "sub_badlink": ("🤔 در پیام شما لینک اشتراک پیدا نشد.\n"
+                    "لینکی به شکل <code>https://…/sub/…</code> لازم است — کامل کپی کنید و در یک پیام بفرستید.\n\n"
+                    "دستورات: /start — راهنما، /status — وضعیت، /link — لینک، /apps — برنامه‌ها."),
+    "sub_none": "اشتراک هنوز متصل نشده. نحوه اتصال را /start نشان می‌دهد.",
+    "sub_unbound": "🔓 Telegram از اشتراک جدا شد. برای اتصال مجدد — /start.",
+    "sub_menu_q": "🤖 منوی مشترک:",
+    "m_sub_status": "📊 اشتراک من", "m_sub_link": "🔑 لینک",
+    "m_sub_apps": "📱 برنامه‌ها", "m_sub_unbind": "🔗 جدا کردن",
+    "sub_hdr": "📊 <b>اشتراک‌های من:</b>",
+    "sub_link_msg": ("🔑 کپی کنید و در برنامه (Happ, v2rayNG, Streisand, NekoBox…) بچسبانید — "
+                     "همه سرورها یکجا وارد می‌شوند:\n<code>%s</code>"),
+    "sub_apps_msg": "📱 صفحه شخصی شما با برنامه‌ها و دکمه‌های اتصال:\n%s",
+    "sub_a80": "⚠️ اشتراک «%s»: ۸۰٪ ترافیک مصرف شد (%s از %s گیگابایت).",
+    "sub_aexp": "⏳ اشتراک «%s» تا %d روز دیگر منقضی می‌شود. تمدید در صفحه شخصی.",
 },
 "zh": {
     "m_status": "📊 状态", "m_clients": "👥 客户",
@@ -3784,6 +4015,29 @@ _BOT_TXT = {
     "lang_saved": "完成：%s",
     "gp_low": "🚨 <b>俄罗斯可达性低于 50%%！</b>\n探测：%s/%s (%s%%)\n时间：%s UTC\n请在面板检查或按 %s",
     "gp_recover": "✅ 俄罗斯可达性已恢复：%s/%s (%s%%) · %s UTC",
+    "sub_welcome": ("👋 <b>你好！我是 Veil 订阅用户助手。</b>\n\n"
+                    "请把<b>订阅链接</b>发到这里 — 它以 <code>https://…/sub/…</code> 开头"
+                    "（在发放订阅的消息里）。绑定后我会：\n"
+                    "• 显示状态、期限和流量（按钮「📊 我的订阅」）；\n"
+                    "• 发送链接和应用推荐；\n"
+                    "• 在订阅即将到期时提醒你。\n\n"
+                    "没有公开访问：通过链接我只能看到<b>你的</b>订阅。"
+                    "随时可用按钮「🔗 解绑」解除绑定。"),
+    "sub_bound": "✅ 完成！Telegram 已绑定订阅「<b>%s</b>」。请选择操作：",
+    "sub_badlink": ("🤔 没有在消息中找到订阅链接。\n"
+                    "需要 <code>https://…/sub/…</code> 形式的链接 — 请完整复制并单独发送。\n\n"
+                    "命令：/start — 帮助，/status — 状态，/link — 链接，/apps — 应用。"),
+    "sub_none": "尚未绑定订阅。绑定方法见 /start。",
+    "sub_unbound": "🔓 已解除 Telegram 绑定。重新绑定请发 /start。",
+    "sub_menu_q": "🤖 订阅用户菜单：",
+    "m_sub_status": "📊 我的订阅", "m_sub_link": "🔑 链接",
+    "m_sub_apps": "📱 应用", "m_sub_unbind": "🔗 解绑",
+    "sub_hdr": "📊 <b>我的订阅：</b>",
+    "sub_link_msg": ("🔑 复制并粘贴到应用（Happ、v2rayNG、Streisand、NekoBox…）——"
+                     "所有服务器将一次性导入：\n<code>%s</code>"),
+    "sub_apps_msg": "📱 你的个人页面（应用和连接按钮）：\n%s",
+    "sub_a80": "⚠️ 订阅「%s」：已使用 80%% 流量（%s / %s GB）。",
+    "sub_aexp": "⏳ 订阅「%s」将在 %d 天后到期。可在个人页面续费。",
 },
 }
 
@@ -3824,6 +4078,144 @@ def _main_menu_keyboard(B=None):
          {"text": B["m_backup"], "callback_data": "cmd_backup"}],
         [{"text": B["m_lang"], "callback_data": "cmd_lang"}],
     ]}
+
+def _bot_sub_keyboard(B):
+    return {"inline_keyboard": [
+        [{"text": B["m_sub_status"], "callback_data": "sub_status"},
+         {"text": B["m_sub_link"], "callback_data": "sub_link"}],
+        [{"text": B["m_sub_apps"], "callback_data": "sub_apps"}],
+        [{"text": B["m_sub_unbind"], "callback_data": "sub_unbind"},
+         {"text": B["m_lang"], "callback_data": "sub_lang"}],
+    ]}
+
+def _bot_sub_link_tok(text):
+    """Достаёт токен подписки из ссылки вида https://…/sub/<tok> (или /p/<tok>)."""
+    m = re.search(r"(?:/sub/|/p/)([A-Za-z0-9_-]{8,64})", text or "")
+    return m.group(1) if m else ""
+
+def _bot_bind(chat_id, tok):
+    """Привязывает Telegram-чат к подписке по sub_token или uuid. Возвращает имя клиента или ''."""
+    t = re.sub(r"[^A-Za-z0-9_-]", "", str(tok or ""))[:64]
+    if not t:
+        return ""
+    st = _load(STATE) or {}
+    name = ""
+    changed = False
+    for inb in (st.get("inbounds") or {}).values():
+        for c in inb.get("clients", []):
+            if c.get("sub_token") == t or c.get("uuid") == t:
+                if str(c.get("tg_chat") or "") != str(chat_id):
+                    c["tg_chat"] = str(chat_id)
+                    changed = True
+                name = c.get("name") or name
+    if name and changed:
+        _save(STATE, st)
+        try:
+            _audit("bot_bind", chat=str(chat_id), client=name)
+        except Exception:
+            pass
+    return name
+
+def _bot_unbind(chat_id):
+    st = _load(STATE) or {}
+    changed = n = 0
+    for inb in (st.get("inbounds") or {}).values():
+        for c in inb.get("clients", []):
+            if str(c.get("tg_chat") or "") == str(chat_id):
+                c.pop("tg_chat", None)
+                changed = 1
+                n += 1
+    if changed:
+        _save(STATE, st)
+    return bool(changed)
+
+def _bot_subs_of(chat_id):
+    return [x for x in _subs_summary(_load(STATE) or {})
+            if str(x.get("tg_chat") or "") == str(chat_id)]
+
+def _bot_sub_urls(u):
+    host = _hop_pub_host()
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    base = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    return base + "/sub/" + u["sub_token"], base + "/p/" + u["sub_token"]
+
+def _bot_sub_status_msg(u, B):
+    lang = B.get("__lang", "ru")
+    try:
+        L = dict(_SUB_TXT_RU); L.update((_SUB_TXT or {}).get(lang) or {})
+    except Exception:
+        L = _SUB_TXT_RU
+    status, key = _sub_status(u)
+    name = _html.escape(str(u.get("name") or L["ttl"]))
+    now = time.time()
+    ex = int(u.get("expiry") or 0)
+    if ex:
+        exp_txt = time.strftime(L["datefmt"], time.localtime(ex))
+        dl = int(ex - now)
+        if dl < 0:
+            exp_txt += " · " + L["exp_over"]
+        elif dl < 86400:
+            exp_txt += " · " + L["exp_lt1d"]
+        else:
+            exp_txt += " · " + _sub_days_left(L, lang, int(dl // 86400))
+    else:
+        exp_txt = L["noexp"]
+    lim = float(u.get("limit_gb") or 0)
+    used = float(u.get("used_gb") or 0)
+    if lim > 0:
+        trf_txt = f"{used:.2f} / {lim:.1f} GB"
+    else:
+        trf_txt = f"{used:.2f} GB · " + L["unlim"]
+    return ("• <b>" + name + "</b> — " + L[key] + "\n"
+            + "  ⏳ " + L["lb_exp"] + ": " + exp_txt + "\n"
+            + "  📈 " + L["lb_trf"] + ": " + trf_txt)
+
+def _bot_sub_cb(chat_id, data, B):
+    """Кнопки меню подписчика (callback_data с префиксом sub_)."""
+    if data == "sub_lang":
+        return _bot_send_message(chat_id, B["lang_q"], "HTML", _lang_keyboard())
+    subs = _bot_subs_of(chat_id)
+    if not subs:
+        return _bot_send_message(chat_id, B["sub_none"], "HTML", _bot_sub_keyboard(B))
+    if data == "sub_status":
+        return _bot_send_message(chat_id, B["sub_hdr"] + "\n\n" +
+                                 "\n\n".join(_bot_sub_status_msg(u, B) for u in subs),
+                                 "HTML", _bot_sub_keyboard(B))
+    if data == "sub_link":
+        for u in subs[:5]:
+            sub_url, _page = _bot_sub_urls(u)
+            _bot_send_message(chat_id, B["sub_link_msg"] % sub_url, "HTML")
+        return
+    if data == "sub_apps":
+        for u in subs[:5]:
+            _bot_send_message(chat_id, B["sub_apps_msg"] % _bot_sub_urls(u)[1], "HTML")
+        return
+    if data == "sub_unbind":
+        _bot_unbind(chat_id)
+        return _bot_send_message(chat_id, B["sub_unbound"], "HTML", _bot_sub_keyboard(B))
+
+def _bot_sub_msg(chat_id, text, B):
+    """Сообщения подписчика (не-администратора): привязка по ссылке и команды."""
+    t = (text or "").strip()
+    low = t.lower()
+    if not t.startswith("/"):
+        tok = _bot_sub_link_tok(t)
+        name = _bot_bind(chat_id, tok) if tok else ""
+        if not name:
+            return _bot_send_message(chat_id, B["sub_badlink"], "HTML", _bot_sub_keyboard(B))
+        return _bot_send_message(chat_id, B["sub_bound"] % _html.escape(name), "HTML",
+                                 _bot_sub_keyboard(B))
+    if low == "/lang":
+        return _bot_send_message(chat_id, B["lang_q"], "HTML", _lang_keyboard())
+    cmds = {"/status": "sub_status", "/link": "sub_link", "/apps": "sub_apps",
+            "/unsubscribe": "sub_unbind"}
+    if low in cmds:
+        return _bot_sub_cb(chat_id, cmds[low], B)
+    if low == "/menu" and _bot_subs_of(chat_id):
+        return _bot_send_message(chat_id, B["sub_menu_q"], "HTML", _bot_sub_keyboard(B))
+    if low in ("/start", "/help"):
+        return _bot_send_message(chat_id, B["sub_welcome"], "HTML", _bot_sub_keyboard(B))
+    return _bot_send_message(chat_id, B["sub_none"], "HTML", _bot_sub_keyboard(B))
 
 # Многошаговое добавление подписки: chat_id -> {"step": "name"|"limit"|"days", ...}
 BOT_NEW_SUB = {}
@@ -4587,9 +4979,12 @@ def _process_bot_update(update):
             lg = data[5:]
             _bot_lang_set(chat_id, lg)
             B2 = _bot_B(chat_id)
-            _bot_send_message(chat_id, B2["lang_saved"] % B2["m_lang"],
-                              reply_markup=_main_menu_keyboard(B2))
+            kb = _main_menu_keyboard(B2) if _is_admin(from_id) else _bot_sub_keyboard(B2)
+            _bot_send_message(chat_id, B2["lang_saved"] % B2["m_lang"], reply_markup=kb)
             return
+        if data.startswith("sub_"):
+            _bot_answer_callback(callback_query_id)
+            return _bot_sub_cb(chat_id, data, B)
         if not _is_admin(from_id):
             _bot_send_message(chat_id, B["norights"] % (from_id, CFG_CACHE.get('bot_chat_ids', [])))
             _bot_answer_callback(callback_query_id, B["norights_short"], show_alert=True)
@@ -4684,11 +5079,13 @@ def _process_bot_update(update):
                     _bot_send_message(chat_id,
                         B["created"] % (_html.escape(name), lim, day, r['sub_url']),
                         "HTML", _main_menu_keyboard(B))
+                return
+            if not _is_admin(from_id):
+                return _bot_sub_msg(chat_id, text, B)
             return
     
     if not _is_admin(from_id):
-        _bot_send_message(chat_id, B["norights_short"])
-        return
+        return _bot_sub_msg(chat_id, text, B)
     
     parts = text.split()
     cmd = parts[0].lower().split("@", 1)[0]
@@ -11455,7 +11852,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(st, js)
             if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
                     and not p.startswith("/api/ext/") and not p.startswith("/pay/")
-                    and not (p.startswith("/p/") and p.endswith("/forget"))):
+                    and not (p.startswith("/p/") and (p.endswith("/forget") or p.endswith("/avatar")))):
                 return self._send(401, {"error": "unauthorized"})
             g = _perm_gate(self, p, "POST")
             if g:
@@ -11559,6 +11956,35 @@ class H(http.server.BaseHTTPRequestHandler):
                 return _pay_handle_public(self, p)
             if p.startswith("/api/pay/"):
                 return self._api_pay(p)
+            if p.startswith("/p/") and p.endswith("/avatar"):
+                # Публичная смена аватара со страницы /p/<tok>: токен = право доступа.
+                tok = p[3:-len("/avatar")].strip("/")
+                st = _load(STATE) or {}
+                if _migrate_state(st): _save(STATE, st)
+                ok_sub = any(x["sub_token"] == tok or x["uuid"] == tok
+                             for x in _subs_summary(st))
+                if not ok_sub:
+                    return self._send(404, {"error": "подписка не найдена"})
+                try:
+                    b = self._body(maxb=260 * 1024)
+                    if not isinstance(b, dict):
+                        b = {}
+                except Exception:
+                    return self._send(400, {"error": "нечитаемое тело запроса"})
+                img = str(b.get("img") or "")
+                if not img:
+                    _avatar_remove(tok)
+                    return self._send(200, {"ok": True, "removed": True})
+                m = re.match(r"^data:image/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]{1,220000})$", img)
+                if not m:
+                    return self._send(400, {"error": "нужна картинка PNG/JPEG/GIF/WebP"})
+                try:
+                    raw = base64.b64decode(m.group(2))
+                except Exception:
+                    return self._send(400, {"error": "нужна картинка PNG/JPEG/GIF/WebP"})
+                if not _avatar_save(tok, raw):
+                    return self._send(400, {"error": "картинка не распознана или слишком большая"})
+                return self._send(200, {"ok": True})
             if p.startswith("/p/") and p.endswith("/forget"):
                 # Публичное «забыть устройство» со страницы подписки /p/<tok>.
                 # Токен сам является правом доступа: кто знает токен — видит и подписку.
