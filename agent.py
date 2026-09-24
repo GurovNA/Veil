@@ -37,7 +37,7 @@ import urllib.parse
 import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONF_FILE = f"{BASE}/agent.conf.json"
 STATE_FILE = f"{BASE}/agent_state.json"
@@ -58,6 +58,8 @@ DEFAULT_CONF = {
     "name": "Veil node",
     "sni": "www.samsung.com",
 }
+
+AGENT_CAPS = ["clients_add", "limits", "unblock", "block", "restart", "autoblock"]
 
 STATE_LOCK = threading.RLock()
 CONF = None
@@ -479,7 +481,7 @@ class H(BaseHTTPRequestHandler):
                 "sni": c.get("sni") or "", "sid": keys.get("sid") or "",
                 "fp": "firefox", "flow": "xtls-rprx-vision",
                 "host_hint": _public_ip(),
-                "clients": len(_active_uuids(st))})
+                "clients": len(_active_uuids(st)), "caps": AGENT_CAPS})
         if p == "/agent/status":
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
@@ -495,7 +497,7 @@ class H(BaseHTTPRequestHandler):
                                                      if x.get("blocked")),
                 "used_gb": round(used / 1024 ** 3, 3),
                 "port": int(c["xport"]), "api_port": int(c["api_port"]),
-                "uptime": int(time.time() - STARTED_AT)})
+                "uptime": int(time.time() - STARTED_AT), "caps": AGENT_CAPS})
         if p == "/agent/clients":
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
@@ -548,11 +550,22 @@ class H(BaseHTTPRequestHandler):
                 _save_state()
                 xray_apply()
                 return self._send(200, {"ok": True, "uuid": u})
-            if action in ("remove", "set_limits", "unblock"):
+            if action == "restart":
+                changed = xray_apply(force=True)
+                return self._send(200, {"ok": True, "restarted": bool(changed)})
+            if action in ("remove", "set_limits", "unblock", "block"):
                 u = (b.get("uuid") or "").strip()
                 c = (st.get("clients") or {}).get(u)
                 if not c:
                     return self._send(404, {"error": "клиент не найден"})
+                if action == "block":
+                    if c.get("blocked"):
+                        return self._send(200, {"ok": True})
+                    c["blocked"] = int(time.time())
+                    c["blocked_reason"] = "manual"
+                    _save_state()
+                    xray_apply()
+                    return self._send(200, {"ok": True})
                 if action == "remove":
                     st["clients"].pop(u, None)
                     _save_state()
@@ -590,7 +603,7 @@ class H(BaseHTTPRequestHandler):
                 if was:
                     xray_apply()
                 return self._send(200, {"ok": True})
-            return self._send(400, {"error": "action: add|remove|set_limits|unblock"})
+            return self._send(400, {"error": "action: add|remove|set_limits|unblock|block|restart"})
 
 
 def _looks_uuid(u):

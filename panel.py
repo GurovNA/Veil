@@ -12,13 +12,14 @@ STATE = f"{BASE}/state.json"
 THEME = f"{BASE}/theme.json"
 WALL = f"{BASE}/wallpaper.bin"
 HTML = f"{BASE}/index.html"
+_HTML_GZ = None
 XRAY = "/usr/local/etc/xray/config.json"
 XRAY_BIN = "/usr/local/bin/xray"
 TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -2582,16 +2583,16 @@ def _sub_status(u, now=None):
     now = now or time.time()
     if u.get("blocked"):
         reason = u.get("blocked_reason") or ""
-        why = {"limit": "исчерпан лимит трафика", "expired": "подписка истекла"}.get(reason, "заблокирован")
-        return "disabled", f"Отключена — {why}"
+        key = {"limit": "st_block_limit", "expired": "st_block_expired"}.get(reason, "st_block")
+        return "disabled", key
     ex = int(u.get("expiry") or 0)
     if ex and now > ex:
-        return "disabled", "Отключена — срок действия истёк"
+        return "disabled", "st_expired"
     lim = float(u.get("limit_gb") or 0)
     used = float(u.get("used_gb") or 0)
     if lim > 0 and used >= lim * 0.95:
-        return "disabled", "Отключена — исчерпан лимит трафика"
-    return "active", "Активна"
+        return "disabled", "st_limit"
+    return "active", "st_active"
 
 def _sub_ua_platform(ua=""):
     u = (ua or "").lower()
@@ -2611,36 +2612,302 @@ def _sub_ua_platform(ua=""):
         return "macos"
     return "ios"
 
-def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None):
-    status, status_txt = _sub_status(u)
+_SUB_LANGS = ("ru", "en", "fa", "zh")
+_SUB_LANG_NAV = (("ru", "RU"), ("en", "EN"), ("fa", "فارسی"), ("zh", "中文"))
+# RU — значения по умолчанию; остальные языки перекрывают их частично.
+_SUB_TXT_RU = {
+    "ttl": "подписка",
+    "tagline": "личный кабинет подписки",
+    "st_active": "Активна",
+    "st_expired": "Отключена — срок действия истёк",
+    "st_limit": "Отключена — исчерпан лимит трафика",
+    "st_block_limit": "Отключена — исчерпан лимит трафика",
+    "st_block_expired": "Отключена — подписка истекла",
+    "st_block": "Отключена — заблокирован",
+    "lb_exp": "Окончание", "lb_trf": "Трафик", "lb_onl": "Онлайн",
+    "lb_conns": "Протоколов", "lb_used": "использовано трафика", "lb_rt": "Маршрутизация",
+    "noexp": "Без ограничения", "exp_over": "срок истёк",
+    "exp_lt1d": "осталось меньше суток", "exp_unset": "срок не задан",
+    "datefmt": "%d.%m.%Y",
+    "lim_over": "лимит исчерпан", "unlim": "безлимит",
+    "reset_day": "сброс ежедневно", "reset_week": "сброс еженедельно",
+    "reset_month": "сброс ежемесячно", "maxdev": "до %d устр.",
+    "head_valid": "Подписка <b>до %s</b>", "head_never": "Подписка <b>бессрочная</b>",
+    "sec_dev": "Устройство", "sec_mydev": "Мои устройства",
+    "forget": "Забыть", "client_default": "Клиент",
+    "devnote": "Устройства, которые запрашивали вашу подписку. «Забыть» уберёт запись, пока клиент снова не обновит подписку с этого адреса.",
+    "ago_now": "только что", "ago_min": "%d мин назад", "ago_hr": "%d ч назад",
+    "ago_day": "%d дн назад",
+    "conf_sb": "sing-box · полный конфиг",
+    "btn_add": "Добавить / Импортировать", "btn_install": "Установить конфиг",
+    "btn_how": "Как подключиться", "btn_copy": "Скопировать подписку",
+    "btn_share": "Поделиться",
+    "hint_pick": "Выберите приложение и нажмите «Добавить / Импортировать».",
+    "ft_sub": "Подписка:", "ft_page": "Ваша страница:",
+    "tag_paid": "платно", "store_dl": "Скачать ↗",
+    "js_first": "Сначала выберите приложение из списка.",
+    "js_wg_open": "%s: откроется импорт или скачается .conf.",
+    "js_wg_dl": "%s: конфиг будет скачан как .conf.",
+    "js_opening": "Открываем «%s…». Если не открылось — скопируйте подписку кнопкой ниже.",
+    "js_ext": "«%s» — внешний клиент: установите из магазина (ссылка «Скачать») и импортируйте подписку через «Скопировать подписку».",
+    "js_copied": "Ссылка подписки скопирована.",
+    "js_copied_open": "Ссылка подписки скопирована. Откройте «%s» и импортируйте её.",
+    "js_nocopy": "Не удалось скопировать автоматически.",
+    "js_manual": "Копируйте ссылку вручную кнопкой выше.",
+    "js_forget_q": "Забыть это устройство?",
+    "js_forgot": "Устройство забыто.",
+    "js_forget_err": "Не удалось забыть устройство: %s",
+    "js_err": "ошибка", "js_net": "Сеть недоступна.",
+    "rt_ru": "<b>Российские сайты и приложения идут напрямую</b>, остальное — через туннель.<br>"
+             "Готовые правила — в кнопке «sing-box · полный конфиг» выше (подходит для Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
+             "Клиентам, которые импортируют ссылки, правило нужно включить в самом приложении:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → добавить правила <code>GEOSITE,category-ru,DIRECT</code> и <code>GEOIP,ru,DIRECT</code>.</li>"
+             "<li><b>v2rayNG</b>: Настройки маршрутизации → «Пользовательские» → правило <code>geosite:category-ru</code> → Direct.</li>"
+             "<li><b>INCY</b>: своих гео-правил нет — вместо ссылки подписки возьмите «sing-box · полный конфиг».</li>"
+             "</ul>",
+    "rt_ir": "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
+             "Готовые правила — в кнопке «sing-box · полный конфиг» выше. В ссылочных клиентах правило настраивается в самом приложении:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → <code>GEOIP,ir,PROXY</code> и <code>GEOSITE,ir,PROXY</code>, финальное правило — DIRECT.</li>"
+             "<li><b>v2rayNG</b>: «Пользовательские» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, остальные правила → Direct.</li>"
+             "<li><b>INCY</b>: своих гео-правил нет — возьмите «sing-box · полный конфиг».</li>"
+             "</ul>",
+}
+_SUB_TXT = {
+"en": {
+    "ttl": "subscription", "tagline": "your subscription dashboard",
+    "st_active": "Active", "st_expired": "Disabled — subscription expired",
+    "st_limit": "Disabled — traffic limit reached",
+    "st_block_limit": "Disabled — traffic limit reached",
+    "st_block_expired": "Disabled — subscription expired", "st_block": "Disabled — blocked",
+    "lb_exp": "Expiry", "lb_trf": "Traffic", "lb_onl": "Online",
+    "lb_conns": "Protocols", "lb_used": "traffic used", "lb_rt": "Routing",
+    "noexp": "No limit", "exp_over": "expired",
+    "exp_lt1d": "less than a day left", "exp_unset": "no date set",
+    "datefmt": "%d %b %Y",
+    "lim_over": "limit reached", "unlim": "unlimited",
+    "reset_day": "resets daily", "reset_week": "resets weekly",
+    "reset_month": "resets monthly", "maxdev": "up to %d devices",
+    "head_valid": "Valid <b>until %s</b>", "head_never": "Subscription <b>never expires</b>",
+    "sec_dev": "Device", "sec_mydev": "My devices",
+    "forget": "Forget", "client_default": "Client",
+    "devnote": "Devices that requested your subscription. “Forget” removes the entry until the client refreshes the subscription from this address again.",
+    "ago_now": "just now", "ago_min": "%d min ago", "ago_hr": "%d h ago",
+    "ago_day": "%d d ago",
+    "conf_sb": "sing-box · full config",
+    "btn_add": "Add / Import", "btn_install": "Install config",
+    "btn_how": "How to connect", "btn_copy": "Copy subscription",
+    "btn_share": "Share",
+    "hint_pick": "Choose an app and tap “Add / Import”.",
+    "ft_sub": "Subscription:", "ft_page": "Your page:",
+    "tag_paid": "paid", "store_dl": "Download ↗",
+    "js_first": "Pick an app from the list first.",
+    "js_wg_open": "%s: import will open or the .conf file will download.",
+    "js_wg_dl": "%s: the config will download as a .conf file.",
+    "js_opening": "Opening “%s…”. If nothing happened — copy the subscription with the button below.",
+    "js_ext": "“%s” is a third-party client: install it from the store (the “Download” link) and import the subscription via “Copy subscription”.",
+    "js_copied": "Subscription link copied.",
+    "js_copied_open": "Subscription link copied. Open “%s” and import it.",
+    "js_nocopy": "Automatic copy failed.",
+    "js_manual": "Copy the link manually with the button above.",
+    "js_forget_q": "Forget this device?",
+    "js_forgot": "Device forgotten.",
+    "js_forget_err": "Could not forget the device: %s",
+    "js_err": "error", "js_net": "Network unavailable.",
+    "exp_1": "%d day left", "exp_n": "%d days left",
+    "rt_ru": "<b>Russian sites and apps go direct</b>, everything else through the tunnel.<br>"
+             "Ready rules are in the “sing-box · full config” button above (works with Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
+             "Clients that import links must enable the rule inside the app:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: Settings → Route → add <code>GEOSITE,category-ru,DIRECT</code> and <code>GEOIP,ru,DIRECT</code>.</li>"
+             "<li><b>v2rayNG</b>: Routing settings → “Custom” → rule <code>geosite:category-ru</code> → Direct.</li>"
+             "<li><b>INCY</b>: no geo rules — use “sing-box · full config” instead of the subscription link.</li>"
+             "</ul>",
+    "rt_ir": "<b>Only Iranian services go through the tunnel</b>, the rest is direct.<br>"
+             "Ready rules are in the “sing-box · full config” button above. In link-based clients the rule is set inside the app:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: Settings → Route → <code>GEOIP,ir,PROXY</code> and <code>GEOSITE,ir,PROXY</code>, final rule — DIRECT.</li>"
+             "<li><b>v2rayNG</b>: “Custom” → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, other rules → Direct.</li>"
+             "<li><b>INCY</b>: no geo rules — use “sing-box · full config”.</li>"
+             "</ul>",
+},
+"fa": {
+    "ttl": "اشتراک", "tagline": "پنل شخصی اشتراک",
+    "st_active": "فعال", "st_expired": "غیرفعال — اشتراک منقضی شده",
+    "st_limit": "غیرفعال — ترافیک مصرف شده",
+    "st_block_limit": "غیرفعال — ترافیک مصرف شده",
+    "st_block_expired": "غیرفعال — اشتراک منقضی شده", "st_block": "غیرفعال — مسدود",
+    "lb_exp": "انقضا", "lb_trf": "ترافیک", "lb_onl": "آنلاین",
+    "lb_conns": "پروتکل‌ها", "lb_used": "ترافیک مصرف‌شده", "lb_rt": "مسیریابی",
+    "noexp": "بدون محدودیت", "exp_over": "منقضی شده",
+    "exp_lt1d": "کمتر از یک روز مانده", "exp_unset": "تاریخی ثبت نشده",
+    "datefmt": "%Y/%m/%d",
+    "lim_over": "ترافیک تمام شده", "unlim": "نامحدود",
+    "reset_day": "ریست روزانه", "reset_week": "ریست هفتگی",
+    "reset_month": "ریست ماهانه", "maxdev": "حداکثر %d دستگاه",
+    "head_valid": "اعتبار اشتراک <b>تا %s</b>", "head_never": "اشتراک <b>بدون انقضا</b>",
+    "sec_dev": "دستگاه", "sec_mydev": "دستگاه‌های من",
+    "forget": "فراموشی", "client_default": "کلاینت",
+    "devnote": "دستگاه‌هایی که اشتراک شما را درخواست کرده‌اند. «فراموشی» ورودی را پاک می‌کند تا وقتی کلاینت دوباره از همین آدرس اشتراک را تازه‌سازی کند.",
+    "ago_now": "همین الان", "ago_min": "%d دقیقه پیش", "ago_hr": "%d ساعت پیش",
+    "ago_day": "%d روز پیش",
+    "conf_sb": "sing-box · کانفیگ کامل",
+    "btn_add": "افزودن / وارد کردن", "btn_install": "نصب کانفیگ",
+    "btn_how": "چگونه وصل شویم", "btn_copy": "کپی اشتراک",
+    "btn_share": "اشتراک‌گذاری",
+    "hint_pick": "یک اپ انتخاب کنید و «افزودن / وارد کردن» را بزنید.",
+    "ft_sub": "اشتراک:", "ft_page": "صفحه شما:",
+    "tag_paid": "پولی", "store_dl": "دانلود ↗",
+    "js_first": "اول یک اپ از لیست انتخاب کنید.",
+    "js_wg_open": "%s: یا وارد می‌شود یا فایل .conf دانلود می‌شود.",
+    "js_wg_dl": "%s: کانفیگ به‌صورت فایل .conf دانلود می‌شود.",
+    "js_opening": "در حال باز کردن «%s…». باز نشد، اشتراک را با دکمه پایین کپی کنید.",
+    "js_ext": "«%s» یک کلاینت خارجی است: از فروشگاه (لینک «دانلود») نصب کنید و اشتراک را با «کپی اشتراک» وارد کنید.",
+    "js_copied": "لینک اشتراک کپی شد.",
+    "js_copied_open": "لینک اشتراک کپی شد. «%s» را باز کنید و وارد کنید.",
+    "js_nocopy": "کپی خودکار نشد.",
+    "js_manual": "لینک را دستی با دکمه بالا کپی کنید.",
+    "js_forget_q": "این دستگاه فراموش شود؟",
+    "js_forgot": "دستگاه فراموش شد.",
+    "js_forget_err": "فراموشی ممکن نشد: %s",
+    "js_err": "خطا", "js_net": "شبکه در دسترس نیست.",
+    "exp_n": "%d روز مانده",
+    "rt_ru": "<b>سایت‌ها و اپ‌های روسی مستقیم می‌روند</b> و بقیه از تونل.<br>"
+             "قوانین آماده در دکمه «sing-box · کانفیگ کامل» بالا (مناسب Happ، SFI/SFA، Streisand، NekoBox، Hiddify). "
+             "در کلاینت‌های لینکی باید قانون را در خود اپ فعال کنید:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: تنظیمات → Route → افزودن <code>GEOSITE,category-ru,DIRECT</code> و <code>GEOIP,ru,DIRECT</code>.</li>"
+             "<li><b>v2rayNG</b>: تنظیمات مسیریابی → «Custom» → قانون <code>geosite:category-ru</code> → Direct.</li>"
+             "<li><b>INCY</b>: قانون جغرافیایی ندارد — به‌جای لینک اشتراک از «sing-box · کانفیگ کامل» استفاده کنید.</li>"
+             "</ul>",
+    "rt_ir": "<b>فقط سرویس‌های ایران از تونل می‌روند</b> و بقیه مستقیم.<br>"
+             "قوانین آماده در دکمه «sing-box · کانفیگ کامل» بالا. در کلاینت‌های لینکی قانون داخل خود اپ تنظیم می‌شود:"
+             "<ul>"
+             "<li><b>Shadowrocket</b>: تنظیمات → Route → <code>GEOIP,ir,PROXY</code> و <code>GEOSITE,ir,PROXY</code>؛ قانون آخر — DIRECT.</li>"
+             "<li><b>v2rayNG</b>: «Custom» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy و بقیه → Direct.</li>"
+             "<li><b>INCY</b>: قانون جغرافیایی ندارد — از «sing-box · کانفیگ کامل» استفاده کنید.</li>"
+             "</ul>",
+},
+"zh": {
+    "ttl": "订阅", "tagline": "我的订阅中心",
+    "st_active": "生效中", "st_expired": "已停用 — 订阅到期",
+    "st_limit": "已停用 — 流量用尽",
+    "st_block_limit": "已停用 — 流量用尽",
+    "st_block_expired": "已停用 — 订阅到期", "st_block": "已停用 — 已封禁",
+    "lb_exp": "到期", "lb_trf": "流量", "lb_onl": "在线",
+    "lb_conns": "协议数", "lb_used": "已用流量", "lb_rt": "分流路由",
+    "noexp": "无限制", "exp_over": "已过期",
+    "exp_lt1d": "不足一天", "exp_unset": "未设到期",
+    "datefmt": "%Y-%m-%d",
+    "lim_over": "流量用尽", "unlim": "无限制",
+    "reset_day": "每日重置", "reset_week": "每周重置",
+    "reset_month": "每月重置", "maxdev": "最多 %d 台设备",
+    "head_valid": "订阅<b>有效期至 %s</b>", "head_never": "订阅<b>永久有效</b>",
+    "sec_dev": "设备", "sec_mydev": "我的设备",
+    "forget": "忘记", "client_default": "客户端",
+    "devnote": "请求过您订阅的设备。「忘记」会删除记录，直到该地址再次刷新订阅。",
+    "ago_now": "刚刚", "ago_min": "%d 分钟前", "ago_hr": "%d 小时前",
+    "ago_day": "%d 天前",
+    "conf_sb": "sing-box · 完整配置",
+    "btn_add": "添加 / 导入", "btn_install": "安装配置",
+    "btn_how": "如何连接", "btn_copy": "复制订阅",
+    "btn_share": "分享",
+    "hint_pick": "选择应用，然后点「添加 / 导入」。",
+    "ft_sub": "订阅：", "ft_page": "您的页面：",
+    "tag_paid": "付费", "store_dl": "下载 ↗",
+    "js_first": "请先从列表选择应用。",
+    "js_wg_open": "%s：将打开导入或下载 .conf 文件。",
+    "js_wg_dl": "%s：配置将作为 .conf 文件下载。",
+    "js_opening": "正在打开「%s…」。没反应请用下方按钮复制订阅。",
+    "js_ext": "「%s」是第三方客户端：请从商店（“下载”链接）安装，再用「复制订阅」导入。",
+    "js_copied": "订阅链接已复制。",
+    "js_copied_open": "订阅链接已复制。打开「%s」并导入。",
+    "js_nocopy": "自动复制失败。",
+    "js_manual": "请用上方按钮手动复制链接。",
+    "js_forget_q": "忘记此设备？",
+    "js_forgot": "已忘记该设备。",
+    "js_forget_err": "无法忘记设备：%s",
+    "js_err": "错误", "js_net": "网络不可用。",
+    "exp_n": "还剩 %d 天",
+    "rt_ru": "<b>俄罗斯网站和应用直连</b>，其余走代理。<br>"
+             "现成规则见上方「sing-box · 完整配置」按钮（适用于 Happ、SFI/SFA、Streisand、NekoBox、Hiddify）。链接类客户端需在应用内开启规则："
+             "<ul>"
+             "<li><b>Shadowrocket</b>：设置 → 路由 → 添加 <code>GEOSITE,category-ru,DIRECT</code> 和 <code>GEOIP,ru,DIRECT</code>。</li>"
+             "<li><b>v2rayNG</b>：路由设置 → 自定义 → 规则 <code>geosite:category-ru</code> → Direct。</li>"
+             "<li><b>INCY</b>：无地理规则 — 请改用「sing-box · 完整配置」。</li>"
+             "</ul>",
+    "rt_ir": "<b>只有伊朗服务走代理</b>，其余直连。<br>"
+             "现成规则见上方「sing-box · 完整配置」按钮。链接类客户端需在应用内设置规则："
+             "<ul>"
+             "<li><b>Shadowrocket</b>：设置 → 路由 → <code>GEOIP,ir,PROXY</code> 和 <code>GEOSITE,ir,PROXY</code>，最后一条 — DIRECT。</li>"
+             "<li><b>v2rayNG</b>：自定义 → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy，其余 → Direct。</li>"
+             "<li><b>INCY</b>：无地理规则 — 请用「sing-box · 完整配置」。</li>"
+             "</ul>",
+},
+}
+
+def _sub_L(lang):
+    d = dict(_SUB_TXT_RU)
+    d.update(_SUB_TXT.get(lang) or {})
+    return d
+
+def _sub_lang_pick(qs="", cookie="", accept=""):
+    for cand in (qs, cookie):
+        c = str(cand or "").strip().lower()
+        for l in _SUB_LANGS:
+            if c == l:
+                return l
+    for pr in str(accept or "").split(","):
+        pr = pr.strip().split(";")[0].lower()
+        for l in _SUB_LANGS:
+            if pr == l or pr.startswith(l + "-"):
+                return l
+    return "ru"
+
+def _sub_days_left(L, lang, n):
+    if lang == "ru":
+        m10, m100 = n % 10, n % 100
+        if m10 == 1 and m100 != 11:
+            return "остался %d день" % n
+        if 2 <= m10 <= 4 and not 12 <= m100 <= 14:
+            return "осталось %d дня" % n
+        return "осталось %d дней" % n
+    if lang == "en":
+        return L.get("exp_1", "%d day left") % n if n == 1 else L["exp_n"] % n
+    return L["exp_n"] % n
+
+def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
+    if lang not in _SUB_LANGS:
+        lang = "ru"
+    L = _sub_L(lang)
+    status, st_key = _sub_status(u)
+    status_txt = L[st_key]
     now = time.time()
     ex = int(u.get("expiry") or 0)
     if ex:
-        exp_txt = time.strftime("%d.%m.%Y", time.localtime(ex))
+        exp_txt = time.strftime(L["datefmt"], time.localtime(ex))
         dl = int(ex - now)
         if dl < 0:
-            exp_sub = "срок истёк"
+            exp_sub = L["exp_over"]
         elif dl < 86400:
-            exp_sub = "осталось меньше суток"
+            exp_sub = L["exp_lt1d"]
         else:
-            days = int(dl // 86400)
-            exp_sub = (f"остался 1 день" if days == 1
-                       else f"осталось {days} дня" if days < 5
-                       else f"осталось {days} дней")
+            exp_sub = _sub_days_left(L, lang, int(dl // 86400))
     else:
-        exp_txt = "Без ограничения"
-        exp_sub = "срок не задан"
+        exp_txt = L["noexp"]
+        exp_sub = L["exp_unset"]
     lim = float(u.get("limit_gb") or 0)
     used = float(u.get("used_gb") or 0)
     if lim > 0:
         pct = min(100.0, used / lim * 100)
         trf_txt = f"{used:.2f} / {lim:.1f} GB"
-        pct_txt = "лимит исчерпан" if pct >= 100 else f"{pct:.1f}%"
+        pct_txt = L["lim_over"] if pct >= 100 else f"{pct:.1f}%"
     else:
         pct = 0.0
-        trf_txt = f"{used:.2f} GB · безлимит"
-        pct_txt = "безлимит"
-    name_plain = str(u.get("name") or "Подписка")
+        trf_txt = f"{used:.2f} GB · " + L["unlim"]
+        pct_txt = L["unlim"]
+    name_plain = str(u.get("name") or L["ttl"])
     name_html = name_plain.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     onl = int(u.get("online") or 0)
     conns = len(u.get("protos") or [])
@@ -2669,43 +2936,30 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None):
     if u.get("sb_url"):
         conf_blocks.append('<a class="btn-conf" href="' + u["sb_url"] + '">'
                            '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
-                           'sing-box · полный конфиг</a>')
+                           + L["conf_sb"] + '</a>')
     confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
     # Строка под именем: лимиты вместо дубля окончания срока (он есть в карточках).
-    cyc_label = {"day": "ежедневно", "week": "еженедельно",
-                 "month": "ежемесячно"}.get(u.get("reset_cycle") or "", "")
+    cyc_label = {"day": L["reset_day"], "week": L["reset_week"],
+                 "month": L["reset_month"]}.get(u.get("reset_cycle") or "", "")
     try: mdev = int(u.get("max_devices") or 0)
     except Exception: mdev = 0
     segs = []
     if cyc_label:
-        segs.append("сброс " + cyc_label)
+        segs.append(cyc_label)
     if mdev:
-        segs.append(f"до {mdev} устр.")
+        segs.append(L["maxdev"] % mdev)
     if segs:
         head_line = "<b>" + " · ".join(segs) + "</b> · " + exp_sub
     else:
-        head_line = ("Подписка <b>до " + exp_txt + "</b> · " if ex else "Подписка <b>бессрочная</b> · ") + exp_sub
+        head_line = ((L["head_valid"] % exp_txt if ex else L["head_never"]) + " · " + exp_sub)
     split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
     rt_html = ""
     if split == "ru":
-        rt_html = ("<div class='sec'><h2>Маршрутизация</h2><div class='rt'>"
-                   "<b>Российские сайты и приложения идут напрямую</b>, остальное — через туннель.<br>"
-                   "Готовые правила — в кнопке «sing-box · полный конфиг» выше (подходит для Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
-                   "Клиентам, которые импортируют ссылки, правило нужно включить в самом приложении:"
-                   "<ul>"
-                   "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → добавить правила <code>GEOSITE,category-ru,DIRECT</code> и <code>GEOIP,ru,DIRECT</code>.</li>"
-                   "<li><b>v2rayNG</b>: Настройки маршрутизации → «Пользовательские» → правило <code>geosite:category-ru</code> → Direct.</li>"
-                   "<li><b>INCY</b>: своих гео-правил нет — вместо ссылки подписки возьмите «sing-box · полный конфиг».</li>"
-                   "</ul></div></div>")
+        rt_html = ("<div class='sec'><h2>" + L["lb_rt"] + "</h2><div class='rt'>"
+                   + L["rt_ru"] + "</div></div>")
     elif split == "ir":
-        rt_html = ("<div class='sec'><h2>Маршрутизация</h2><div class='rt'>"
-                   "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
-                   "Готовые правила — в кнопке «sing-box · полный конфиг» выше. В ссылочных клиентах правило настраивается в самом приложении:"
-                   "<ul>"
-                   "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → <code>GEOIP,ir,PROXY</code> и <code>GEOSITE,ir,PROXY</code>, финальное правило — DIRECT.</li>"
-                   "<li><b>v2rayNG</b>: «Пользовательские» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, остальные правила → Direct.</li>"
-                   "<li><b>INCY</b>: своих гео-правил нет — возьмите «sing-box · полный конфиг».</li>"
-                   "</ul></div></div>")
+        rt_html = ("<div class='sec'><h2>" + L["lb_rt"] + "</h2><div class='rt'>"
+                   + L["rt_ir"] + "</div></div>")
     hy2_conf = links.get("hysteria2") or ""
     cat = {k: [dict(a) for a in v
                if not (a.get("wg") and not wg_conf)
@@ -2725,13 +2979,13 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None):
         except Exception:
             return ""
         s = max(0, int(now - dt))
-        if s < 120: return "только что"
-        if s < 3600: return "%d мин назад" % (s // 60)
-        if s < 86400: return "%d ч назад" % (s // 3600)
-        return "%d дн назад" % (s // 86400)
+        if s < 120: return L["ago_now"]
+        if s < 3600: return L["ago_min"] % (s // 60)
+        if s < 86400: return L["ago_hr"] % (s // 3600)
+        return L["ago_day"] % (s // 86400)
     drows = []
     for d in (devs or [])[:10]:
-        cli = _esc(d.get("client") or "Клиент")
+        cli = _esc(d.get("client") or L["client_default"])
         ver = _esc(d.get("version") or "")
         typ = _esc(d.get("type") or "")
         osl = _esc(d.get("os") or "")
@@ -2744,20 +2998,24 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None):
                      (ago + ((" ×%d" % n) if n > 1 else "")) if ago else "") if x)
         drows.append('<div class="devr"><div class="devi"><b>' + who +
                      '</b><span>' + sub + '</span></div>'
-                     '<button class="devx" data-ip="' + ip + '">Забыть</button></div>')
+                     '<button class="devx" data-ip="' + ip + '">' + L["forget"] + '</button></div>')
     if drows:
-        devs_html = ('<div class="sec"><h2>Мои устройства</h2><div class="devlist">'
-                     + "".join(drows) + '</div><div class="devnote">Устройства, '
-                     'которые запрашивали вашу подписку. «Забыть» уберёт запись, '
-                     'пока клиент снова не обновит подписку с этого адреса.</div></div>')
+        devs_html = ('<div class="sec"><h2>' + L["sec_mydev"] + '</h2><div class="devlist">'
+                     + "".join(drows) + '</div><div class="devnote">' + L["devnote"] + '</div></div>')
     else:
         devs_html = ''
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
-    tpl = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+    langnav = "".join('<a href="?lang=' + lk + '"' + (' class="sel"' if lk == lang else "") +
+                      '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
+    js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_copied js_copied_open "
+               "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
+               "btn_add btn_install btn_how tag_paid store_dl").split()
+    ljs_json = json.dumps({k: L[k] for k in js_keys}, ensure_ascii=False)
+    tpl = """<!DOCTYPE html><html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/png" href="/logo.png">
 <meta name="theme-color" content="#0a122a">
-<title>__NAMEHT__ · подписка</title><style>
+<title>__NAMEHT__ · __TTL__</title><style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0}
 body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e8ecf7;
@@ -2771,12 +3029,19 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .ray{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
   background:radial-gradient(900px 600px at 50% -12%,rgba(56,189,248,.10),transparent 60%)}
 .page{width:100%;max-width:460px;position:relative;z-index:1}
-.hbar{display:flex;align-items:center;gap:11px;margin-bottom:18px;padding:0 2px}
-.hbar .lg{width:40px;height:40px;border-radius:12px;object-fit:cover;box-shadow:0 8px 20px -6px rgba(34,211,238,.5)}
-.hbar .br{min-width:0;display:flex;flex-direction:column;justify-content:center}
+.hbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
+  grid-template-areas:"logo br pill" "logo br langs";
+  column-gap:11px;row-gap:6px;align-items:center;margin-bottom:18px;padding:0 2px}
+.hbar .lg{grid-area:logo;align-self:center;width:40px;height:40px;border-radius:12px;object-fit:cover;box-shadow:0 8px 20px -6px rgba(34,211,238,.5)}
+.hbar .br{grid-area:br;align-self:center;min-width:0;display:flex;flex-direction:column;justify-content:center}
 .hbar .br b{font-size:15px;font-weight:800;letter-spacing:3px;line-height:1}
-.hbar .br span{font-size:10.5px;color:#8b94b5;letter-spacing:.3px;margin-top:3px}
-.hbar .pill{margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
+.hbar .br span{font-size:10.5px;color:#8b94b5;letter-spacing:.3px;margin-top:3px;overflow-wrap:anywhere}
+.langs{grid-area:langs;justify-self:end;display:grid;grid-template-columns:repeat(2,min-content);gap:4px}
+[dir=rtl] .langs{justify-self:start}
+.langs a{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:#8b94b5;text-decoration:none;
+  padding:6px 8px;border-radius:999px;border:1px solid rgba(66,84,130,.45);background:rgba(22,29,52,.6);text-align:center}
+.langs a.sel{color:#04101f;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent}
+.hbar .pill{grid-area:pill;justify-self:end;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
   font-size:12px;font-weight:700;white-space:nowrap}
 .pill.ok{background:rgba(74,222,128,.1);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
 .pill.off{background:rgba(251,113,133,.1);color:#fb7185;border:1px solid rgba(251,113,133,.35)}
@@ -2826,7 +3091,7 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .rt{font-size:12.5px;color:#9aa6c8;line-height:1.65;background:rgba(22,29,52,.75);
   border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:12px 14px}
 .rt b{color:#cbd5f1}
-.rt ul{margin:8px 0 0;padding-left:18px}
+.rt ul{margin:8px 0 0;padding-inline-start:18px}
 .rt li{margin:5px 0}
 .rt code{color:#7dd3fc;font-size:11px;background:rgba(10,15,33,.6);padding:1px 5px;border-radius:5px}
 .devlist{display:flex;flex-direction:column;gap:8px}
@@ -2843,7 +3108,7 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .sec{padding:18px 20px 20px}
 h2{font-size:13px;color:#94a3c4;text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
   display:flex;align-items:center}
-h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,84,130,.5),transparent);margin-left:12px}
+h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,84,130,.5),transparent);margin-inline-start:12px}
 .chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
 .chip-p{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;
@@ -2908,8 +3173,9 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
 <div class="page">
  <header class="hbar fade">
   <img src="/logo.png" class="lg" alt="Veil" width="40" height="40">
-  <div class="br"><b>VEIL</b><span>личный кабинет подписки</span></div>
+  <div class="br"><b>VEIL</b><span>__TAG__</span></div>
   <span class="pill __CLS__"><i></i>__STATUS__</span>
+  <nav class="langs">__LANGS__</nav>
  </header>
  <main class="card fade" style="animation-delay:.08s">
   <div class="head">
@@ -2920,33 +3186,34 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    </div>
   </div>
   <div class="stats">
-   <div class="stat"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><div class="lb">Окончание</div><b>__EXP__<span class="dim"> · __EXPSUB__</span></b></div>
-   <div class="stat"><svg viewBox="0 0 24 24"><circle cx="12" cy="15" r="8"/><path d="M12 15l3.5-3.5M5 5l4 4"/></svg><div class="lb">Трафик</div><b>__TRF__</b></div>
-   <div class="stat"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg><div class="lb">Онлайн</div><b>__ONL__</b></div>
-   <div class="stat"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><div class="lb">Протоколов</div><b>__CONNS__</b></div>
+   <div class="stat"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><div class="lb">__LBEXP__</div><b>__EXP__<span class="dim"> · __EXPSUB__</span></b></div>
+   <div class="stat"><svg viewBox="0 0 24 24"><circle cx="12" cy="15" r="8"/><path d="M12 15l3.5-3.5M5 5l4 4"/></svg><div class="lb">__LBTRF__</div><b>__TRF__</b></div>
+   <div class="stat"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg><div class="lb">__LBONL__</div><b>__ONL__</b></div>
+   <div class="stat"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><div class="lb">__LBCON__</div><b>__CONNS__</b></div>
   </div>
   <div class="barwrap">
    <div class="track"><i style="width:__PCT__%"></i></div>
-   <div class="tl"><span>использовано трафика</span><b>__PCTLBL__</b></div>
+   <div class="tl"><span>__LBUSED__</span><b>__PCTLBL__</b></div>
   </div>
   __CONFS__
   <div class="sec">
-   <h2>Устройство</h2>
+   <h2>__SECDEV__</h2>
    <div class="chips" id="chips"></div>
    <div id="apps" class="apps"></div>
   </div>
   __DEVS__
   __RT__
+  __PAYBLOCK__
  </main>
  <div class="action">
-  <button class="btn btn-add fade" style="animation-delay:.16s" id="addBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span id="addLbl">Добавить / Импортировать</span></button>
+  <button class="btn btn-add fade" style="animation-delay:.16s" id="addBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span id="addLbl">__BTNADD__</span></button>
   <div class="btn-row fade" style="animation-delay:.22s">
-   <button class="btn btn-copy" id="copyBtn"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Скопировать подписку</button>
-   <button class="btn btn-copy" id="shareBtn"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>Поделиться</button>
+   <button class="btn btn-copy" id="copyBtn"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>__BTNCOPY__</button>
+   <button class="btn btn-copy" id="shareBtn"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>__BTNSHARE__</button>
   </div>
-  <div class="hint" id="hint" style="animation:none">Выберите приложение и нажмите «Добавить / Импортировать».</div>
+  <div class="hint" id="hint" style="animation:none">__HINTPICK__</div>
  </div>
- <div class="footer"><b>Подписка:</b> <code>__SUB__</code><br><b>Ваша страница:</b> <code>__PAGE__</code></div>
+ <div class="footer"><b>__SUBFT__</b> <code>__SUB__</code><br><b>__PAGEFT__</b> <code>__PAGE__</code></div>
 </div>
 <script>
 const CATALOG=__CAT__;
@@ -2959,6 +3226,8 @@ const WGDOWN=__WGDOWN__;
 const AWGDOWN=__AWGDOWN__;
 const PLATS=__PLATS__;
 const TOK=__TOK__;
+const L=__LJS__;
+function F(s){var a=[].slice.call(arguments,1);return String(s).replace(/%s/g,function(){return a.shift()});}
 let cur=null;
 let lastK=__PLATDEFAULT__;
 const HP=document.getElementById.bind(document);
@@ -2967,14 +3236,14 @@ function buildLink(a){return (a.link||'')
   .replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
   .replace('{name}',encodeURIComponent(NAME)).replace('{wgconf}',WGCONF).replace('{awgconf}',AWGCONF);}
 function selHint(){
-  if(!cur){hint('Сначала выберите приложение из списка.','#fbbf24');return false;}
+  if(!cur){hint(L.js_first,'#fbbf24');return false;}
   if(cur.wg||cur.awg){
-    if(cur.link){hint((cur.wg?'WireGuard':'AmneziaWG')+': откроется импорт или скачается .conf.','#7dd3fc');}
-    else{hint((cur.wg?'WireGuard':'AmneziaWG')+': конфиг будет скачан как .conf.','#7dd3fc');}
+    if(cur.link){hint(F(L.js_wg_open,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
+    else{hint(F(L.js_wg_dl,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
   }else if(cur.link){
-    hint('Открываем «'+cur.name+'…». Если не открылось — скопируйте подписку кнопкой ниже.');
+    hint(F(L.js_opening,cur.name));
   }else{
-    hint('«'+cur.name+'» — внешний клиент: установите из магазина (ссылка «Скачать») и импортируйте подписку через «Скопировать подписку».','#fbbf24');
+    hint(F(L.js_ext,cur.name),'#fbbf24');
   }
   return true;
 }
@@ -2987,9 +3256,9 @@ function app(a){
   const inf=document.createElement('div');inf.className='inf';
   const b=document.createElement('b');b.textContent=a.name;
   const tg=document.createElement('div');tg.className='tags';
-  if(a.pay){const p=document.createElement('span');p.className='tag pay';p.textContent='платно';tg.appendChild(p);}
+  if(a.pay){const p=document.createElement('span');p.className='tag pay';p.textContent=L.tag_paid;tg.appendChild(p);}
   else if(a.wg||a.awg){const p=document.createElement('span');p.className='tag cfg';p.textContent='.conf';tg.appendChild(p);}
-  if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent='Скачать ↗';
+  if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent=L.store_dl;
     x.addEventListener('click',function(e){e.stopPropagation();});tg.appendChild(x);}
   inf.appendChild(b);inf.appendChild(tg);
   const ck=document.createElement('span');ck.className='ck';ck.textContent='✓';
@@ -3009,10 +3278,10 @@ function render(){
   if(cur){const el=box.children[arr.indexOf(cur)];if(el)el.classList.add('sel');}
   selHint();
   const lbl=HP('addLbl');
-  if(cur&&cur.link)lbl.textContent='Добавить / Импортировать';
-  else if(cur&&(cur.wg||cur.awg))lbl.textContent='Установить конфиг';
-  else if(cur)lbl.textContent='Как подключиться';
-  else lbl.textContent='Добавить / Импортировать';
+  if(cur&&cur.link)lbl.textContent=L.btn_add;
+  else if(cur&&(cur.wg||cur.awg))lbl.textContent=L.btn_install;
+  else if(cur)lbl.textContent=L.btn_how;
+  else lbl.textContent=L.btn_add;
 }
 function renderChips(){
   const box=HP('chips');box.innerHTML='';
@@ -3035,49 +3304,65 @@ document.addEventListener('DOMContentLoaded',function(){
     if(cur.link){location.href=buildLink(cur);return;}
     if(navigator.clipboard){
       navigator.clipboard.writeText(SUB).then(function(){
-        hint('Ссылка подписки скопирована. Откройте «'+cur.name+'» и импортируйте её.','#4ade80');
-      }).catch(function(){hint('Не удалось скопировать автоматически.');});
-    }else{hint('Не удалось скопировать автоматически.');}
+        hint(F(L.js_copied_open,cur.name),'#4ade80');
+      }).catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
   });
   HP('copyBtn').addEventListener('click',function(){
     if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint('Ссылка подписки скопирована.','#4ade80');})
-        .catch(function(){hint('Не удалось скопировать автоматически.');});
-    }else{hint('Не удалось скопировать автоматически.');}
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'#4ade80');})
+        .catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
   });
   HP('shareBtn').addEventListener('click',function(){
     if(navigator.share){
-      navigator.share({title:NAME,text:NAME,url:SUB}).catch(function(){hint('Копируйте ссылку вручную кнопкой выше.');});
+      navigator.share({title:NAME,text:NAME,url:SUB}).catch(function(){hint(L.js_manual);});
     }else if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint('Ссылка подписки скопирована.','#4ade80');})
-        .catch(function(){hint('Не удалось скопировать автоматически.');});
-    }else{hint('Не удалось скопировать автоматически.');}
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'#4ade80');})
+        .catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
   });
   Array.prototype.forEach.call(document.querySelectorAll('.devx'),function(btn){
     btn.addEventListener('click',function(){
       var ip=btn.getAttribute('data-ip');
-      if(!confirm('Забыть это устройство?'))return;
+      if(!confirm(L.js_forget_q))return;
       btn.disabled=true;
       fetch('/p/'+encodeURIComponent(TOK)+'/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})})
         .then(function(r){return r.json();})
-        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint('Устройство забыто.','#4ade80');} else {hint('Не удалось забыть устройство: '+((j&&j.error)||'ошибка'),'#fb7185'); btn.disabled=false;} })
-        .catch(function(){hint('Сеть недоступна.','#fb7185'); btn.disabled=false;});
+        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint(L.js_forgot,'#4ade80');} else {hint(F(L.js_forget_err,(j&&j.error)||L.js_err),'#fb7185'); btn.disabled=false;} })
+        .catch(function(){hint(L.js_net,'#fb7185'); btn.disabled=false;});
     });
   });
 });
 </script></body></html>"""
-    return (tpl.replace("__AVA__", avatar)
+    payblock = ""
+    try:
+        payblock = _pay_block_html(u.get("sub_token") or "", L)
+    except Exception:
+        pass
+    return (tpl.replace("__LANGS__", langnav)
+                .replace("__LANG__", lang).replace("__DIR__", "rtl" if lang == "fa" else "ltr")
+                .replace("__TTL__", L["ttl"]).replace("__TAG__", L["tagline"])
+                .replace("__AVA__", avatar)
                 .replace("__NAMEHT__", name_html)
                 .replace("__CLS__", cls).replace("__STATUS__", status_txt)
                 .replace("__EXP__", exp_txt).replace("__EXPSUB__", exp_sub)
                 .replace("__TRF__", trf_txt).replace("__PCT__", f"{pct:.2f}")
                 .replace("__PCTLBL__", pct_txt)
+                .replace("__LBEXP__", L["lb_exp"]).replace("__LBTRF__", L["lb_trf"])
+                .replace("__LBONL__", L["lb_onl"]).replace("__LBCON__", L["lb_conns"])
+                .replace("__LBUSED__", L["lb_used"])
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
                 .replace("__CONFS__", confs_html)
                 .replace("__HEADLINE__", head_line)
+                .replace("__SECDEV__", L["sec_dev"])
+                .replace("__BTNADD__", L["btn_add"]).replace("__BTNCOPY__", L["btn_copy"])
+                .replace("__BTNSHARE__", L["btn_share"]).replace("__HINTPICK__", L["hint_pick"])
+                .replace("__SUBFT__", L["ft_sub"]).replace("__PAGEFT__", L["ft_page"])
                 .replace("__DEVS__", devs_html)
                 .replace("__RT__", rt_html)
+                .replace("__PAYBLOCK__", payblock)
                 .replace("__SUBJS__", json.dumps(sub_url))
                 .replace("__B64JS__", json.dumps(sub64))
                 .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
@@ -3087,6 +3372,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__AWGDOWN__", json.dumps(awg_url))
                 .replace("__CAT__", catalog_json)
                 .replace("__PLATS__", plats_json)
+                .replace("__LJS__", ljs_json)
                 .replace("__TOK__", json.dumps(u["sub_token"]))
                 .replace("__PLATDEFAULT__", json.dumps(plat_default)))
 
@@ -3226,14 +3512,274 @@ def _is_admin(chat_id):
     admin_ids = CFG_CACHE.get("bot_chat_ids", [])
     return str(chat_id) in [str(x) for x in admin_ids]
 
-def _main_menu_keyboard():
+BOT_LANGS = f"{BASE}/bot_langs.json"
+_BOT_RU = {
+    "m_status": "📊 Статус", "m_clients": "👥 Клиенты",
+    "m_addsub": "➕ Добавить подписку", "m_restart": "🔄 Перезапустить Xray",
+    "m_2fa": "🔐 2FA", "m_help": "❓ Помощь", "m_lang": "🌐 Язык",
+    "start": "🤖 <b>Veil Panel Bot</b>\nВаш Chat ID: <code>%s</code>\n\nВыберите действие:",
+    "norights": "⛔ Нет прав доступа. Ваш ID: %s. Админ ID: %s",
+    "norights_short": "⛔ Нет прав доступа",
+    "nocallback": "Ошибка: нет сообщения",
+    "add_step1": "➕ <b>Новая подписка</b>\nШаг 1 из 3. Отправь <b>имя</b> клиента (например: <b>Мама</b>).\nОтмена: /cancel",
+    "add_nameempty": "Имя не может быть пустым. Напиши имя ещё раз или /cancel",
+    "add_limitq": "👤 Имя: <b>%s</b>\nТеперь <b>лимит</b> трафика в ГБ (число, <code>0</code> = безлимит, можно дробное: 12.5):\nОтмена: /cancel",
+    "add_num": "Нужно число. Повтори лимит (0 = безлимит) или /cancel",
+    "add_daysq": "Лимит: <b>%s</b> ГБ\nТеперь <b>срок</b> в днях (число, <code>0</code> = бессрочно):\nОтмена: /cancel",
+    "add_intnum": "Нужно целое число дней. Повтори (0 = бессрочно) или /cancel",
+    "add_err": "❌ Ошибка создания: %s",
+    "created": "✅ <b>Подписка создана</b>\nИмя: <code>%s</code>\nЛимит: %s · Срок: %s\nПодписка: <code>%s</code>\nСкопируй ссылку в приложение (v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket).",
+    "unlim": "безлимит", "gb": "%s ГБ", "daysu": "%s дн.", "forever": "бессрочно",
+    "clients_hdr": "👥 <b>Клиенты:</b>", "clients_empty": "Клиентов нет",
+    "restarted": "🔄 Xray перезапущен", "cancelled": "Отменено.",
+    "help": "<b>Команды:</b>\n/start — меню\n/status — статус и статистика\n/clients — список клиентов\n/restart — перезагрузить Xray\n/addsub — создать новую подписку (имя → лимит → срок)\n/2fa — настройка 2FA\n/pay — оплата: сводка и счета\n/paycheck — проверить статусы оплат\n/backup — автобэкапы: список и восстановление\n/lang — язык / language",
+    "m_pay": "💳 Оплата",
+    "pay_off": "💳 Приём оплаты <b>выключен</b>. Включается в панели: вкладка «💳 Оплата».",
+    "pay_hdr": "💳 Приём оплаты: <b>включён</b>\nСпособ: %s\nТарифов: %d · неоплаченных счетов: %d · собрано: %s %s",
+    "pay_none": "Счетов ещё не было.",
+    "pay_recent": "<b>Последние счета:</b>",
+    "pay_line": "%s — %s · %s %s · %s",
+    "pay_wait": "⏳ ожидает",
+    "pay_paidst": "✅ оплачен",
+    "pay_none_open": "Неоплаченных счетов нет — проверять нечего.",
+    "pay_checked": "Проверено счетов: %d · подтверждено оплат: %d",
+    "m_backup": "🗄 Бэкап",
+    "bk_hdr": "🗄 <b>Автобэкапы</b>: %d шт. (раньше сверху — новее)",
+    "bk_none": "Автобэкапов ещё нет. Создай новый кнопкой или включи расписание в панели: «💾 Бэкапы».",
+    "bk_new_btn": "🆕 Создать",
+    "bk_send_btn": "📤 Прислать свежий",
+    "bk_file_btn": "%s UTC · %d КБ",
+    "bk_created": "✅ Бэкап создан: %s (%d КБ)",
+    "bk_sent": "📤 Отправляю файл бэкапа...",
+    "bk_noent": "Файл %s не найден.",
+    "bk_ask": "⚠️ Восстановить панель из бэкапа <b>%s</b>?\nСоздан: %s UTC · клиентов в нём: %s\nТекущие данные будут перезаписаны (страховочная копия сервера делается автоматически).",
+    "bk_yes": "✅ Да, восстановить",
+    "bk_no": "❌ Отмена",
+    "bk_done": "✅ Восстановлено из %s · клиентов: %s. Xray перезапущен.",
+    "bk_cancel": "Отменено.",
+    "bk_err": "⚠️ Ошибка бэкапа: %s",
+    "status_hdr": "📊 <b>Статус и статистика</b>\nXray: %s\nАптайм: %s\nКлиентов: %s\nНод: %s\n%s\nCPU: %s · RAM: %s\nДиск: %s",
+    "xray_on": "🟢 работает", "xray_off": "🔴 остановлен",
+    "gp_ok": "🇷🇺 Доступность из РФ: %s %s/%s (%s%%) · %s UTC",
+    "gp_none": "🇷🇺 Доступность из РФ: — (проверок ещё не было, открой панель)",
+    "twofa": "🔐 <b>2FA настройка</b>\nНастройте 2FA в панели: вкладка <b>Безопасность</b> → <b>Двухфакторная аутентификация</b>",
+    "unknown": "Неизвестная команда. /help",
+    "err": "⚠️ Ошибка: %s",
+    "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
+    "lang_saved": "Готово: %s",
+    "gp_low": "🚨 <b>Доступность из РФ упала ниже 50%%!</b>\nЗонды: %s/%s (%s%%)\nВремя: %s UTC\nПодробности проведи проверку в панели или нажми %s",
+    "gp_recover": "✅ Доступность из РФ восстановилась: %s/%s (%s%%) · %s UTC",
+}
+_BOT_TXT = {
+"en": {
+    "m_status": "📊 Status", "m_clients": "👥 Clients",
+    "m_addsub": "➕ Add subscription", "m_restart": "🔄 Restart Xray",
+    "m_2fa": "🔐 2FA", "m_help": "❓ Help", "m_lang": "🌐 Language",
+    "start": "🤖 <b>Veil Panel Bot</b>\nYour Chat ID: <code>%s</code>\n\nChoose an action:",
+    "norights": "⛔ Access denied. Your ID: %s. Admin IDs: %s",
+    "norights_short": "⛔ Access denied",
+    "nocallback": "Error: no message",
+    "add_step1": "➕ <b>New subscription</b>\nStep 1 of 3. Send the client <b>name</b> (e.g. <b>Mom</b>).\nCancel: /cancel",
+    "add_nameempty": "Name can't be empty. Send the name again or /cancel",
+    "add_limitq": "👤 Name: <b>%s</b>\nNow the traffic <b>limit</b> in GB (number, <code>0</code> = unlimited, fractions OK: 12.5):\nCancel: /cancel",
+    "add_num": "A number is required. Repeat the limit (0 = unlimited) or /cancel",
+    "add_daysq": "Limit: <b>%s</b> GB\nNow the <b>validity</b> in days (number, <code>0</code> = forever):\nCancel: /cancel",
+    "add_intnum": "A whole number of days is required. Repeat (0 = forever) or /cancel",
+    "add_err": "❌ Creation failed: %s",
+    "created": "✅ <b>Subscription created</b>\nName: <code>%s</code>\nLimit: %s · Valid: %s\nSubscription: <code>%s</code>\nCopy the link into your app (v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket).",
+    "unlim": "unlimited", "gb": "%s GB", "daysu": "%s d", "forever": "forever",
+    "clients_hdr": "👥 <b>Clients:</b>", "clients_empty": "No clients",
+    "restarted": "🔄 Xray restarted", "cancelled": "Cancelled.",
+    "help": "<b>Commands:</b>\n/start — menu\n/status — status and stats\n/clients — client list\n/restart — restart Xray\n/addsub — create a subscription (name → limit → days)\n/2fa — 2FA setup\n/pay — payments summary and invoices\n/paycheck — poll payment statuses\n/backup — auto-backups: list and restore\n/lang — язык / language",
+    "m_pay": "💳 Payments",
+    "pay_off": "💳 Payments are <b>off</b>. Turn them on in the panel: “💳 Payments” tab.",
+    "pay_hdr": "💳 Payments: <b>on</b>\nProvider: %s\nPlans: %d · unpaid invoices: %d · collected: %s %s",
+    "pay_none": "No invoices yet.",
+    "pay_recent": "<b>Recent invoices:</b>",
+    "pay_line": "%s — %s · %s %s · %s",
+    "pay_wait": "⏳ pending",
+    "pay_paidst": "✅ paid",
+    "pay_none_open": "No unpaid invoices to check.",
+    "pay_checked": "Invoices checked: %d · payments confirmed: %d",
+    "m_backup": "🗄 Backup",
+    "bk_hdr": "🗄 <b>Auto-backups</b>: %d (newest on top)",
+    "bk_none": "No auto-backups yet. Create one with the button or enable the schedule in the panel: '💾 Backups'.",
+    "bk_new_btn": "🆕 Create",
+    "bk_send_btn": "📤 Send newest",
+    "bk_file_btn": "%s UTC · %d KB",
+    "bk_created": "✅ Backup created: %s (%d KB)",
+    "bk_sent": "📤 Sending the backup file...",
+    "bk_noent": "File %s not found.",
+    "bk_ask": "⚠️ Restore the panel from backup <b>%s</b>?\nCreated: %s UTC · clients inside: %s\nCurrent data will be overwritten (a safety copy of the server is made automatically).",
+    "bk_yes": "✅ Yes, restore",
+    "bk_no": "❌ Cancel",
+    "bk_done": "✅ Restored from %s · clients: %s. Xray restarted.",
+    "bk_cancel": "Cancelled.",
+    "bk_err": "⚠️ Backup error: %s",
+    "status_hdr": "📊 <b>Status and stats</b>\nXray: %s\nUptime: %s\nClients: %s\nNodes: %s\n%s\nCPU: %s · RAM: %s\nDisk: %s",
+    "xray_on": "🟢 running", "xray_off": "🔴 stopped",
+    "gp_ok": "🇷🇺 Access from Russia: %s %s/%s (%s%%) · %s UTC",
+    "gp_none": "🇷🇺 Access from Russia: — (no checks yet, open the panel)",
+    "twofa": "🔐 <b>2FA setup</b>\nConfigure 2FA in the panel: tab <b>Security</b> → <b>Two-factor authentication</b>",
+    "unknown": "Unknown command. /help",
+    "err": "⚠️ Error: %s",
+    "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
+    "lang_saved": "Done: %s",
+    "gp_low": "🚨 <b>Access from Russia dropped below 50%%!</b>\nProbes: %s/%s (%s%%)\nTime: %s UTC\nCheck the panel or press %s",
+    "gp_recover": "✅ Access from Russia recovered: %s/%s (%s%%) · %s UTC",
+},
+"fa": {
+    "m_status": "📊 وضعیت", "m_clients": "👥 کاربران",
+    "m_addsub": "➕ افزودن اشتراک", "m_restart": "🔄 ریستارت Xray",
+    "m_2fa": "🔐 2FA", "m_help": "❓ راهنما", "m_lang": "🌐 زبان",
+    "start": "🤖 <b>ربات Veil Panel</b>\nشناسه گفتگوی شما: <code>%s</code>\n\nیک عملیات انتخاب کنید:",
+    "norights": "⛔ دسترسی ندارید. شناسه شما: %s. شناسه مدیر: %s",
+    "norights_short": "⛔ دسترسی ندارید",
+    "nocallback": "خطا: پیامی وجود ندارد",
+    "add_step1": "➕ <b>اشتراک جدید</b>\nمرحله ۱ از ۳. <b>نام</b> کاربر را بفرستید (مثلاً <b>مامان</b>).\nلغو: /cancel",
+    "add_nameempty": "نام نمی‌تواند خالی باشد. دوباره نام بفرستید یا /cancel",
+    "add_limitq": "👤 نام: <b>%s</b>\nحالا <b>محدوده</b> ترافیک به گیگ (عدد، <code>0</code> = نامحدود، اعشاری هم می‌شود: 12.5):\nلغو: /cancel",
+    "add_num": "عدد لازم است. محدوده را دوباره بفرستید (0 = نامحدود) یا /cancel",
+    "add_daysq": "محدوده: <b>%s</b> گیگ\nحالا <b>مدت اعتبار</b> به روز (عدد، <code>0</code> = بدون انقضا):\nلغو: /cancel",
+    "add_intnum": "عدد کامل روز لازم است. دوباره بفرستید (0 = بدون انقضا) یا /cancel",
+    "add_err": "❌ ساخت اشتراک ناموفق: %s",
+    "created": "✅ <b>اشتراک ساخته شد</b>\nنام: <code>%s</code>\nمحدوده: %s · اعتبار: %s\nلینک اشتراک: <code>%s</code>\nلینک را در اپ کپی کنید (v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket).",
+    "unlim": "نامحدود", "gb": "%s گیگ", "daysu": "%s روز", "forever": "بدون انقضا",
+    "clients_hdr": "👥 <b>کاربران:</b>", "clients_empty": "کاربری نیست",
+    "restarted": "🔄 Xray ریستارت شد", "cancelled": "لغو شد.",
+    "help": "<b>دستورات:</b>\n/start — منو\n/status — وضعیت\n/clients — کاربران\n/restart — ریستارت Xray\n/addsub — اشتراک جدید (نام → محدودیت → مدت)\n/2fa — تنظیم 2FA\n/pay — خلاصه پرداخت‌ها و فاکتورها\n/paycheck — بررسی وضعیت پرداخت‌ها\n/backup — پشتیبان‌های خودکار: فهرست و بازگردانی\n/lang — язык / language",
+    "m_pay": "💳 پرداخت",
+    "pay_off": "💳 دریافت پرداخت <b>خاموش</b> است. از تب «💳 پرداخت» در پنل روشن کنید.",
+    "pay_hdr": "💳 دریافت پرداخت: <b>روشن</b>\nروش: %s\nپلن‌ها: %d · فاکتور پرداخت‌نشده: %d · جمع‌شده: %s %s",
+    "pay_none": "هنوز فاکتوری ثبت نشده.",
+    "pay_recent": "<b>آخرین فاکتورها:</b>",
+    "pay_line": "%s — %s · %s %s · %s",
+    "pay_wait": "⏳ در انتظار",
+    "pay_paidst": "✅ پرداخت شد",
+    "pay_none_open": "فاکتور پرداخت‌نشده‌ای برای بررسی وجود ندارد.",
+    "pay_checked": "بررسی شد: %d · پرداخت تأییدشده: %d",
+    "m_backup": "🗄 پشتیبان",
+    "bk_hdr": "🗄 <b>پشتیبان‌های خودکار</b>: %d (جدیدترین در بالا)",
+    "bk_none": "هنوز پشتیبان خودکاری نیست. با دکمه بسازید یا زمان‌بندی را در پنل فعال کنید: «💾 پشتیبان‌ها».",
+    "bk_new_btn": "🆕 ساخت",
+    "bk_send_btn": "📤 ارسال جدیدترین",
+    "bk_file_btn": "%s UTC · %d کیلوبایت",
+    "bk_created": "✅ پشتیبان ساخته شد: %s (%d کیلوبایت)",
+    "bk_sent": "📤 در حال ارسال فایل پشتیبان...",
+    "bk_noent": "فایل %s پیدا نشد.",
+    "bk_ask": "⚠️ پنل از پشتیبان <b>%s</b> بازگردانی شود؟\nساخته: %s UTC · مشتری‌های داخل آن: %s\nداده‌های فعلی بازنویسی می‌شوند (نسخه امن خودکار ساخته می‌شود).",
+    "bk_yes": "✅ بله، بازگردانی",
+    "bk_no": "❌ انصراف",
+    "bk_done": "✅ از %s بازگردانی شد · مشتری‌ها: %s. Xray ریستارت شد.",
+    "bk_cancel": "لغو شد.",
+    "bk_err": "⚠️ خطای پشتیبان: %s",
+    "status_hdr": "📊 <b>وضعیت و آمار</b>\nXray: %s\nآپتایم: %s\nکاربران: %s\nنودها: %s\n%s\nCPU: %s · RAM: %s\nدیسک: %s",
+    "xray_on": "🟢 فعال", "xray_off": "🔴 متوقف",
+    "gp_ok": "🇷🇺 دسترس‌پذیری از روسیه: %s %s/%s (%s%%) · %s UTC",
+    "gp_none": "🇷🇺 دسترس‌پذیری از روسیه: — (بررسی انجام نشده، پنل را باز کنید)",
+    "twofa": "🔐 <b>تنظیم 2FA</b>\nدر پنل تنظیم کنید: تب <b>امنیت</b> → <b>احراز دو مرحله‌ای</b>",
+    "unknown": "دستور نامعلوم. /help",
+    "err": "⚠️ خطا: %s",
+    "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
+    "lang_saved": "انجام شد: %s",
+    "gp_low": "🚨 <b>دسترس‌پذیری از روسیه زیر ۵۰٪ افتاد!</b>\nکاوش‌ها: %s/%s (%s%%)\nزمان: %s UTC\nدر پنل بررسی کنید یا %s را بزنید",
+    "gp_recover": "✅ دسترس‌پذیری از روسیه برگشت: %s/%s (%s%%) · %s UTC",
+},
+"zh": {
+    "m_status": "📊 状态", "m_clients": "👥 客户",
+    "m_addsub": "➕ 添加订阅", "m_restart": "🔄 重启 Xray",
+    "m_2fa": "🔐 两步验证", "m_help": "❓ 帮助", "m_lang": "🌐 语言",
+    "start": "🤖 <b>Veil 面板机器人</b>\n您的 Chat ID：<code>%s</code>\n\n请选择操作：",
+    "norights": "⛔ 无权限。您的 ID：%s。管理员 ID：%s",
+    "norights_short": "⛔ 无权限",
+    "nocallback": "错误：没有消息",
+    "add_step1": "➕ <b>新建订阅</b>\n第 1/3 步：发送客户<b>名字</b>（例如<b>妈妈</b>）。\n取消：/cancel",
+    "add_nameempty": "名字不能为空。请重发或 /cancel",
+    "add_limitq": "👤 名字：<b>%s</b>\n现在输入流量<b>限额</b>（GB，数字，<code>0</code> = 无限制，可小数 12.5）：\n取消：/cancel",
+    "add_num": "需要数字。请重发限额（0 = 无限制）或 /cancel",
+    "add_daysq": "限额：<b>%s</b> GB\n现在输入<b>有效期</b>（天数，<code>0</code> = 永久）：\n取消：/cancel",
+    "add_intnum": "需要整数天数。请重发（0 = 永久）或 /cancel",
+    "add_err": "❌ 创建失败：%s",
+    "created": "✅ <b>订阅已创建</b>\n名字：<code>%s</code>\n限额：%s · 有效期：%s\n订阅链接：<code>%s</code>\n把链接复制到应用（v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket）。",
+    "unlim": "无限制", "gb": "%s GB", "daysu": "%s 天", "forever": "永久",
+    "clients_hdr": "👥 <b>客户：</b>", "clients_empty": "暂无客户",
+    "restarted": "🔄 Xray 已重启", "cancelled": "已取消。",
+    "help": "<b>命令：</b>\n/start — 菜单\n/status — 状态统计\n/clients — 客户列表\n/restart — 重启 Xray\n/addsub — 新建订阅（名字 → 限额 → 天数）\n/2fa — 两步验证\n/pay — 收款概览与账单\n/paycheck — 查询支付状态\n/backup — 自动备份：列表与恢复\n/lang — язык / language",
+    "m_pay": "💳 支付",
+    "pay_off": "💳 收款功能<b>未开启</b>。请在面板「💳 支付」标签页中开启。",
+    "pay_hdr": "💳 收款：<b>已开启</b>\n方式：%s\n套餐：%d · 待支付账单：%d · 已收款：%s %s",
+    "pay_none": "还没有账单。",
+    "pay_recent": "<b>最近账单：</b>",
+    "pay_line": "%s — %s · %s %s · %s",
+    "pay_wait": "⏳ 等待中",
+    "pay_paidst": "✅ 已支付",
+    "pay_none_open": "没有待支付账单可查询。",
+    "pay_checked": "已检查账单：%d · 新确认支付：%d",
+    "m_backup": "🗄 备份",
+    "bk_hdr": "🗄 <b>自动备份</b>：%d 个（最新在上）",
+    "bk_none": "还没有自动备份。点按钮新建一个，或在面板「💾 备份」里开启计划。",
+    "bk_new_btn": "🆕 新建",
+    "bk_send_btn": "📤 发送最新的",
+    "bk_file_btn": "%s UTC · %d KB",
+    "bk_created": "✅ 备份已创建：%s（%d KB）",
+    "bk_sent": "📤 正在发送备份文件……",
+    "bk_noent": "找不到文件 %s。",
+    "bk_ask": "⚠️ 从备份 <b>%s</b> 恢复面板？\n创建时间：%s UTC · 内含客户：%s\n当前数据将被覆盖（服务器会自动先做一份保险副本）。",
+    "bk_yes": "✅ 确认恢复",
+    "bk_no": "❌ 取消",
+    "bk_done": "✅ 已从 %s 恢复 · 客户数：%s。Xray 已重启。",
+    "bk_cancel": "已取消。",
+    "bk_err": "⚠️ 备份出错：%s",
+    "status_hdr": "📊 <b>状态与统计</b>\nXray：%s\n运行时长：%s\n客户数：%s\n节点数：%s\n%s\nCPU：%s · 内存：%s\n磁盘：%s",
+    "xray_on": "🟢 运行中", "xray_off": "🔴 已停止",
+    "gp_ok": "🇷🇺 俄罗斯可达性：%s %s/%s (%s%%) · %s UTC",
+    "gp_none": "🇷🇺 俄罗斯可达性：—（尚未检测，请打开面板）",
+    "twofa": "🔐 <b>两步验证</b>\n请在面板设置：「安全」→「两步验证」",
+    "unknown": "未知命令。/help",
+    "err": "⚠️ 错误：%s",
+    "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
+    "lang_saved": "完成：%s",
+    "gp_low": "🚨 <b>俄罗斯可达性低于 50%%！</b>\n探测：%s/%s (%s%%)\n时间：%s UTC\n请在面板检查或按 %s",
+    "gp_recover": "✅ 俄罗斯可达性已恢复：%s/%s (%s%%) · %s UTC",
+},
+}
+
+def _bot_B(chat_id, tg_code=None):
+    lang = ""
+    try:
+        lang = str((_load(BOT_LANGS) or {}).get(str(chat_id)) or "")
+    except Exception:
+        pass
+    if lang not in _SUB_LANGS:
+        c = (tg_code or "").lower()
+        lang = next((l for l in ("en", "fa", "zh", "ru") if c.startswith(l)), "ru")
+    d = dict(_BOT_RU)
+    d.update(_BOT_TXT.get(lang) or {})
+    d["__lang"] = lang
+    return d
+
+def _bot_lang_set(chat_id, lang):
+    if lang not in _SUB_LANGS:
+        return
+    try:
+        d = _load(BOT_LANGS) or {}
+        d[str(chat_id)] = lang
+        _save(BOT_LANGS, d)
+    except Exception:
+        pass
+
+def _main_menu_keyboard(B=None):
+    B = B or _BOT_RU
     return {"inline_keyboard": [
-        [{"text": "📊 Статус", "callback_data": "cmd_status"},
-         {"text": "👥 Клиенты", "callback_data": "cmd_clients"}],
-        [{"text": "➕ Добавить подписку", "callback_data": "cmd_addsub"},
-         {"text": "🔄 Перезапустить Xray", "callback_data": "cmd_restart"}],
-        [{"text": "🔐 2FA", "callback_data": "cmd_2fa"},
-         {"text": "❓ Помощь", "callback_data": "cmd_help"}],
+        [{"text": B["m_status"], "callback_data": "cmd_status"},
+         {"text": B["m_clients"], "callback_data": "cmd_clients"}],
+        [{"text": B["m_addsub"], "callback_data": "cmd_addsub"},
+         {"text": B["m_restart"], "callback_data": "cmd_restart"}],
+        [{"text": B["m_2fa"], "callback_data": "cmd_2fa"},
+         {"text": B["m_help"], "callback_data": "cmd_help"}],
+        [{"text": B["m_pay"], "callback_data": "cmd_pay"},
+         {"text": B["m_backup"], "callback_data": "cmd_backup"}],
+        [{"text": B["m_lang"], "callback_data": "cmd_lang"}],
     ]}
 
 # Многошаговое добавление подписки: chat_id -> {"step": "name"|"limit"|"days", ...}
@@ -3252,20 +3798,18 @@ def _gp_maybe_alert(entry):
         ids = (CFG_CACHE.get("bot_chat_ids") or [])
         if not ids:
             return
+        B = _bot_B(ids[0])
         if pct <= 50.0 and not _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = True
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
             _bot_send_message(ids[0],
-                f"🚨 <b>Доступность из РФ упала ниже 50%!</b>\n"
-                f"Зонды: {ok}/{total} ({pct:.0f}%)\n"
-                f"Время: {ts} UTC\n"
-                f"Подробности проведи проверку в панели или нажми 📊 Статус",
+                B["gp_low"] % (ok, total, f"{pct:.0f}", ts, B["m_status"]),
                 "HTML")
         elif pct > 50.0 and _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = False
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
             _bot_send_message(ids[0],
-                f"✅ Доступность из РФ восстановилась: {ok}/{total} ({pct:.0f}%) · {ts} UTC",
+                B["gp_recover"] % (ok, total, f"{pct:.0f}", ts),
                 "HTML")
     except Exception:
         pass
@@ -3286,6 +3830,605 @@ def _gp_last_history():
     pct = ok * 100.0 / total
     ts = str(last.get("created_at") or "")[:16].replace("T", " ")
     return ok, total, pct, ts
+
+# ================= PAYMENTS =================
+# Подключаемые платежи: тарифы → счета → провайдер (manual/generic/cryptobot/yookassa)
+# → автопродление подписки + уведомление админу в Telegram.
+PAYMENTS_F = f"{BASE}/payments.json"
+PAY_LOCK = threading.Lock()
+_PAY_PROVIDERS = ("manual", "generic", "cryptobot", "yookassa")
+_PAY_LABELS = {"manual": "Вручную", "generic": "Своя касса (HMAC API)",
+               "cryptobot": "CryptoBot (крипта)", "yookassa": "ЮKassa (карты)"}
+
+# --- дополняем словари /p-страниц и бота ключами платежей ---
+_SUB_TXT_RU.update({
+    "pay_hd": "Оплата и продление", "pay_days": "%d дн.", "pay_gb": "%s ГБ",
+    "pay_unl": "безлимит", "pay_btn": "Продлить",
+    "ch_ttl": "Оплата подписки", "ch_plan": "Тариф", "ch_sum": "К оплате",
+    "ch_paybtn": "Перейти к оплате", "ch_wait": "Ожидаем подтверждение платежа…",
+    "ch_manual": "Как оплатить: свяжись с владельцем сервиса (способ оплаты он указал при выдаче). Как только оплата подтвердится, срок продлится автоматически.",
+    "ch_paid": "Оплата получена — подписка продлена",
+    "ch_back": "Вернуться к подписке", "ch_err": "Счёт не найден или недействителен",
+    "ch_exp": "Срок до", "ch_cli": "Клиент", "ch_inv": "Счёт",
+})
+for _pk, _pv in {
+    "en": {
+        "pay_hd": "Payment & renewal", "pay_days": "%d days", "pay_gb": "%s GB",
+        "pay_unl": "unlimited", "pay_btn": "Renew",
+        "ch_ttl": "Subscription payment", "ch_plan": "Plan", "ch_sum": "Amount due",
+        "ch_paybtn": "Go to payment", "ch_wait": "Waiting for payment confirmation…",
+        "ch_manual": "How to pay: contact the service owner (payment method is the one they gave you). Once the payment is confirmed, the expiry extends automatically.",
+        "ch_paid": "Payment received — subscription extended",
+        "ch_back": "Back to subscription", "ch_err": "Invoice not found or invalid",
+        "ch_exp": "Valid until", "ch_cli": "Client", "ch_inv": "Invoice",
+    },
+    "fa": {
+        "pay_hd": "پرداخت و تمدید", "pay_days": "%d روز", "pay_gb": "%s گیگ",
+        "pay_unl": "نامحدود", "pay_btn": "تمدید",
+        "ch_ttl": "پرداخت اشتراک", "ch_plan": "پلن", "ch_sum": "مبلغ قابل پرداخت",
+        "ch_paybtn": "رفتن به پرداخت", "ch_wait": "در انتظار تأیید پرداخت…",
+        "ch_manual": "نحوه پرداخت: با صاحب سرویس تماس بگیرید. پس از تأیید پرداخت، اعتبار اشتراک به‌طور خودکار تمدید می‌شود.",
+        "ch_paid": "پرداخت دریافت شد — اشتراک تمدید شد",
+        "ch_back": "بازگشت به اشتراک", "ch_err": "فاکتور یافت نشد یا نامعتبر است",
+        "ch_exp": "اعتبار تا", "ch_cli": "مشتری", "ch_inv": "فاکتور",
+    },
+    "zh": {
+        "pay_hd": "付款与续订", "pay_days": "%d 天", "pay_gb": "%s GB",
+        "pay_unl": "无限制", "pay_btn": "续订",
+        "ch_ttl": "订阅付款", "ch_plan": "套餐", "ch_sum": "应付金额",
+        "ch_paybtn": "前往付款", "ch_wait": "等待付款确认…",
+        "ch_manual": "付款方式：请联系服务提供者。付款确认后，订阅时长将自动延长。",
+        "ch_paid": "已收到付款——订阅已延长",
+        "ch_back": "返回订阅页", "ch_err": "未找到账单或账单无效",
+        "ch_exp": "有效期至", "ch_cli": "客户", "ch_inv": "账单",
+    },
+}.items():
+    _SUB_TXT.setdefault(_pk, {}).update(_pv)
+
+_BOT_RU.update({
+    "pay_paid": "💰 <b>Оплата прошла</b>\nКлиент: <code>%s</code>\nТариф: %s · %s\nПодписка продлена автоматически.",
+    "pay_paid_na": "⚠️ Оплата %s: подписка не найдена (клиент удалён?), продлить нечем.",
+})
+_BOT_TXT["en"].update({
+    "pay_paid": "💰 <b>Payment received</b>\nClient: <code>%s</code>\nPlan: %s · %s\nSubscription extended automatically.",
+    "pay_paid_na": "⚠️ Payment %s: subscription not found (client deleted?), nothing to extend.",
+})
+_BOT_TXT["fa"].update({
+    "pay_paid": "💰 <b>پرداخت دریافت شد</b>\nمشتری: <code>%s</code>\nپلن: %s · %s\nاعتبار اشتراک خودکار تمدید شد.",
+    "pay_paid_na": "⚠️ پرداخت %s: اشتراک یافت نشد، تمدید انجام نشد.",
+})
+_BOT_TXT["zh"].update({
+    "pay_paid": "💰 <b>已收到付款</b>\n客户：<code>%s</code>\n套餐：%s · %s\n订阅已自动延长。",
+    "pay_paid_na": "⚠️ 付款 %s：未找到订阅，无法延长。",
+})
+
+def _pay_load():
+    d = _load(PAYMENTS_F, None)
+    if not isinstance(d, dict):
+        d = {}
+    if not isinstance(d.get("plans"), list):
+        d["plans"] = []
+    if not isinstance(d.get("invoices"), dict):
+        d["invoices"] = {}
+    try:
+        d["seq"] = int(d.get("seq") or 0)
+    except Exception:
+        d["seq"] = 0
+    return d
+
+def _pay_save(d):
+    _save(PAYMENTS_F, d, 0o600)
+
+def _pay_cfg():
+    return {
+        "enabled": bool(CFG_CACHE.get("pay_enabled")),
+        "provider": CFG_CACHE.get("pay_provider") if CFG_CACHE.get("pay_provider") in _PAY_PROVIDERS else "manual",
+        "secret": CFG_CACHE.get("pay_secret") or "",
+        "cb_token": CFG_CACHE.get("pay_cb_token") or "",
+        "yoo_shop": CFG_CACHE.get("pay_yoo_shop") or "",
+        "yoo_secret": CFG_CACHE.get("pay_yoo_secret") or "",
+        "notify": CFG_CACHE.get("pay_notify", True) is not False,
+    }
+
+def _pay_base():
+    host = _hop_pub_host()
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    return _pb(host, CFG_CACHE.get("panel_port", 8444))
+
+def _pay_pub_plans():
+    d = _pay_load()
+    out = []
+    for pl in d["plans"]:
+        try:
+            if float(pl.get("price") or 0) > 0 and int(pl.get("days") or 0) >= 0 and pl.get("id"):
+                out.append(pl)
+        except Exception:
+            pass
+    return out
+
+def _pay_sub_find(tok):
+    if not tok:
+        return None
+    st = _load(STATE) or {}
+    return next((x for x in _subs_summary(st)
+                 if x["sub_token"] == tok or x["uuid"] == tok), None)
+
+# ---------- провайдеры ----------
+def _pay_cb_api(method, params):
+    pc = _pay_cfg()
+    if not pc["cb_token"]:
+        raise ValueError("CryptoBot: не задан API-токен")
+    body = json.dumps(params).encode()
+    req = urllib.request.Request("https://pay.crypt.bot/api/" + method, data=body,
+        headers={"Content-Type": "application/json", "Crypto-Pay-API-Token": pc["cb_token"]})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        j = json.loads(r.read().decode("utf-8", "replace") or "{}")
+    if not j.get("ok"):
+        raise ValueError("CryptoBot: " + str((j.get("error") or {}).get("name") or "ошибка API"))
+    return j.get("result")
+
+def _pay_cb_sig_ok(raw, sig):
+    tok = _pay_cfg()["cb_token"]
+    if not tok or not sig:
+        return False
+    mac = hmac.new(tok.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, str(sig).lower())
+
+def _pay_cb_create(inv):
+    r = _pay_cb_api("createInvoice", {
+        "currencies": ["RUB"], "amount": "%.2f" % inv["price"],
+        "payload": inv["id"], "description": ("Veil: " + (inv["title"] or ""))[:1024]})
+    url = r.get("bot_invoice_url") or r.get("pay_url") or ""
+    return url, str(r.get("invoice_id") or "")
+
+def _pay_yoo_api(path, body=None, idem=None):
+    pc = _pay_cfg()
+    if not pc["yoo_shop"] or not pc["yoo_secret"]:
+        raise ValueError("ЮKassa: не заданы shopId/secret")
+    auth = base64.b64encode((pc["yoo_shop"] + ":" + pc["yoo_secret"]).encode()).decode()
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request("https://api.yookassa.ru/v3" + path, data=data,
+        headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
+    if idem:
+        req.add_header("Idempotence-Key", idem)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8", "replace") or "{}")
+
+def _pay_yoo_create(inv):
+    r = _pay_yoo_api("/payments", {
+        "amount": {"value": "%.2f" % inv["price"], "currency": inv["currency"] or "RUB"},
+        "capture": True,
+        "confirmation": {"type": "redirect", "return_url": _pay_base() + "/p/" + inv["sub_token"]},
+        "description": "Veil: " + (inv["title"] or inv["id"])[:128],
+        "metadata": {"veil_inv": inv["id"]}}, idem=inv["id"])
+    url = ((r.get("confirmation") or {}).get("confirmation_url")) or ""
+    return url, str(r.get("id") or "")
+
+def _pay_pay_sig_ok(raw, sig, secret):
+    if not secret or not sig:
+        return False
+    mac = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, str(sig).lower())
+
+# ---------- продление ----------
+def _pay_extend(inv):
+    st = _load(STATE)
+    if st is None:
+        return False
+    _migrate_state(st)
+    now = int(time.time())
+    grp = []
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c.get("sub_token") == inv.get("sub_token"):
+                grp.append(c)
+    if not grp:
+        return False
+    days = int(inv.get("days") or 0)
+    gb = float(inv.get("gb") or 0)
+    for c in grp:
+        if days > 0:
+            ex = int(c.get("expiry") or 0)
+            c["expiry"] = (max(now, ex) if ex else now) + days * 86400
+            c["warned_days"] = []
+            c["blocked"] = False
+            c["blocked_reason"] = ""
+        if gb > 0:
+            c["limit_gb"] = gb
+            c["warned_80"] = False
+    if gb > 0 and inv.get("reset"):
+        uid = grp[0].get("uuid")
+        for c in grp:
+            c["up"] = 0; c["down"] = 0; c["last_up"] = 0; c["last_down"] = 0
+        if uid:
+            try:
+                subprocess.run(["xray", "api", "statsreset",
+                                "--server", f"127.0.0.1:{_STATS_PORT}",
+                                "--pattern", f"user>>>{uid}>>>"],
+                               capture_output=True, text=True, timeout=8)
+            except Exception:
+                pass
+    _awg_sync(st); _wg_sync(st)
+    _write_xray(st); _save(STATE, st)
+    _restart_xray()
+    _audit("pay_extend", inv=inv["id"], sub=inv.get("sub_token"), days=days, gb=gb)
+    return True
+
+def _pay_notify_paid(inv, ok):
+    pc = _pay_cfg()
+    if not pc["notify"]:
+        return
+    ids = CFG_CACHE.get("bot_chat_ids") or []
+    if not ids:
+        return
+    try:
+        B = _bot_B(ids[0])
+        price = ("%g" % inv["price"]) + " " + (inv.get("currency") or "RUB")
+        if ok:
+            txt = B["pay_paid"] % (inv.get("name") or "?", inv.get("title") or inv["id"], price)
+        else:
+            txt = B["pay_paid_na"] % inv["id"]
+        for cid in ids:
+            _bot_send_message(cid, txt, "HTML")
+    except Exception:
+        pass
+
+def _pay_mark_paid(inv_id, src=""):
+    with PAY_LOCK:
+        d = _pay_load()
+        inv = d["invoices"].get(inv_id)
+        if not inv:
+            return None
+        if inv.get("applied"):
+            return inv
+        inv["status"] = "paid"
+        inv["paid_at"] = int(time.time())
+        inv["paid_src"] = src
+        ok = _pay_extend(inv)
+        inv["applied"] = bool(ok)
+        d["invoices"][inv_id] = inv
+        _pay_save(d)
+    _pay_notify_paid(inv, ok)
+    return inv
+
+def _pay_find_by_ext(provider, ext):
+    ext = str(ext or "")
+    if not ext:
+        return None
+    d = _pay_load()
+    for v in d["invoices"].values():
+        if v.get("provider") == provider and str(v.get("external_id") or "") == ext:
+            return v
+    return None
+
+def _pay_mkv(tok, plan, src="page"):
+    pc = _pay_cfg()
+    u = _pay_sub_find(tok)
+    if not u:
+        raise ValueError("подписка не найдена")
+    with PAY_LOCK:
+        d = _pay_load()
+        d["seq"] += 1
+        now = int(time.time())
+        for _try in range(50):
+            iid = "V%06d" % ((now + d["seq"] * 7919) % 1000000)
+            if iid not in d["invoices"]:
+                break
+            d["seq"] += 1
+        inv = {"id": iid,
+               "plan_id": plan.get("id") or "", "title": plan.get("title") or "",
+               "price": float(plan.get("price") or 0),
+               "currency": (plan.get("currency") or "RUB")[:8],
+               "days": int(plan.get("days") or 0), "gb": float(plan.get("gb") or 0),
+               "reset": bool(plan.get("reset")), "sub_token": u["sub_token"],
+               "name": u.get("name") or "", "provider": pc["provider"],
+               "status": "new", "external_id": "", "pay_url": "",
+               "created": now, "paid_at": 0, "applied": False, "src": src}
+        try:
+            if pc["provider"] == "cryptobot":
+                inv["pay_url"], inv["external_id"] = _pay_cb_create(inv)
+            elif pc["provider"] == "yookassa":
+                inv["pay_url"], inv["external_id"] = _pay_yoo_create(inv)
+        except Exception as e:
+            raise ValueError(str(e))
+        d["invoices"][inv["id"]] = inv
+        if len(d["invoices"]) > 2000:
+            for k in sorted(d["invoices"], key=lambda x: d["invoices"][x].get("created") or 0)[:-1500]:
+                if d["invoices"][k].get("applied"):
+                    d["invoices"].pop(k, None)
+        _pay_save(d)
+    return inv
+
+def _pay_check_ext(inv_id):
+    """Опрос статуса у провайдера (для кнопки «Проверить» и dry-режима без webhook)."""
+    d = _pay_load()
+    inv = d["invoices"].get(inv_id)
+    if not inv or inv.get("applied"):
+        return inv
+    try:
+        if inv["provider"] == "cryptobot" and inv.get("external_id"):
+            r = _pay_cb_api("getInvoices", {"invoice_ids": inv["external_id"]})
+            items = r.get("items") or ([r] if isinstance(r, dict) else [])
+            if any(str(x.get("invoice_id")) == str(inv["external_id"]) and x.get("status") == "paid"
+                   for x in items):
+                return _pay_mark_paid(inv_id, "poll")
+        elif inv["provider"] == "yookassa" and inv.get("external_id"):
+            r = _pay_yoo_api("/payments/" + urllib.parse.quote(inv["external_id"]))
+            if r.get("status") == "succeeded":
+                return _pay_mark_paid(inv_id, "poll")
+    except Exception as e:
+        print("[pay] check " + str(inv_id) + ": " + str(e), flush=True)
+    return inv
+
+# ---------- публичные страницы ----------
+def _pay_block_html(tok, L):
+    try:
+        if not _pay_cfg()["enabled"]:
+            return ""
+        plans = _pay_pub_plans()
+    except Exception:
+        return ""
+    if not plans:
+        return ""
+    rows = []
+    for pl in plans[:12]:
+        bits = []
+        if int(pl.get("days") or 0) > 0:
+            bits.append(L["pay_days"] % int(pl["days"]))
+        gbv = float(pl.get("gb") or 0)
+        bits.append(L["pay_gb"] % ("%g" % gbv) if gbv > 0 else L["pay_unl"])
+        href = "/pay/buy/" + urllib.parse.quote(tok) + "/" + urllib.parse.quote(str(pl["id"]))
+        rows.append(
+            '<a href="' + _html.escape(href, quote=True) + '" '
+            'style="display:flex;justify-content:space-between;gap:10px;align-items:center;'
+            'padding:10px 12px;margin:6px 0;border:1px solid rgba(128,128,128,.35);'
+            'border-radius:10px;text-decoration:none;color:inherit">'
+            '<span><b>' + _html.escape(str(pl.get("title") or "")) + '</b><br>'
+            '<span style="opacity:.65;font-size:12px">' + _html.escape(" · ".join(bits)) + '</span></span>'
+            '<span style="white-space:nowrap;font-weight:700">' + _html.escape("%g" % float(pl["price"])) + " " +
+            _html.escape(str(pl.get("currency") or "RUB")) + '</span></a>')
+    return ('<div class="sec"><h2>' + _html.escape(L["pay_hd"]) + '</h2>' + "".join(rows) + '</div>')
+
+def _pay_page_html(inv, L):
+    esc = lambda s: _html.escape(str(s or ""), quote=True)
+    tok = esc(inv.get("sub_token") or "")
+    state = "paid" if inv.get("applied") else ("wait" if inv.get("status") == "paid" else "new")
+    if state == "paid":
+        body = ('<div class="box ok">✅ ' + esc(L["ch_paid"]) + '</div>'
+                '<a class="btn" href="/p/' + tok + '">' + esc(L["ch_back"]) + '</a>')
+    else:
+        parts = ['<div class="box"><div class="row"><span>' + esc(L["ch_plan"]) +
+                 '</span><b>' + esc(inv.get("title")) + '</b></div>',
+                 '<div class="row"><span>' + esc(L["ch_inv"]) + '</span><b>' + esc(inv.get("id")) + '</b></div>',
+                 '<div class="row"><span>' + esc(L["ch_sum"]) + '</span><b>' +
+                 ("%g" % float(inv.get("price") or 0)) + " " + esc(inv.get("currency")) + '</b></div></div>']
+        if inv.get("provider") == "manual":
+            parts.append('<div class="box note">' + esc(L["ch_manual"]) + '</div>')
+        elif inv.get("pay_url"):
+            parts.append('<a class="btn big" target="_blank" rel="noopener" href="' +
+                         esc(inv["pay_url"]) + '">' + esc(L["ch_paybtn"]) + '</a>')
+        else:
+            parts.append('<div class="box note">' + esc(L["ch_wait"]) + '</div>')
+        parts.append('<p class="wait">' + esc(L["ch_wait"]) + '</p>'
+                     '<a class="lnk" href="/p/' + tok + '">' + esc(L["ch_back"]) + '</a>')
+        body = "".join(parts)
+    meta = '<meta http-equiv="refresh" content="25">' if state == "new" else ""
+    return ('<!doctype html><html lang="' + L.get("_code", "ru") + '" dir="' +
+            ("rtl" if L.get("_code") == "fa" else "ltr") + '"><head><meta charset="utf-8">' + meta +
+            '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<title>' + esc(L["ch_ttl"]) + '</title><style>'
+            'body{background:#0d1020;color:#e8eaf6;font-family:system-ui,sans-serif;display:flex;'
+            'justify-content:center;padding:24px 14px;margin:0}'
+            '.w{max-width:420px;width:100%}h1{font-size:19px;text-align:center}'
+            '.box{background:#171b30;border:1px solid rgba(128,128,128,.35);border-radius:12px;padding:12px 14px;margin:10px 0}'
+            '.box.ok{border-color:#3fb95066;text-align:center;padding:18px 14px}'
+            '.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:14px}'
+            '.btn{display:block;text-align:center;background:#3b6cf6;color:#fff;text-decoration:none;'
+            'border-radius:12px;padding:12px;margin:10px 0;font-weight:700}'
+            '.note{font-size:13px;opacity:.85}.wait{text-align:center;font-size:12px;opacity:.6}'
+            '.lnk{display:block;text-align:center;color:#8fa3ff;font-size:13px}'
+            '</style></head><body><div class="w"><h1>' + esc(L["ch_ttl"]) + '</h1>' + body +
+            '</div></body></html>')
+
+def _pay_lang_for(self):
+    _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query or "")
+    _lq = (_q.get("lang") or [""])[0]
+    _lck = ""
+    for _c in (self.headers.get("Cookie") or "").split(";"):
+        _c = _c.strip()
+        if _c.startswith("veil_sub_lang="):
+            _lck = _c[len("veil_sub_lang="):]
+    lang = _sub_lang_pick(_lq, _lck, self.headers.get("Accept-Language", ""))
+    L = _sub_L(lang)
+    L["_code"] = lang
+    return L
+
+# ---------- сводка для админ-API ----------
+def _pay_summary():
+    pc = _pay_cfg()
+    d = _pay_load()
+    base = _pay_base()
+    invs = sorted(d["invoices"].values(), key=lambda x: -(x.get("created") or 0))[:100]
+    st = _load(STATE) or {}
+    subs = [{"token": x["sub_token"], "name": x["name"], "expiry": x["expiry"],
+             "limit_gb": x["limit_gb"]} for x in _subs_summary(st)][:400]
+    return {"enabled": pc["enabled"], "provider": pc["provider"],
+            "providers": [{"key": k, "label": _PAY_LABELS[k]} for k in _PAY_PROVIDERS],
+            "labels": dict(_PAY_LABELS),
+            "secret_set": bool(pc["secret"]), "cb_set": bool(pc["cb_token"]),
+            "yoo_set": bool(pc["yoo_shop"] and pc["yoo_secret"]),
+            "yoo_shop": pc["yoo_shop"], "notify": pc["notify"],
+            "hook_cb": base + "/pay/hook/cryptobot",
+            "hook_yoo": base + "/pay/hook/yookassa",
+            "api_url": base + "/pay/api/",
+            "plans": d["plans"], "invoices": invs,
+            "unpaid": sum(1 for v in d["invoices"].values() if not v.get("applied")),
+            "paid_total": sum(float(v.get("price") or 0) for v in d["invoices"].values() if v.get("applied")),
+            "subs": subs}
+
+def _pay_plan_valid(pl):
+    title = str(pl.get("title") or "").strip()[:60]
+    if not title:
+        raise ValueError("нужно название тарифа")
+    try:
+        price = float(pl.get("price") or 0)
+        days = int(pl.get("days") or 0)
+        gb = float(pl.get("gb") or 0)
+    except Exception:
+        raise ValueError("price/days/gb — числа")
+    cur = str(pl.get("currency") or "RUB").strip().upper()[:8]
+    if not re.fullmatch(r"[A-Z]{2,8}", cur):
+        raise ValueError("валюта: 2-8 букв (RUB, USD…)")
+    if price <= 0 or price > 10_000_000:
+        raise ValueError("цена: 0…10 000 000")
+    if days < 0 or days > 3650:
+        raise ValueError("дни: 0…3650")
+    if gb < 0 or gb > 100_000:
+        raise ValueError("ГБ: 0…100000")
+    if days == 0 and gb == 0:
+        raise ValueError("тариф должен добавлять дни или ГБ")
+    return {"title": title, "price": round(price, 2), "currency": cur,
+            "days": days, "gb": round(gb, 3), "reset": bool(pl.get("reset"))}
+
+_PAY_TL = {}
+_PAY_TL_LK = threading.Lock()
+
+def _pay_throttle(ip, limit=60):
+    now = int(time.time())
+    with _PAY_TL_LK:
+        e = _PAY_TL.get(ip)
+        if not e or now - e[0] > 60:
+            _PAY_TL[ip] = [now, 1]
+            return False
+        e[1] += 1
+        return e[1] > limit
+
+def _pay_handle_public(self, p):
+    """Публичные /pay/* маршруты. True — обработано."""
+    ip = self.client_address[0]
+    if _pay_throttle(ip):
+        self._send(429, {"error": "too many requests"})
+        return True
+    pc = _pay_cfg()
+    # GET /pay/buy/<tok>/<plan> — создать/взять счёт и показать страницу оплаты
+    if p.startswith("/pay/buy/"):
+        parts = p[len("/pay/buy/"):].strip("/").split("/")
+        if len(parts) != 2:
+            self._send(404, {"error": "not found"})
+            return True
+        tok, plan_id = parts
+        if not pc["enabled"]:
+            self._send(404, {"error": "платежи выключены"})
+            return True
+        plan = next((x for x in _pay_pub_plans() if str(x.get("id")) == plan_id), None)
+        u = _pay_sub_find(tok)
+        if not plan or not u:
+            self._send(404, {"error": "тариф или подписка не найдены"})
+            return True
+        d = _pay_load()
+        inv = next((v for v in d["invoices"].values()
+                    if v.get("sub_token") == u["sub_token"] and str(v.get("plan_id")) == str(plan_id)
+                    and not v.get("applied") and (v.get("created") or 0) > time.time() - 3 * 86400), None)
+        if not inv:
+            try:
+                inv = _pay_mkv(u["sub_token"], plan, src="page")
+            except Exception as e:
+                self._send(502, {"error": "не удалось создать счёт: " + str(e)})
+                return True
+        self.send_response(302)
+        self.send_header("Location", "/pay/i/" + urllib.parse.quote(inv["id"]))
+        self.end_headers()
+        return True
+    # GET /pay/i/<id> — страница счёта
+    if p.startswith("/pay/i/"):
+        inv_id = p[len("/pay/i/"):].strip("/")
+        inv = _pay_load()["invoices"].get(inv_id) if re.fullmatch(r"V\d{6}", inv_id or "") else None
+        if not inv:
+            self._send(404, {"error": "not found"})
+            return True
+        L = _pay_lang_for(self)
+        b = _pay_page_html(inv, L).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(b)
+        return True
+    # POST-маршруты ниже
+    n = int(self.headers.get("Content-Length") or 0)
+    if n < 0 or n > 262144:
+        self._send(400, {"error": "bad body"})
+        return True
+    raw = self.rfile.read(n) if n else b""
+    if p == "/pay/hook/cryptobot":
+        if not pc["cb_token"]:
+            self._send(404, {"error": "not found"})
+            return True
+        if not _pay_cb_sig_ok(raw, self.headers.get("Crypto-Pay-API-Signature", "")):
+            _audit("pay_hook_bad_sig", provider="cryptobot", ip=ip)
+            self._send(403, {"error": "bad signature"})
+            return True
+        try:
+            upd = json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:
+            upd = {}
+        cb_inv = upd.get("invoice") or {}
+        if upd.get("update_type") == "pay_status_changed" and cb_inv.get("status") == "paid":
+            mine = _pay_find_by_ext("cryptobot", cb_inv.get("invoice_id"))
+            if mine:
+                _pay_check_ext(mine["id"])
+        self._send(200, {"ok": True})
+        return True
+    if p == "/pay/hook/yookassa":
+        try:
+            upd = json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:
+            upd = {}
+        obj = upd.get("object") or {}
+        if upd.get("event") == "payment.succeeded":
+            mine = _pay_find_by_ext("yookassa", obj.get("id"))
+            if mine:
+                _pay_check_ext(mine["id"])  # повторный запрос к API — источник истины
+        self._send(200, {"ok": True})
+        return True
+    if p in ("/pay/api/invoice", "/pay/api/paid"):
+        if not pc["secret"]:
+            self._send(404, {"error": "not found"})
+            return True
+        if not _pay_pay_sig_ok(raw, self.headers.get("X-Signature", ""), pc["secret"]):
+            _audit("pay_hook_bad_sig", provider="generic", ip=ip)
+            self._send(403, {"error": "bad signature"})
+            return True
+        try:
+            b = json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:
+            self._send(400, {"error": "bad json"})
+            return True
+        if p == "/pay/api/invoice":
+            plan = next((x for x in _pay_pub_plans() if str(x.get("id")) == str(b.get("plan_id") or "")), None)
+            if not plan:
+                self._send(404, {"error": "plan not found"})
+                return True
+            try:
+                inv = _pay_mkv(str(b.get("sub_token") or ""), plan, src="api")
+            except Exception as e:
+                self._send(400, {"error": str(e)})
+                return True
+            self._send(200, {"invoice_id": inv["id"], "price": inv["price"],
+                             "currency": inv["currency"], "pay_url": inv["pay_url"],
+                             "status": "paid" if inv.get("applied") else "new"})
+            return True
+        inv = _pay_load()["invoices"].get(str(b.get("invoice_id") or ""))
+        if not inv:
+            self._send(404, {"error": "invoice not found"})
+            return True
+        inv = _pay_mark_paid(inv["id"], "api")
+        self._send(200, {"invoice_id": inv["id"], "status": "paid" if inv.get("applied") else inv.get("status")})
+        return True
+    self._send(404, {"error": "not found"})
+    return True
+
 
 def _create_subscription(name, limit_gb=0, expiry_days=0):
     st = _load(STATE)
@@ -3372,6 +4515,14 @@ def _bot_answer_callback(callback_query_id, text=None, show_alert=False):
     except Exception as e:
         print("[bot] answerCallbackQuery error: " + str(e), flush=True)
 
+def _lang_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "Русский", "callback_data": "lang_ru"},
+        {"text": "English", "callback_data": "lang_en"},
+        {"text": "فارسی", "callback_data": "lang_fa"},
+        {"text": "中文", "callback_data": "lang_zh"},
+    ]]}
+
 def _process_bot_update(update):
     message = update.get("message") or update.get("edited_message")
     callback_query = update.get("callback_query")
@@ -3379,19 +4530,35 @@ def _process_bot_update(update):
     if callback_query:
         callback_query_id = callback_query["id"]
         message = callback_query.get("message")
+        tg_code = (callback_query.get("from") or {}).get("language_code") or ""
         if not message:
             # Answer callback query even if no message (shouldn't happen but safety)
-            _bot_answer_callback(callback_query_id, "Ошибка: нет сообщения", show_alert=True)
+            _bot_answer_callback(callback_query_id, _BOT_RU["nocallback"], show_alert=True)
             return
         chat_id = message["chat"]["id"]
         from_id = callback_query["from"]["id"]
         data = callback_query["data"]
+        B = _bot_B(chat_id, tg_code)
+        if data.startswith("lang_"):
+            _bot_answer_callback(callback_query_id)
+            lg = data[5:]
+            _bot_lang_set(chat_id, lg)
+            B2 = _bot_B(chat_id)
+            _bot_send_message(chat_id, B2["lang_saved"] % B2["m_lang"],
+                              reply_markup=_main_menu_keyboard(B2))
+            return
         if not _is_admin(from_id):
-            _bot_send_message(chat_id, f"⛔ Нет прав доступа. Ваш ID: {from_id}. Админ ID: {CFG_CACHE.get('bot_chat_ids', [])}")
-            _bot_answer_callback(callback_query_id, "⛔ Нет прав доступа", show_alert=True)
+            _bot_send_message(chat_id, B["norights"] % (from_id, CFG_CACHE.get('bot_chat_ids', [])))
+            _bot_answer_callback(callback_query_id, B["norights_short"], show_alert=True)
             return
         # Answer callback query first (required by Telegram)
         _bot_answer_callback(callback_query_id)
+        if data.startswith("bk"):
+            try:
+                _bot_backup_cb(chat_id, data, B)
+            except Exception as e:
+                _bot_send_message(chat_id, B["bk_err"] % str(e))
+            return
         if data == "cmd_status":
             cmd = "/status"
         elif data == "cmd_clients":
@@ -3406,6 +4573,13 @@ def _process_bot_update(update):
             cmd = "/stats"
         elif data == "cmd_2fa":
             cmd = "/2fa"
+        elif data == "cmd_pay":
+            cmd = "/pay"
+        elif data == "cmd_backup":
+            cmd = "/backup"
+        elif data == "cmd_lang":
+            _bot_send_message(chat_id, B["lang_q"], reply_markup=_lang_keyboard())
+            return
         else:
             return
         # Simulate command processing
@@ -3416,6 +4590,8 @@ def _process_bot_update(update):
             return
         chat_id = message.get("chat", {}).get("id")
         from_id = message.get("from", {}).get("id")
+        tg_code = (message.get("from") or {}).get("language_code") or ""
+        B = _bot_B(chat_id, tg_code)
         text = message.get("text", "").strip()
         if not text.startswith("/"):
             stp = BOT_NEW_SUB.get(chat_id)
@@ -3424,36 +4600,33 @@ def _process_bot_update(update):
                 if step == "name":
                     name = text.strip()
                     if not name:
-                        _bot_send_message(chat_id, "Имя не может быть пустым. Напиши имя ещё раз или /cancel", "HTML")
+                        _bot_send_message(chat_id, B["add_nameempty"], "HTML")
                         return
                     stp["name"] = name[:40]
                     stp["step"] = "limit"
                     BOT_NEW_SUB[chat_id] = stp
                     _bot_send_message(chat_id,
-                        "👤 Имя: <b>" + _html.escape(stp["name"]) + "</b>\n"
-                        "Теперь <b>лимит</b> трафика в ГБ (число, <code>0</code> = безлимит, можно дробное: 12.5):\n"
-                        "Отмена: /cancel", "HTML")
+                        B["add_limitq"] % _html.escape(stp["name"]), "HTML")
                 elif step == "limit":
                     try:
                         limit_gb = float(text.replace(",", ".").strip())
                         if limit_gb < 0:
                             raise ValueError
                     except ValueError:
-                        _bot_send_message(chat_id, "Нужно число. Повтори лимит (0 = безлимит) или /cancel", "HTML")
+                        _bot_send_message(chat_id, B["add_num"], "HTML")
                         return
                     stp["limit_gb"] = limit_gb
                     stp["step"] = "days"
                     BOT_NEW_SUB[chat_id] = stp
                     _bot_send_message(chat_id,
-                        "Лимит: <b>" + str(limit_gb) + "</b> ГБ\nТеперь <b>срок</b> в днях (число, <code>0</code> = бессрочно):\n"
-                        "Отмена: /cancel", "HTML")
+                        B["add_daysq"] % str(limit_gb), "HTML")
                 elif step == "days":
                     try:
                         days = int(text.strip())
                         if days < 0:
                             raise ValueError
                     except ValueError:
-                        _bot_send_message(chat_id, "Нужно целое число дней. Повтори (0 = бессрочно) или /cancel", "HTML")
+                        _bot_send_message(chat_id, B["add_intnum"], "HTML")
                         return
                     stp["days"] = days
                     BOT_NEW_SUB.pop(chat_id, None)
@@ -3461,20 +4634,17 @@ def _process_bot_update(update):
                     try:
                         r = _create_subscription(name, limit_gb=stp.get("limit_gb", 0), expiry_days=days)
                     except Exception as e:
-                        _bot_send_message(chat_id, f"❌ Ошибка создания: {e}")
+                        _bot_send_message(chat_id, B["add_err"] % str(e))
                         return
-                    lim = "безлимит" if r["limit_gb"] <= 0 else (str(r["limit_gb"]) + " ГБ")
-                    day = "бессрочно" if r["expiry_days"] <= 0 else (str(r["expiry_days"]) + " дн.")
+                    lim = B["unlim"] if r["limit_gb"] <= 0 else (B["gb"] % r["limit_gb"])
+                    day = B["forever"] if r["expiry_days"] <= 0 else (B["daysu"] % r["expiry_days"])
                     _bot_send_message(chat_id,
-                        f"✅ <b>Подписка создана</b>\nИмя: <code>{_html.escape(name)}</code>\n"
-                        f"Лимит: {lim} · Срок: {day}\n"
-                        f"Подписка: <code>{r['sub_url']}</code>\n"
-                        f"Скопируй ссылку в приложение (v2rayNG / Hiddify / Streisand / NekoBox / Happ / Shadowrocket).",
-                        "HTML", _main_menu_keyboard())
+                        B["created"] % (_html.escape(name), lim, day, r['sub_url']),
+                        "HTML", _main_menu_keyboard(B))
             return
     
     if not _is_admin(from_id):
-        _bot_send_message(chat_id, "⛔ Нет прав доступа")
+        _bot_send_message(chat_id, B["norights_short"])
         return
     
     parts = text.split()
@@ -3482,31 +4652,30 @@ def _process_bot_update(update):
     args = parts[1:]
     try:
         if cmd == "/start":
-            _bot_send_message(chat_id, 
-                f"🤖 <b>Veil Panel Bot</b>\nВаш Chat ID: <code>{chat_id}</code>\n\nВыберите действие:",
-                "HTML", _main_menu_keyboard())
+            _bot_send_message(chat_id, B["start"] % chat_id,
+                "HTML", _main_menu_keyboard(B))
+        elif cmd == "/lang":
+            _bot_send_message(chat_id, B["lang_q"], reply_markup=_lang_keyboard())
         elif cmd == "/clients":
             st = _load(STATE, {}) or {}
-            lines = ["👥 <b>Клиенты:</b>"]
+            lines = [B["clients_hdr"]]
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
                     online = "🟢" if c.get("online") else "⚪"
-                    limit = f" ({c.get('limit_gb', 0)} ГБ)" if c.get("limit_gb", 0) > 0 else ""
+                    limit = (" (" + (B["gb"] % c.get('limit_gb', 0)) + ")") if c.get("limit_gb", 0) > 0 else ""
                     lines.append(f"{online} {_html.escape(str(c.get('name', '?')))} — {_html.escape(str(PROTO_LABELS.get(proto, proto)))}{limit}")
-            _bot_send_message(chat_id, "\n".join(lines) if len(lines) > 1 else "Клиентов нет", "HTML", _main_menu_keyboard())
+            _bot_send_message(chat_id, "\n".join(lines) if len(lines) > 1 else B["clients_empty"], "HTML", _main_menu_keyboard(B))
         elif cmd == "/restart":
             _restart_xray()
-            _bot_send_message(chat_id, "🔄 Xray перезапущен", reply_markup=_main_menu_keyboard())
+            _bot_send_message(chat_id, B["restarted"], reply_markup=_main_menu_keyboard(B))
         elif cmd == "/addsub":
             BOT_NEW_SUB[chat_id] = {"step": "name", "name": ""}
-            _bot_send_message(chat_id,
-                "➕ <b>Новая подписка</b>\nШаг 1 из 3. Отправь <b>имя</b> клиента (например: <b>Мама</b>).\nОтмена: /cancel",
-                "HTML")
+            _bot_send_message(chat_id, B["add_step1"], "HTML")
         elif cmd == "/cancel":
             BOT_NEW_SUB.pop(chat_id, None)
-            _bot_send_message(chat_id, "Отменено.", reply_markup=_main_menu_keyboard())
+            _bot_send_message(chat_id, B["cancelled"], reply_markup=_main_menu_keyboard(B))
         elif cmd == "/help":
-            _bot_send_message(chat_id, "<b>Команды:</b>\n/start — меню\n/status — статус и статистика\n/clients — список клиентов\n/restart — перезагрузить Xray\n/addsub — создать новую подписку (имя → лимит → срок)\n/2fa — настройка 2FA", "HTML", _main_menu_keyboard())
+            _bot_send_message(chat_id, B["help"], "HTML", _main_menu_keyboard(B))
         elif cmd in ("/status", "/stats"):
             st = _load(STATE, {}) or {}
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
@@ -3515,9 +4684,9 @@ def _process_bot_update(update):
             gp = _gp_last_history()
             if gp:
                 ok, total, pct, ts = gp
-                gp_txt = f"🇷🇺 Доступность из РФ: {'🟢' if pct > 50 else '🔴'} {ok}/{total} ({pct:.0f}%) · {ts} UTC"
+                gp_txt = B["gp_ok"] % ("🟢" if pct > 50 else "🔴", ok, total, f"{pct:.0f}", ts)
             else:
-                gp_txt = "🇷🇺 Доступность из РФ: — (проверок ещё не было, открой панель)"
+                gp_txt = B["gp_none"]
             cpu = mem = None
             try:
                 m = get_system_metrics()
@@ -3526,24 +4695,69 @@ def _process_bot_update(update):
                 pass
             disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=3).stdout
             _bot_send_message(chat_id,
-                f"📊 <b>Статус и статистика</b>\nXray: {'🟢 работает' if running else '🔴 остановлен'}\n"
-                f"Аптайм: {uptime or '—'}\nКлиентов: {clients}\nНод: {len(_load_nodes())}\n"
-                f"{gp_txt}\n"
-                f"CPU: {cpu if cpu is not None else '—'} · RAM: {mem if mem is not None else '—'}\n"
-                f"Диск: {disk.splitlines()[1] if len(disk.splitlines())>1 else '—'}",
-                "HTML", _main_menu_keyboard())
+                B["status_hdr"] % (B["xray_on"] if running else B["xray_off"],
+                    uptime or '—', clients, len(_load_nodes()), gp_txt,
+                    cpu if cpu is not None else '—', mem if mem is not None else '—',
+                    disk.splitlines()[1] if len(disk.splitlines()) > 1 else '—'),
+                "HTML", _main_menu_keyboard(B))
         elif cmd == "/2fa":
-            _bot_send_message(chat_id, 
-                "🔐 <b>2FA настройка</b>\nНастройте 2FA в панели: вкладка <b>Безопасность</b> → <b>Двухфакторная аутентификация</b>",
-                "HTML", _main_menu_keyboard())
+            _bot_send_message(chat_id, B["twofa"],
+                "HTML", _main_menu_keyboard(B))
+        elif cmd == "/pay":
+            try:
+                pc = _pay_cfg()
+                if not pc["enabled"]:
+                    _bot_send_message(chat_id, B["pay_off"], "HTML", _main_menu_keyboard(B))
+                    return
+                d = _pay_load()
+                labels = dict(_PAY_LABELS)
+                applied = [v for v in d["invoices"].values() if v.get("applied")]
+                collected = sum(float(v.get("price") or 0) for v in applied)
+                cur0 = (applied[0].get("currency") if applied and applied[0].get("currency") else "RUB")
+                unpaid = sum(1 for v in d["invoices"].values() if not v.get("applied"))
+                lines = [B["pay_hdr"] % (labels.get(pc["provider"], pc["provider"]),
+                                         len(d["plans"]), unpaid, "%g" % collected, cur0)]
+                invs = sorted(d["invoices"].values(), key=lambda x: -(x.get("created") or 0))[:6]
+                if invs:
+                    lines.append(B["pay_recent"])
+                    for v in invs:
+                        stt = B["pay_paidst"] if v.get("applied") else B["pay_wait"]
+                        lines.append(B["pay_line"] % (v.get("id"),
+                                                      _html.escape(str(v.get("name") or "?")),
+                                                      "%g" % float(v.get("price") or 0),
+                                                      v.get("currency") or "RUB", stt))
+                else:
+                    lines.append(B["pay_none"])
+                _bot_send_message(chat_id, "\n".join(lines), "HTML", _main_menu_keyboard(B))
+            except Exception as e:
+                _bot_send_message(chat_id, B["err"] % str(e))
+        elif cmd == "/paycheck":
+            try:
+                d = _pay_load()
+                open_invs = [v["id"] for v in d["invoices"].values()
+                             if not v.get("applied") and v.get("provider") in ("cryptobot", "yookassa")
+                             and v.get("external_id")]
+                if not open_invs:
+                    _bot_send_message(chat_id, B["pay_none_open"], "HTML", _main_menu_keyboard(B))
+                    return
+                before = sum(1 for v in d["invoices"].values() if v.get("applied"))
+                for iid in open_invs[:30]:
+                    _pay_check_ext(iid)
+                after = sum(1 for v in _pay_load()["invoices"].values() if v.get("applied"))
+                _bot_send_message(chat_id, B["pay_checked"] % (len(open_invs), after - before),
+                                  "HTML", _main_menu_keyboard(B))
+            except Exception as e:
+                _bot_send_message(chat_id, B["err"] % str(e))
+        elif cmd == "/backup":
+            _bot_backup_menu(chat_id, B)
         else:
-            _bot_send_message(chat_id, "Неизвестная команда. /help", reply_markup=_main_menu_keyboard())
+            _bot_send_message(chat_id, B["unknown"], reply_markup=_main_menu_keyboard(B))
     except Exception as e:
         import traceback
         print("[bot] ошибка обработки " + str(text) + ": " + str(e), flush=True)
         traceback.print_exc()
         try:
-            _bot_send_message(chat_id, "⚠️ Ошибка: " + str(e))
+            _bot_send_message(chat_id, B["err"] % str(e))
         except Exception:
             pass
 
@@ -3568,6 +4782,444 @@ def _authed(self):
         t = (self.headers.get("X-Sid") or "").strip() or None
     e = SESSIONS.get(t) if t else None
     return bool(e and e > time.time())
+
+# ---------- роли: операторы с настраиваемыми правами ----------
+PERM_KEYS = ["clients", "nodes", "hop", "proxy", "rotation", "site", "pay",
+             "backups", "restore", "settings", "bot", "security", "logs", "appearance"]
+
+def _clean_perms(d):
+    d = d if isinstance(d, dict) else {}
+    return {k: bool(d.get(k)) for k in PERM_KEYS}
+
+# Логи служб (вкладка «Логи»): id, метка, источник (journal=имя юнита, file=путь), цель
+LOG_SOURCES = [
+    ("xray", "Xray (VPN-ядро)", "journal", "xray"),
+    ("telemt", "telemt (Telegram-прокси)", "journal", "telemt"),
+    ("vpnpanel", "Veil-панель", "journal", "vpnpanel"),
+    ("nginx", "nginx (веб-фронт)", "journal", "nginx"),
+    ("cloudflared", "Cloudflare Tunnel", "journal", "cloudflared"),
+    ("zapret", "veil-zapret2 (обход DPI)", "journal", "veil-zapret2"),
+    ("syslog", "Системный (syslog)", "file", "/var/log/syslog"),
+]
+
+def _tail_lines(path, count):
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        sz = f.tell()
+        off = max(0, sz - 1500000)
+        f.seek(off)
+        data = f.read().decode("utf-8", "replace")
+    ls = data.splitlines()
+    if off > 0 and ls:
+        ls = ls[1:]
+    return ls[-count:]
+
+# ================= Passkeys (WebAuthn): Face ID / Touch ID =================
+# Самодостаточная реализация без внешних зависимостей: минимальный декодер CBOR
+# и проверка ECDSA P-256 (ES256) на чистом Python. Регистрация — TOFU: ключ
+# привязывается из уже аутентифицированной сессии и принимается как есть;
+# вход доказывает владение приватным ключом подписью assertion'а (UV обязателен,
+# т.е. биометрия/PIN на устройстве).
+PASSKEYS_FILE = f"{BASE}/passkeys.json"
+_PK_LOCK = threading.Lock()
+_PK_PENDING = {}  # token -> {"ch": bytes, "exp": ts, "host": str}
+
+def _b64u_dec(s):
+    s = str(s or "")
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+def _b64u_enc(b):
+    return base64.urlsafe_b64encode(bytes(b)).decode().rstrip("=")
+
+def _cbor_dec(d, i=0):
+    v = d[i]; i += 1
+    mt, ai = v >> 5, v & 31
+    def ln():
+        nonlocal i
+        if ai < 24: return ai
+        if ai == 24: n = d[i]; i += 1; return n
+        if ai == 25: n = int.from_bytes(d[i:i + 2], "big"); i += 2; return n
+        if ai == 26: n = int.from_bytes(d[i:i + 4], "big"); i += 4; return n
+        if ai == 27: n = int.from_bytes(d[i:i + 8], "big"); i += 8; return n
+        raise ValueError("cbor")
+    if mt == 0: return ln(), i
+    if mt == 1: return -1 - ln(), i
+    if mt == 2:
+        n = ln(); return bytes(d[i:i + n]), i + n
+    if mt == 3:
+        n = ln(); return d[i:i + n].decode("utf-8", "replace"), i + n
+    if mt == 4:
+        if ai == 31:
+            out = []
+            while d[i] != 0xFF:
+                x, i = _cbor_dec(d, i); out.append(x)
+            return out, i + 1
+        n = ln(); out = []
+        for _ in range(n):
+            x, i = _cbor_dec(d, i); out.append(x)
+        return out, i
+    if mt == 5:
+        if ai == 31:
+            out = {}
+            while d[i] != 0xFF:
+                k, i = _cbor_dec(d, i); x, i = _cbor_dec(d, i); out[k] = x
+            return out, i + 1
+        n = ln(); out = {}
+        for _ in range(n):
+            k, i = _cbor_dec(d, i); x, i = _cbor_dec(d, i); out[k] = x
+        return out, i
+    if mt == 6:
+        ln()
+        return _cbor_dec(d, i)
+    if mt == 7:
+        if ai == 20: return False, i
+        if ai == 21: return True, i
+        if ai == 22: return None, i
+        if ai == 24: return d[i], i + 1
+        n = {25: 2, 26: 4, 27: 8}.get(ai)
+        if n: return None, i + n
+    raise ValueError("cbor")
+
+_EC_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+_EC_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_EC_GX = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
+_EC_GY = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
+
+def _ec_inv(a, m):
+    return pow(a % m, m - 2, m)
+
+def _ec_add(p, q):
+    if p is None: return q
+    if q is None: return p
+    if p[0] == q[0]:
+        if (p[1] + q[1]) % _EC_P == 0: return None
+        s = (3 * p[0] * p[0] - 3) * _ec_inv(2 * p[1], _EC_P) % _EC_P
+    else:
+        s = (q[1] - p[1]) * _ec_inv(q[0] - p[0], _EC_P) % _EC_P
+    x = (s * s - p[0] - q[0]) % _EC_P
+    return (x, (s * (p[0] - x) - p[1]) % _EC_P)
+
+def _ec_mul(k, p):
+    r0, rp = None, p
+    while k:
+        if k & 1: r0 = _ec_add(r0, rp)
+        rp = _ec_add(rp, rp); k >>= 1
+    return r0
+
+def _ecdsa_verify(msg_int, r, s, x, y):
+    if not (1 <= r < _EC_N and 1 <= s < _EC_N): return False
+    w = _ec_inv(s, _EC_N)
+    pt = _ec_add(_ec_mul((msg_int * w) % _EC_N, (_EC_GX, _EC_GY)), _ec_mul((r * w) % _EC_N, (x, y)))
+    return pt is not None and pt[0] % _EC_N == r
+
+def _der_rs(b):
+    try:
+        if b[0] != 0x30: return None
+        i = 2
+        if b[1] & 0x80: i += (b[1] & 0x7F)
+        if b[i] != 0x02: return None
+        rl = b[i + 1]; r = int.from_bytes(b[i + 2:i + 2 + rl], "big"); i += 2 + rl
+        if b[i] != 0x02: return None
+        sl = b[i + 1]; s = int.from_bytes(b[i + 2:i + 2 + sl], "big")
+        return r, s
+    except Exception:
+        return None
+
+def _pk_authdata(ad):
+    if len(ad) < 37: return None
+    out = {"rp": ad[:32], "flags": ad[32], "counter": int.from_bytes(ad[33:37], "big"), "cred": None}
+    if out["flags"] & 0x40:
+        rest = ad[37:]
+        if len(rest) < 19: return None
+        cl = int.from_bytes(rest[16:18], "big")
+        if len(rest) < 18 + cl: return None
+        try:
+            cose, _ = _cbor_dec(rest, 18 + cl)
+        except Exception:
+            return None
+        out["cred"] = {"id": rest[18:18 + cl], "cose": cose}
+    return out
+
+def _pk_cose_es256(cose):
+    try:
+        if cose.get(1) != 2 or cose.get(3) != -7 or cose.get(-1) != 1: return None
+        x, y = cose.get(-2), cose.get(-3)
+        if isinstance(x, (bytes, bytearray)) and len(x) == 32 \
+                and isinstance(y, (bytes, bytearray)) and len(y) == 32:
+            return int.from_bytes(x, "big"), int.from_bytes(y, "big")
+    except Exception:
+        pass
+    return None
+
+def _pk_load():
+    try:
+        with open(PASSKEYS_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _pk_host(self):
+    h = (self.headers.get("Host") or "").strip()
+    if h.startswith("["):
+        try:
+            return h[1:h.index("]")]
+        except Exception:
+            return h
+    return h.split(":")[0]
+
+def _pk_new_pending(host):
+    with _PK_LOCK:
+        now = time.time()
+        for k in [k for k, v in _PK_PENDING.items() if v.get("exp", 0) < now]:
+            _PK_PENDING.pop(k, None)
+        tok = secrets.token_hex(8)
+        _PK_PENDING[tok] = {"ch": secrets.token_bytes(32), "exp": now + 180, "host": host}
+        return tok, _PK_PENDING[tok]["ch"]
+
+def _pk_take_pending(tok):
+    with _PK_LOCK:
+        p = _PK_PENDING.pop(str(tok or ""), None)
+    if not p or p["exp"] < time.time(): return None
+    return p
+
+def _pk_clientdata(rb, want_type, ch_b64, host):
+    try:
+        raw = _b64u_dec((rb or {}).get("clientDataJSON"))
+        cd = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None, "clientDataJSON не разобран", None
+    if cd.get("type") != want_type:
+        return None, "не тот тип церемонии", None
+    if cd.get("challenge") != ch_b64:
+        return None, "challenge не совпал", None
+    try:
+        oh = urllib.parse.urlparse(str(cd.get("origin") or "")).hostname or ""
+    except Exception:
+        return None, "origin не разобран", None
+    if oh.lower() != str(host or "").lower():
+        return None, "origin не совпал с адресом панели", None
+    return cd, None, raw
+
+def _pk_uid(self):
+    u = _auth_user(self)
+    if u is None: return None
+    return "" if u.get("owner") else u.get("login")
+
+def _pk_reg_end(self, b, uid):
+    p = _pk_take_pending(b.get("token"))
+    if not p: return 400, {"error": "попытка истекла — начни заново"}
+    rb = b.get("response") or b
+    cd, err, raw = _pk_clientdata(rb, "webauthn.create", _b64u_enc(p["ch"]), p["host"])
+    if cd is None: return 401, {"error": err}
+    try:
+        att = _b64u_dec(rb.get("attestationObject"))
+        am, _ = _cbor_dec(att)
+        ad = _pk_authdata(am.get("authData") or b"")
+    except Exception:
+        return 400, {"error": "attestationObject не разобран"}
+    if not ad or not ad.get("cred"): return 400, {"error": "нет данных кредитенциала"}
+    if not (ad["flags"] & 0x01): return 401, {"error": "UP не подтверждён"}
+    if ad["rp"] != hashlib.sha256(p["host"].encode()).digest(): return 401, {"error": "rpIdHash не совпал"}
+    xy = _pk_cose_es256(ad["cred"]["cose"])
+    if not xy: return 400, {"error": "поддерживаются только ключи ES256 (P-256)"}
+    if am.get("fmt") == "packed":
+        st_ = am.get("attStmt") or {}
+        sig = st_.get("sig")
+        if sig and not st_.get("x5c"):
+            try:
+                cdh, i2 = _cbor_dec(att)
+                blob = am.get("authData") + hashlib.sha256(raw).digest()
+                rs = _der_rs(bytes(sig))
+                if rs and not _ecdsa_verify(int.from_bytes(hashlib.sha256(blob).digest(), "big"),
+                                            rs[0], rs[1], xy[0], xy[1]):
+                    return 401, {"error": "подпись аттестации не прошла"}
+            except Exception:
+                return 400, {"error": "packed-аттестация не разобрана"}
+    name = str(b.get("name") or "").strip()[:40] or \
+        ((self.headers.get("User-Agent") or "ключ")[:40])
+    db = _pk_load()
+    lst = db.get(uid) or []
+    if len(lst) >= 12: return 400, {"error": "слишком много ключей (макс. 12)"}
+    cid = _b64u_enc(ad["cred"]["id"])
+    if any(c.get("id") == cid for c in lst): return 409, {"error": "такой ключ уже привязан"}
+    lst.append({"id": cid, "x": "%064x" % xy[0], "y": "%064x" % xy[1],
+                "name": name, "rp": p["host"], "created": _now_iso(), "counter": 0})
+    db[uid] = lst
+    _save(PASSKEYS_FILE, db)
+    _audit("passkey_add", user=uid or "owner", name=name)
+    return 200, {"ok": True, "keys": _pk_public(lst)}
+
+def _pk_public(lst):
+    return [{"id": c.get("id"), "name": c.get("name"), "created": c.get("created")} for c in (lst or [])]
+
+def _pk_login_end(self, b):
+    cip = self.client_address[0]
+    ua_h = (self.headers.get("User-Agent") or "")[:256]
+    if _login_throttle(cip):
+        return 429, {"error": "слишком много попыток. подожди 10 минут"}
+    p = _pk_take_pending(b.get("token"))
+    if not p: return 400, {"error": "попытка истекла — начни заново"}
+    rb = b.get("response") or b
+    found, fuid = None, None
+    db = _pk_load()
+    ckey = None
+    try:
+        ckey = _b64u_enc(_b64u_dec(b.get("id")))
+    except Exception:
+        pass
+    for uid, lst in db.items():
+        for c in lst:
+            if ckey and c.get("id") == ckey:
+                found, fuid = c, uid
+    if not found:
+        _login_fail(cip)
+        _login_history("fail", ip=cip, ua=ua_h, err="passkey_unknown_cred")
+        return 401, {"error": "ключ не привязан к этой панели"}
+    cd, err, raw = _pk_clientdata(rb, "webauthn.get", _b64u_enc(p["ch"]), p["host"])
+    if cd is None:
+        _login_fail(cip)
+        _login_history("fail", ip=cip, ua=ua_h, err="passkey_clientdata")
+        return 401, {"error": err}
+    try:
+        ad_raw = _b64u_dec(rb.get("authenticatorData"))
+        a = _pk_authdata(ad_raw)
+        sig = _der_rs(_b64u_dec(rb.get("signature")))
+    except Exception:
+        a, sig = None, None
+    if not a or not sig:
+        return 400, {"error": "ответ устройства не разобран"}
+    if not (a["flags"] & 0x01):
+        return 401, {"error": "устройство не подтвердило присутствие (UP)"}
+    if not (a["flags"] & 0x04):
+        return 401, {"error": "биометрия не подтверждена (UV) — на устройстве должен быть настроен Face ID/Touch ID или PIN"}
+    if a["rp"] != hashlib.sha256((found.get("rp") or "").encode()).digest():
+        return 401, {"error": "ключ выпущен для другого адреса"}
+    old = int(found.get("counter") or 0)
+    if old and a["counter"] and a["counter"] <= old:
+        return 401, {"error": "возможно клонирование ключа — привяжи заново"}
+    blob = ad_raw + hashlib.sha256(raw).digest()
+    if not _ecdsa_verify(int.from_bytes(hashlib.sha256(blob).digest(), "big"),
+                         sig[0], sig[1], int(found["x"], 16), int(found["y"], 16)):
+        _login_fail(cip)
+        _login_history("fail", ip=cip, ua=ua_h, err="passkey_bad_sig")
+        return 401, {"error": "подпись не прошла"}
+    if fuid:
+        x = next((u for u in (CFG_CACHE.get("users") or []) if u.get("login") == fuid), None)
+        if not x or x.get("disabled"):
+            return 403, {"error": "оператор удалён или заблокирован"}
+    _login_ok(cip)
+    t = secrets.token_hex(32)
+    SESSIONS[t] = time.time() + 30 * 86400
+    SESSIONS_META[t] = {"ip": cip, "ua": ua_h, "created": _now_iso(),
+                        "last_seen": _now_iso(), "remember": True,
+                        "user": fuid, "passkey": True}
+    found["counter"] = a["counter"] or old
+    _save(PASSKEYS_FILE, db)
+    _login_history("ok", ip=cip, ua=ua_h, user=fuid or "owner")
+    _audit("login_passkey", ip=cip, user=fuid or "owner", ok=True)
+    _save_sessions()
+    self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax"
+                     + ("; Secure" if self._is_tls() else "")]
+    return 200, {"ok": True, "sid": t}
+
+def _auth_sid(self):
+    t = _cookie(self)
+    if t is None:
+        t = (self.headers.get("X-Sid") or "").strip() or None
+    if not t:
+        return None
+    e = SESSIONS.get(t)
+    return t if (e and e > time.time()) else None
+
+def _auth_user(self):
+    sid = _auth_sid(self)
+    if not sid:
+        return None
+    uname = (SESSIONS_META.get(sid) or {}).get("user") or ""
+    if not uname:
+        return {"owner": True, "login": str(CFG_CACHE.get("login") or "owner"), "perms": {}}
+    for x in (CFG_CACHE.get("users") or []):
+        if x.get("login") == uname:
+            if x.get("disabled"):
+                return None
+            return {"owner": False, "login": uname, "perms": x.get("perms") or {}}
+    return None
+
+def _drop_user_sessions(login):
+    drop = [t for t, mlist in SESSIONS_META.items() if (mlist or {}).get("user") == login]
+    for t in drop:
+        SESSIONS.pop(t, None)
+        SESSIONS_META.pop(t, None)
+    if drop:
+        try:
+            _save_sessions()
+        except Exception:
+            pass
+
+def _perm_for(p, m):
+    if not p.startswith("/api/"):
+        return None
+    if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook", "/api/hop/register",
+             "/api/2fa/status"):
+        return None
+    if p.startswith("/api/ext/") or p.startswith("/pay/"):
+        return None
+    if p == "/api/theme" and m == "GET":
+        return None
+    if p == "/api/backup" or p.startswith("/api/backups"):
+        return ["restore"] if p == "/api/backups/restore" else ["backups"]
+    if p.startswith("/api/users"):
+        return ["owner"]
+    if p.startswith("/api/2fa/"):
+        return ["owner"]
+    if p.startswith("/api/nodes"):
+        return ["nodes"]
+    if p.startswith("/api/hop"):
+        return ["hop"]
+    if p.startswith("/api/tg/") or p.startswith("/api/webproxy") or p.startswith("/api/webmux"):
+        return ["proxy"]
+    if (p.startswith("/api/rotate") or p.startswith("/api/dynv6")
+            or p.startswith("/api/globalping") or p.startswith("/api/fix/")):
+        return ["rotation"]
+    if p.startswith("/api/cert"):
+        return ["site"]
+    if p.startswith("/api/pay"):
+        return ["pay"]
+    if p.startswith("/api/bot/"):
+        return ["bot"]
+    if (p.startswith("/api/sessions") or p in ("/api/security", "/api/login/history", "/api/audit")
+            or p.startswith("/api/journal")):
+        return ["security"]
+    if p.startswith("/api/logs"):
+        return ["security", "logs"]
+    if (p.startswith("/api/clients") or p.startswith("/api/subs") or p.startswith("/api/bans")
+            or p.startswith("/api/sub/") or p.startswith("/api/wgconf") or p.startswith("/api/awgconf")
+            or p in ("/api/favorite", "/api/extimport/apply", "/api/extimport/preview",
+                     "/api/subscription/settings")):
+        return ["clients"]
+    if (p.startswith("/api/logo") or p.startswith("/api/wallpaper")
+            or p == "/api/theme"):
+        return ["appearance"]
+    for pref in ("/api/settings", "/api/panel", "/api/xray", "/api/versions", "/api/update",
+                 "/api/restart", "/api/port", "/api/inbound", "/api/network", "/api/vpn",
+                 "/api/selftest"):
+        if p.startswith(pref):
+            return ["settings"]
+    return None
+
+def _perm_gate(self, p, m):
+    need = _perm_for(p, m)
+    if need is None:
+        return None
+    u = _auth_user(self)
+    if u is None:
+        return (401, {"error": "unauthorized"})
+    if u["owner"]:
+        return None
+    if any(u["perms"].get(k) for k in need):
+        return None
+    return (403, {"error": "недостаточно прав", "need": need[0]})
 
 
 # ---------- telemt / telegram proxy ----------
@@ -3716,6 +5368,16 @@ def _agent_nodes(nodes=None):
     nodes = nodes if nodes is not None else get_nodes()
     return [n for n in (nodes or []) if (n.get("type") or "agent") == "agent"]
 
+EXT_CAPS = ["clients_add", "clients_update", "clients_delete", "traffic", "restart"]
+
+def _node_restart(n):
+    """Перезапуск ядра на ноде: veil -> /api/ext/restart, agent -> apply restart. Возвращает err или None."""
+    if (n.get("type") or "agent") == "veil":
+        _d, err, _fp = _node_call(n, "/api/ext/restart", {}, timeout=15)
+    else:
+        _d, err, _fp = _node_call(n, "/agent/apply", {"action": "restart"}, timeout=25)
+    return err
+
 def _nodes_public():
     return [{k: v for k, v in n.items() if k != "token"} for n in get_nodes()]
 
@@ -3732,6 +5394,7 @@ def _node_poll_one(n):
             n["node_xray"] = data.get("xray")
             n["status_cache"] = {"inbounds": data.get("inbounds") or [],
                                  "at": int(time.time())}
+            n["node_caps"] = data.get("caps") or []
         else:
             n["online"] = False
             e = (err or "")
@@ -3755,6 +5418,7 @@ def _node_poll_one(n):
         n["remote_version"] = data.get("version")
         n["node_clients"] = data.get("clients")
         n["node_xray"] = data.get("xray")
+        n["node_caps"] = data.get("caps") or []
         hd, herr, hfp = _node_call(n, "/agent/hello", need_token=False)
         if hd and hd.get("public_key"):
             hd["at"] = int(time.time())
@@ -8079,6 +9743,7 @@ def _backup():
         "panel_config": _load(CFG, {}),
         "state": _load(STATE),
         "theme": _load(THEME, {}),
+        "payments": _load(PAYMENTS_F, {}),
         "xray_config": _load(XRAY),
         "wallpaper": None,
         "certs": {},
@@ -8113,6 +9778,8 @@ def _restore(data):
         _write_xray(st)
     if isinstance(data.get("theme"), dict):
         _save(THEME, data["theme"], 0o644)
+    if isinstance(data.get("payments"), dict) and data["payments"]:
+        _save(PAYMENTS_F, data["payments"], 0o600)
     if data.get("wallpaper"):
         try:
             with open(WALL, "wb") as f:
@@ -8234,6 +9901,79 @@ def _autobk_loop():
 
 threading.Thread(target=_autobk_loop, daemon=True).start()
 
+# ---------- backup / restore через Telegram-бота ----------
+BOT_BK_PENDING = {}
+
+def _bot_bk_disp(name):
+    # veil-backup-YYYYMMDD-HHMMSS.json.gz -> YYYY-MM-DD HH:MM
+    t = name[12:26]
+    return t[0:4] + "-" + t[4:6] + "-" + t[6:8] + " " + t[9:11] + ":" + t[11:13]
+
+def _bot_backup_menu(chat_id, B):
+    files = _autobk_files()[:8]
+    rows = [[{"text": B["bk_file_btn"] % (_bot_bk_disp(f["name"]), f["size"] // 1024),
+              "callback_data": "bkr|" + f["name"]}] for f in files]
+    rows.append([{"text": B["bk_new_btn"], "callback_data": "bkw"},
+                 {"text": B["bk_send_btn"], "callback_data": "bks"}])
+    kb = {"inline_keyboard": rows}
+    if files:
+        _bot_send_message(chat_id, B["bk_hdr"] % len(files), "HTML", kb)
+    else:
+        _bot_send_message(chat_id, B["bk_none"], "HTML", kb)
+
+def _bot_backup_cb(chat_id, data, B):
+    if data == "bkw":
+        fname, raw = _autobk_make()
+        _audit("bot_backup_make", name=fname)
+        _bot_send_message(chat_id, B["bk_created"] % (fname, len(raw) // 1024),
+                          "HTML", _main_menu_keyboard(B))
+    elif data == "bks":
+        files = _autobk_files()
+        if files:
+            fname = files[0]["name"]
+            with open(os.path.join(_AUTOBK_DIR, fname), "rb") as f:
+                raw = f.read()
+        else:
+            fname, raw = _autobk_make()
+        _bot_send_message(chat_id, B["bk_sent"])
+        if not _tg_send_document(chat_id, fname, raw, caption="Veil backup " + fname):
+            _bot_send_message(chat_id, B["bk_err"] % "sendDocument")
+    elif data.startswith("bkr|"):
+        name = data[4:]
+        if not _AUTOBK_RE.fullmatch(name or ""):
+            _bot_send_message(chat_id, B["bk_noent"] % name)
+            return
+        path = os.path.join(_AUTOBK_DIR, name)
+        if not os.path.exists(path):
+            _bot_send_message(chat_id, B["bk_noent"] % name)
+            return
+        with open(path, "rb") as f:
+            data_ = json.loads(gzip.decompress(f.read()))
+        ncl = _client_count(data_.get("state") or {})
+        BOT_BK_PENDING[chat_id] = name
+        _bot_send_message(chat_id, B["bk_ask"] % (name, _bot_bk_disp(name), ncl), "HTML",
+                          {"inline_keyboard": [[{"text": B["bk_yes"], "callback_data": "bky|" + name},
+                                                {"text": B["bk_no"], "callback_data": "bkn"}]]})
+    elif data.startswith("bky|"):
+        name = data[4:]
+        if BOT_BK_PENDING.get(chat_id) != name or not _AUTOBK_RE.fullmatch(name or ""):
+            _bot_send_message(chat_id, B["bk_noent"] % name)
+            return
+        BOT_BK_PENDING.pop(chat_id, None)
+        path = os.path.join(_AUTOBK_DIR, name)
+        if not os.path.exists(path):
+            _bot_send_message(chat_id, B["bk_noent"] % name)
+            return
+        with open(path, "rb") as f:
+            data_ = json.loads(gzip.decompress(f.read()))
+        res = _restore(data_)
+        _audit("bot_backup_restore", name=name, clients=res.get("clients"))
+        _bot_send_message(chat_id, B["bk_done"] % (name, res.get("clients")),
+                          "HTML", _main_menu_keyboard(B))
+    elif data == "bkn":
+        BOT_BK_PENDING.pop(chat_id, None)
+        _bot_send_message(chat_id, B["bk_cancel"], "HTML", _main_menu_keyboard(B))
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -8272,6 +10012,91 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", c)
         self.end_headers(); self.wfile.write(b)
 
+    def _api_pay(self, p):
+        b = self._body()
+        pc = _pay_cfg()
+        if p == "/api/pay/settings":
+            prov = (b.get("provider") or pc["provider"])
+            if prov not in _PAY_PROVIDERS:
+                return self._send(400, {"error": "неизвестный провайдер"})
+            CFG_CACHE["pay_enabled"] = bool(b.get("enabled"))
+            CFG_CACHE["pay_provider"] = prov
+            CFG_CACHE["pay_notify"] = bool(b.get("notify", True))
+            for key, field in (("pay_secret", "secret"), ("pay_cb_token", "cb_token"),
+                               ("pay_yoo_shop", "yoo_shop"), ("pay_yoo_secret", "yoo_secret")):
+                v = b.get(field)
+                v = v.strip() if isinstance(v, str) else ""
+                if v:
+                    CFG_CACHE[key] = v[:256]
+            _save(CFG, CFG_CACHE)
+            _audit("pay_settings", provider=prov, enabled=bool(b.get("enabled")))
+            return self._send(200, _pay_summary())
+        if p == "/api/pay/plans":
+            act = (b.get("action") or "").strip()
+            try:
+                with PAY_LOCK:
+                    d = _pay_load()
+                    if act in ("add", "edit"):
+                        clean = _pay_plan_valid(b.get("plan") or {})
+                        pid = str((b.get("plan") or {}).get("id") or "")
+                        if act == "add":
+                            d["seq"] += 1
+                            clean["id"] = "P%d" % d["seq"]
+                            d["plans"].append(clean)
+                        else:
+                            hit = False
+                            for i, x in enumerate(d["plans"]):
+                                if str(x.get("id")) == pid:
+                                    clean["id"] = pid
+                                    d["plans"][i] = clean
+                                    hit = True
+                                    break
+                            if not hit:
+                                raise LookupError("тариф не найден")
+                    elif act == "del":
+                        pid = str(b.get("id") or "")
+                        d["plans"] = [x for x in d["plans"] if str(x.get("id")) != pid]
+                    else:
+                        raise ValueError("нужен action: add|edit|del")
+                    _pay_save(d)
+            except LookupError as e:
+                return self._send(404, {"error": str(e)})
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            _audit("pay_plans", action=act)
+            return self._send(200, _pay_summary())
+        if p == "/api/pay/invoice":
+            plan = next((x for x in _pay_load()["plans"]
+                         if str(x.get("id")) == str(b.get("plan_id") or "")), None)
+            if not plan:
+                return self._send(404, {"error": "тариф не найден"})
+            try:
+                inv = _pay_mkv(str(b.get("sub_token") or ""), plan, src="panel")
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            _audit("pay_invoice", inv=inv["id"])
+            return self._send(200, {"ok": True, "invoice": inv, "summary": _pay_summary()})
+        if p == "/api/pay/confirm":
+            iid = str(b.get("invoice_id") or "")
+            if not re.fullmatch(r"V\d{6}", iid):
+                return self._send(400, {"error": "неверный id счёта"})
+            inv = _pay_mark_paid(iid, "panel")
+            if not inv:
+                return self._send(404, {"error": "счёт не найден"})
+            _audit("pay_confirm", inv=iid)
+            return self._send(200, {"ok": True, "applied": bool(inv.get("applied")),
+                                    "summary": _pay_summary()})
+        if p == "/api/pay/check":
+            iid = str(b.get("invoice_id") or "")
+            if re.fullmatch(r"V\d{6}", iid):
+                _pay_check_ext(iid)
+            else:
+                for v in list(_pay_load()["invoices"].values()):
+                    if not v.get("applied") and v.get("provider") in ("cryptobot", "yookassa"):
+                        _pay_check_ext(v["id"])
+            return self._send(200, _pay_summary())
+        return self._send(404, {"error": "not found"})
+
     def _body(self, maxb=8 * 1024 * 1024):
         n = int(self.headers.get("Content-Length") or 0)
         if n < 0 or n > maxb:
@@ -8308,6 +10133,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "xray": subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0,
                 "clients": len(uuids), "online": online,
                 "traffic_today": int(_TRAFFIC_DAYS.get(today_k) or 0),
+                "caps": EXT_CAPS,
                 "inbounds": inb_list})
         if p == "/api/ext/inbounds":
             return self._send(200, {"inbounds": [
@@ -8433,11 +10259,34 @@ class H(http.server.BaseHTTPRequestHandler):
             _restart_xray()
             _audit("ext_client_delete", uuid=u, token=t.get("label"))
             return self._send(200, {"ok": True})
+        if p == "/api/ext/restart":
+            _restart_xray()
+            _audit("ext_restart", token=t.get("label"))
+            return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
 
     # ---- GET ----
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        g = _perm_gate(self, p, "GET")
+        if g:
+            return self._send(*g)
+        if p == "/api/me":
+            u = _auth_user(self)
+            if not u:
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {"login": u["login"], "owner": bool(u["owner"]),
+                                    "perms": ({"*": True} if u["owner"] else u["perms"])})
+        if p == "/api/users":
+            u = _auth_user(self)
+            if not u:
+                return self._send(401, {"error": "unauthorized"})
+            if not u["owner"]:
+                return self._send(403, {"error": "недостаточно прав"})
+            us = [{"login": x.get("login"), "perms": x.get("perms") or {},
+                   "disabled": bool(x.get("disabled")), "created": x.get("created")}
+                  for x in (CFG_CACHE.get("users") or [])]
+            return self._send(200, {"users": us, "perm_keys": PERM_KEYS})
         
         if p.startswith("/sub/") or p in ("/sub", "/sub/"):
             # Универсальная подписка (/sub) или личная подписка клиента (/sub/<subId>).
@@ -8550,6 +10399,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     b = payload.encode("utf-8")
                     ctype = "text/plain; charset=utf-8"
                 else:
+                    # WG/AmneziaWG — однострочными ссылками wireguard:// и amneziawg://
+                    # (тот же формат, что для INCY): Shadowrocket, Happ, NekoBox
+                    # импортируют их из подписки. Многострочные [Interface]-блоки
+                    # клиенты не разбирают и теряли эти протоколы молча.
+                    links = [(inc_links.get(p) or l) if p in ("wireguard", "amneziawg") else l
+                             for p, l in inb_links.items()]
                     # ссылки нод, куда клиент размещён мастером — в общий base64-список
                     links = links + list(node_links.values()) + tg_links
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
@@ -8640,6 +10495,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(404, {"error": "клиент не найден"})
             return self._send(200, cfgj)
 
+        if p.startswith("/pay/"):
+            return _pay_handle_public(self, p)
+
         if p.startswith("/p/"):
             # Публичная страница подписки: сюда ведёт profile-web-page-url (кнопка «i»
             # в клиентах). Показывает имя, статус, срок, трафик и способы подключения.
@@ -8655,14 +10513,25 @@ class H(http.server.BaseHTTPRequestHandler):
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             sub_url = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
+            _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query or "")
+            _lq = (_q.get("lang") or [""])[0]
+            _lck = ""
+            for _c in (self.headers.get("Cookie") or "").split(";"):
+                _c = _c.strip()
+                if _c.startswith("veil_sub_lang="):
+                    _lck = _c[len("veil_sub_lang="):]
+            lang = _sub_lang_pick(_lq, _lck, self.headers.get("Accept-Language", ""))
             html = _sub_page_html(u, sub_url, host, panel_port,
                                   self.headers.get("User-Agent", "") or "",
-                                  devs=_subdev_list(tok))
+                                  devs=_subdev_list(tok), lang=lang)
             b = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
             self.send_header("Cache-Control", "no-store")
+            if _lq:
+                self.send_header("Set-Cookie",
+                                 "veil_sub_lang=" + lang + "; Path=/; Max-Age=31536000; SameSite=Lax")
             self.end_headers()
             self.wfile.write(b)
             return None
@@ -8770,15 +10639,34 @@ class H(http.server.BaseHTTPRequestHandler):
                 content = f.read()
             style = (CFG_CACHE.get("ui_style") or "new").strip().lower()
             content = content.replace(b"__UI_STYLE__", b"classic" if style == "classic" else b"new")
+            etag = '"' + hashlib.sha256(content).hexdigest()[:32] + '"'
+            if (self.headers.get("If-None-Match") or "").strip() == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Vary", "Accept-Encoding")
+                self._sec_headers()
+                self.end_headers()
+                return None
+            body = content
+            enc = None
+            if "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+                global _HTML_GZ
+                if not (_HTML_GZ and _HTML_GZ[0] == etag):
+                    _HTML_GZ = (etag, gzip.compress(content, 6))
+                body, enc = _HTML_GZ[1], "gzip"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", etag)
+            # no-cache = перепроверка по ETag каждый раз: файл ~1 МБ, но отдача
+            # 304 или gzip снимает почти весь трафик повторных загрузок.
+            self.send_header("Cache-Control", "no-cache")
+            if enc: self.send_header("Content-Encoding", enc)
+            self.send_header("Vary", "Accept-Encoding")
             self._sec_headers()
             self.end_headers()
-            self.wfile.write(content)
+            self.wfile.write(body)
             return None
         if p == "/api/state":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -9035,6 +10923,45 @@ class H(http.server.BaseHTTPRequestHandler):
             except Exception:
                 hist = list(_LOGIN_HIST)
             return self._send(200, {"items": hist[-limit:][::-1]})
+        if p == "/api/logs/services":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            out = []
+            for sid, label, kind, tgt in LOG_SOURCES:
+                if kind == "journal":
+                    ok = (os.path.exists("/etc/systemd/system/%s.service" % tgt)
+                          or os.path.exists("/lib/systemd/system/%s.service" % tgt))
+                else:
+                    ok = os.path.exists(tgt)
+                out.append({"id": sid, "label": label, "available": ok})
+            return self._send(200, {"services": out})
+        if p == "/api/logs":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            svc = (qs.get("svc") or [""])[0].strip()
+            src = next((s for s in LOG_SOURCES if s[0] == svc), None)
+            if not src: return self._send(400, {"error": "unknown service"})
+            try: lines = max(10, min(2000, int((qs.get("lines") or [""])[0] or "200")))
+            except Exception: lines = 200
+            grep = (qs.get("q") or [""])[0].strip()[:200]
+            want = min(lines * 4, 8000) if grep else lines
+            if src[2] == "journal":
+                try:
+                    r = subprocess.run(["journalctl", "-u", src[3], "-n", str(want),
+                                        "--no-pager", "-q"], capture_output=True, text=True, timeout=10)
+                    ls = (r.stdout or "").splitlines()
+                except Exception:
+                    return self._send(502, {"error": "journalctl unavailable"})
+            else:
+                try:
+                    ls = _tail_lines(src[3], want)
+                except Exception:
+                    return self._send(502, {"error": "log file unavailable"})
+            if grep:
+                gl = grep.lower()
+                ls = [x for x in ls if gl in x.lower()][:lines]
+            else:
+                ls = ls[-lines:]
+            return self._send(200, {"text": "\n".join(ls), "count": len(ls), "svc": svc})
         if p == "/api/sessions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             cur = None
@@ -9052,6 +10979,9 @@ class H(http.server.BaseHTTPRequestHandler):
                                "remember": bool(m.get("remember"))})
             items.sort(key=lambda x: x["current"] is False)
             return self._send(200, {"items": items, "count": len(SESSIONS)})
+        if p == "/api/pay":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _pay_summary())
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
@@ -9357,12 +11287,20 @@ class H(http.server.BaseHTTPRequestHandler):
                 if _login_throttle(cip):
                     return self._send(429, {"error": "слишком много попыток. подожди 10 минут"})
                 ua_h = (self.headers.get("User-Agent") or "")[:256]
-                if not (b.get("login") == CFG_CACHE.get("login") and
-                        self._is_cur_pw(b.get("password", ""))):
+                is_owner = (b.get("login") == CFG_CACHE.get("login") and
+                            self._is_cur_pw(b.get("password", "")))
+                op_user = None
+                if not is_owner:
+                    for x in (CFG_CACHE.get("users") or []):
+                        if (x.get("login") == b.get("login") and not x.get("disabled") and
+                                _pw_match(x.get("salt", ""), b.get("password", ""), x.get("pass_hash"))):
+                            op_user = x
+                            break
+                if not (is_owner or op_user):
                     _login_fail(cip)
                     _login_history("fail", ip=cip, ua=ua_h, user=b.get("login"))
                     return self._send(401, {"error": "неверный логин или пароль"})
-                if CFG_CACHE.get("totp_enabled"):
+                if is_owner and CFG_CACHE.get("totp_enabled"):
                     totp_code = (b.get("totp_code") or "").strip()
                     if not totp_code or not _totp_verify(CFG_CACHE.get("totp_secret", ""), totp_code):
                         _login_fail(cip)
@@ -9373,7 +11311,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 rem = bool(b.get("remember"))
                 SESSIONS[t] = time.time() + (30 * 86400 if rem else 72 * 3600)
                 SESSIONS_META[t] = {"ip": cip, "ua": ua_h, "created": _now_iso(),
-                                    "last_seen": _now_iso(), "remember": bool(rem)}
+                                    "last_seen": _now_iso(), "remember": bool(rem),
+                                    "user": "" if is_owner else (op_user or {}).get("login", "")}
                 _login_history("ok", ip=cip, ua=ua_h, user=b.get("login"))
                 _audit("login", ip=cip, ua=ua_h, user=b.get("login"), ok=True)
                 _save_sessions()
@@ -9381,10 +11320,122 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"
                                  + ("; Secure" if self._is_tls() else "")]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
+            if p == "/api/passkey/login/begin":
+                db = _pk_load()
+                ids = [k.get("id") for lst in db.values() for k in lst if k.get("id")]
+                if not ids:
+                    return self._send(400, {"error": "нет привязанных ключей входа"})
+                tok, ch = _pk_new_pending(_pk_host(self))
+                return self._send(200, {"token": tok, "challenge": _b64u_enc(ch), "ids": ids})
+            if p == "/api/passkey/login/end":
+                st, js = _pk_login_end(self, self._body() or {})
+                return self._send(st, js)
             if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
-                    and not p.startswith("/api/ext/")
+                    and not p.startswith("/api/ext/") and not p.startswith("/pay/")
                     and not (p.startswith("/p/") and p.endswith("/forget"))):
                 return self._send(401, {"error": "unauthorized"})
+            g = _perm_gate(self, p, "POST")
+            if g:
+                return self._send(*g)
+            if p == "/api/passkey/register/begin":
+                b = self._body() or {}
+                uid = _pk_uid(self)
+                if uid is None:
+                    return self._send(401, {"error": "unauthorized"})
+                host = _pk_host(self)
+                if not host or re.match(r"^\d+\.\d+\.\d+\.\d+$", host):
+                    return self._send(400, {"error": "для привязки ключа открой панель по домену и https"})
+                tok, ch = _pk_new_pending(host)
+                u = _auth_user(self) or {}
+                db = _pk_load()
+                exclude = [k.get("id") for k in db.get(uid, []) if k.get("id")]
+                return self._send(200, {
+                    "token": tok, "challenge": _b64u_enc(ch), "rp": host,
+                    "exclude": exclude,
+                    "user": ("" if uid == "" else uid) or (u.get("login") or CFG_CACHE.get("login") or "admin"),
+                })
+            if p == "/api/passkey/register/end":
+                uid = _pk_uid(self)
+                if uid is None:
+                    return self._send(401, {"error": "unauthorized"})
+                st, js = _pk_reg_end(self, self._body() or {}, uid)
+                return self._send(st, js)
+            if p == "/api/passkey/list":
+                uid = _pk_uid(self)
+                if uid is None:
+                    return self._send(401, {"error": "unauthorized"})
+                return self._send(200, {"keys": _pk_public(_pk_load().get(uid, []))})
+            if p == "/api/passkey/delete":
+                uid = _pk_uid(self)
+                if uid is None:
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body() or {}
+                kid = str(b.get("id") or "")
+                db = _pk_load()
+                lst = db.get(uid) or []
+                left = [k for k in lst if k.get("id") != kid]
+                if len(left) == len(lst):
+                    return self._send(404, {"error": "ключ не найден"})
+                removed = next(k for k in lst if k.get("id") == kid)
+                db[uid] = left
+                _save(PASSKEYS_FILE, db)
+                _audit("passkey_del", id=kid, name=removed.get("name"))
+                return self._send(200, {"ok": True})
+            if p.startswith("/api/users/"):
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                users = [dict(x) for x in (CFG_CACHE.get("users") or [])]
+                lg = str(b.get("login") or "").strip().lower()
+                if p == "/api/users/add":
+                    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,31}", lg):
+                        return self._send(400, {"error": "логин: 3–32 символа, латиница, цифры, . _ -"})
+                    if lg == str(CFG_CACHE.get("login") or "").lower() or any(x.get("login") == lg for x in users):
+                        return self._send(400, {"error": "такой логин уже занят"})
+                    if len(users) >= 20:
+                        return self._send(400, {"error": "не более 20 операторов"})
+                    pw = str(b.get("password") or "")
+                    if len(pw) < 8:
+                        return self._send(400, {"error": "пароль минимум 8 символов"})
+                    salt = secrets.token_hex(16)
+                    users.append({"login": lg, "salt": salt, "pass_hash": _hash2(salt, pw),
+                                  "perms": _clean_perms(b.get("perms")),
+                                  "disabled": False, "created": _now_iso()})
+                    CFG_CACHE["users"] = users
+                    _save(CFG, CFG_CACHE)
+                    _audit("user_add", login=lg)
+                    return self._send(200, {"ok": True})
+                tgt = next((x for x in users if x.get("login") == lg), None)
+                if not tgt:
+                    return self._send(404, {"error": "оператор не найден"})
+                if p == "/api/users/update":
+                    if "perms" in b:
+                        tgt["perms"] = _clean_perms(b.get("perms"))
+                    if "disabled" in b:
+                        tgt["disabled"] = bool(b.get("disabled"))
+                        if tgt["disabled"]:
+                            _drop_user_sessions(lg)
+                elif p == "/api/users/passwd":
+                    pw = str(b.get("password") or "")
+                    if len(pw) < 8:
+                        return self._send(400, {"error": "пароль минимум 8 символов"})
+                    tgt["salt"] = secrets.token_hex(16)
+                    tgt["pass_hash"] = _hash2(tgt["salt"], pw)
+                    _drop_user_sessions(lg)
+                elif p == "/api/users/delete":
+                    users = [x for x in users if x.get("login") != lg]
+                    _drop_user_sessions(lg)
+                else:
+                    return self._send(404, {"error": "not found"})
+                CFG_CACHE["users"] = users
+                _save(CFG, CFG_CACHE)
+                _audit("user_update", login=lg, action=p.rsplit("/", 1)[-1])
+                return self._send(200, {"ok": True})
+            if p.startswith("/pay/"):
+                return _pay_handle_public(self, p)
+            if p.startswith("/api/pay/"):
+                return self._api_pay(p)
             if p.startswith("/p/") and p.endswith("/forget"):
                 # Публичное «забыть устройство» со страницы подписки /p/<tok>.
                 # Токен сам является правом доступа: кто знает токен — видит и подписку.
@@ -9637,6 +11688,24 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"online": True, "status": status,
                                         "pin": node.get("pin"),
                                         "new_pin": (not pinned) and bool(node.get("pin"))})
+            if p == "/api/nodes/restart":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                b = self._body()
+                host = (b.get("host") or "").strip()
+                nodes = get_nodes()
+                node = next((n for n in nodes
+                             if (n.get("host") or "").strip().lower() == host.lower()), None)
+                if not node:
+                    return self._send(404, {"error": "нода не найдена"})
+                err = _node_restart(node)
+                _node_poll_one(node)
+                save_nodes(nodes)
+                if err:
+                    _audit("node_restart", host=host, ok=False, err=str(err)[:120])
+                    return self._send(502, {"error": err})
+                _audit("node_restart", host=host, ok=True)
+                return self._send(200, {"ok": True, "nodes": _nodes_public()})
             if p == "/api/nodes/add":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
@@ -9972,6 +12041,42 @@ class H(http.server.BaseHTTPRequestHandler):
                     _save(STATE, st)
                     _audit("client_undeploy", uuid=u, node=host)
                 return self._send(200, {"ok": True})
+
+            if p == "/api/clients/expand":
+                b = self._body() or {}
+                u = (b.get("uuid") or "").strip()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                src, have = None, set()
+                for proto, inb in (st.get("inbounds") or {}).items():
+                    for c in (inb.get("clients") or []):
+                        if c.get("uuid") == u:
+                            if src is None: src = c
+                            have.add(proto)
+                if not src: return self._send(404, {"error": "клиент не найден"})
+                added = []
+                for proto, inb in (st.get("inbounds") or {}).items():
+                    if proto in have: continue
+                    c = _new_client(src.get("name") or "Клиент", proto, inb,
+                                    limit_gb=src.get("limit_gb"), expiry=src.get("expiry") or 0,
+                                    reset_cycle=src.get("reset_cycle"), max_devices=src.get("max_devices"))
+                    c["uuid"] = u
+                    if src.get("sub_token"): c["sub_token"] = src["sub_token"]
+                    for k in ("tg_proxy", "tg_user"):
+                        if src.get(k): c[k] = src[k]
+                    inb.setdefault("clients", []).append(c)
+                    added.append(proto)
+                if not added:
+                    return self._send(200, {"added": [], "note": "уже во всех протоколах"})
+                try: _awg_sync(st)
+                except Exception: pass
+                try: _wg_sync(st)
+                except Exception: pass
+                _write_xray(st); _save(STATE, st)
+                try: _restart_xray()
+                except Exception: pass
+                _audit("client_expand", uuid=u, protos=",".join(added))
+                return self._send(200, {"added": added})
 
             if p == "/api/clients/delete":
                 b = self._body()
