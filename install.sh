@@ -12,6 +12,12 @@ TELEMT_PORT=7443
 PANEL_PORT=8443
 TLS_DOMAIN="my.aeza.ru"
 
+# ---------- language ----------
+# RU by default; EN auto-detected from locale or forced with --lang en.
+L_EN=0
+case "${LANGUAGE:-${LANG:-}}" in en*) L_EN=1 ;; esac
+T() { if [ "$L_EN" = "1" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 # ---------- colors ----------
 if [ -t 1 ]; then
   C_R="\033[31m"; C_G="\033[32m"; C_Y="\033[33m"; C_B="\033[36m"; C_N="\033[0m"
@@ -34,10 +40,11 @@ usage() {
 Veil installer v$VERSION
 
 Usage:
-  bash install.sh                Интерактивное меню управления
-  bash install.sh --step 1       Выполнить только шаг N
-  bash install.sh --dry-run      Показать команды, не выполнять
-  bash install.sh --help         Это сообщение
+  bash install.sh                $(T "Интерактивное меню управления" "Interactive manage menu")
+  bash install.sh --step N       $(T "Выполнить только шаг N" "Run only step N")
+  bash install.sh --dry-run      $(T "Показать команды, не выполнять" "Show commands without running")
+  bash install.sh --lang ru|en   $(T "Язык сообщений (по умолчанию — по локали)" "Message language (default: from locale)")
+  bash install.sh --help         $(T "Это сообщение" "This message")
 EOF
 }
 
@@ -50,8 +57,8 @@ run() {
 }
 
 find_free_port() {
-  python3 - "$1" <<'PYFP'
-import socket, sys
+  FP_MSG="$(T "нет свободного порта рядом с" "no free port near")" python3 - "$1" <<'PYFP'
+import os, socket, sys
 start = int(sys.argv[1])
 for p in range(start, start + 50):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -60,41 +67,41 @@ for p in range(start, start + 50):
         print(p); sys.exit(0)
     except OSError:
         s.close()
-print("нет свободного порта рядом с " + str(start), file=sys.stderr)
+print(os.environ["FP_MSG"] + " " + str(start), file=sys.stderr)
 sys.exit(1)
 PYFP
 }
 
 step_0_preflight() {
-  msg "Шаг 0: pre-flight checks"
-  [ "$(id -u)" = "0" ] || die "нужен запуск от root"
+  msg "$(T "Шаг 0: проверка перед установкой" "Step 0: pre-flight checks")"
+  [ "$(id -u)" = "0" ] || die "$(T "нужен запуск от root" "must run as root")"
   ok "root"
   # os-release задаёт собственную VERSION/ID и т.п. — читаем в подоболочке,
   # чтобы не перезатереть наш VERSION="..." (иначе меню и лог врют про версию).
   (. /etc/os-release) 2>/dev/null || true
   SERVER_IP="$(curl -fsSL --max-time 8 "$IPIFY" 2>/dev/null || true)"
-  [ -n "$SERVER_IP" ] || die "не удалось определить внешний IP — проверь сеть"
-  ok "внешний IP: $SERVER_IP"
-  [ -d /etc/systemd/system ] || die "/etc/systemd/system не найден"
-  ok "systemd на месте"
+  [ -n "$SERVER_IP" ] || die "$(T "не удалось определить внешний IP — проверь сеть" "could not detect public IP — check network")"
+  ok "$(T "внешний IP" "public IP"): $SERVER_IP"
+  [ -d /etc/systemd/system ] || die "$(T "/etc/systemd/system не найден" "/etc/systemd/system not found")"
+  ok "$(T "systemd на месте" "systemd present")"
 }
 
 step_1_packages() {
-  msg "Шаг 1: пакеты apt"
+  msg "$(T "Шаг 1: пакеты apt" "Step 1: apt packages")"
   export DEBIAN_FRONTEND=noninteractive
   run "apt-get update -y"
   PKGS="python3 curl openssl tar jq nftables qrencode ca-certificates unzip"
   run "apt-get install -y $PKGS"
-  command -v python3 >/dev/null || die "python3 не поставился"
-  command -v nft     >/dev/null || die "nftables не поставился"
-  command -v curl    >/dev/null || die "curl не поставился"
-  ok "пакеты установлены"
+  command -v python3 >/dev/null || die "$(T "python3 не поставился" "python3 failed to install")"
+  command -v nft     >/dev/null || die "$(T "nftables не поставился" "nftables failed to install")"
+  command -v curl    >/dev/null || die "$(T "curl не поставился" "curl failed to install")"
+  ok "$(T "пакеты установлены" "packages installed")"
 }
 
 step_2_xray() {
-  msg "Шаг 2: Xray (VLESS + Reality)"
+  msg "$(T "Шаг 2: Xray (VLESS + Reality)" "Step 2: Xray (VLESS + Reality)")"
   if [ -x /usr/local/bin/xray ]; then
-    ok "Xray уже установлен: $(/usr/local/bin/xray version 2>/dev/null | head -1)"
+    ok "$(T "Xray уже установлен" "Xray already installed"): $(/usr/local/bin/xray version 2>/dev/null | head -1)"
   else
     run "curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/xray-install.sh"
     run "bash /tmp/xray-install.sh install"
@@ -125,9 +132,9 @@ WantedBy=multi-user.target
 UNITEOF
   systemctl daemon-reload
   systemctl enable xray
-  ok "Xray service настроен"
+  ok "$(T "Xray service настроен" "Xray service configured")"
 
-  [ -x /usr/local/bin/xray ] || die "Xray не установился"
+  [ -x /usr/local/bin/xray ] || die "$(T "Xray не установился" "Xray failed to install")"
   if [ ! -f /usr/local/etc/xray/config.json ]; then
     run "mkdir -p /usr/local/etc/xray"
     run "echo '{\"log\":{\"loglevel\":\"warning\"},\"inbounds\":[],\"outbounds\":[{\"protocol\":\"freedom\"}]}' > /usr/local/etc/xray/config.json"
@@ -135,9 +142,9 @@ UNITEOF
 }
 
 step_3_telemt() {
-  msg "Шаг 3: telemt (Telegram MTProto)"
+  msg "$(T "Шаг 3: telemt (Telegram MTProto)" "Step 3: telemt (Telegram MTProto)")"
   if [ -x /usr/bin/telemt ]; then
-    ok "telemt уже установлен"
+    ok "$(T "telemt уже установлен" "telemt already installed")"
     return 0
   fi
   if [ ! -f /etc/telemt/telemt.toml ]; then
@@ -147,7 +154,7 @@ step_3_telemt() {
   case "$(uname -m)" in
     x86_64)  arch="x86_64" ;;
     aarch64) arch="aarch64" ;;
-    *) die "неподдерживаемая архитектура: $(uname -m)" ;;
+    *) die "$(T "неподдерживаемая архитектура" "unsupported architecture"): $(uname -m)" ;;
   esac
   variant=""
   if [ "$arch" = "x86_64" ] && grep -qm1 avx2 /proc/cpuinfo 2>/dev/null; then
@@ -218,13 +225,13 @@ UNITEOF
   fi
   run "systemctl daemon-reload"
   run "systemctl enable --now telemt"
-  ok "telemt готов"
+  ok "$(T "telemt готов" "telemt ready")"
 }
 
 step_4_zapret2() {
-  msg "Шаг 4: veil-zapret2 (DPI bypass)"
+  msg "$(T "Шаг 4: veil-zapret2 (DPI bypass)" "Step 4: veil-zapret2 (DPI bypass)")"
   if [ -x /opt/veil-zapret2/bin/nfqws2 ]; then
-    ok "veil-zapret2 уже установлен"
+    ok "$(T "veil-zapret2 уже установлен" "veil-zapret2 already installed")"
     run "systemctl enable --now veil-zapret2"
     return 0
   fi
@@ -262,23 +269,23 @@ WantedBy=multi-user.target
 UNITEOF
   run "systemctl daemon-reload"
   run "systemctl enable --now veil-zapret2 || true"
-  ok "veil-zapret2 готов"
+  ok "$(T "veil-zapret2 готов" "veil-zapret2 ready")"
 }
 
 step_5_panel() {
-  msg "Шаг 5: панель Veil v$VERSION"
+  msg "$(T "Шаг 5" "Step 5"): $(T "панель Veil" "Veil panel") v$VERSION"
   local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   if [ "$DRY_RUN" = "1" ]; then
     # Не трогаем диск: только показываем, что будет сделано.
     printf "${C_Y}[dry]${C_N} mkdir -p /opt/vpnpanel\n"
     printf "${C_Y}[dry]${C_N} curl -fsSL -o /tmp/veil.tar.gz '%s' && tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel\n" "$TARBALL_URL"
     if [ ! -f /opt/vpnpanel/config.json ]; then
-      printf "${C_Y}[dry]${C_N} сгенерировать /opt/vpnpanel/config.json и FIRST-LOGIN.txt (порт из find_free_port %s)\n" "$PANEL_PORT"
+      printf "${C_Y}[dry]${C_N} $(T "сгенерировать /opt/vpnpanel/config.json и FIRST-LOGIN.txt (порт из find_free_port %s)" "generate /opt/vpnpanel/config.json and FIRST-LOGIN.txt (port from find_free_port %s)")\n" "$PANEL_PORT"
     fi
-    printf "${C_Y}[dry]${C_N} записать /etc/systemd/system/vpnpanel.service\n"
+    printf "${C_Y}[dry]${C_N} $(T "записать /etc/systemd/system/vpnpanel.service" "write /etc/systemd/system/vpnpanel.service")\n"
     run "systemctl daemon-reload"
     run "systemctl enable --now vpnpanel"
-    ok "панель активна (dry-run)"
+    ok "$(T "панель активна (dry-run)" "panel active (dry-run)")"
     return 0
   fi
   if [ ! -f /opt/vpnpanel/config.json ]; then
@@ -289,7 +296,7 @@ step_5_panel() {
     tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
     rm -f /tmp/veil.tar.gz
   else
-    warn "Не удалось скачать релиз с GitHub, используем локальные файлы"
+    warn "$(T "Не удалось скачать релиз с GitHub, используем локальные файлы" "Failed to download release from GitHub, using local files")"
   fi
   if [ ! -f /opt/vpnpanel/config.json ]; then
     python3 - "$PANEL_PORT" <<'PYCFG'
@@ -324,11 +331,11 @@ WantedBy=multi-user.target
 UNITEOF
   run "systemctl daemon-reload"
   run "systemctl enable --now vpnpanel"
-  ok "панель активна"
+  ok "$(T "панель активна" "panel active")"
 }
 
 step_6_finish() {
-  msg "Шаг 6: итог"
+  msg "$(T "Шаг 6: итог" "Step 6: summary")"
   show_panel_info_internal
 }
 
@@ -352,20 +359,20 @@ show_panel_info_internal() {
 
   echo
   echo -e "${C_B}================================================================${C_N}"
-  echo -e "${C_B}          Veil v${_pv} - информация о панели                   ${C_N}"
+  echo -e "${C_B}  Veil v${_pv} - $(T "информация о панели" "panel information")${C_N}"
   echo -e "${C_B}================================================================${C_N}"
-  echo -e "  Адрес панели (URL):  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
+  echo -e "  $(T "Адрес панели (URL)" "Panel URL"):  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
   echo
   if [ -f /opt/vpnpanel/FIRST-LOGIN.txt ]; then
     local _L _P
     _L="$(awk '/^login:/    {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
     _P="$(awk '/^password:/ {print $2}' /opt/vpnpanel/FIRST-LOGIN.txt)"
-    echo -e "  Логин:  ${C_G}${_L}${C_N}"
-    echo -e "  Пароль: ${C_G}${_P}${C_N}"
-    echo -e "  (первоначальный пароль из FIRST-LOGIN.txt)"
+    echo -e "  $(T "Логин" "Login"):  ${C_G}${_L}${C_N}"
+    echo -e "  $(T "Пароль" "Password"): ${C_G}${_P}${C_N}"
+    echo -e "  $(T "первоначальный пароль из FIRST-LOGIN.txt" "initial password from FIRST-LOGIN.txt")"
   else
-    echo -e "  Логин:  ${C_G}admin${C_N}"
-    echo -e "  Пароль: (используйте ваш текущий пароль от панели)"
+    echo -e "  $(T "Логин" "Login"):  ${C_G}admin${C_N}"
+    echo -e "  $(T "Пароль" "Password"): $(T "используйте ваш текущий пароль от панели" "use your current panel password")"
   fi
   echo -e "${C_B}================================================================${C_N}"
   echo
@@ -394,7 +401,7 @@ run_install_steps() {
 }
 
 uninstall_completely() {
-  msg "Удаление Veil и всех компонентов..."
+  msg "$(T "Удаление Veil и всех компонентов..." "Removing Veil and all components...")"
   systemctl stop vpnpanel xray telemt veil-zapret2 nginx 2>/dev/null || true
   systemctl disable vpnpanel xray telemt veil-zapret2 nginx 2>/dev/null || true
   rm -f /etc/systemd/system/vpnpanel.service
@@ -404,20 +411,20 @@ uninstall_completely() {
   systemctl daemon-reload
   rm -rf /opt/vpnpanel /opt/telemt /etc/telemt /var/lib/telemt /opt/veil-zapret2 /etc/veil-zapret2 /usr/local/etc/xray
   nft delete table ip veil_mtproto 2>/dev/null || true
-  ok "Veil полностью удален с сервера."
+  ok "$(T "Veil полностью удален с сервера." "Veil has been fully removed from the server.")"
   exit 0
 }
 
 reinstall_keeping_data() {
-  msg "Переустановка с сохранением данных..."
+  msg "$(T "Переустановка с сохранением данных..." "Reinstalling while keeping data...")"
   local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   mkdir -p /opt/vpnpanel
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
     tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
     rm -f /tmp/veil.tar.gz
-    ok "Панель обновлена из релиза v$VERSION"
+    ok "$(T "Панель обновлена из релиза" "Panel updated from release") v$VERSION"
   else
-    warn "Не удалось скачать релиз с GitHub, используем текущие файлы"
+    warn "$(T "Не удалось скачать релиз с GitHub, используем текущие файлы" "Failed to download release from GitHub, using current files")"
   fi
 
   # Восстанавливаем/проверяем systemd-юнит панели
@@ -440,20 +447,20 @@ UNITEOF
   # telemt кэширует каталог заглушки (/opt/vpnpanel/decoy) при старте:
   # без перезапуска посетители продолжают видеть старый index.html и не видят новые .nes.
   systemctl is-active --quiet telemt && systemctl restart telemt
-  ok "Переустановка с сохранением данных завершена."
+  ok "$(T "Переустановка с сохранением данных завершена." "Reinstall keeping data completed.")"
   show_panel_info_internal
   exit 0
 }
 
 reinstall_deleting_data() {
-  warn "Внимание: все данные будут удалены!"
-  read -rp "Продолжить? [y/N]: " confirm
+  warn "$(T "Внимание: все данные будут удалены!" "Warning: all data will be deleted!")"
+  read -rp "$(T "Продолжить? [y/N]: " "Continue? [y/N]: ")" confirm
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     systemctl stop vpnpanel xray telemt veil-zapret2 2>/dev/null || true
     rm -rf /opt/vpnpanel
     run_install_steps
   else
-    msg "Отменено."
+    msg "$(T "Отменено." "Cancelled.")"
     exit 0
   fi
 }
@@ -463,8 +470,18 @@ main() {
     case "$1" in
       --dry-run) DRY_RUN=1 ;;
       --step)    ONLY_STEP="${2:-}"; shift ;;
+      --lang)    case "${2:-}" in
+                   en|en_US|en-US|english) L_EN=1 ;;
+                   ru|ru_RU|ru-RU) L_EN=0 ;;
+                   *) die "$(T "неизвестный язык: " "unknown language: ")${2:-}" ;;
+                 esac; shift ;;
+      --lang=*)  case "${1#--lang=}" in
+                   en|en_US|en-US|english) L_EN=1 ;;
+                   ru|ru_RU|ru-RU) L_EN=0 ;;
+                   *) die "$(T "неизвестный язык: " "unknown language: ")${1#--lang=}" ;;
+                 esac ;;
       --help|-h) usage; exit 0 ;;
-      *) die "неизвестный аргумент: $1" ;;
+      *) die "$(T "неизвестный аргумент: " "unknown argument: ")$1" ;;
     esac
     shift
   done
@@ -481,14 +498,14 @@ main() {
   echo -e "${C_B}================================================================${C_N}"
   echo -e "${C_B}            Veil Installer & Manager v$VERSION                  ${C_N}"
   echo -e "${C_B}================================================================${C_N}"
-  echo -e "  1) Установить"
-  echo -e "  2) Переустановить с сохранением данных"
-  echo -e "  3) Переустановить с удалением данных"
-  echo -e "  4) Удалить полностью панель"
-  echo -e "  5) Показать адрес панели"
-  echo -e "  0) Выход"
+  echo -e "  1) $(T "Установить" "Install")"
+  echo -e "  2) $(T "Переустановить с сохранением данных" "Reinstall keeping data")"
+  echo -e "  3) $(T "Переустановить с удалением данных" "Reinstall deleting data")"
+  echo -e "  4) $(T "Удалить полностью панель" "Uninstall panel completely")"
+  echo -e "  5) $(T "Показать адрес панели" "Show panel URL")"
+  echo -e "  0) $(T "Выход" "Exit")"
   echo -e "${C_B}================================================================${C_N}"
-  read -rp "Выберите пункт [1-5]: " choice
+  read -rp "$(T "Выберите пункт [1-5]: " "Choose item [1-5]: ")" choice
 
   case "$choice" in
     1) run_install_steps ;;
@@ -497,10 +514,10 @@ main() {
     4) uninstall_completely ;;
     5) show_panel_info ;;
     0) exit 0 ;;
-    *) err "Неверный выбор"; exit 1 ;;
+    *) err "$(T "Неверный выбор" "Invalid choice")"; exit 1 ;;
   esac
 
-  ok "Готово"
+  ok "$(T "Готово" "Done")"
 }
 
 main "$@"
