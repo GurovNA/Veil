@@ -7983,7 +7983,9 @@ server {
     listen [::]:443 ssl;
     http2 on;
     server_name {domain};
-    access_log /var/log/nginx/decoy-access.log;
+    # access_log выключен: в URL страницы-моста живёт bearer-секрет (?bridge=…),
+    # а в логе — ещё и IP клиентов. Telemt рекомендует не светить это (WEB_PROXY docs).
+    access_log off;
 
     ssl_certificate     {cert};
     ssl_certificate_key {key};
