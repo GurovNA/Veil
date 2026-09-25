@@ -19,7 +19,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -180,7 +180,6 @@ PROTOCOLS = [
     {"id": "vmess-ws",            "label": "VMess + WebSocket",                       "group": "vmess",   "net": "ws",       "tls": False},
     {"id": "vmess-ws-tls",        "label": "VMess + WebSocket + TLS",   "group": "vmess",   "net": "ws",       "tls": True},
     {"id": "vmess-tcp-tls",       "label": "VMess + TCP + TLS",         "group": "vmess",   "net": "tcp",      "tls": True},
-    {"id": "vmess-grpc-tls",      "label": "VMess + gRPC + TLS",        "group": "vmess",   "net": "grpc",     "tls": True},
     {"id": "trojan-ws-tls",       "label": "Trojan + WebSocket + TLS",             "group": "trojan",  "net": "ws",       "tls": True},
     {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS",        "group": "trojan",  "net": "tcp",      "tls": True},
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS",       "group": "trojan",  "net": "grpc",     "tls": True},
@@ -201,7 +200,7 @@ PROTO_LABELS = {p["id"]: p["label"] for p in PROTOCOLS}
 _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
-          "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443, "vmess-grpc-tls": 20443,
+          "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
@@ -603,7 +602,62 @@ AWG_ADDR = "10.20.0.1/24"
 WG_IFACE = "veilwg"
 WG_CONF = "/etc/wireguard/veilwg.conf"
 WG_ADDR = "10.10.0.1/24"
+# ULA-адреса ВНУТРИ туннелей. Клиенты (INCY/нативный WG) вешают в туннель
+# AllowedIPs ::/0; без собственного v6-адреса в туннеле все IPv6-запросы
+# приложения чёрнеют (на мобильном LTE v6 — норма). Выдаём каждому клиенту
+# v6, выведенный из v4-октета, и делаем masquerade наружу.
+WG_ADDR6 = "fd10:10::1/64"
+AWG_ADDR6 = "fd20:10::1/64"
 AWG_POOL = "10.20.0."
+# MTU туннеля. 1420 — дефолт wg под IPv4-транспорт (путь 1500). Но телефон
+# часто приходит по IPv6-транспорту мобильной сети, где путь < 1500, а IPv6 не
+# фрагментируется на маршрутизаторах: крупные пакеты (ответы сервера) молча
+# чёрнеют — handshake и DNS (мелкие) проходят, а первое же крупное TCP/TLS
+# соединение виснет («VPN загорелся, но интернет падает»). 1280 — гарантированный
+# минимум IPv6, влезает в любой мобильный путь (outer = 1280 + 80 = 1360).
+WG_MTU = 1280
+
+def _tun6(c, prefix="fd10:10::"):
+    """IPv6 внутри туннеля из последнего октета v4-адреса клиента.
+    Никакой миграции state.json: адреса детерминированы."""
+    host = str(c.get("address") or "").split("/")[0].rsplit(".", 1)[-1]
+    try:
+        return prefix + str(int(host)) if host.isdigit() and 0 < int(host) < 256 else ""
+    except Exception:
+        return ""
+
+_WG4 = {}
+def _wg_ep(host):
+    """Транспорт WireGuard/AmneziaWG — только IPv4. WG не требует hostname/SNI
+    (шифрование привязано к ключам), а мобильный IPv6-транспорт рвётся: префикс
+    переназначается, NAT-состояния живут недолго, handshake перестаёт
+    обновляться — «VPN загорается и падает». Поэтому вместо домена основного
+    хоста (у него есть AAAA → телефон уйдёт в v6) подставляем A-only домен
+    wg.<...> — панель заводит его сама. Hop-узлы не подменяем: нашего IP у них
+    нет, для них резолвим домен в IPv4-литерал. Fallback: IPv4-литерал."""
+    h = str(host or "").strip().strip("[]")
+    if not h:
+        return h
+    try:
+        socket.inet_pton(socket.AF_INET, h)
+        return h
+    except Exception:
+        pass
+    pd = str(CFG_CACHE.get("panel_domain") or "").strip().lower()
+    if h.lower() == pd:
+        wd = (CFG_CACHE.get("wg_domain") or "").strip() or _wg_auto_domain()
+        if wd:
+            return wd
+    try:
+        now = time.time()
+        c = _WG4.get(h)
+        if c and now - c[1] < 600:
+            return c[0]
+        v4 = socket.gethostbyname(h)
+        _WG4[h] = (v4, now)
+        return v4
+    except Exception:
+        return h
 # Параметры обфускации AmneziaWG. S1-S4 — размеры padding (числа 15-150), H1-H4 — уникальные
 # номера типов пакетов. ВАЖНО: S1/S2/H1-H4 должны совпадать на сервере и клиенте (server-side).
 AWG_JUNK = {
@@ -635,17 +689,17 @@ def _awg_read_conf():
     return {"private_key": m.group(1) if m else None,
             "port": int(p.group(1)) if p else None,
             "address": a.group(1) if a else None,
-            "mtu": int(mt.group(1)) if mt else 1420}
+            "mtu": int(mt.group(1)) if mt else WG_MTU}
 
 def _awg_write_conf(inb):
     os.makedirs(os.path.dirname(AWG_CONF), exist_ok=True)
     jk = AWG_JUNK
     with open(AWG_CONF, "w") as f:
         f.write("[Interface]\n"
-                f"Address = {inb.get('address') or AWG_ADDR}\n"
+                f"Address = {(inb.get('address') or AWG_ADDR)}, {AWG_ADDR6}\n"
                 f"ListenPort = {inb['port']}\n"
                 f"PrivateKey = {inb['private_key']}\n"
-                f"MTU = {inb.get('mtu', 1420)}\n"
+                f"MTU = {inb.get('mtu', WG_MTU)}\n"
                 f"Jc = {jk['Jc']}\n"
                 f"Jmin = {jk['Jmin']}\n"
                 f"Jmax = {jk['Jmax']}\n"
@@ -660,9 +714,10 @@ def _awg_write_conf(inb):
                 continue
             if not (c.get("client_public_key") and c.get("address")):
                 continue
+            a6 = _tun6(c, "fd20:10::")
             f.write("\n[Peer]\n"
                     f"PublicKey = {c['client_public_key']}\n"
-                    f"AllowedIPs = {c['address']}\n"
+                    f"AllowedIPs = {c['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
                     "PersistentKeepalive = 25\n")
     os.chmod(AWG_CONF, 0o600)
 
@@ -675,6 +730,17 @@ def _awg_iface_synced(inb):
             return False
         if cur.get("port") != inb.get("port"):
             return False
+        # MTU на диске должен совпадать с желаемым, иначе перезапускаем (иначе
+        # интерфейс останется на старом 1420 и крупные пакеты чёрнеют на v6-пути)
+        if int(cur.get("mtu") or 0) != int(inb.get("mtu") or WG_MTU):
+            return False
+        # v6-адрес внутри туннеля должен уже быть в конфиге, иначе перезапускаем
+        try:
+            with open(AWG_CONF) as f:
+                if AWG_ADDR6 not in f.read():
+                    return False
+        except Exception:
+            return False
         r = subprocess.run(["ip", "link", "show", AWG_IFACE], capture_output=True, text=True)
         if r.returncode != 0:
             return False
@@ -684,7 +750,21 @@ def _awg_iface_synced(inb):
 
 def _awg_restart_iface(st):
     try:
-        _awg_write_conf(st["inbounds"]["amneziawg"])
+        inb = st["inbounds"]["amneziawg"]
+        try:
+            with open(AWG_CONF) as f:
+                old = f.read()
+        except OSError:
+            old = ""
+        _awg_write_conf(inb)
+        with open(AWG_CONF) as f:
+            new = f.read()
+        # мягкий путь, как у veilwg: peers без разрыва активных сессий
+        exists = subprocess.run(["ip", "link", "show", AWG_IFACE],
+                                capture_output=True).returncode == 0
+        if old and exists and old.partition("[Peer]")[0] == new.partition("[Peer]")[0]:
+            if _soft_sync(AWG_IFACE, new):
+                return True
         r = subprocess.run(["systemctl", "restart", "awg-quick@" + AWG_IFACE],
                            capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
@@ -710,7 +790,7 @@ def _awg_sync(st, force=False):
             inb["public_key"] = _awg_pubof(conf["private_key"])
             inb["port"] = conf["port"]
             inb.setdefault("address", conf.get("address") or AWG_ADDR)
-            inb.setdefault("mtu", int(conf.get("mtu") or 1420))
+            inb.setdefault("mtu", int(conf.get("mtu") or WG_MTU))
             inb.setdefault("next_address", 2)
     if not inb.get("public_key"):
         inb["public_key"] = _awg_pubof(inb.get("private_key", ""))
@@ -729,7 +809,8 @@ def _awg_sync(st, force=False):
         if c.get("blocked"):
             continue
         if c.get("client_public_key") and c.get("address"):
-            want[c["client_public_key"]] = c["address"]
+            a6 = _tun6(c, "fd20:10::")
+            want[c["client_public_key"]] = c["address"] + ((", " + a6) if a6 else "")
     for pub in cur:
         if pub not in want:
             try:
@@ -738,13 +819,12 @@ def _awg_sync(st, force=False):
             except Exception:
                 pass
     for pub, addr in want.items():
-        if pub not in cur:
-            try:
-                subprocess.run(["/usr/bin/awg", "set", AWG_IFACE, "peer", pub,
-                                "allowed-ips", addr, "persistent-keepalive", "25"],
-                               capture_output=True, text=True, timeout=10)
-            except Exception as e:
-                print("awg set peer err: " + str(e), flush=True)
+        try:
+            subprocess.run(["/usr/bin/awg", "set", AWG_IFACE, "peer", pub,
+                            "allowed-ips", addr, "persistent-keepalive", "25"],
+                           capture_output=True, text=True, timeout=10)
+        except Exception as e:
+            print("awg set peer err: " + str(e), flush=True)
     return True
 
 def _wg_pubof(priv):
@@ -772,18 +852,19 @@ def _wg_listen_port():
 
 def _wg_conf_text(inb):
     parts = ["[Interface]\n",
-             f"Address = {inb.get('address') or WG_ADDR}\n",
+             f"Address = {inb.get('address') or WG_ADDR}, {WG_ADDR6}\n",
              f"ListenPort = {inb['port']}\n",
              f"PrivateKey = {inb['private_key']}\n",
-             f"MTU = {inb.get('mtu', 1420)}\n"]
+             f"MTU = {inb.get('mtu', WG_MTU)}\n"]
     for c in inb.get("clients", []):
         if c.get("blocked"):
             continue
         if not (c.get("client_public_key") and c.get("address")):
             continue
+        a6 = _tun6(c)
         parts += ["\n[Peer]\n",
                   f"PublicKey = {c['client_public_key']}\n",
-                  f"AllowedIPs = {c['address']}\n",
+                  f"AllowedIPs = {c['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n",
                   "PersistentKeepalive = 25\n"]
     return "".join(parts)
 
@@ -802,9 +883,51 @@ def _wg_write_conf(inb):
         f.write(_wg_conf_text(inb))
     os.chmod(WG_CONF, 0o600)
 
+def _wg_iface_section(text):
+    return text.partition("[Peer]")[0]
+
+def _soft_sync(iface, conf_text):
+    """Применяет конфиг без пересоздания интерфейса. wg/awg syncconf не понимают
+    директивы wg-quick (Address/MTU) — подаём копию без них. Бинарник wg ограничен
+    AppArmor и читает только из /etc/wireguard — временный файл кладём туда же.
+    Ошибка -> False, вызывающий пойдёт жёстким путём."""
+    path = "/etc/wireguard/.veil-soft-%d.conf" % os.getpid()
+    try:
+        lines = [l for l in conf_text.splitlines()
+                 if l.split("=", 1)[0].strip() not in ("Address", "MTU")]
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        tool = "awg" if iface == AWG_IFACE else "wg"
+        r = subprocess.run([tool, "syncconf", iface, path],
+                           capture_output=True, text=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
 def _wg_restart_iface(st):
     try:
-        _wg_write_conf(st["inbounds"]["wireguard"])
+        inb = st["inbounds"]["wireguard"]
+        new = _wg_conf_text(inb)
+        try:
+            with open(WG_CONF) as f:
+                old = f.read()
+        except OSError:
+            old = ""
+        _wg_write_conf(inb)
+        # Мягкий путь: если параметры самого интерфейса не менялись, syncconf
+        # обновляет только peers — активные туннели (и роумящие клиенты) не
+        # рвутся. Полный down/up только при смене порта/ключа/MTU/адреса.
+        exists = subprocess.run(["ip", "link", "show", WG_IFACE],
+                                capture_output=True).returncode == 0
+        if old and exists and _wg_iface_section(old) == _wg_iface_section(new):
+            if _soft_sync(WG_IFACE, new):
+                return True
         subprocess.run(["systemctl", "stop", "wg-quick@" + WG_IFACE],
                        capture_output=True, text=True, timeout=30)
         r = subprocess.run(["systemctl", "start", "wg-quick@" + WG_IFACE],
@@ -839,20 +962,33 @@ def _wg_sync(st, force=False):
     return True
 
 def _ensure_wg_net():
-    """IPv4-forwarding + NAT masquerade для туннельных подсетей
-    (wireguard 10.10.0.0/24 и amneziawg 10.20.0.0/24).
+    """IPv4/IPv6-forwarding + NAT masquerade для туннельных подсетей
+    (wireguard 10.10.0.0/24 + fd10:10::/64 и amneziawg 10.20.0.0/24 + fd20:10::/64).
     Идемпотентно; повторно применяется при каждом старте панели."""
     try:
         subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"],
                        capture_output=True, text=True, timeout=10)
+        subprocess.run(["sysctl", "-w", "net.ipv6.conf.all.forwarding=1"],
+                       capture_output=True, text=True, timeout=10)
+        # ULA внутри туннеля: ответный трафик уходит в тот же интерфейс, но RPF
+        # на net0 может его гасить — ослабляем reverse-path для туннельных ifaces.
+        subprocess.run(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"],
+                       capture_output=True, text=True, timeout=10)
         with open("/etc/sysctl.d/99-veil-wg.conf", "w") as f:
-            f.write("net.ipv4.ip_forward = 1\n")
+            f.write("net.ipv4.ip_forward = 1\n"
+                    "net.ipv6.conf.all.forwarding = 1\n"
+                    "net.ipv4.conf.all.rp_filter = 0\n")
     except Exception:
         pass
     try:
         subprocess.run(["nft", "create", "table", "ip", "veil_wg"],
                        capture_output=True, text=True, timeout=10)
         subprocess.run(["nft", "create", "chain", "ip", "veil_wg", "post",
+                        "{ type nat hook postrouting priority srcnat; policy accept; }"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "create", "table", "ip6", "veil_wg"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "create", "chain", "ip6", "veil_wg", "post",
                         "{ type nat hook postrouting priority srcnat; policy accept; }"],
                        capture_output=True, text=True, timeout=10)
     except Exception:
@@ -865,6 +1001,14 @@ def _ensure_wg_net():
                        capture_output=True, text=True, timeout=10)
         subprocess.run(["nft", "add", "rule", "ip", "veil_wg", "post",
                         "ip", "saddr", "10.20.0.0/24", "masquerade"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "flush", "table", "ip6", "veil_wg"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "add", "rule", "ip6", "veil_wg", "post",
+                        "ip6", "saddr", "fd10:10::/64", "masquerade"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["nft", "add", "rule", "ip6", "veil_wg", "post",
+                        "ip6", "saddr", "fd20:10::/64", "masquerade"],
                        capture_output=True, text=True, timeout=10)
     except Exception as e:
         print("nft err: " + str(e), flush=True)
@@ -1087,11 +1231,11 @@ def _new_inbound(proto):
     if proto == "wireguard":
         priv, pub = _gen_keys()
         inb.update({"private_key": _wg_key_std(priv), "public_key": _wg_key_std(pub),
-                    "address": "10.10.0.1/24", "mtu": 1420, "next_address": 2})
+                    "address": "10.10.0.1/24", "mtu": WG_MTU, "next_address": 2})
     if proto == "amneziawg":
         priv, pub = _gen_keys()
         inb.update({"private_key": _wg_key_std(priv), "public_key": _wg_key_std(pub),
-                    "address": AWG_ADDR, "mtu": 1420, "next_address": 2})
+                    "address": AWG_ADDR, "mtu": WG_MTU, "next_address": 2})
     if _proto_meta(proto)["tls"]:
         cp = _cert_pathes()
         if cp["cert"] and cp["key"]:
@@ -1222,7 +1366,7 @@ def _inbound(proto, inb):
             "secretKey": inb["private_key"],
             "address": [inb.get("address", "10.10.0.1/32")],
             "noKernelTun": True,
-            "mtu": inb.get("mtu", 1420),
+            "mtu": inb.get("mtu", WG_MTU),
             "peers": [{"publicKey": c["client_public_key"],
                        "preSharedKey": inb.get("psk", ""),
                        "allowedIPs": ["0.0.0.0/0", "::/0"],
@@ -1310,6 +1454,8 @@ def _build_xray_cfg(st, force_proto=None):
     inbounds = []
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
+            continue
+        if inb.get("disabled"):
             continue
         if inb.get("clients") or inb.get("_mux_enabled") or proto == force_proto:
             inbounds.append(_inbound(proto, inb))
@@ -1593,17 +1739,18 @@ def _subs_summary(st, for_display=False):
                 users[key] = u
             elif not u.get("tg_chat") and c.get("tg_chat"):
                 u["tg_chat"] = str(c["tg_chat"])
-            try:
-                u["links"][proto] = _link(inb, host, c, proto)
-            except Exception:
-                pass
-            if proto == "wireguard":
-                u["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{key}"
-            if proto == "amneziawg":
-                u["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{key}"
-            if proto not in [x["proto"] for x in u["protos"]]:
-                u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
-                                    "port": inb.get("port", 0)})
+            if not inb.get("disabled"):
+                try:
+                    u["links"][proto] = _link(inb, host, c, proto)
+                except Exception:
+                    pass
+                if proto == "wireguard":
+                    u["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{key}"
+                if proto == "amneziawg":
+                    u["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{key}"
+                if proto not in [x["proto"] for x in u["protos"]]:
+                    u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
+                                        "port": inb.get("port", 0)})
             if not u.get("_tr_taken"):
                 u["_tr_taken"] = True
                 u["up"] = int(c.get("up") or 0)
@@ -1667,7 +1814,11 @@ def _fp():
     v = (CFG_CACHE.get("fp") or "").strip().lower()
     return v if v in _FP_VALUES else "firefox"
 
-def _link(inb, host, client, proto):
+def _link(inb, host, client, proto, std=False):
+    """Ссылка подключения. std=True — канонический Xray-формат (строгий парсер
+    INCY): encryption=none, без allowInsecure (удалён из свежих ядер), обычный
+    base64 в vmess, реальные path/service из inbound. По умолчанию std=False —
+    исторический формат, который понимают Happ/Shadowrocket/v2rayNG."""
     meta = _proto_meta(proto)
     fp = _fp()
     _base = client.get("name") or "Veil"
@@ -1689,28 +1840,30 @@ def _link(inb, host, client, proto):
                     f"H2 = {jk['H2']}\n"
                     f"H3 = {jk['H3']}\n"
                     f"H4 = {jk['H4']}\n")
+        a6 = _tun6(client, "fd20:10::")
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
-                f"Address = {client['address']}\n"
+                f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
                 f"DNS = 1.1.1.1, 8.8.8.8\n"
-                f"MTU = {inb.get('mtu', 1420)}\n"
+                f"MTU = {inb.get('mtu', WG_MTU)}\n"
                 + cli_junk
                 + "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
-                f"Endpoint = {host}:{inb['port']}\n"
-                "AllowedIPs = 0.0.0.0/0, ::/0\n"
+                f"Endpoint = {_wg_ep(host)}:{inb['port']}\n"
+                f"AllowedIPs = {_wg_full_tunnel_allowed_ips()}\n"
                 "PersistentKeepalive = 25\n"
                 "")
     if proto == "wireguard":
+        a6 = _tun6(client)
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
-                f"Address = {client['address']}\n"
+                f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
                 f"DNS = 1.1.1.1, 8.8.8.8\n"
-                f"MTU = {inb.get('mtu', 1420)}\n\n"
+                f"MTU = {inb.get('mtu', WG_MTU)}\n\n"
                 "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
-                f"Endpoint = {host}:{inb['port']}\n"
-                "AllowedIPs = 0.0.0.0/0, ::/0\n"
+                f"Endpoint = {_wg_ep(host)}:{inb['port']}\n"
+                f"AllowedIPs = {_wg_full_tunnel_allowed_ips()}\n"
                 "PersistentKeepalive = 25\n"
                 "")
     if proto.startswith("shadowsocks"):
@@ -1719,25 +1872,55 @@ def _link(inb, host, client, proto):
         return f"ss://{raw}@{host}:{inb['port']}#{urllib.parse.quote(name)}"
     if proto.startswith("vmess"):
         add = host.strip("[]")
-        p = {"v": "2", "ps": name, "add": add, "port": inb["port"],
-             "id": client["uuid"], "aid": "0", "scy": "auto",
-             "net": meta["net"], "type": "gun" if meta["net"] == "grpc" else "none", "host": "",
-             "path": "/veil" if meta["net"] == "ws" else "veil",
+        if std:
+            p = {"v": "2", "ps": name, "add": add, "port": inb["port"],
+                 "id": client["uuid"], "aid": "0", "scy": "auto",
+                 "net": meta["net"], "type": "none", "host": inb.get("host") or "",
+                 "path": (inb.get("path") or "/veil") if meta["net"] == "ws"
+                         else ((inb.get("service") or "veil") if meta["net"] == "grpc" else ""),
+                 "tls": "tls" if meta["tls"] else ""}
+            if meta["tls"]:
+                p["sni"] = host; p["fp"] = fp
+            if meta["net"] == "grpc":
+                # gRPC говорит по HTTP/2; без явного alpn=h2 свежие ядра приложений
+                # могут согласовать http/1.1 и молча не открыть соединение.
+                p["alpn"] = "h2"
+            return "vmess://" + base64.b64encode(json.dumps(p, separators=(",", ":")).encode()).decode()
+        p = {"v": "2", "ps": name, "add": add, "port": int(inb["port"]), "id": client["uuid"],
+             "aid": "0", "scy": "auto", "net": meta["net"], "type": "none", "host": "",
+             "path": "/veil" if meta["net"] == "ws" else ("veil" if meta["net"] == "grpc" else ""),
              "tls": "tls" if meta["tls"] else ""}
+        # allowInsecure НЕ добавляем: сертификат валидный LE, а свежие ядра
+        # (Happ 5.9+, INCY) удалили флаг и роняют весь vmess-JSON при его виде.
         if meta["tls"]:
-            p["sni"] = host; p["allowInsecure"] = True; p["fp"] = fp
+            p["sni"] = host; p["fp"] = fp
+        if meta["net"] == "grpc":
+            p["alpn"] = "h2"
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
     if proto.startswith("trojan"):
         scheme = "trojan://" + urllib.parse.quote(client.get("password") or inb.get("password") or "") + "@"
     else:
         scheme = f"vless://{client['uuid']}@"
     qparts = {"type": meta["net"]}
+    if std and not proto.startswith("trojan"):
+        qparts["encryption"] = "none"
     if meta["net"] == "ws":
-        qparts["path"] = "/veil"
+        qparts["path"] = (inb.get("path") or "/veil") if std else "/veil"
+        if std and inb.get("host"):
+            qparts["host"] = inb["host"]
     elif meta["net"] == "grpc":
-        qparts["serviceName"] = "veil"; qparts["mode"] = "gun"
+        qparts["serviceName"] = (inb.get("service") or "veil") if std else "veil"
+        qparts["alpn"] = "h2"
+        if std:
+            md = inb.get("mode")
+            if md and md != "gun":
+                qparts["mode"] = md
+            if inb.get("host"):
+                qparts["authority"] = inb["host"]
+        else:
+            qparts["mode"] = "gun"
     elif meta["net"] in ("xhttp", "splithttp"):
-        qparts["path"] = "/veil"
+        qparts["path"] = (inb.get("path") or "/veil") if std else "/veil"
     if proto in ("reality", "vless-xhttp-reality"):
         qparts.update({"security": "reality", "pbk": inb["public_key"],
                        "fp": fp, "sni": inb["sni"], "sid": inb["sid"],
@@ -1747,8 +1930,9 @@ def _link(inb, host, client, proto):
         else:
             qparts["host"] = inb["sni"]
     elif meta["tls"]:
-        qparts.update({"security": "tls", "sni": host, "fp": fp,
-                       "allowInsecure": "1"})
+        # allowInsecure нигде не ставим: сертификат валидный LE, а свежие ядра
+        # Xray (Happ 5.9+ и INCY) удалили флаг и отвергают ссылку целиком.
+        qparts.update({"security": "tls", "sni": host, "fp": fp})
         if meta["net"] in ("xhttp", "splithttp"):
             qparts["alpn"] = "h2,http/1.1"
     else:
@@ -1858,7 +2042,7 @@ def _map_vmess_proto(net, tls):
     net = {"splithttp": "xhttp", "h2": "xhttp", "ws": "ws", "grpc": "grpc", "tcp": "tcp"}.get((net or "").lower(), (net or "").lower())
     if net == "ws":   return "vmess-ws-tls" if tls else "vmess-ws"
     if net == "tcp":  return "vmess-tcp-tls" if tls else None
-    if net == "grpc": return "vmess-grpc-tls" if tls else None
+    if net == "grpc": return "vmess-ws-tls" if tls else "vmess-ws"  # VMess+gRPC убран (ядра Happ/INCY не возят) — импорт переезжает на WebSocket
     return None
 
 def _parse_link_line(line):
@@ -2156,7 +2340,7 @@ _EXTIMP_PROTO_MAP = {
         "tls|xhttp": "vless-xhttp-tls", "tls|*": "vless-ws-tls",
         "none|ws": "vless-ws",
     },
-    "vmess": {"tls|ws": "vmess-ws-tls", "tls|tcp": "vmess-tcp-tls", "tls|grpc": "vmess-grpc-tls",
+    "vmess": {"tls|ws": "vmess-ws-tls", "tls|tcp": "vmess-tcp-tls", "tls|grpc": "vmess-ws-tls",
               "tls|xhttp": "vmess-ws-tls", "none|ws": "vmess-ws", "none|*": "vmess-ws"},
     "trojan": {"tls|ws": "trojan-ws-tls", "tls|tcp": "trojan-tcp-tls", "tls|grpc": "trojan-grpc-tls",
                "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-tcp-tls", "reality|*": "trojan-tcp-tls",
@@ -2390,6 +2574,53 @@ def _is_incy_client(ua="", xclient=""):
     # Его подписка — открытые ссылки/база, НЕ sing-box outbound'ы.
     return "incy" in (ua or "").lower() or (xclient or "").lower() == "incy"
 
+def _routing_profile_b64(base=""):
+    """Профиль маршрутизации (split-tunnel) для Xray-клиентов INCY и Happ —
+    у них одинаковая схема JSON-профиля. Возвращает base64(JSON) или None.
+    В подписку строка подставляется с префиксом:
+      * INCY  →  ://routing/onadd/{b64}
+      * Happ  →  happ://routing/onadd/{b64}
+    Формат — по докам (routing.md): base64(JSON), обновляется по совпадению Name.
+    Гео-базы раздаёт сама панель (/rulesets/*.dat, зеркало runetfreedom):
+    телефон без VPN до GitHub не достанет, а кода geosite:ru в базах нет —
+    он называется category-ru (проверено xray -test)."""
+    split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
+    gh = "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/"
+    def _u(dst, gname):
+        if base and os.path.exists(os.path.join(RULESET_DIR, dst)):
+            return base + "/rulesets/" + dst
+        return gh + gname
+    private = ["geoip:private",
+               "10.0.0.0/8", "127.0.0.0/8", "172.16.0.0/12",
+               "192.168.0.0/16", "224.0.0.0/4",
+               "::1/128", "fc00::/7", "fe80::/10"]
+    # Адреса самой панели всегда напрямую: под VPN клиент иначе уходит туннелем
+    # на тот же VPS (петля) и MTProto/webproxy-ссылка не подключается —
+    # то самое «вписать IP в исключительные маршруты», только из коробки.
+    own = _own_direct_ips()
+    dom = (CFG_CACHE.get("panel_domain") or "").strip()
+    own_sites = [dom] if dom and ":" not in dom and not re.fullmatch(r"[0-9.]+", dom) else []
+    if split == "ru":
+        # РФ напрямую, остальное через туннель
+        fields = {"GlobalProxy": "true",
+                  "DirectSites": ["geosite:category-ru"] + own_sites,
+                  "DirectIp": ["geoip:ru"] + private + own}
+    elif split == "ir":
+        # только иранские сервисы через туннель, остальное напрямую
+        # (geosite:ir в зеркале отсутствует — опираемся на geoip:ir)
+        fields = {"GlobalProxy": "false",
+                  "ProxyIp": ["geoip:ir"]}
+    else:
+        if not own:
+            return None
+        fields = {"GlobalProxy": "true", "DirectIp": private + own}
+    prof = {"Name": "Veil", "LastUpdated": int(time.time()),
+            "DomainStrategy": "IPIfNonMatch",
+            "Geoipurl": _u("geoip-ru.dat", "geoip.dat"),
+            "Geositeurl": _u("geosite-ru.dat", "geosite.dat")}
+    prof.update(fields)
+    return base64.b64encode(json.dumps(prof, ensure_ascii=False).encode("utf-8")).decode()
+
 def _expire_seconds_client(ua="", xclient=""):
     # subscription-userinfo.expire: по умолчанию миллисекунды (v2rayNG, NekoBox,
     # Hiddify, Clash-клиенты), но INCY (по докам — Unix-секунды), Happ Plus и
@@ -2412,11 +2643,18 @@ def _incy_link(proto, inb, c, host):
         # (в его конфиг уезжали "N%2FrePA...%3D" и "10.10.0.2%2F32/32").
         # Поэтому: ключ в userinfo кодируем, publickey/address — плейнтекстом,
         # address без префикса /32. Формат: wireguard://secretKey@host:port?publickey=K&address=IP#name
+        # mtu обязателен: по умолчанию приложения берут 1500, а туннельный
+        # интерфейс — WG_MTU (1280); на мобильном IPv6-пути крупные пакеты не
+        # фрагментируются и молча чёрнеют (handshake есть, трафика нет).
         addr = (c.get("address") or "10.10.0.2/32").split("/")[0]
+        a6 = _tun6(c)
+        if a6:
+            addr = addr + "," + a6
         key = urllib.parse.quote(c.get("client_private_key") or "", safe="")
-        q = "publickey=" + (inb.get("public_key") or "") + "&address=" + addr
-        return (f"wireguard://{key}@{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
-    return _link(inb, host, c, proto)
+        q = ("publickey=" + (inb.get("public_key") or "") + "&address=" + addr
+             + "&mtu=" + str(int(inb.get("mtu") or WG_MTU)))
+        return (f"wireguard://{key}@{_wg_ep(host)}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
+    return _link(inb, host, c, proto, std=True)
 
 def _singbox_outbound(proto, inb, c, host):
     meta = _proto_meta(proto)
@@ -2431,11 +2669,17 @@ def _singbox_outbound(proto, inb, c, host):
                 "utls": {"enabled": True, "fingerprint": fp}}
     def _transport():
         if meta["net"] == "ws":
-            return {"type": "ws", "path": "/veil"}
+            t = {"type": "ws", "path": inb.get("path") or "/veil"}
+            if inb.get("host"):
+                t["headers"] = {"Host": inb["host"]}
+            return t
         if meta["net"] == "grpc":
-            return {"type": "grpc", "service_name": "veil"}
+            t = {"type": "grpc", "service_name": inb.get("service") or "veil"}
+            if inb.get("host"):
+                t["authority"] = inb["host"]
+            return t
         if meta["net"] in ("xhttp", "splithttp"):
-            return {"type": "xhttp", "path": "/veil"}
+            return {"type": "xhttp", "path": inb.get("path") or "/veil"}
         return None
     if proto in ("amneziawg", "wireguard"):
         raw_priv = c.get("client_private_key") or ""
@@ -2448,15 +2692,17 @@ def _singbox_outbound(proto, inb, c, host):
             addr += "/32"
         elif "/32/32" in addr:
             addr = "10.10.0.2/32"
+        a6 = _tun6(c, "fd20:10::" if proto == "amneziawg" else "fd10:10::")
+        addrs = [addr] + ([a6 + "/128"] if a6 else [])
         ob = {"type": "wireguard", "tag": tag,
               "secretKey": priv,
-              "address": [addr],
+              "address": addrs,
               "peers": [{
                   "publicKey": pub,
-                  "endpoint": f"{host}:{port}",
+                  "endpoint": f"{_wg_ep(host)}:{port}",
                   "preSharedKey": inb.get("psk", "")
               }],
-              "mtu": int(inb.get("mtu", 1420))}
+              "mtu": int(inb.get("mtu", WG_MTU))}
         return ob
     if proto.startswith("shadowsocks"):
         return {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
@@ -2502,6 +2748,8 @@ def _singbox_subscription(st, sub_path, host, tr):
             match = (not sub_path) or (c.get("sub_token") == sub_path) or (c["uuid"] == sub_path)
             if not match:
                 continue
+            if inb.get("disabled"):
+                continue
             sub_name = c.get("name") or sub_name
             key = c["uuid"]
             if key not in seen:
@@ -2535,7 +2783,7 @@ if not os.path.exists(_LOGO_PNG):
 _SUB_APP_CATALOG = {
     "ios": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}#{name}"},
-        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-proxy-utility/id6504287215", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-proxy-utility/id6504287215", "link": "happ://", "precopy": 1},
         {"name": "sing-box (SFI)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Streisand", "ic": "S", "col": "#9333ea", "col2": "#d946ef", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "Foxray", "ic": "F", "col": "#ea580c", "col2": "#f59e0b", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
@@ -2549,7 +2797,7 @@ _SUB_APP_CATALOG = {
         {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
-        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://play.google.com/store/apps/details?id=com.happproxy", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://play.google.com/store/apps/details?id=com.happproxy", "link": "happ://", "precopy": 1},
         {"name": "Karing", "ic": "K", "col": "#7c3aed", "col2": "#c084fc", "store": "https://karing.app/en/download", "link": ""},
         {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
@@ -2691,6 +2939,7 @@ _SUB_TXT_RU = {
     "js_wg_dl": "%s: конфиг будет скачан как .conf.",
     "js_opening": "Открываем «%s…». Если не открылось — скопируйте подписку кнопкой ниже.",
     "js_ext": "«%s» — внешний клиент: установите из магазина (ссылка «Скачать») и импортируйте подписку через «Скопировать подписку».",
+    "js_happ": "Скопируем подписку и откроем Happ — он сам предложит добавить её из буфера. Обход РФ включится автоматически: ничего искать и вставлять вручную не нужно.",
     "js_copied": "Ссылка подписки скопирована.",
     "js_copied_open": "Ссылка подписки скопирована. Откройте «%s» и импортируйте её.",
     "js_nocopy": "Не удалось скопировать автоматически.",
@@ -2705,19 +2954,25 @@ _SUB_TXT_RU = {
     "ava_err": "Не удалось сохранить фото",
     "js_err": "ошибка", "js_net": "Сеть недоступна.",
     "rt_ru": "<b>Российские сайты и приложения идут напрямую</b>, остальное — через туннель.<br>"
-             "Готовые правила — в кнопке «sing-box · полный конфиг» выше (подходит для Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
-             "Клиентам, которые импортируют ссылки, правило нужно включить в самом приложении:"
+             "В <b>Happ</b> и <b>INCY</b> ничего настраивать не нужно: профиль обхода «Veil» приходит прямо в подписке и включается сам при её добавлении или обновлении. "
+             "Остальным приложениям готовый набор правил даёт кнопка «sing-box · полный конфиг» — <b>SFI/SFA, Streisand, NekoBox и Hiddify добавляйте именно ей</b>. "
+             "Клиентам, которые импортируют только ссылки, правило включается в самом приложении:"
              "<ul>"
+             "<li><b>Happ</b>: нажмите «Добавить / Импортировать» (или «Скопировать подписку» и вставьте в Happ) — обычная ссылка-подписка, обход включится автоматически. "
+             "Файл <code>veil.json</code> Happ не подходит: у него ядро Xray, а не sing-box.</li>"
              "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → добавить правила <code>GEOSITE,category-ru,DIRECT</code> и <code>GEOIP,ru,DIRECT</code>.</li>"
              "<li><b>v2rayNG</b>: Настройки маршрутизации → «Пользовательские» → правило <code>geosite:category-ru</code> → Direct.</li>"
-             "<li><b>INCY</b>: своих гео-правил нет — вместо ссылки подписки возьмите «sing-box · полный конфиг».</li>"
+             "<li><b>INCY</b>: ничего настраивать не нужно — профиль обхода подставляется прямо в подписку и включается сам при её добавлении/обновлении. "
+             "Ноду «VLESS + WebSocket» без TLS новые ядра блокируют — используйте ноду «VLESS + WebSocket + TLS» или Reality.</li>"
              "</ul>",
     "rt_ir": "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
-             "Готовые правила — в кнопке «sing-box · полный конфиг» выше. В ссылочных клиентах правило настраивается в самом приложении:"
+             "В <b>Happ</b> и <b>INCY</b> настраивать не нужно: профиль туннеля приходит прямо в подписке и включается сам. "
+             "Готовые правила для других приложений — в кнопке «sing-box · полный конфиг». В ссылочных клиентах правило настраивается в самом приложении:"
              "<ul>"
+             "<li><b>Happ</b>: добавьте обычную ссылку-подписку — профиль туннеля активируется автоматически.</li>"
              "<li><b>Shadowrocket</b>: Настройки → Маршрутизация → <code>GEOIP,ir,PROXY</code> и <code>GEOSITE,ir,PROXY</code>, финальное правило — DIRECT.</li>"
              "<li><b>v2rayNG</b>: «Пользовательские» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, остальные правила → Direct.</li>"
-             "<li><b>INCY</b>: своих гео-правил нет — возьмите «sing-box · полный конфиг».</li>"
+             "<li><b>INCY</b>: настраивать не нужно — профиль туннеля добавляется прямо в подписку автоматически.</li>"
              "</ul>",
 }
 _SUB_TXT = {
@@ -2755,6 +3010,7 @@ _SUB_TXT = {
     "js_wg_dl": "%s: the config will download as a .conf file.",
     "js_opening": "Opening “%s…”. If nothing happened — copy the subscription with the button below.",
     "js_ext": "“%s” is a third-party client: install it from the store (the “Download” link) and import the subscription via “Copy subscription”.",
+    "js_happ": "We’ll copy the subscription and open Happ — it will offer to add it from the clipboard. RU bypass turns on automatically: no manual searching or pasting needed.",
     "js_copied": "Subscription link copied.",
     "js_copied_open": "Subscription link copied. Open “%s” and import it.",
     "js_nocopy": "Automatic copy failed.",
@@ -2770,19 +3026,25 @@ _SUB_TXT = {
     "js_err": "error", "js_net": "Network unavailable.",
     "exp_1": "%d day left", "exp_n": "%d days left",
     "rt_ru": "<b>Russian sites and apps go direct</b>, everything else through the tunnel.<br>"
-             "Ready rules are in the “sing-box · full config” button above (works with Happ, SFI/SFA, Streisand, NekoBox, Hiddify). "
-             "Clients that import links must enable the rule inside the app:"
+             "In <b>Happ</b> and <b>INCY</b> nothing to configure: the “Veil” bypass profile ships inside the subscription and activates itself when you add or update it. "
+             "For other apps the ready rule set is in the “sing-box · full config” button — <b>add SFI/SFA, Streisand, NekoBox and Hiddify with it</b>. "
+             "Link-only clients must enable the rule inside the app:"
              "<ul>"
+             "<li><b>Happ</b>: tap “Add / Import” (or “Copy subscription” and paste it in Happ) — a plain subscription link, bypass turns on automatically. "
+             "The <code>veil.json</code> file does NOT work in Happ: its core is Xray, not sing-box.</li>"
              "<li><b>Shadowrocket</b>: Settings → Route → add <code>GEOSITE,category-ru,DIRECT</code> and <code>GEOIP,ru,DIRECT</code>.</li>"
              "<li><b>v2rayNG</b>: Routing settings → “Custom” → rule <code>geosite:category-ru</code> → Direct.</li>"
-             "<li><b>INCY</b>: no geo rules — use “sing-box · full config” instead of the subscription link.</li>"
+             "<li><b>INCY</b>: nothing to configure — the bypass profile is embedded in the subscription and applies itself. "
+             "New cores block the plaintext “VLESS + WebSocket” node — use the “VLESS + WebSocket + TLS” or Reality node instead.</li>"
              "</ul>",
     "rt_ir": "<b>Only Iranian services go through the tunnel</b>, the rest is direct.<br>"
-             "Ready rules are in the “sing-box · full config” button above. In link-based clients the rule is set inside the app:"
+             "In <b>Happ</b> and <b>INCY</b> nothing to configure: the tunnel profile ships inside the subscription and activates itself. "
+             "Ready rules for other apps are in the “sing-box · full config” button. In link-based clients the rule is set inside the app:"
              "<ul>"
+             "<li><b>Happ</b>: just add the plain subscription link — the tunnel profile activates automatically.</li>"
              "<li><b>Shadowrocket</b>: Settings → Route → <code>GEOIP,ir,PROXY</code> and <code>GEOSITE,ir,PROXY</code>, final rule — DIRECT.</li>"
              "<li><b>v2rayNG</b>: “Custom” → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, other rules → Direct.</li>"
-             "<li><b>INCY</b>: no geo rules — use “sing-box · full config”.</li>"
+             "<li><b>INCY</b>: nothing to configure — the tunnel profile is embedded in the subscription.</li>"
              "</ul>",
 },
 "fa": {
@@ -2819,6 +3081,7 @@ _SUB_TXT = {
     "js_wg_dl": "%s: کانفیگ به‌صورت فایل .conf دانلود می‌شود.",
     "js_opening": "در حال باز کردن «%s…». باز نشد، اشتراک را با دکمه پایین کپی کنید.",
     "js_ext": "«%s» یک کلاینت خارجی است: از فروشگاه (لینک «دانلود») نصب کنید و اشتراک را با «کپی اشتراک» وارد کنید.",
+    "js_happ": "اشتراک کپی می‌شود و Happ باز می‌شود — خودش پیشنهاد می‌کند از حافظه وارد کنید. عبور روسی خودکار فعال می‌شود: نیازی به جست‌وجو یا جای‌گذاری دستی نیست.",
     "js_copied": "لینک اشتراک کپی شد.",
     "js_copied_open": "لینک اشتراک کپی شد. «%s» را باز کنید و وارد کنید.",
     "js_nocopy": "کپی خودکار نشد.",
@@ -2834,19 +3097,24 @@ _SUB_TXT = {
     "js_err": "خطا", "js_net": "شبکه در دسترس نیست.",
     "exp_n": "%d روز مانده",
     "rt_ru": "<b>سایت‌ها و اپ‌های روسی مستقیم می‌روند</b> و بقیه از تونل.<br>"
-             "قوانین آماده در دکمه «sing-box · کانفیگ کامل» بالا (مناسب Happ، SFI/SFA، Streisand، NekoBox، Hiddify). "
+             "در <b>Happ</b> و <b>INCY</b> نیازی به تنظیم نیست: پروفایل عبور «Veil» داخل خود اشتراک می‌آید و هنگام افزودن یا به‌روزرسانی به‌طور خودکار فعال می‌شود. "
+             "برای بقیه اپ‌ها قوانین آماده در دکمه «sing-box · کانفیگ کامل» است — <b>SFI/SFA، Streisand، NekoBox و Hiddify را با همان کانفیگ کامل اضافه کنید</b>. "
              "در کلاینت‌های لینکی باید قانون را در خود اپ فعال کنید:"
              "<ul>"
+             "<li><b>Happ</b>: روی «افزودن / وارد کردن» بزنید (یا «کپی اشتراک» و در Happ جای‌گذاری کنید) — همان لینک اشتراک معمولی، عبور خودکار فعال می‌شود. فایل <code>veil.json</code> در Happ کار نمی‌کند: هسته‌اش Xray است نه sing-box.</li>"
              "<li><b>Shadowrocket</b>: تنظیمات → Route → افزودن <code>GEOSITE,category-ru,DIRECT</code> و <code>GEOIP,ru,DIRECT</code>.</li>"
              "<li><b>v2rayNG</b>: تنظیمات مسیریابی → «Custom» → قانون <code>geosite:category-ru</code> → Direct.</li>"
-             "<li><b>INCY</b>: قانون جغرافیایی ندارد — به‌جای لینک اشتراک از «sing-box · کانفیگ کامل» استفاده کنید.</li>"
+             "<li><b>INCY</b>: نیازی به تنظیم ندارد — پروفایل تونل به‌صورت خودکار در اشتراک قرار می‌گیرد. "
+             "هسته‌های جدید گره «VLESS + WebSocket» بدون TLS را مسدود می‌کنند — از گره «VLESS + WebSocket + TLS» یا Reality استفاده کنید.</li>"
              "</ul>",
     "rt_ir": "<b>فقط سرویس‌های ایران از تونل می‌روند</b> و بقیه مستقیم.<br>"
-             "قوانین آماده در دکمه «sing-box · کانفیگ کامل» بالا. در کلاینت‌های لینکی قانون داخل خود اپ تنظیم می‌شود:"
+             "در <b>Happ</b> و <b>INCY</b> نیازی به تنظیم نیست: پروفایل تونل داخل خود اشتراک می‌آید و خودکار فعال می‌شود. "
+             "قوانین آماده برای بقیه اپ‌ها در دکمه «sing-box · کانفیگ کامل». در کلاینت‌های لینکی قانون داخل خود اپ تنظیم می‌شود:"
              "<ul>"
+             "<li><b>Happ</b>: همان لینک اشتراک معمولی را اضافه کنید — پروفایل تونل خودکار فعال می‌شود.</li>"
              "<li><b>Shadowrocket</b>: تنظیمات → Route → <code>GEOIP,ir,PROXY</code> و <code>GEOSITE,ir,PROXY</code>؛ قانون آخر — DIRECT.</li>"
              "<li><b>v2rayNG</b>: «Custom» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy و بقیه → Direct.</li>"
-             "<li><b>INCY</b>: قانون جغرافیایی ندارد — از «sing-box · کانفیگ کامل» استفاده کنید.</li>"
+             "<li><b>INCY</b>: نیازی به تنظیم ندارد — پروفایل تونل خودکار داخل اشتراک است.</li>"
              "</ul>",
 },
 "zh": {
@@ -2883,6 +3151,7 @@ _SUB_TXT = {
     "js_wg_dl": "%s：配置将作为 .conf 文件下载。",
     "js_opening": "正在打开「%s…」。没反应请用下方按钮复制订阅。",
     "js_ext": "「%s」是第三方客户端：请从商店（“下载”链接）安装，再用「复制订阅」导入。",
+    "js_happ": "我们会复制订阅并打开 Happ — 它会自动提示从剪贴板添加。俄区绕行会自动生效：无需手动查找或粘贴。",
     "js_copied": "订阅链接已复制。",
     "js_copied_open": "订阅链接已复制。打开「%s」并导入。",
     "js_nocopy": "自动复制失败。",
@@ -2898,18 +3167,22 @@ _SUB_TXT = {
     "js_err": "错误", "js_net": "网络不可用。",
     "exp_n": "还剩 %d 天",
     "rt_ru": "<b>俄罗斯网站和应用直连</b>，其余走代理。<br>"
-             "现成规则见上方「sing-box · 完整配置」按钮（适用于 Happ、SFI/SFA、Streisand、NekoBox、Hiddify）。链接类客户端需在应用内开启规则："
+             "在 <b>Happ</b> 和 <b>INCY</b> 无需设置：绕行配置「Veil」直接随订阅下发，添加或更新订阅时会自动启用。"
+             "其他应用可用上方「sing-box · 完整配置」按钮 — <b>SFI/SFA、Streisand、NekoBox、Hiddify 请用该完整配置添加</b>。仅导入链接的客户端需在应用内开启规则："
              "<ul>"
+             "<li><b>Happ</b>：点「添加 / 导入」（或「复制订阅」后在 Happ 粘贴）— 用普通订阅链接即可，绕行自动生效。<code>veil.json</code> 文件在 Happ 无效：它的内核是 Xray，不是 sing-box。</li>"
              "<li><b>Shadowrocket</b>：设置 → 路由 → 添加 <code>GEOSITE,category-ru,DIRECT</code> 和 <code>GEOIP,ru,DIRECT</code>。</li>"
              "<li><b>v2rayNG</b>：路由设置 → 自定义 → 规则 <code>geosite:category-ru</code> → Direct。</li>"
-             "<li><b>INCY</b>：无地理规则 — 请改用「sing-box · 完整配置」。</li>"
+             "<li><b>INCY</b>：无需设置 — 分流配置自动嵌入订阅。新版内核会拦截无 TLS 的「VLESS + WebSocket」节点 — 请改用「VLESS + WebSocket + TLS」或 Reality 节点。</li>"
              "</ul>",
     "rt_ir": "<b>只有伊朗服务走代理</b>，其余直连。<br>"
-             "现成规则见上方「sing-box · 完整配置」按钮。链接类客户端需在应用内设置规则："
+             "在 <b>Happ</b> 和 <b>INCY</b> 无需设置：分流配置直接随订阅下发并自动启用。"
+             "其他应用的现成规则见上方「sing-box · 完整配置」按钮。链接类客户端需在应用内设置规则："
              "<ul>"
+             "<li><b>Happ</b>：添加普通订阅链接即可 — 分流配置自动启用。</li>"
              "<li><b>Shadowrocket</b>：设置 → 路由 → <code>GEOIP,ir,PROXY</code> 和 <code>GEOSITE,ir,PROXY</code>，最后一条 — DIRECT。</li>"
              "<li><b>v2rayNG</b>：自定义 → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy，其余 → Direct。</li>"
-             "<li><b>INCY</b>：无地理规则 — 请用「sing-box · 完整配置」。</li>"
+             "<li><b>INCY</b>：无需设置 — 分流配置自动嵌入订阅。</li>"
              "</ul>",
 },
 }
@@ -3005,6 +3278,42 @@ def _avatar_data_url(tok):
     else:
         return ""
     return "data:" + mime + ";base64," + base64.b64encode(data).decode()
+
+def _avatar_version(tok):
+    """Метка времени файла аватара для cache-busting URL (?v=...), или 0 если файла нет."""
+    path = _avatar_path(tok)
+    if not path:
+        return 0
+    try:
+        return int(os.path.getmtime(path))
+    except OSError:
+        return 0
+
+def _avatar_mime(raw):
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+def _avatar_serve(tok):
+    """(mime, bytes) аватара для отдачи по GET, или (None, None) если файла нет."""
+    path = _avatar_path(tok)
+    if not path:
+        return None, None
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None, None
+    mime = _avatar_mime(raw)
+    if mime == "application/octet-stream":
+        return None, None
+    return mime, raw
 
 def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
     if lang not in _SUB_LANGS:
@@ -3152,7 +3461,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
     langnav = "".join('<a href="?lang=' + lk + '"' + (' class="sel"' if lk == lang else "") +
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
-    js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_copied js_copied_open "
+    js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
                "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
                "btn_add btn_install btn_how tag_paid store_dl").split()
     ljs_json = json.dumps({k: L[k] for k in js_keys}, ensure_ascii=False)
@@ -3396,6 +3705,8 @@ function selHint(){
   if(cur.wg||cur.awg){
     if(cur.link){hint(F(L.js_wg_open,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
     else{hint(F(L.js_wg_dl,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
+  }else if(cur.precopy){
+    hint(L.js_happ,'#7dd3fc');
   }else if(cur.link){
     hint(F(L.js_opening,cur.name));
   }else{
@@ -3457,6 +3768,13 @@ document.addEventListener('DOMContentLoaded',function(){
     if(!selHint())return;
     if(cur.wg||cur.awg){
       location.href=cur.link?buildLink(cur):(cur.wg?WGDOWN:AWGDOWN);
+      return;
+    }
+    if(cur.precopy){
+      var _lk=buildLink(cur);
+      if(navigator.clipboard){navigator.clipboard.writeText(SUB).then(function(){location.href=_lk;})
+        .catch(function(){location.href=_lk;});}
+      else{location.href=_lk;}
       return;
     }
     if(cur.link){location.href=buildLink(cur);return;}
@@ -3534,7 +3852,10 @@ document.addEventListener('DOMContentLoaded',function(){
         payblock = _pay_block_html(u.get("sub_token") or "", L)
     except Exception:
         pass
-    ava_img = _avatar_data_url(tok)
+    # аватар — отдельным кэшируемым файлом: base64 внутри страницы добавлял ~95 КБ
+    # к каждому показу /p, и страница с ним не кэшировалась вообще
+    _av = _avatar_version(tok)
+    ava_img = ("/p/" + tok + "/avatar?v=" + str(_av)) if _av else ""
     avatar_html = ('<img src="' + ava_img + '" alt>' if ava_img else avatar)
     _ava_cam = ('<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" '
                 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -3797,6 +4118,15 @@ _BOT_RU = {
     "sub_apps_msg": "📱 Твоя личная страница с приложениями и кнопками подключения:\n%s",
     "sub_a80": "⚠️ Подписка «%s»: использовано 80%% трафика (%s из %s ГБ).",
     "sub_aexp": "⏳ Подписка «%s» истекает через %d дн. Продлить можно на личной странице.",
+    "onboard_msg": ("🎉 <b>Твой VPN готов — прямо из коробки!</b>\n\n"
+                    "Я завёл тебе личную подписку «Я»: без лимита трафика и срока. "
+                    "Она сама обновляется, если я добавлю новые протоколы или серверы.\n\n"
+                    "🔑 Ссылка подписки — вставь её один раз в приложение "
+                    "(Happ, Streisand, v2rayNG, NekoBox…):\n<code>%s</code>\n\n"
+                    "📱 Личная страница с приложениями и кнопкой «Подключить»:\n%s\n\n"
+                    "Кнопка «👥 Клиенты» покажет тебя в списке. Когда захочешь добавить близких — "
+                    "жми «➕ Добавить подписку», а им напоминать ничего не надо: "
+                    "дай им ссылку со страницы и всё."),
 }
 _BOT_TXT = {
 "en": {
@@ -3878,6 +4208,14 @@ _BOT_TXT = {
     "sub_apps_msg": "📱 Your personal page with apps and connection buttons:\n%s",
     "sub_a80": "⚠️ Subscription «%s»: 80%% of traffic used (%s of %s GB).",
     "sub_aexp": "⏳ Subscription «%s» expires in %d day(s). Renew on your personal page.",
+    "onboard_msg": ("🎉 <b>Your VPN is ready — right out of the box!</b>\n\n"
+                    "I created a personal subscription «Я» for you: no traffic or time limits. "
+                    "It updates itself when new protocols or servers are added.\n\n"
+                    "🔑 Subscription link — paste it once into your app "
+                    "(Happ, Streisand, v2rayNG, NekoBox…):\n<code>%s</code>\n\n"
+                    "📱 Personal page with apps and a «Connect» button:\n%s\n\n"
+                    "The «👥 Clients» button shows you in the list. To add family later press "
+                    "«➕ Add subscription» — just hand them the link from the page."),
 },
 "fa": {
     "m_status": "📊 وضعیت", "m_clients": "👥 کاربران",
@@ -3958,6 +4296,13 @@ _BOT_TXT = {
     "sub_apps_msg": "📱 صفحه شخصی شما با برنامه‌ها و دکمه‌های اتصال:\n%s",
     "sub_a80": "⚠️ اشتراک «%s»: ۸۰٪ ترافیک مصرف شد (%s از %s گیگابایت).",
     "sub_aexp": "⏳ اشتراک «%s» تا %d روز دیگر منقضی می‌شود. تمدید در صفحه شخصی.",
+    "onboard_msg": ("🎉 <b>VPN شما آماده — بدون تنظیمات!</b>\n\n"
+                    "اشتراک شخصی «Я» برایتان ساخته شد: بدون محدودیت ترافیک و زمان. "
+                    "با افزودن پروتکل‌ها یا سرورهای تازه خودش به‌روز می‌شود.\n\n"
+                    "🔑 لینک اشتراک — یک‌بار در برنامه (Happ, Streisand, v2rayNG, NekoBox…) بچسبانید:\n<code>%s</code>\n\n"
+                    "📱 صفحه شخصی با برنامه‌ها و دکمه «اتصال»:\n%s\n\n"
+                    "دکمه «👥 کاربران» شما را در فهرست نشان می‌دهد. برای افزودن نزدیکان «➕ افزودن اشتراک» را بزنید — "
+                    "کافی است لینک صفحه را به آن‌ها بدهید."),
 },
 "zh": {
     "m_status": "📊 状态", "m_clients": "👥 客户",
@@ -4038,6 +4383,11 @@ _BOT_TXT = {
     "sub_apps_msg": "📱 你的个人页面（应用和连接按钮）：\n%s",
     "sub_a80": "⚠️ 订阅「%s」：已使用 80%% 流量（%s / %s GB）。",
     "sub_aexp": "⏳ 订阅「%s」将在 %d 天后到期。可在个人页面续费。",
+    "onboard_msg": ("🎉 <b>你的 VPN 已就绪——开箱即用！</b>\n\n"
+                    "已为你创建个人订阅「Я」：不限流量、不限时长。新增协议或服务器时它会自动更新。\n\n"
+                    "🔑 订阅链接——在应用（Happ、Streisand、v2rayNG、NekoBox…）里粘贴一次即可：\n<code>%s</code>\n\n"
+                    "📱 含应用和「连接」按钮的个人页面：\n%s\n\n"
+                    "按钮「👥 用户」可在列表中看到你。想为家人添加时按「➕ 添加订阅」——把页面链接发给他们即可。"),
 },
 }
 
@@ -4285,6 +4635,12 @@ _SUB_TXT_RU.update({
     "ch_paid": "Оплата получена — подписка продлена",
     "ch_back": "Вернуться к подписке", "ch_err": "Счёт не найден или недействителен",
     "ch_exp": "Срок до", "ch_cli": "Клиент", "ch_inv": "Счёт",
+    "sh_ttl": "Тарифы VPN", "sh_hd": "Выбери тариф — доступ придёт сразу после оплаты",
+    "sh_buy": "Купить", "sh_tg": "Telegram @username",
+    "sh_tg_hint": "необязательно: напиши — и после оплаты бот пришлёт ссылку в этот чат",
+    "sh_go": "Перейти к оплате", "sh_err": "Не удалось создать счёт — попробуй позже",
+    "sh_empty": "Тарифы временно недоступны — загляни позже",
+    "ch_link": "Твоя ссылка-подписка (сохрани её):",
 })
 for _pk, _pv in {
     "en": {
@@ -4296,6 +4652,12 @@ for _pk, _pv in {
         "ch_paid": "Payment received — subscription extended",
         "ch_back": "Back to subscription", "ch_err": "Invoice not found or invalid",
         "ch_exp": "Valid until", "ch_cli": "Client", "ch_inv": "Invoice",
+        "sh_ttl": "VPN plans", "sh_hd": "Pick a plan — access arrives right after payment",
+        "sh_buy": "Buy", "sh_tg": "Telegram @username",
+        "sh_tg_hint": "optional: add it and the bot will send the link to this chat after payment",
+        "sh_go": "Proceed to payment", "sh_err": "Could not create the invoice — try again later",
+        "sh_empty": "Plans are temporarily unavailable — check back later",
+        "ch_link": "Your subscription link (save it):",
     },
     "fa": {
         "pay_hd": "پرداخت و تمدید", "pay_days": "%d روز", "pay_gb": "%s گیگ",
@@ -4306,6 +4668,12 @@ for _pk, _pv in {
         "ch_paid": "پرداخت دریافت شد — اشتراک تمدید شد",
         "ch_back": "بازگشت به اشتراک", "ch_err": "فاکتور یافت نشد یا نامعتبر است",
         "ch_exp": "اعتبار تا", "ch_cli": "مشتری", "ch_inv": "فاکتور",
+        "sh_ttl": "پلن‌های VPN", "sh_hd": "یک پلن انتخاب کنید — دسترسی بلافاصله پس از پرداخت فعال می‌شود",
+        "sh_buy": "خرید", "sh_tg": "نام کاربری تلگرام",
+        "sh_tg_hint": "اختیاری: آن را بنویسید تا ربات پس از پرداخت لینک را در همین چات بفرستد",
+        "sh_go": "رفتن به پرداخت", "sh_err": "ایجاد فاکتور ممکن نشد — بعداً تلاش کنید",
+        "sh_empty": "پلن‌ها موقتاً در دسترس نیستند — بعداً سر بزنید",
+        "ch_link": "لینک اشتراک شما (آن را ذخیره کنید):",
     },
     "zh": {
         "pay_hd": "付款与续订", "pay_days": "%d 天", "pay_gb": "%s GB",
@@ -4316,6 +4684,12 @@ for _pk, _pv in {
         "ch_paid": "已收到付款——订阅已延长",
         "ch_back": "返回订阅页", "ch_err": "未找到账单或账单无效",
         "ch_exp": "有效期至", "ch_cli": "客户", "ch_inv": "账单",
+        "sh_ttl": "VPN 套餐", "sh_hd": "选择套餐——付款成功后立即开通",
+        "sh_buy": "购买", "sh_tg": "Telegram 用户名",
+        "sh_tg_hint": "可选：填写后机器人将在付款完成后把链接发到该聊天",
+        "sh_go": "前往付款", "sh_err": "无法创建账单——请稍后重试",
+        "sh_empty": "套餐暂时不可用——请稍后再来",
+        "ch_link": "你的订阅链接（请保存）：",
     },
 }.items():
     _SUB_TXT.setdefault(_pk, {}).update(_pv)
@@ -4323,18 +4697,26 @@ for _pk, _pv in {
 _BOT_RU.update({
     "pay_paid": "💰 <b>Оплата прошла</b>\nКлиент: <code>%s</code>\nТариф: %s · %s\nПодписка продлена автоматически.",
     "pay_paid_na": "⚠️ Оплата %s: подписка не найдена (клиент удалён?), продлить нечем.",
+    "pay_paid_shop": "🛒 <b>Покупка с витрины</b>\nПокупатель: <code>%s</code>\nТариф: %s · %s\nНовая подписка создана и выдана.",
+    "shop_found": "🛒 <b>Нашла твою покупку с витрины!</b>\nТариф: <b>%s</b> — подписка привязана к этому чату.\n🔑 Ссылка: <code>%s</code>\n📱 Страница: %s\nДальше — кнопки меню: статус, ссылка, приложения.",
 })
 _BOT_TXT["en"].update({
     "pay_paid": "💰 <b>Payment received</b>\nClient: <code>%s</code>\nPlan: %s · %s\nSubscription extended automatically.",
     "pay_paid_na": "⚠️ Payment %s: subscription not found (client deleted?), nothing to extend.",
+    "pay_paid_shop": "🛒 <b>Storefront purchase</b>\nBuyer: <code>%s</code>\nPlan: %s · %s\nNew subscription created and delivered.",
+    "shop_found": "🛒 <b>Found your storefront purchase!</b>\nPlan: <b>%s</b> — the subscription is now linked to this chat.\n🔑 Link: <code>%s</code>\n📱 Page: %s\nUse the menu buttons: status, link, apps.",
 })
 _BOT_TXT["fa"].update({
     "pay_paid": "💰 <b>پرداخت دریافت شد</b>\nمشتری: <code>%s</code>\nپلن: %s · %s\nاعتبار اشتراک خودکار تمدید شد.",
     "pay_paid_na": "⚠️ پرداخت %s: اشتراک یافت نشد، تمدید انجام نشد.",
+    "pay_paid_shop": "🛒 <b>خرید از ویترین</b>\nخریدار: <code>%s</code>\nپلن: %s · %s\nاشتراک جدید ساخته و تحویل شد.",
+    "shop_found": "🛒 <b>خرید شما از ویترین پیدا شد!</b>\nپلن: <b>%s</b> — اشتراک به این چات متصل شد.\n🔑 لینک: <code>%s</code>\n📱 صفحه: %s\nدکمه‌های منو: وضعیت، لینک، برنامه‌ها.",
 })
 _BOT_TXT["zh"].update({
     "pay_paid": "💰 <b>已收到付款</b>\n客户：<code>%s</code>\n套餐：%s · %s\n订阅已自动延长。",
     "pay_paid_na": "⚠️ 付款 %s：未找到订阅，无法延长。",
+    "pay_paid_shop": "🛒 <b>商店购买</b>\n买家：<code>%s</code>\n套餐：%s · %s\n已创建并交付新订阅。",
+    "shop_found": "🛒 <b>找到你的商店订单！</b>\n套餐：<b>%s</b> — 订阅已绑定到此聊天。\n🔑 链接：<code>%s</code>\n📱 页面：%s\n使用菜单按钮：状态、链接、应用。",
 })
 
 def _pay_load():
@@ -4380,6 +4762,15 @@ def _pay_pub_plans():
         except Exception:
             pass
     return out
+
+def _pay_shop_plans():
+    """Витрина /shop: только при включённых платежах и у тарифов с флагом shop."""
+    try:
+        if not _pay_cfg()["enabled"]:
+            return []
+    except Exception:
+        return []
+    return [pl for pl in _pay_pub_plans() if pl.get("shop")][:24]
 
 def _pay_sub_find(tok):
     if not tok:
@@ -4446,7 +4837,66 @@ def _pay_pay_sig_ok(raw, sig, secret):
     return hmac.compare_digest(mac, str(sig).lower())
 
 # ---------- продление ----------
+def _pay_shop_deliver(inv):
+    """Покупка с витрины оплачена -> создать новую подписку."""
+    if inv.get("delivered"):
+        return True
+    name = (str(inv.get("tg") or "").lstrip("@") or ("куплено-" + inv["id"]))[:40]
+    try:
+        r = _create_subscription(name, limit_gb=float(inv.get("gb") or 0),
+                                 expiry_days=int(inv.get("days") or 0))
+    except Exception as e:
+        print("[pay] shop deliver " + str(inv.get("id")) + ": " + str(e), flush=True)
+        return False
+    inv["delivered"] = {"sub_token": r["sub_token"], "name": r["name"]}
+    _audit("pay_shop_deliver", inv=inv["id"], client=r["name"])
+    return True
+
+def _shop_try_bind(username, chat_id, B):
+    """Покупатель с витрины написал в бота и совпал по @username — привязать подписку к чату."""
+    uname = str(username or "").lower().lstrip("@")
+    if not uname or len(uname) < 3:
+        return
+    try:
+        cands = [v for v in _pay_load()["invoices"].values()
+                 if v.get("kind") == "shop" and v.get("applied") and v.get("delivered")
+                 and not v.get("tg_chat")
+                 and str(v.get("tg") or "").lower().lstrip("@") == uname]
+    except Exception:
+        return
+    for inv in cands:
+        tok = str((inv.get("delivered") or {}).get("sub_token") or "")
+        if not tok:
+            continue
+        try:
+            st = _load(STATE) or {}
+            hit = 0
+            for inb in (st.get("inbounds") or {}).values():
+                for c in inb.get("clients", []):
+                    if c.get("sub_token") == tok:
+                        c["tg_chat"] = str(chat_id)
+                        hit += 1
+            if hit:
+                _save(STATE, st)
+            with PAY_LOCK:
+                d = _pay_load()
+                v = d["invoices"].get(inv["id"])
+                if v:
+                    v["tg_chat"] = str(chat_id)
+                    _pay_save(d)
+            base = _pay_base()
+            _bot_send_message(chat_id,
+                              (B.get("shop_found") or _BOT_RU["shop_found"]) %
+                              ((inv.get("delivered") or {}).get("name") or "?",
+                               base + "/sub/" + tok, base + "/p/" + tok),
+                              "HTML", _bot_sub_keyboard(B))
+            _audit("shop_tg_bind", inv=inv["id"], chat=str(chat_id))
+        except Exception as e:
+            print("[pay] shop bind " + str(e), flush=True)
+
 def _pay_extend(inv):
+    if inv.get("kind") == "shop":
+        return _pay_shop_deliver(inv)
     st = _load(STATE)
     if st is None:
         return False
@@ -4500,7 +4950,9 @@ def _pay_notify_paid(inv, ok):
         B = _bot_B(ids[0])
         price = ("%g" % inv["price"]) + " " + (inv.get("currency") or "RUB")
         if ok:
-            txt = B["pay_paid"] % (inv.get("name") or "?", inv.get("title") or inv["id"], price)
+            key = "pay_paid_shop" if inv.get("kind") == "shop" else "pay_paid"
+            txt = (B.get(key) or B["pay_paid"]) % (inv.get("name") or "?",
+                                                   inv.get("title") or inv["id"], price)
         else:
             txt = B["pay_paid_na"] % inv["id"]
         for cid in ids:
@@ -4536,10 +4988,10 @@ def _pay_find_by_ext(provider, ext):
             return v
     return None
 
-def _pay_mkv(tok, plan, src="page"):
+def _pay_mkv(tok, plan, src="page", kind="renew", tg=""):
     pc = _pay_cfg()
-    u = _pay_sub_find(tok)
-    if not u:
+    u = None if kind == "shop" else _pay_sub_find(tok)
+    if kind != "shop" and not u:
         raise ValueError("подписка не найдена")
     with PAY_LOCK:
         d = _pay_load()
@@ -4555,8 +5007,10 @@ def _pay_mkv(tok, plan, src="page"):
                "price": float(plan.get("price") or 0),
                "currency": (plan.get("currency") or "RUB")[:8],
                "days": int(plan.get("days") or 0), "gb": float(plan.get("gb") or 0),
-               "reset": bool(plan.get("reset")), "sub_token": u["sub_token"],
-               "name": u.get("name") or "", "provider": pc["provider"],
+               "reset": bool(plan.get("reset")), "kind": kind, "tg": (tg or "")[:40],
+               "sub_token": u["sub_token"] if u else "",
+               "name": (u.get("name") if u else (tg or ("витрина-" + iid))) or "",
+               "provider": pc["provider"],
                "status": "new", "external_id": "", "pay_url": "",
                "created": now, "paid_at": 0, "applied": False, "src": src}
         try:
@@ -4626,11 +5080,16 @@ def _pay_block_html(tok, L):
 
 def _pay_page_html(inv, L):
     esc = lambda s: _html.escape(str(s or ""), quote=True)
-    tok = esc(inv.get("sub_token") or "")
+    tok = esc((inv.get("delivered") or {}).get("sub_token") or inv.get("sub_token") or "")
     state = "paid" if inv.get("applied") else ("wait" if inv.get("status") == "paid" else "new")
     if state == "paid":
         body = ('<div class="box ok">✅ ' + esc(L["ch_paid"]) + '</div>'
                 '<a class="btn" href="/p/' + tok + '">' + esc(L["ch_back"]) + '</a>')
+        if inv.get("kind") == "shop" and tok:
+            body += ('<div class="box" style="text-align:center"><div style="font-size:12px;'
+                     'opacity:.7;margin-bottom:6px">' + esc(L["ch_link"]) + '</div>'
+                     '<code style="font-size:13px;word-break:break-all">' +
+                     esc(_pay_base() + "/sub/" + tok) + '</code></div>')
     else:
         parts = ['<div class="box"><div class="row"><span>' + esc(L["ch_plan"]) +
                  '</span><b>' + esc(inv.get("title")) + '</b></div>',
@@ -4665,6 +5124,83 @@ def _pay_page_html(inv, L):
             '</style></head><body><div class="w"><h1>' + esc(L["ch_ttl"]) + '</h1>' + body +
             '</div></body></html>')
 
+def _shop_page_html(L, plans):
+    esc = lambda s: _html.escape(str(s or ""), quote=True)
+    if plans:
+        cards = []
+        for pl in plans:
+            bits = []
+            if int(pl.get("days") or 0) > 0:
+                bits.append(L["pay_days"] % int(pl["days"]))
+            gbv = float(pl.get("gb") or 0)
+            bits.append(L["pay_gb"] % ("%g" % gbv) if gbv > 0 else L["pay_unl"])
+            cards.append(
+                '<div class="pc"><div class="pt">' + esc(pl.get("title")) + '</div>'
+                '<div class="pb">' + esc(" · ".join(bits)) + '</div>'
+                '<div class="pp">' + ("%g" % float(pl.get("price") or 0)) + " " +
+                esc(pl.get("currency") or "RUB") + '</div>'
+                '<button class="btn" onclick="shopPick(\'' + esc(pl["id"]) + '\')">' +
+                esc(L["sh_buy"]) + '</button></div>')
+        body = ('<div class="grid">' + "".join(cards) + '</div>'
+                '<div id="co" class="box" style="display:none">'
+                '<div class="row"><span>' + esc(L["ch_plan"]) + '</span><b id="coT">—</b></div>'
+                '<div class="tg"><label>' + esc(L["sh_tg"]) +
+                '<input id="coTg" type="text" placeholder="@username" autocomplete="off"></label></div>'
+                '<p class="wait">' + esc(L["sh_tg_hint"]) + '</p>'
+                '<button class="btn big" id="coGo" onclick="shopGo()">' + esc(L["sh_go"]) + '</button>'
+                '<p class="wait err" id="coErr"></p></div>')
+    else:
+        body = '<div class="box note">' + esc(L["sh_empty"]) + '</div>'
+    pj = json.dumps([{"id": str(pl["id"]), "title": str(pl.get("title") or "")}
+                     for pl in plans], ensure_ascii=True).replace("<", "\\u003c")
+    js = ('<script>var _P=' + pj + ';var _S=null;'
+          'function shopPick(id){_S=id;'
+          'var p=_P.filter(function(x){return x.id==id})[0];'
+          'document.getElementById("coT").textContent=p?p.title:"";'
+          'document.getElementById("coErr").textContent="";'
+          'var c=document.getElementById("co");c.style.display="block";'
+          'c.scrollIntoView({behavior:"smooth"});}'
+          'function shopGo(){if(!_S)return;'
+          'var g=document.getElementById("coTg").value.trim();'
+          'var b=document.getElementById("coGo");b.disabled=true;'
+          'fetch("/pay/shop/buy",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({plan_id:_S,tg:g})})'
+          '.then(function(r){return r.json()})'
+          '.then(function(j){b.disabled=false;if(j&&j.url){location.href=j.url;}'
+          'else{document.getElementById("coErr").textContent=(j&&j.error)||'
+          + json.dumps(L["sh_err"]) + ';}})'
+          '.catch(function(){b.disabled=false;document.getElementById("coErr").textContent='
+          + json.dumps(L["sh_err"]) + ';})}'
+          '</script>')
+    brand = str(CFG_CACHE.get("sub_brand") or "").strip()[:60]
+    ttl = esc(L["sh_ttl"]) + ((" · " + esc(brand)) if brand else "")
+    return ('<!doctype html><html lang="' + L.get("_code", "ru") + '" dir="' +
+            ("rtl" if L.get("_code") == "fa" else "ltr") + '"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<title>' + ttl + '</title><style>'
+            'body{background:#0d1020;color:#e8eaf6;font-family:system-ui,sans-serif;'
+            'display:flex;justify-content:center;padding:24px 14px;margin:0}'
+            '.w{max-width:680px;width:100%}h1{font-size:22px;text-align:center;margin:6px 0 2px}'
+            '.hd{text-align:center;font-size:13px;opacity:.7;margin:0 0 18px}'
+            '.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}'
+            '.pc{background:#171b30;border:1px solid rgba(128,128,128,.35);border-radius:14px;'
+            'padding:14px;display:flex;flex-direction:column;gap:8px}'
+            '.pt{font-weight:700;font-size:15px}.pb{font-size:12px;opacity:.65}'
+            '.pp{font-size:20px;font-weight:800;margin-top:auto}'
+            '.btn{display:block;text-align:center;background:#3b6cf6;color:#fff;text-decoration:none;'
+            'border:0;border-radius:12px;padding:11px;font-weight:700;font-size:14px;cursor:pointer}'
+            '.btn.big{width:100%;margin:8px 0 2px}.btn:disabled{opacity:.5}'
+            '.box{background:#171b30;border:1px solid rgba(128,128,128,.35);border-radius:14px;'
+            'padding:14px;margin:16px 0 0}'
+            '.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:14px}'
+            '.tg input{width:100%;box-sizing:border-box;margin-top:6px;background:#0d1020;'
+            'color:inherit;border:1px solid rgba(128,128,128,.45);border-radius:10px;padding:9px 10px;'
+            'font-size:14px}'
+            '.note{font-size:13px;opacity:.85;text-align:center}.wait{font-size:12px;opacity:.6;text-align:center}'
+            '.err{color:#ff8a8a;opacity:1}'
+            '</style></head><body><div class="w"><h1>' + ttl + '</h1>'
+            '<p class="hd">' + esc(L["sh_hd"]) + '</p>' + body + '</div>' + js + '</body></html>')
+
 def _pay_lang_for(self):
     _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query or "")
     _lq = (_q.get("lang") or [""])[0]
@@ -4693,6 +5229,7 @@ def _pay_summary():
             "secret_set": bool(pc["secret"]), "cb_set": bool(pc["cb_token"]),
             "yoo_set": bool(pc["yoo_shop"] and pc["yoo_secret"]),
             "yoo_shop": pc["yoo_shop"], "notify": pc["notify"],
+            "shop_url": base + "/shop",
             "hook_cb": base + "/pay/hook/cryptobot",
             "hook_yoo": base + "/pay/hook/yookassa",
             "api_url": base + "/pay/api/",
@@ -4723,7 +5260,8 @@ def _pay_plan_valid(pl):
     if days == 0 and gb == 0:
         raise ValueError("тариф должен добавлять дни или ГБ")
     return {"title": title, "price": round(price, 2), "currency": cur,
-            "days": days, "gb": round(gb, 3), "reset": bool(pl.get("reset"))}
+            "days": days, "gb": round(gb, 3), "reset": bool(pl.get("reset")),
+            "shop": bool(pl.get("shop"))}
 
 _PAY_TL = {}
 _PAY_TL_LK = threading.Lock()
@@ -4772,6 +5310,7 @@ def _pay_handle_public(self, p):
                 return True
         self.send_response(302)
         self.send_header("Location", "/pay/i/" + urllib.parse.quote(inv["id"]))
+        self.send_header("Content-Length", "0")
         self.end_headers()
         return True
     # GET /pay/i/<id> — страница счёта
@@ -4783,6 +5322,17 @@ def _pay_handle_public(self, p):
             return True
         L = _pay_lang_for(self)
         b = _pay_page_html(inv, L).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(b)
+        return True
+    # GET /shop — публичная витрина тарифов
+    if p == "/shop":
+        L = _pay_lang_for(self)
+        b = _shop_page_html(L, _pay_shop_plans()).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))
@@ -4861,6 +5411,38 @@ def _pay_handle_public(self, p):
         inv = _pay_mark_paid(inv["id"], "api")
         self._send(200, {"invoice_id": inv["id"], "status": "paid" if inv.get("applied") else inv.get("status")})
         return True
+    if p == "/pay/shop/buy":
+        if not pc["enabled"]:
+            self._send(404, {"error": "платежи выключены"})
+            return True
+        try:
+            b = json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:
+            b = {}
+        plan = next((x for x in _pay_shop_plans()
+                     if str(x.get("id")) == str(b.get("plan_id") or "")), None)
+        if not plan:
+            self._send(404, {"error": "тариф не найден"})
+            return True
+        tg = str(b.get("tg") or "").strip()[:40]
+        if tg and not re.fullmatch(r"@?[A-Za-z0-9_]{3,34}", tg):
+            self._send(400, {"error": "telegram: @username без пробелов (3–34 символа)"})
+            return True
+        dd = _pay_load()
+        inv = next((v for v in dd["invoices"].values()
+                    if v.get("kind") == "shop" and not v.get("applied")
+                    and str(v.get("plan_id")) == str(plan["id"])
+                    and str(v.get("tg") or "").lower() == tg.lower()
+                    and (v.get("created") or 0) > time.time() - 3 * 86400), None)
+        try:
+            if not inv:
+                inv = _pay_mkv("", plan, src="shop", kind="shop", tg=tg)
+        except Exception as e:
+            self._send(502, {"error": "не удалось создать счёт: " + str(e)[:160]})
+            return True
+        _audit("shop_buy", inv=inv["id"], plan=plan["id"])
+        self._send(200, {"ok": True, "invoice_id": inv["id"], "url": "/pay/i/" + inv["id"]})
+        return True
     self._send(404, {"error": "not found"})
     return True
 
@@ -4903,6 +5485,63 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
     return {"name": name, "sub_token": sub_token, "sub_url": sub_url,
             "link": first_link or "", "limit_gb": float(limit_gb) or 0,
             "expiry_days": int(expiry_days)}
+
+_ONBOARD_LOCK = threading.Lock()
+
+def _onboard_ensure():
+    """Первый запуск «из коробки»: нет ни одного клиента — заводим личную подписку владельца.
+    Возвращает True, если подписку создали сейчас (нужно оповестить в бот)."""
+    try:
+        if CFG_CACHE.get("onboarded"):
+            return False
+        with _ONBOARD_LOCK:
+            if CFG_CACHE.get("onboarded"):
+                return False
+            st = _load(STATE)
+            if _client_count(st or {}) > 0:
+                CFG_CACHE["onboarded"] = "clients"
+                _save(CFG, CFG_CACHE)
+                return False
+            r = _create_subscription("Я")
+            CFG_CACHE["onboarded"] = r["sub_token"]
+            _save(CFG, CFG_CACHE)
+            try:
+                _audit("onboard_first_sub", client=r["name"])
+            except Exception:
+                pass
+            return True
+    except Exception as e:
+        print("onboard: " + str(e), flush=True)
+        return False
+
+def _onboard_info():
+    """Данные карточки онбординга для дашборда или None (не показывать)."""
+    tok = str(CFG_CACHE.get("onboarded") or "")
+    if not tok or tok in ("clients", "seen"):
+        return None
+    st = _load(STATE) or {}
+    if not any(c.get("sub_token") == tok
+               for inb in (st.get("inbounds") or {}).values()
+               for c in inb.get("clients", [])):
+        return None
+    host = _hop_pub_host()
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    base = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    return {"sub_url": base + "/sub/" + tok, "page_url": base + "/p/" + tok}
+
+def _onboard_notify():
+    ids = CFG_CACHE.get("bot_chat_ids") or []
+    if not ids:
+        return
+    try:
+        info = _onboard_info()
+        if not info:
+            return
+        B = _bot_B(ids[0])
+        _bot_send_message(ids[0], B["onboard_msg"] % (info["sub_url"], info["page_url"]),
+                          "HTML", _main_menu_keyboard(B))
+    except Exception as e:
+        print("onboard bot: " + str(e), flush=True)
 
 def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
     token = CFG_CACHE.get("bot_token", "")
@@ -4974,6 +5613,12 @@ def _process_bot_update(update):
         from_id = callback_query["from"]["id"]
         data = callback_query["data"]
         B = _bot_B(chat_id, tg_code)
+        _cb_un = (callback_query.get("from") or {}).get("username") or ""
+        if _cb_un:
+            try:
+                _shop_try_bind(_cb_un, chat_id, B)
+            except Exception:
+                pass
         if data.startswith("lang_"):
             _bot_answer_callback(callback_query_id)
             lg = data[5:]
@@ -5031,6 +5676,12 @@ def _process_bot_update(update):
         tg_code = (message.get("from") or {}).get("language_code") or ""
         B = _bot_B(chat_id, tg_code)
         text = message.get("text", "").strip()
+        _msg_un = (message.get("from") or {}).get("username") or ""
+        if _msg_un:
+            try:
+                _shop_try_bind(_msg_un, chat_id, B)
+            except Exception:
+                pass
         if not text.startswith("/"):
             stp = BOT_NEW_SUB.get(chat_id)
             if stp and stp.get("step") and _is_admin(from_id):
@@ -6282,7 +6933,7 @@ def _agent_link(n, ap, u, c0):
 _NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "hysteria2",
                         "vless-xhttp-tls", "vless-ws-tls", "vless-tcp-tls", "vless-grpc-tls", "vless-ws",
                         "trojan-tcp-tls", "trojan-ws-tls", "trojan-grpc-tls",
-                        "vmess-ws-tls", "vmess-tcp-tls", "vmess-grpc-tls", "vmess-ws",
+                        "vmess-ws-tls", "vmess-tcp-tls", "vmess-ws",
                         "shadowsocks", "wireguard", "amneziawg")
 
 def _deploy_client_to_nodes(st, u):
@@ -6953,7 +7604,7 @@ def _tg_rotate_secret(username, secret=""):
         _tg_ensure_secret_in_toml(name, new_secret)
     links = ((d.get("user") or {}).get("links") or {}).get("tls") or []
     return {"username": name, "secret": new_secret,
-            "link": _tg_host_ok(_tg_pick_tls_link(links)),
+            "link": _tg_fix_mtproto_link(_tg_pick_tls_link(links), _tg_mtproto_info().get("port")),
             "web_link": _tg_web_link(name)}
 
 def _tg_sni():
@@ -7275,6 +7926,8 @@ def _tg_web_ensure():
     web_block = ('[web]\n'
                  "enabled = true\n"
                  'carrier = "https"\n'
+                 'carriers = ["websocket", "https"]\n'
+                 "carrier_learning = true\n"
                  "\n[[web.vhosts]]\n"
                  'host = "%s"\n'
                  'public_addr = "%s:443"\n'
@@ -7325,6 +7978,9 @@ upstream telemt_web {
 
 server {
     listen 443 ssl;
+    # домен отдаёт AAAA, а при включённом VPN туннель добавляет маршрут ::/0 —
+    # клиент идёт на IPv6 и без этого листенера получал refusal (webproxy «не работает с VPN»)
+    listen [::]:443 ssl;
     http2 on;
     server_name {domain};
     access_log /var/log/nginx/decoy-access.log;
@@ -7345,10 +8001,8 @@ server {
         proxy_hide_header Cache-Control;
         add_header Cache-Control "no-store, no-cache" always;
 
-        # telemt жёстко отдаёт CSP без 'wasm-unsafe-eval' — под ней WASM-эмулятор
-        # заглушки не запускается. Переопределяем своей политикой (всё с этого хоста).
-        proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" always;
+        # CSP НЕ переопределяем: страница-мост telemt — inline-скрипты с одноразовым
+        # nonce, наша политика их блокирует (JS не стартует, /api/v1/ws не открывается).
 
         proxy_connect_timeout 5s;
         proxy_send_timeout 65s;
@@ -7577,6 +8231,7 @@ stream {
     }
     server {
         listen 443 reuseport;
+        listen [::]:443 reuseport;
         proxy_protocol off;
         ssl_preread on;
         proxy_timeout 3600s;
@@ -8759,7 +9414,8 @@ def _ensure_logrotate():
 # (/rulesets/<файл>): клиенту не нужен доступ к GitHub из-под VPN.
 
 RULESET_DIR = f"{BASE}/rulesets"
-_RULESET_FILES = {"geoip-ru.srs", "geosite-ru.srs", "geoip-ir.db", "geosite-ir.db"}
+_RULESET_FILES = {"geoip-ru.srs", "geosite-ru.srs", "geoip-ir.db", "geosite-ir.db",
+                  "geoip-ru.dat", "geosite-ru.dat"}
 _RULESET_STATE = {"updated": 0, "error": "", "tag_ru": "", "tag_ir": ""}
 
 def _gh_release_latest(repo):
@@ -8767,6 +9423,74 @@ def _gh_release_latest(repo):
     req = urllib.request.Request(url, headers=_gh_headers())
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
+
+def _geo_dat_trim(buf, keep):
+    """Обрезка xray-дайджеста .dat до нужных кодов, чтобы мобильный клиент
+    успевал скачать базу: зеркало runetfreedom весит 18/73 МБ, а Happ/INCY
+    обрывают загрузку геофайлов дольше ~3 минут. Формат — GeoData: поток
+    записей 0x0a <varint len> <GeoField>, имя кода — string-поле 1 (у
+    зеркал оно ВЕРХНЕГО регистра; поиск xray регистронезависим). Возвращает
+    new bytes или None (тогда пишем полный файл). Если хоть одного кода из
+    keep нет — тоже None: лучше медленная полная база, чем битая."""
+    n = len(buf)
+    def rdv(b, o):
+        v = 0; sh = 0
+        while o < len(b):
+            c = b[o]; o += 1
+            v |= (c & 0x7F) << sh
+            if not c & 0x80:
+                return v, o
+            sh += 7
+        raise ValueError("varint")
+    def varint_enc(k):
+        out = bytearray()
+        while True:
+            c = k & 0x7F; k >>= 7
+            out.append(c | (0x80 if k else 0))
+            if not k:
+                return bytes(out)
+    def gtype(payload):
+        o = 0
+        while o < len(payload):
+            key, o = rdv(payload, o)
+            fn, wt = key >> 3, key & 7
+            if wt == 2:
+                ln, o = rdv(payload, o)
+                if fn == 1:
+                    return payload[o:o+ln].decode("ascii", "ignore")
+                o += ln
+            elif wt == 0:
+                _, o = rdv(payload, o)
+            elif wt == 5:
+                o += 4
+            elif wt == 1:
+                o += 8
+            else:
+                return None
+        return None
+    out = bytearray(); found = set(); off = 0
+    while off < n:
+        if buf[off] != 0x0A:
+            return None
+        off += 1
+        ln, off = rdv(buf, off)
+        end = off + ln
+        if end > n:
+            return None
+        payload = buf[off:end]; off = end
+        t = gtype(payload)
+        if t is None:
+            return None
+        if t.upper() in keep:
+            found.add(t.upper())
+            out += b"\x0a" + varint_enc(ln) + payload
+    if found != {k.upper() for k in keep}:
+        return None
+    return bytes(out)
+
+# Какие коды нужны профилю «Veil» из _routing_profile_b64 — остальное вырезаем.
+_RULESET_TRIM = {"geoip-ru.dat": {"RU", "PRIVATE", "IR"},
+                 "geosite-ru.dat": {"CATEGORY-RU"}}
 
 def _rulesets_update():
     os.makedirs(RULESET_DIR, exist_ok=True)
@@ -8790,6 +9514,37 @@ def _rulesets_update():
                     with z.open(mem[0]) as src, \
                          open(os.path.join(RULESET_DIR, local), "wb") as dst:
                         shutil.copyfileobj(src, dst)
+            # Xray-формат (.dat) для INCY и других xray-клиентов — телефон не должен
+            # тянуть GitHub сам (в РФ он без VPN недоступен).
+            for src_name, dst_name in (("geoip.dat", "geoip-ru.dat"),
+                                       ("geosite.dat", "geosite-ru.dat")):
+                if src_name not in assets:
+                    raise RuntimeError("в релизе нет " + src_name)
+                p = os.path.join(tmp, src_name)
+                _dl(assets[src_name], p)
+                shf = os.path.join(tmp, src_name + ".sha")
+                _dl(assets[src_name + ".sha256sum"], shf)
+                with open(shf) as f:
+                    expected = f.read().strip().split()[0]
+                if _sha256_file(p).lower() != expected.lower():
+                    raise RuntimeError("sha256 не совпал: " + src_name)
+                dstp = os.path.join(RULESET_DIR, dst_name)
+                tb = None
+                if dst_name in _RULESET_TRIM:
+                    try:
+                        with open(p, "rb") as f:
+                            raw = f.read()
+                        tb = _geo_dat_trim(raw, _RULESET_TRIM[dst_name])
+                        if tb:
+                            print(f"[rulesets] {dst_name}: {len(raw)} -> {len(tb)} Б (обрезка до нужных кодов)", flush=True)
+                    except Exception as e:
+                        tb = None
+                        print(f"[rulesets] обрезка {dst_name} не удалась: {e}", flush=True)
+                if tb:
+                    with open(dstp, "wb") as f:
+                        f.write(tb)
+                else:
+                    shutil.copy2(p, dstp)
             _RULESET_STATE["tag_ru"] = str(rel.get("tag_name", ""))
         except Exception as e:
             errs.append("ru: " + str(e))
@@ -8830,6 +9585,77 @@ def _rulesets_loop():
             print("[rulesets] " + str(e), flush=True)
         time.sleep(86400)
 
+_OWN_IP_CACHE = {"cidrs": [], "ts": 0.0}
+
+def _own_ip_cidrs():
+    """Публичные адреса самой панели (v4+v6, плюс IPv4-литерал хопа). Берутся ИЗ ДВУХ
+    мест и объединяются: внешний эхо-сервис (_pub_ip4/_pub_ip6) и последний опубликованный
+    в DDNS адрес — ровно то, что резолвит клиент. Под VPN эти адреса обязаны идти мимо
+    туннеля (direct), иначе клиент петлёй заходит на тот же VPS и MTProto/webproxy
+    не подключается. При смене IP панель перепроверяет сама: кэш короткий, а после
+    обновления DDNS (_dynv6_update) он сбрасывается."""
+    now = time.time()
+    if _OWN_IP_CACHE["cidrs"] and now - _OWN_IP_CACHE["ts"] < 120:
+        return _OWN_IP_CACHE["cidrs"]
+    ips = []
+    try:
+        ip4 = _pub_ip4() or ""
+    except Exception:
+        ip4 = ""
+    if ip4:
+        ips.append(ip4)
+    try:
+        ip6 = _pub_ip6() or ""
+    except Exception:
+        ip6 = ""
+    if ip6:
+        ips.append(ip6)
+    for k in ("ipv4", "ipv6"):
+        v = _DDNS.get(k) or ""
+        if v:
+            ips.append(v)
+    hop = (CFG_CACHE.get("hop_public_host") or "").strip()
+    if re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", hop) or \
+            (":" in hop and re.fullmatch(r"[0-9a-fA-F:]+", hop)):
+        ips.append(hop)
+    # Куда клиент реально стучится: A/AAAA собственного домена панели и wg-эндпоинта.
+    for d in ((CFG_CACHE.get("panel_domain") or "").strip(), hop, _wg_auto_domain()):
+        if d and not re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", d) and ":" not in d:
+            try:
+                for r in socket.getaddrinfo(d, None, proto=socket.IPPROTO_TCP):
+                    ips.append(r[4][0])
+            except Exception:
+                pass
+    out = [ip + ("/32" if ":" not in ip else "/128")
+           for ip in dict.fromkeys(ips)
+           if re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", ip) or
+              (":" in ip and re.fullmatch(r"[0-9a-fA-F:.]+", ip))]
+    if out:
+        _OWN_IP_CACHE["cidrs"] = out
+        _OWN_IP_CACHE["ts"] = now
+    return out
+
+def _own_direct_ips():
+    """Те же адреса панели, но без маски (Xray DirectIp/INCY принимает чистые IP)."""
+    return [c.split("/")[0] for c in _own_ip_cidrs()]
+
+def _wg_full_tunnel_allowed_ips():
+    """AllowedIPs полного туннеля, но ВНЕ его — IPv4 самого VPS (тот самый «IP в
+    direct», только не руками в приложении, а в раздаваемом .conf): трафик к
+    прокси панели под VPN идёт напрямую, а не петлёй через туннель на тот же VPS.
+    WG не умеет exclude, поэтому 0.0.0.0/0 минус /32 = 32 парных префикса."""
+    ips = [c for c in _own_ip_cidrs() if c.endswith("/32")]
+    if not ips:
+        return "0.0.0.0/0, ::/0"
+    a, b, c, d = (int(x) for x in ips[0][:-3].split("."))
+    v = (a << 24) | (b << 16) | (c << 8) | d
+    out = []
+    for depth in range(32):
+        sib = (v ^ (1 << (31 - depth))) & ~((1 << (31 - depth)) - 1)
+        out.append("%d.%d.%d.%d/%d" % ((sib >> 24) & 255, (sib >> 16) & 255,
+                                       (sib >> 8) & 255, sib & 255, depth + 1))
+    return ", ".join(out) + ", ::/0"
+
 def _sb_config(st, sub_path, host, panel_port):
     """Полный standalone-конфиг sing-box для подписчика: tun + all outbounds
     + split-tunnel RU/IR через rule-sets, раздаваемые панелью. None = нет клиента."""
@@ -8839,6 +9665,8 @@ def _sb_config(st, sub_path, host, panel_port):
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto == "amneziawg":
             continue  # magic-амнезия в sing-box wireguard не импортируется
+        if inb.get("disabled"):
+            continue
         for c in inb.get("clients", []):
             if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
                 continue
@@ -8875,6 +9703,14 @@ def _sb_config(st, sub_path, host, panel_port):
                           "url": f"{_pb(host, panel_port)}/rulesets/{fname}",
                           "download_detour": "direct"})
     rules = [{"protocol": ["dns"], "outbound": "dns-out"}]
+    # Адреса самой панели — всегда мимо туннеля (тот самый «IP в direct»): под VPN
+    # клиент иначе уходит туннелем на тот же VPS и MTProto/webproxy не подключается.
+    own = _own_ip_cidrs()
+    if own:
+        rules.append({"ip_cidr": own, "outbound": "direct"})
+    dom = (CFG_CACHE.get("panel_domain") or "").strip()
+    if dom and ":" not in dom and not re.fullmatch(r"[0-9.]+", dom):
+        rules.append({"domain": [dom], "outbound": "direct"})
     final = first
     if rule_sets:
         rules.append({"rule_set": [x["tag"] for x in rule_sets],
@@ -9284,6 +10120,90 @@ def _dynv6_conf():
     return {"host": (c.get("dynv6_host") or "").strip(),
             "token": (c.get("dynv6_token") or "").strip()}
 
+def _wg_auto_domain():
+    """Домен-эндпоинт WireGuard из того DDNS, что уже настроен у панели.
+    У основного домена (dynv6 .v6.navy) есть AAAA, и телефон при резолве уйдёт
+    в мобильный IPv6-транспорт, который рвёт WG-сессию. Для каждого хоста dynv6
+    панель заводит A-only поддомен wg.<host> (AAAA у него физически нет) —
+    это человекочитаемый эндпоинт, переживающий смену IP без реимпорта."""
+    c = CFG_CACHE or {}
+    prov = (c.get("rot_provider") or "dynv6").strip().lower()
+    dh = (c.get("dynv6_host") or "").strip().lower()
+    pd = (c.get("panel_domain") or "").strip().lower()
+    if dh and dh == pd and prov in ("dynv6", "both"):
+        return "wg." + dh
+    z = (c.get("cf_zone") or "").strip().lower()
+    if z and prov == "cloudflare":
+        return "wg." + z
+    return ""
+
+_D6_WG = {"zid": None, "rid": None, "ts": 0.0}
+_D6_LOCK = threading.Lock()
+
+def _dynv6_api(method, path, body=None):
+    token = _dynv6_conf()["token"]
+    if not token:
+        raise RuntimeError("dynv6 токен не задан")
+    data = json.dumps(body).encode() if body is not None else None
+    err = None
+    for _ in range(2):
+        req = urllib.request.Request("https://dynv6.com/api/v2" + path, data=data, method=method,
+                                     headers={"Content-Type": "application/json",
+                                              "Accept": "application/json",
+                                              "Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                t = r.read().decode("utf-8", "replace")
+            return json.loads(t) if t.strip() else None
+        except urllib.error.HTTPError as e:
+            try:
+                msg = e.read().decode("utf-8", "replace")[:150]
+            except Exception:
+                msg = ""
+            raise RuntimeError("dynv6 HTTP %d %s" % (e.code, msg))
+        except Exception as e:
+            err = e
+            time.sleep(2)
+    raise RuntimeError("dynv6: %s" % str(err)[:150])
+
+def _dynv6_ensure_wg(host, ip4):
+    """Создать/починить A-only запись wg.<host> в зоне dynv6. Идемпотентно."""
+    with _D6_LOCK:
+        now = time.time()
+        if _D6_WG["zid"] and now - _D6_WG["ts"] < 3600:
+            zid = _D6_WG["zid"]
+        else:
+            zs = _dynv6_api("GET", "/zones") or []
+            zid = next((z.get("id") for z in zs
+                        if (z.get("name") or "").lower() == host.lower()), None)
+            if not zid:
+                raise RuntimeError("зона %s не найдена в dynv6" % host)
+            _D6_WG["zid"], _D6_WG["ts"] = zid, now
+        recs = _dynv6_api("GET", "/zones/%s/records" % zid) or []
+        if isinstance(recs, dict):
+            recs = recs.get("records") or []
+        arec = next((r for r in recs if (r.get("type") or "").upper() == "A" and
+                     str(r.get("name") or "").lower().rstrip(".") in ("wg", "wg." + host.lower())),
+                    None)
+        v6junk = [r for r in recs if (r.get("type") or "").upper() == "AAAA" and
+                  str(r.get("name") or "").lower().rstrip(".") in ("wg", "wg." + host.lower())]
+        for r in v6junk:  # AAAA у wg-поддомена быть не должно — вернёт баг мобильного v6
+            try:
+                _dynv6_api("DELETE", "/zones/%s/records/%s" % (zid, r.get("id")))
+            except Exception:
+                pass
+        if arec and (arec.get("data") or "") == ip4 and not v6junk:
+            _D6_WG["rid"] = arec.get("id")
+            return False
+        if arec:
+            _dynv6_api("PUT", "/zones/%s/records/%s" % (zid, arec.get("id")), {"data": ip4})
+            _D6_WG["rid"] = arec.get("id")
+        else:
+            r = _dynv6_api("POST", "/zones/%s/records" % zid,
+                           {"name": "wg", "type": "A", "data": ip4})
+            _D6_WG["rid"] = (r or {}).get("id") if isinstance(r, dict) else None
+        return True
+
 def _pub_ip4():
     for u in ("https://ipv4.icanhazip.com", "https://api.ipify.org"):
         try:
@@ -9373,6 +10293,13 @@ def _dynv6_update(force4=None):
         if not CFG_CACHE.get("panel_domain"):
             CFG_CACHE["panel_domain"] = host
             _save(CFG, CFG_CACHE)
+        if ip4 and _wg_auto_domain() == "wg." + host.lower():
+            try:
+                _dynv6_ensure_wg(host, ip4)
+            except Exception as e:
+                _DDNS["wg_rec"] = "ошибка: " + str(e)[:120]
+            else:
+                _DDNS["wg_rec"] = "ok"
     else:
         _DDNS["error"] = "dynv6: " + body
         raise RuntimeError("dynv6: " + body[:200])
@@ -9625,6 +10552,29 @@ def _cf_set_ip(ip):
     return changed
 
 
+def _cf_ensure_wg(ip):
+    """A-only серая запись wg.<cf_zone> — эндпоинт WireGuard (без AAAA)."""
+    _, zone = _cf_zone()
+    name = "wg." + zone
+    zid, _ = _cf_zone()
+    res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
+                  (urllib.parse.quote(zid), urllib.parse.quote(name))) or []
+    if not res:
+        _cf_api("POST", "/zones/%s/dns_records" % urllib.parse.quote(zid),
+                {"type": "A", "name": name, "content": ip, "ttl": 60, "proxied": False})
+        return [{"name": name, "from": "нет записи", "to": ip, "proxied": False}]
+    changed = []
+    for rec in res:
+        if (rec.get("content") or "") == ip and not rec.get("proxied"):
+            continue
+        _cf_api("PUT", "/zones/%s/dns_records/%s" % (urllib.parse.quote(zid),
+                                                     urllib.parse.quote(rec.get("id") or "")),
+                {"type": "A", "name": name, "content": ip, "ttl": 60, "proxied": False})
+        changed.append({"name": name, "from": rec.get("content"), "to": ip,
+                        "proxied": False})
+    return changed
+
+
 def _rot_apply(ip):
     """Применить новый IP к выбранным провайдерам DNS. Вернуть отчёт."""
     cfg = _rot_conf()
@@ -9644,6 +10594,16 @@ def _rot_apply(ip):
                        for c in ch) if ch else "записи уже актуальны"))
         except Exception as e:
             rep.append("cloudflare: ошибка %s" % str(e)[:160])
+    # A-only эндпоинт WireGuard обязан следовать за IP, иначе подписчики
+    # останутся стучаться в старый адрес (dynv6-ветку чинит хук в _dynv6_update)
+    wd = _wg_auto_domain()
+    z = (CFG_CACHE.get("cf_zone") or "").strip().lower()
+    if wd and z and wd == "wg." + z:
+        try:
+            _cf_ensure_wg(ip)
+            rep.append("wg-эндпоинт: %s → %s" % (wd, ip))
+        except Exception as e:
+            rep.append("wg-эндпоинт: ошибка %s" % str(e)[:140])
     if prov == "off":
         rep.append("провайдер смены выключен")
     return rep
@@ -10449,6 +11409,12 @@ def _bot_backup_cb(chat_id, data, B):
         _bot_send_message(chat_id, B["bk_cancel"], "HTML", _main_menu_keyboard(B))
 
 class H(http.server.BaseHTTPRequestHandler):
+    # HTTP/1.1 = keep-alive: без него каждый <script>/<img>/fetch открывает
+    # новое TCP+TLS соединение (3-4 RTT). На мобильной сети панель из-за этого
+    # грузилась секундами. timeout освобождает зависшие потоки через 30 с.
+    protocol_version = "HTTP/1.1"
+    timeout = 30
+
     def log_message(self, *a): pass
 
     def handle_error(self, request, client_address):
@@ -10816,15 +11782,16 @@ class H(http.server.BaseHTTPRequestHandler):
                                         tg_links.append(l)
                             except Exception:
                                 pass
-                        try:
-                            if proto not in inb_links:
-                                inb_links[proto] = _link(inb, host, c, proto)
-                            if proto not in inc_links:
-                                inc_links[proto] = _incy_link(proto, inb, c, host)
-                            if proto not in sb_objs:
-                                sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
-                        except Exception:
-                            continue
+                        if not inb.get("disabled"):
+                            try:
+                                if proto not in inb_links:
+                                    inb_links[proto] = _link(inb, host, c, proto)
+                                if proto not in inc_links:
+                                    inc_links[proto] = _incy_link(proto, inb, c, host)
+                                if proto not in sb_objs:
+                                    sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
+                            except Exception:
+                                continue
                         for h, e in (c.get("nodes") or {}).items():
                             lk = (e or {}).get("link")
                             if lk:
@@ -10864,12 +11831,31 @@ class H(http.server.BaseHTTPRequestHandler):
                         use_sb = False; is_incy = False
                     elif _pin == "singbox":
                         use_sb = True; is_incy = False
+                xprof = None
+                _ual = ua.lower()
+                if sub_path and not use_sb and \
+                        ("incy" in _ual or "happ" in _ual or _is_incy_client(ua, xc)):
+                    try:
+                        xprof = _routing_profile_b64(
+                            _pb(host, CFG_CACHE.get("panel_port", 8444)))
+                    except Exception:
+                        xprof = None
                 if use_sb:
                     payload = json.dumps(list(sb_objs.values()), ensure_ascii=False).replace(r'\/', '/')
                     b = payload.encode("utf-8")
                     ctype = "application/json; charset=utf-8"
                 elif is_incy:
-                    payload = "\n".join(inc_links.values())
+                    # Xray 26.7.11+ наотрез отказывается поднимать outbound
+                    # «VLESS без TLS/Reality к публичному адресу» (шифрования
+                    # нет — логин ушёл бы открытым текстом). Отдать незашифрованную
+                    # vless-ссылку такому ядру нельзя, поэтому в подписку INCY
+                    # plaintext-VLESS ноды не попадают: за WebSocket берёт
+                    # соседняя нода «VLESS + WebSocket + TLS» (тот же uuid).
+                    payload = "\n".join(l for l in inc_links.values()
+                                        if not (l.startswith("vless://") and
+                                                "security=none" in l))
+                    if xprof:
+                        payload = "://routing/onadd/" + xprof + "\n" + payload
                     b = payload.encode("utf-8")
                     ctype = "text/plain; charset=utf-8"
                 else:
@@ -10886,6 +11872,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "tg://"))]
                     if len(one) < len(links):
                         links = one + [l for l in links if l not in one]
+                    # Happ (Xray-ядро) понимает профиль маршрутизации, приложенный
+                    # к подписке строкой happ://routing/onadd/{base64} — тогда
+                    # обход РФ включается сам, без «полного конфига» (который Happ
+                    # всё равно не импортирует: у него Xray, а не sing-box).
+                    # Прочим v2ray-клиентам (Shadowrocket/v2rayNG) строку не даём —
+                    # они её не распознают.
+                    if xprof and "happ" in _ual:
+                        links.insert(0, "happ://routing/onadd/" + xprof)
                     payload = base64.b64encode("\n".join(links).encode()).decode()
                     b = payload.encode()
                     ctype = "text/plain; charset=utf-8"
@@ -10971,10 +11965,41 @@ class H(http.server.BaseHTTPRequestHandler):
             cfgj = _sb_config(st, tok, host, panel_port)
             if cfgj is None:
                 return self._send(404, {"error": "клиент не найден"})
-            return self._send(200, cfgj)
+            # Отдаём как файл: браузер сохраняет veil.json (Happ импортирует его),
+            # а _send добавил бы в JSON служебный ключ "ok" — конфиг с ним ломается.
+            payload = json.dumps(cfgj, ensure_ascii=False, indent=1).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="veil.json"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers(); self.wfile.write(payload)
+            return None
 
-        if p.startswith("/pay/"):
+        if p.startswith("/pay/") or p == "/shop":
             return _pay_handle_public(self, p)
+
+        if p.startswith("/p/") and p.endswith("/avatar"):
+            # Аватар отдельным GET-файлом (токен = право доступа, как у POST-варианта).
+            # Встроенный base64 делал каждую загрузку /p на ~95 КБ тяжелее и
+            # гарантированно не кэшировался; здесь — public, max-age=1 день.
+            tok = p[3:-len("/avatar")].strip("/")
+            st = _load(STATE) or {}
+            if _migrate_state(st):
+                _save(STATE, st)
+            if not any(x["sub_token"] == tok or x["uuid"] == tok
+                       for x in _subs_summary(st)):
+                return self._send(404, {"error": "подписка не найдена"})
+            mime, raw = _avatar_serve(tok)
+            if raw is None:
+                return self._send(404, {"error": "аватара нет"})
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(raw)
+            return None
 
         if p.startswith("/p/"):
             # Публичная страница подписки: сюда ведёт profile-web-page-url (кнопка «i»
@@ -11003,10 +12028,18 @@ class H(http.server.BaseHTTPRequestHandler):
                                   self.headers.get("User-Agent", "") or "",
                                   devs=_subdev_list(tok), lang=lang)
             b = html.encode("utf-8")
+            # страница весит ~135 КБ (все ссылки/иконки встроены): по мобильному
+            # каналу gzip снимает ~85% трафика и секунды ожидания
+            enc = None
+            if "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+                b, enc = gzip.compress(b, 6), "gzip"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Accept-Encoding")
+            if enc:
+                self.send_header("Content-Encoding", enc)
             if _lq:
                 self.send_header("Set-Cookie",
                                  "veil_sub_lang=" + lang + "; Path=/; Max-Age=31536000; SameSite=Lax")
@@ -11184,6 +12217,9 @@ class H(http.server.BaseHTTPRequestHandler):
             return None
         if p == "/api/state":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            just_born = _onboard_ensure()
+            if just_born:
+                _onboard_notify()
             st = _load(STATE)
             running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
@@ -11191,14 +12227,18 @@ class H(http.server.BaseHTTPRequestHandler):
                    "proto": _proto_of(st),
                    "panel_port": CFG_CACHE.get("panel_port", 8443),
                    "ipv6": _my_ipv6(),
+                   "onboarding": _onboard_info(),
                    "favorites": st.get("favorites", []) if st else []}
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE) or {}
+            inbs = st.get("inbounds") or {}
             return self._send(200, {"current": _proto_of(st),
                                     "configured": _client_count(st) > 0,
-                                    "protocols": PROTOCOLS})
+                                    "protocols": [dict(p, disabled=bool((inbs.get(p["id"]) or {}).get("disabled")),
+                                                        has_inbound=bool(inbs.get(p["id"])))
+                                                  for p in PROTOCOLS]})
         if p == "/api/inbound/get":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             proto = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -11323,11 +12363,13 @@ class H(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(502, {"error": str(e)})
         if p == "/api/theme":
+            b = json.dumps(_load(THEME, {})).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(json.dumps(_load(THEME, {})).encode())
+            self.wfile.write(b)
             return
         if p == "/api/port/check":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -11644,7 +12686,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             else:
-                self.send_response(404); self.end_headers()
+                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers()
             return
         if p == "/logo":
             if os.path.exists(LOGO_FILE):
@@ -11658,7 +12700,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
             else:
-                self.send_response(404); self.end_headers()
+                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers()
             return
         if p == "/api/fix/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -12042,6 +13084,31 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not ok:
                     return self._send(400, {"error": err or "конфиг не прошёл проверку"})
                 return self._send(200, {"ok": True, "inbound": _inbound_public(proto, inb)})
+            if p == "/api/inbound/toggle":
+                b = self._body()
+                proto = (b.get("proto") or "").strip()
+                if proto not in _VALID_PROTOCOLS:
+                    return self._send(400, {"error": "неизвестный протокол"})
+                st = _load(STATE) or {}
+                inb = (st.get("inbounds") or {}).get(proto)
+                if not inb:
+                    return self._send(404, {"error": "inbound не найден: " + proto})
+                want = bool(b.get("disabled"))
+                was = bool(inb.get("disabled"))
+                if want:
+                    inb["disabled"] = True
+                else:
+                    inb.pop("disabled", None)
+                _awg_sync(st); _wg_sync(st)
+                ok, err = _validate_and_apply(st)
+                if not ok:
+                    if was:
+                        inb["disabled"] = True
+                    else:
+                        inb.pop("disabled", None)
+                    return self._send(400, {"error": err or "конфиг не принят"})
+                _audit("proto_toggle", proto=proto, disabled=want)
+                return self._send(200, {"ok": True, "proto": proto, "disabled": want})
             if p == "/api/bot/webhook":
                 # Telegram webhook endpoint (no auth needed - called by Telegram)
                 if self.command != "POST":
@@ -12368,6 +13435,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "imported": imported,
                                         "warnings": warnings,
                                         "subs": _subs_summary(st)})
+            if p == "/api/onboard/dismiss":
+                if not _authed(self):
+                    return self._send(401, {"error": "unauthorized"})
+                if CFG_CACHE.get("onboarded") and CFG_CACHE.get("onboarded") != "clients":
+                    CFG_CACHE["onboarded"] = "seen"
+                    _save(CFG, CFG_CACHE)
+                return self._send(200, {"ok": True})
             if p == "/api/extimport/preview":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
@@ -13362,7 +14436,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 for k in ("bg","bg2","card","card2","fg","mut","br","acc","acc2","font","layout","swipe"):
                     if k in body: t[k] = body[k]
                 _save(THEME, t)
-                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/wallpaper":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -13382,18 +14456,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 try: blob = _b64.b64decode(b64)
                 except Exception: blob = b""
                 if not blob:
-                    self.send_response(400); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.send_response(400); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","17"); self.end_headers()
                     self.wfile.write(b'{"error":"empty"}'); return
                 with open(WALL, "wb") as f: f.write(blob)
                 t = _load(THEME, {}) or {}; t["wall_mime"] = mime; _save(THEME, t)
-                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/wallpaper/delete":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try: os.remove(WALL)
                 except FileNotFoundError: pass
                 t = _load(THEME, {}) or {}; t.pop("wall_mime", None); _save(THEME, t)
-                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/logo":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -13413,18 +14487,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 try: blob = _b64.b64decode(b64)
                 except Exception: blob = b""
                 if not blob:
-                    self.send_response(400); self.send_header("Content-Type","application/json"); self.end_headers()
+                    self.send_response(400); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","17"); self.end_headers()
                     self.wfile.write(b'{"error":"empty"}'); return
                 with open(LOGO_FILE, "wb") as f: f.write(blob)
                 t = _load(THEME, {}) or {}; t["logo_mime"] = mime; _save(THEME, t)
-                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/logo/delete":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try: os.remove(LOGO_FILE)
                 except FileNotFoundError: pass
                 t = _load(THEME, {}) or {}; t.pop("logo_mime", None); _save(THEME, t)
-                self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+                self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/network/settings":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
