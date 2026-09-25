@@ -975,6 +975,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <b>Маскировка прокси (SNI)</b>
       <input id=tgSniMain placeholder="домен, напр. my.aeza.ru" style="max-width:260px">
       <button class="tiny sec" onclick=saveTgSni()>Применить</button>
+      <span class=mut id=tgSniPq style="font-size:12px"></span>
     </div>
     <textarea id=tgSniExtra rows=2 placeholder="дополнительные домены, по одному в строку" style="width:100%"></textarea>
     <p class=mut style="font-size:12px;margin:6px 0 0">Смена домена ломает ранее выданные ссылки — клиентам надо выдать новые. Значение пишется в <code>censorship.tls_domain</code> / <code>tls_domains</code> telemt (hot-reload).</p>
@@ -1268,6 +1269,14 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <span class=mut id=bansCount style="font-size:12px"></span>
       </div>
       <div id=bansList style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div style="margin:12px 0">
+      <label><input type=checkbox id=synfixEnabled> SYN-защита MTProto-порта (nftables) — порт от ботов, iOS не ломается <span class=mut id=synfixState style="font-size:12px"></span></label>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Проблема:</b> MTProto-прокси «торчат» в интернет открытыми портами, и боты-сканеры круглосуточно стучатся в них тысячами запросов. Хочешь прикрыть дверь лимитом на все входящие — и первым делом ломаешь iPhone: приложение Telegram на iOS переподключается к прокси агрессивно, шлёт повторные запросы быстрее любого лимита.</p>
+        <p><b>Что делает эта функция:</b> панель различает запросы по «отпечатку»: iPhone пропускается всегда без ограничений, всем остальным — 54 новых соединения в минуту с одного адреса (реальному клиенту хватает с огромным запасом), а кто стучится чаще — получает «хост недоступен», и сканер теряет интерес.</p>
+        <p><b>Безопасно ли?</b> Да: правило вешается только на MTProto-порт (обычно 7443), сайт-заглушка, VPN-протоколы и вход в панель не затрагиваются. Панель сама перепроверяет порт раз в минуту и чинит правило, если тот поменялся или правило исчезло после перезагрузки сервера.</p>
+      </div></details>
     </div>
     <div style="margin:12px 0">
       <label for=metricsToken>Токен Prometheus <code>/metrics</code> (пусто = экспорт выключен)</label>
@@ -3762,6 +3771,7 @@ async function refresh(){
       loadTgVerInfo(), loadStats(), loadSettings(), loadDynv6(), loadCert(),
       loadXrayInfo(), loadAutoBk(), loadVersions(), loadTheme(),
     ]);
+    if(!window._veilTabRestored){window._veilTabRestored=true;restoreTab();}
     if(document.body.classList.contains('ui-new'))loadDashboard();
   }catch(e){
     if(/unauthorized/i.test(e.message)){
@@ -4951,6 +4961,12 @@ function renderTgSni(s){
   const list = (cur.tls_domains || []).filter(function(x){ return x && x !== cur.tls_domain; });
   if (document.activeElement !== main) main.value = cur.tls_domain || '';
   if (document.activeElement !== extra) extra.value = list.join('\n');
+  const pq = document.getElementById('tgSniPq');
+  if (pq){
+    if (cur.mlkem === true){ pq.textContent='X25519MLKEM768 — ок для iOS'; pq.style.color='var(--ok)'; }
+    else if (cur.mlkem === false){ pq.textContent='нет X25519MLKEM768 — iOS может капризничать (примеры с PQ: www.microsoft.com, apple.com)'; pq.style.color='var(--err)'; }
+    else { pq.textContent=''; }
+  }
 }
 
 async function saveTgSni(){
@@ -5065,6 +5081,9 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     document.querySelectorAll('.tab-pane').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     $('tab-'+b.dataset.tab).classList.add('active');
+    // мобильные браузеры выгружают фоновые вкладки; без этой записи после
+    // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
+    try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
     if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();}
       if(b.dataset.tab==='subscription')loadSub();
@@ -5084,6 +5103,15 @@ document.querySelectorAll('.tabs button').forEach(b=>{
 
   });
 });
+// возврат из фона: мобильный браузер перезагружает вкладку — вернём хотя бы активную
+function restoreTab(){
+  let t=null;try{t=sessionStorage.getItem('veil_tab')}catch(e){}
+  if(!t)return;
+  const cur=document.querySelector('.tabs button.active');
+  if(cur&&cur.dataset.tab===t)return;
+  const b=document.querySelector('.tabs button[data-tab="'+t+'"]');
+  if(b&&b.style.display!=='none')b.click();
+}
 var curSwipe=true;
 function setSwipe(v){
   curSwipe=!!v;
@@ -5596,6 +5624,9 @@ async function loadNetworkSettings(){
     if(r.f2b_threshold)$('f2bThreshold').value=r.f2b_threshold;
     if(r.f2b_window_min)$('f2bWindow').value=r.f2b_window_min;
     if(r.f2b_ban_hours)$('f2bBanHrs').value=r.f2b_ban_hours;
+    if(r.synfix_enabled!==undefined)$('synfixEnabled').checked=!!r.synfix_enabled;
+    const sf=$('synfixState');
+    if(sf)sf.textContent=r.synfix_port_live?('· сейчас защищён :'+r.synfix_port_live):(r.synfix_enabled===false?'· выключена':'· нет публичного MTProto-порта');
     if(r.metrics_token!==undefined)$('metricsToken').value=r.metrics_token;
     const rs=r.rulesets||{};
     let _rs='rule-sets: ';
@@ -5642,6 +5673,7 @@ async function saveNetworkSettings(){
       f2b_threshold: parseInt($('f2bThreshold').value,10)||5,
       f2b_window_min: parseInt($('f2bWindow').value,10)||10,
       f2b_ban_hours: parseInt($('f2bBanHrs').value,10)||24,
+      synfix_enabled: $('synfixEnabled').checked,
       metrics_token: $('metricsToken').value.trim()
     };
     const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
