@@ -10,7 +10,7 @@ IPIFY="https://api.ipify.org"
 XRAY_PORT=443
 TELEMT_PORT=7443
 PANEL_PORT=8443
-TLS_DOMAIN="my.aeza.ru"
+TLS_DOMAIN="www.microsoft.com"   # SNI-фронт MTProto: обязан отдавать TLS1.3+X25519MLKEM768 (iOS), my.aeza.ru — только TLS1.2
 
 # ---------- language ----------
 # RU by default; EN auto-detected from locale or forced with --lang en.
@@ -185,6 +185,8 @@ tg_connect = 30
 classic = false
 secure = false
 tls = true
+[network]
+ipv6 = true
 [server]
 port = ${TELEMT_PORT}
 [server.api]

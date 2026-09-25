@@ -19,7 +19,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.12.0"
+VERSION = "2.12.1"
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -579,6 +579,38 @@ def _sni_ok(host, timeout=5):
             s.close()
             continue
     return "SNI: домен '" + host + "' не отвечает на 443 — Reality перестанет работать. Укажи реальный сайт (например www.samsung.com)."
+
+_SNI_PQ_CACHE = {}
+
+def _sni_mlkem_ok(host, ttl=600):
+    """Отвечает ли домен по TLS1.3 постквантовой группой X25519MLKEM768 (кодопойнт
+    0x11ec). Наблюдение MEKO: свежий Telegram iOS капризничает на MTProto/webproxy,
+    если SNI-фронт не поддерживает PQ — андроид всё терпит. True/False, None = не
+    проверить (нет openssl/домена). Кэш 10 минут: дёргаем из каждой выдачи /api/tg."""
+    host = (host or "").strip().lower()
+    if not host or not re.fullmatch(r"[a-z0-9.-]+", host):
+        return None
+    now = time.time()
+    c = _SNI_PQ_CACHE.get(host)
+    if c and now - c[1] < ttl:
+        return c[0]
+    res = None
+    try:
+        r = subprocess.run(["openssl", "s_client", "-connect", host + ":443",
+                            "-servername", host, "-tls1_3",
+                            "-groups", "X25519MLKEM768:X25519", "-tlsextdebug"],
+                           input=b"", capture_output=True, timeout=10)
+        out = ((r.stdout or b"") + (r.stderr or b"")).decode("utf-8", "replace")
+        m = re.search(r'server extension "key share"[^\n]*\n\s*0+ - ([0-9a-f]{2}) ([0-9a-f]{2})',
+                      out, re.IGNORECASE)
+        if m:
+            res = (m.group(1) == "11" and m.group(2) == "ec")
+        elif r.returncode != 0:
+            res = False
+    except Exception:
+        res = None
+    _SNI_PQ_CACHE[host] = (res, now)
+    return res
 
 def _last_line(out, *keys):
     for line in out.splitlines():
@@ -1374,7 +1406,9 @@ def _inbound(proto, inb):
                       for c in inb["clients"]]}
         ib["sniffing"] = {"enabled": False}
         return ib
-    ib["sniffing"] = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+    # facade-фронт не должен становиться destination'ом при sniffing (см. _veil_front_domains)
+    ib["sniffing"] = {"enabled": True, "destOverride": ["http", "tls", "quic"],
+                      "domainsExcluded": _veil_front_domains()}
     sn = inb.get("sniff")
     if sn is False:
         ib["sniffing"] = {"enabled": False}
@@ -2578,7 +2612,7 @@ def _routing_profile_b64(base=""):
     """Профиль маршрутизации (split-tunnel) для Xray-клиентов INCY и Happ —
     у них одинаковая схема JSON-профиля. Возвращает base64(JSON) или None.
     В подписку строка подставляется с префиксом:
-      * INCY  →  ://routing/onadd/{b64}
+      * INCY  →  incy://routing/onadd/{b64} (+ старая безымянная строка ://… )
       * Happ  →  happ://routing/onadd/{b64}
     Формат — по докам (routing.md): base64(JSON), обновляется по совпадению Name.
     Гео-базы раздаёт сама панель (/rulesets/*.dat, зеркало runetfreedom):
@@ -2629,13 +2663,32 @@ def _expire_seconds_client(ua="", xclient=""):
     return ("shadowrocket" in u or "incy" in u or "happ" in u
             or (xclient or "").lower() == "incy")
 
+def _incy_wg_ep(host):
+    """WG-endpoint специально для Incy: только IPv4-литерал. Пинг-проверка Incy
+    не резолвит хостнеймы (показывает «na», даже когда туннель живой), а WG-
+    транспорту hostname не нужен — шифрование привязано к ключам. Подписка
+    обновляется чаще, чем меняется IP, так что литерал не устаревает."""
+    ep = str(_wg_ep(host) or "")
+    if re.fullmatch(r"[0-9.]+", ep):
+        return ep
+    try:
+        now = time.time()
+        c = _WG4.get(ep)
+        if c and now - c[1] < 600:
+            return c[0]
+        v4 = socket.gethostbyname(ep)
+        _WG4[ep] = (v4, now)
+        return v4
+    except Exception:
+        return ep
+
 def _incy_link(proto, inb, c, host):
     """Ссылка в формате INCY: по одной в строке, WG/AmneziaWG — однострочными схемами."""
     meta = _proto_meta(proto)
     base = c.get("name") or "Veil"
     name = f"{base} · {meta['label']}"
     if proto == "amneziawg":
-        conf = _link(inb, host, c, proto)
+        conf = _link(inb, _incy_wg_ep(host), c, proto)
         b64 = base64.urlsafe_b64encode(conf.encode("utf-8")).decode().rstrip("=")
         return f"amneziawg://{b64}#{urllib.parse.quote(name)}"
     if proto == "wireguard":
@@ -2653,7 +2706,7 @@ def _incy_link(proto, inb, c, host):
         key = urllib.parse.quote(c.get("client_private_key") or "", safe="")
         q = ("publickey=" + (inb.get("public_key") or "") + "&address=" + addr
              + "&mtu=" + str(int(inb.get("mtu") or WG_MTU)))
-        return (f"wireguard://{key}@{_wg_ep(host)}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
+        return (f"wireguard://{key}@{_incy_wg_ep(host)}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
     return _link(inb, host, c, proto, std=True)
 
 def _singbox_outbound(proto, inb, c, host):
@@ -7291,16 +7344,33 @@ def _tg_toml_public_mp_listener(text):
 def _tg_toml_has_any_listener(text):
     return bool(_tg_toml_listeners(text))
 
+def _tg_toml_ipv6_on(text):
+    """Гарантировать [network] ipv6 = true — без этого флага (по умолчанию false)
+    telemt молча НЕ биндит ни :: , ни v6-адрес: AAAA домен живёт, а слушателя нет,
+    и iOS под VPN (где v6-маршрут появляется) теряет MTProto-прокси."""
+    if re.search(r"(?m)^\s*ipv6\s*=\s*true", text):
+        return text
+    m = re.search(r"(?ms)^\s*\[network\]\s*$", text)
+    if m:
+        return text[:m.end()] + "\nipv6 = true\n" + text[m.end():]
+    return text.replace("[server]\n", "[network]\nipv6 = true\n\n[server]\n", 1)
+
 def _tg_toml_add_mp_listener(text, port):
-    """Добавить публичный MTProto-listener на port; вернуть (новый_текст, блок).
+    """Добавить публичные MTProto-listeners (v4 + v6) на port; вернуть (новый_текст, блок).
     Вставляем сразу после последнего существующего [[server.listeners]] (если есть) —
     тогда все listeners сгруппированы; иначе — в конец файла."""
     if _TG_MP_MARK in text:
         raise RuntimeError("VEIL-MTProto-listener уже добавлен — сначала откат")
+    text = _tg_toml_ipv6_on(text)
     block = (
         "# "+_TG_MP_MARK+"\n"
         "[[server.listeners]]\n"
         "ip = \"0.0.0.0\"\n"
+        "port = "+str(int(port))+"\n"
+        "transport = \"mtproxy\"\n\n"
+        "# "+_TG_MP_MARK+"\n"
+        "[[server.listeners]]\n"
+        "ip = \"::\"\n"
         "port = "+str(int(port))+"\n"
         "transport = \"mtproxy\"\n"
     )
@@ -7313,9 +7383,11 @@ def _tg_toml_add_mp_listener(text, port):
     return text.rstrip("\n") + "\n\n" + block, block
 
 def _tg_toml_remove_mp_listener(text):
-    """Вырезать блок-маркер + последующий [[server.listeners]] до следующей секции."""
-    pat = re.compile(r"(?ms)^#\s*"+re.escape(_TG_MP_MARK)+r"\s*\n\[\[server\.listeners\]\][^\[]*?(?=^\s*\[|\Z)")
-    new, n = pat.subn("", text, count=1)
+    """Вырезать наши блоки-маркеры (v4+v6): строка-комментарий, заголовок [[server.listeners]]
+    и тело до следующей секции/комментария."""
+    pat = re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\n"
+                     r"\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
+    new, n = pat.subn("", text, count=2)
     if n == 0:
         raise RuntimeError("наш MTProto-listener не найден в telemt.toml — откатывать нечего")
     return new
@@ -7442,6 +7514,10 @@ def _tg_mp_apply(port=None, confirm=False):
         subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
         raise RuntimeError("MTProto не поднялся на :%d (restart rc=%d) — конфиг откачен" % (new_port, r.returncode))
     selfw = _tg_mp_firewall_open(new_port)
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix: " + str(e), flush=True)
     _save(_TGBP_STATE, {"applied": True, "port": new_port, "prev_server_port": prev_server_port,
                         "ts": _now_iso()}, 0o600)
     _audit("tg_mtproto_listen", port=new_port, prev=prev_server_port)
@@ -7472,6 +7548,10 @@ def _tg_mp_revert(confirm=False):
         f.write(text)
     subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
     _save(_TGBP_STATE, {"applied": False, "port": prev, "ts": _now_iso()}, 0o600)
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix: " + str(e), flush=True)
     ni = _tg_mtproto_info()
     _audit("tg_mtproto_revert", port=prev)
     if ni.get("up"):
@@ -7612,8 +7692,48 @@ def _tg_sni():
     try:
         c = _tg_api("GET", "/v1/config").get("data", {}).get("censorship") or {}
     except Exception:
-        return {"tls_domain": "", "tls_domains": []}
-    return {"tls_domain": c.get("tls_domain") or "", "tls_domains": c.get("tls_domains") or []}
+        return {"tls_domain": "", "tls_domains": [], "mlkem": None}
+    return {"tls_domain": c.get("tls_domain") or "", "tls_domains": c.get("tls_domains") or [],
+            "mlkem": _sni_mlkem_ok(c.get("tls_domain") or "")}
+
+def _veil_front_domains():
+    """Домены-фронты MTProto facade (SNI в ClientHello подделки TLS). Xray-сервер
+    обязан исключать их из sniffing-override: туннельное соединение к прокси
+    (hairpin: телефон под VPN → xray → свой же :7443) имеет изначальный dest
+    = IP/домен панели, но внутри — TLS ClientHello с SNI=фронт. Если sniffing
+    перезапишет dest этим SNI (docs telemt XRAY-SINGBOX-ROUTING, «Вариант B»),
+    сервер начнёт долбить фронт (Akamai microsoft.com) на порту 7443 — там
+    никто не слушает: шторм безответных SYN, а telemt не видит ни одного
+    соединения. Отсюда и «прокси не работает под VPN» в клиентах без
+    DirectIp-исключений (Incy)."""
+    doms = []
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r'(?m)^\s*tls_domain\s*=\s*"([^"]+)"', text)
+        if m:
+            doms.append(m.group(1).strip().lower())
+        m = re.search(r'(?m)^\s*tls_domains\s*=\s*\[([^\]]*)\]', text)
+        if m:
+            doms += [d.strip().strip(",").strip().strip('"').lower()
+                     for d in m.group(1).split(",")]
+    except Exception:
+        pass
+    # секреты facade: фронт зашит и в secret'ы пользователей:
+    # ee + key(16B) + [первый байт SNI] + hex(остаток SNI)
+    for mm in re.finditer(r'(?m)^\s*secret\s*=\s*"ee([0-9a-f]{64,})"', text or ""):
+        try:
+            hx = mm.group(1)
+            if len(hx) < 68:
+                continue
+            host = chr(int(hx[64:66], 16)) + bytes.fromhex(hx[66:]).decode("ascii", "ignore")
+            if re.fullmatch(r"[a-z0-9.-]+", host or ""):
+                doms.append(host.lower())
+        except Exception:
+            pass
+    if not doms:
+        doms = ["www.microsoft.com", "my.aeza.ru"]
+    return sorted({d for d in doms if d and "." in d})
 
 def _tg_sni_set(tls_domain=None, tls_domains=None):
     dom = (tls_domain or "").strip().lower() if tls_domain is not None else None
@@ -7639,6 +7759,7 @@ def _tg_sni_set(tls_domain=None, tls_domains=None):
     if not body:
         raise RuntimeError("нечего менять")
     _tg_api("PATCH", "/v1/config", {"censorship": body})
+    _SNI_PQ_CACHE.clear()
     _audit("tg_sni", **({"domain": dom} if dom is not None else {}))
     return _tg_sni()
 
@@ -7925,7 +8046,7 @@ def _tg_web_ensure():
 
     web_block = ('[web]\n'
                  "enabled = true\n"
-                 'carrier = "https"\n'
+                 'carrier = "websocket"\n'
                  'carriers = ["websocket", "https"]\n'
                  "carrier_learning = true\n"
                  "\n[[web.vhosts]]\n"
@@ -9302,6 +9423,92 @@ def _f2b_unban(ip):
     _audit("f2b_unban", ip=ip)
     return True
 
+# ---------- MTProto SYN-защита (nftables; порт логики MTPROTO_FIX_By_MEKO v3) ----------
+# Публичный MTProto-порт круглосуточно сканируют каталогизаторы Telegram-прокси.
+# Ограничить SYN-флуд просто — ломается Telegram iOS: он агрессивно шлёт дубли
+# SYN (retransmit быстрее лимита). Поэтому три слоя, как в MEKO:
+#  1) SYN с TCP-опциями iOS (отпечаток в заголовке) — accept без лимита;
+#  2) все остальные — 54 SYN/мин на IP (реальному клиенту хватает с запасом);
+#  3) сверх — reject «хост недоступен»: сканер видит фильтруемый порт.
+# Таблица inet veil_synfix пересобирается панелью при старте, при смене порта
+# MTProto и раз в минуту при дрейфе. После ребута ОС таблицы нет до старта
+# панели — ok, окнами в 1 минуту защищаемся и сами не ломаемся.
+
+_SYNFIX_LOCK = threading.Lock()
+
+def _synfix_port():
+    """Порт, который надо защищать: публичный MTProto listener telemt (0 = нечего)."""
+    try:
+        info = _tg_mtproto_info()
+    except Exception:
+        return 0
+    try:
+        port = int(info.get("port") or 0)
+    except (TypeError, ValueError, AttributeError):
+        port = 0
+    return port if port and (info.get("up") or info.get("has_public_listener")) else 0
+
+def _synfix_live():
+    """(порт, число правил) живой таблицы veil_synfix; (0, 0) если таблицы нет."""
+    try:
+        r = subprocess.run(["nft", "list", "table", "inet", "veil_synfix"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return (0, 0)
+    if r.returncode != 0:
+        return (0, 0)
+    m = re.search(r"dport (\d+)", r.stdout or "")
+    return (int(m.group(1)) if m else 0, (r.stdout or "").count("counter"))
+
+def _synfix_apply():
+    """Пересобрать inet/veil_synfix под текущий порт MTProto. Возвращает защищённый порт.
+    _limits_loop стартует ещё на импорте модуля — его тик может совпасть со стартовым
+    apply, поэтому пересборка таблицы под локом (иначе правила задвоятся)."""
+    port = _synfix_port() if CFG_CACHE.get("synfix_enabled", True) else 0
+    with _SYNFIX_LOCK:
+        _f2b_nft("delete", "table", "inet", "veil_synfix")
+        if not port:
+            return 0
+        _f2b_nft("add", "table", "inet", "veil_synfix")
+        _f2b_nft("add", "chain", "inet", "veil_synfix", "input",
+                 "{ type filter hook input priority 0; policy accept; }")
+        # своя служебная проверка порта с loopback/из локальных сетей лимиту не
+        # подлежит; туда же собственные публичные адреса — это hairpin-петля
+        # (клиент под VPN → туннель → xray звонит на свой же :7443): её SYN
+        # приходят с IP сервера и под лимит 54/мин попадать не должны.
+        try:
+            own = _own_ip_cidrs()
+        except Exception:
+            own = []
+        v4 = ["0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16",
+              "172.16.0.0/12", "192.168.0.0/16"] + [c for c in own if ":" not in c]
+        v6 = ["::1/128", "fc00::/7", "fe80::/10"] + [c for c in own if ":" in c]
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %d ip saddr { %s } counter accept comment "local_accept"'
+                 % (port, ", ".join(v4)))
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %d ip6 saddr { %s } counter accept comment "local6_accept"'
+                 % (port, ", ".join(v6)))
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %d tcp flags & (syn|ack) == syn '
+                 '@th,108,20 0x2ffff @th,160,16 0x204 @th,192,16 0x103 '
+                 '@th,224,24 0x10108 @th,320,32 0x4020000 counter accept comment "ios_accept"' % port)
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %d tcp flags & (syn|ack) == syn '
+                 'meter veil_synfix { ip saddr timeout 60s limit rate 54/minute burst 1 packets } '
+                 'counter accept comment "other_accept"' % port)
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %d tcp flags & (syn|ack) == syn counter '
+                 'reject with icmp type host-unreachable comment "other_reject"' % port)
+    return port
+
+def _synfix_tick():
+    """Самоцелость: таблица ушла (ребут/вмешательство) или порт поменялся — пересобрать."""
+    want = _synfix_port() if CFG_CACHE.get("synfix_enabled", True) else 0
+    live, _ = _synfix_live()
+    if live != want:
+        _synfix_apply()
+
 # ---------- лимит устройств на клиента (P3) ----------
 # Источник — access-лог Xray (в нём email == uuid клиента). Окно активности 15 мин;
 # при превышении max_devices самый «свежий» публичный IP банируется на 2ч через
@@ -9642,21 +9849,40 @@ def _own_direct_ips():
     return [c.split("/")[0] for c in _own_ip_cidrs()]
 
 def _wg_full_tunnel_allowed_ips():
-    """AllowedIPs полного туннеля, но ВНЕ его — IPv4 самого VPS (тот самый «IP в
+    """AllowedIPs полного туннеля, но ВНЕ его — адреса самого VPS (тот самый «IP в
     direct», только не руками в приложении, а в раздаваемом .conf): трафик к
     прокси панели под VPN идёт напрямую, а не петлёй через туннель на тот же VPS.
-    WG не умеет exclude, поэтому 0.0.0.0/0 минус /32 = 32 парных префикса."""
-    ips = [c for c in _own_ip_cidrs() if c.endswith("/32")]
-    if not ips:
-        return "0.0.0.0/0, ::/0"
-    a, b, c, d = (int(x) for x in ips[0][:-3].split("."))
-    v = (a << 24) | (b << 16) | (c << 8) | d
+    WG не умеет exclude, поэтому 0.0.0.0/0 минус /32 = 32 парных префикса, а ::/0
+    минус /128 = 128. IPv6 важен: iOS при наличии AAAA стучится на v6, а v6-петля
+    через wg0 сервером не прокидывается — MTProto под VPN молча не коннектит."""
+    own = _own_ip_cidrs()
     out = []
-    for depth in range(32):
-        sib = (v ^ (1 << (31 - depth))) & ~((1 << (31 - depth)) - 1)
-        out.append("%d.%d.%d.%d/%d" % ((sib >> 24) & 255, (sib >> 16) & 255,
-                                       (sib >> 8) & 255, sib & 255, depth + 1))
-    return ", ".join(out) + ", ::/0"
+    ips4 = [c for c in own if c.endswith("/32")]
+    if ips4:
+        a, b, c, d = (int(x) for x in ips4[0][:-3].split("."))
+        v = (a << 24) | (b << 16) | (c << 8) | d
+        for depth in range(32):
+            sib = (v ^ (1 << (31 - depth))) & ~((1 << (31 - depth)) - 1)
+            out.append("%d.%d.%d.%d/%d" % ((sib >> 24) & 255, (sib >> 16) & 255,
+                                           (sib >> 8) & 255, sib & 255, depth + 1))
+    else:
+        out.append("0.0.0.0/0")
+    ips6 = [c for c in own if c.endswith("/128")]
+    if ips6:
+        seen = set()
+        for cidr in ips6:
+            raw = socket.inet_pton(socket.AF_INET6, cidr[:-4])
+            v = int.from_bytes(raw, "big")
+            for depth in range(128):
+                sib = (v ^ (1 << (127 - depth))) & ~((1 << (127 - depth)) - 1)
+                p = "%s/%d" % (socket.inet_ntop(socket.AF_INET6,
+                                                sib.to_bytes(16, "big")), depth + 1)
+                if p not in seen:
+                    seen.add(p)
+                    out.append(p)
+    else:
+        out.append("::/0")
+    return ", ".join(out)
 
 def _sb_config(st, sub_path, host, panel_port):
     """Полный standalone-конфиг sing-box для подписчика: tun + all outbounds
@@ -11081,6 +11307,10 @@ def _limits_loop():
                 except Exception as e:
                     print("[f2b] " + str(e), flush=True)
                 try:
+                    _synfix_tick()
+                except Exception as e:
+                    print("[synfix] " + str(e), flush=True)
+                try:
                     _device_tick(st)
                 except Exception as e:
                     print("[devices] " + str(e), flush=True)
@@ -11853,11 +12083,17 @@ class H(http.server.BaseHTTPRequestHandler):
                     # vless-ссылку такому ядру нельзя, поэтому в подписку INCY
                     # plaintext-VLESS ноды не попадают: за WebSocket берёт
                     # соседняя нода «VLESS + WebSocket + TLS» (тот же uuid).
-                    payload = "\n".join(l for l in inc_links.values()
+                    payload = "\n".join(list(tg_links) + [
+                                        l for l in inc_links.values()
                                         if not (l.startswith("vless://") and
-                                                "security=none" in l))
+                                                "security=none" in l)])
                     if xprof:
-                        payload = "://routing/onadd/" + xprof + "\n" + payload
+                        # Incy понимает routing-профиль только диплинк-формой
+                        # incy://routing/onadd/{b64} (схема обязательна, как happ:// у
+                        # Happ). Без схемы строку ядро молча игнорировало — потому под
+                        # VPN-туннелем Incy и терял MTProto: обходных DirectIp-исключений
+                        # не применялось, телефон петлёй уходил на тот же VPS.
+                        payload = ("incy://routing/onadd/" + xprof + "\n" + payload)
                     b = payload.encode("utf-8")
                     ctype = "text/plain; charset=utf-8"
                 else:
@@ -12591,6 +12827,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 "f2b_threshold": int(CFG_CACHE.get("f2b_threshold") or 5),
                 "f2b_window_min": int(CFG_CACHE.get("f2b_window_min") or 10),
                 "f2b_ban_hours": int(CFG_CACHE.get("f2b_ban_hours") or 24),
+                "synfix_enabled": bool(CFG_CACHE.get("synfix_enabled", True)),
+                "synfix_port_live": _synfix_live()[0],
                 "metrics_token": CFG_CACHE.get("metrics_token", ""),
                 "split_tunnel": CFG_CACHE.get("split_tunnel", "off"),
                 "ui_style": (CFG_CACHE.get("ui_style") or "new").strip().lower(),
@@ -14553,6 +14791,13 @@ class H(http.server.BaseHTTPRequestHandler):
                             return self._send(400, {"error": f"{fk}: диапазон {fmin}..{fmax}"})
                         CFG_CACHE[fk] = fv
                         f2b_changed = True
+                if "synfix_enabled" in body:
+                    CFG_CACHE["synfix_enabled"] = bool(body["synfix_enabled"])
+                    try:
+                        _synfix_apply()
+                    except Exception as e:
+                        return self._send(500, {"error": "synfix: " + str(e)})
+                    f2b_changed = True
                 if "metrics_token" in body:
                     mt = (body["metrics_token"] or "").strip()
                     if mt and not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", mt):
@@ -14876,6 +15121,10 @@ if __name__ == "__main__":
         _ensure_logrotate()
     except Exception as e:
         print("f2b init: " + str(e), flush=True)
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix init: " + str(e), flush=True)
     try:
         st = _load(STATE)
         xc = _load(XRAY)
