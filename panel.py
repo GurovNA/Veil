@@ -19,7 +19,13 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.12.1"
+VERSION = "2.13.0"
+# 2.13.0: «Переезд» — автоматическая миграция на новый VPS (порт-в-порт, ссылки не меняются,
+#        захват портов по подтверждению, DNS по часам, журнал шагов — продолжение с места остановки);
+#        сайт-маска TLS-F (свой фронт) + «Главная ссылка Telegram»; устройства — по токену
+#        установки, а не IP; passkey-вход по умолчанию; лимит устройств TG-прокси; C8 «чем
+#        пользуетесь»; B5 самопривязка смены адреса; кнопки бота «➕ Прокси / 💳 Продлить»;
+#        A2 самопроверка MTProto под VPN; A3 IPv6-зеркало SYN-лимита.
 # 2.5.0: Фаза 1 — циклы сброса трафика (день/неделя/месяц) + TG-алерты 80%/истечение,
 #        лимит устройств на клиента (по access-логу Xray, автобан лишних IP),
 #        fail2ban-lite для входа в панель (nft-таблица inet veil_bans),
@@ -305,6 +311,14 @@ _SUBDEV_LOCK = threading.Lock()
 _SUBDEV = None    # {sub_token: [ {ip,ua,client,version,os,type,old,n,first_ts,last_ts} ]}
 _SUBPREF = None   # {sub_token: {"fmt": "auto|base64|singbox"}}
 _SUBDEV_MAX_IPS = 24
+# Персистентный «токен установки» в User-Agent: у Happ и клиентов той же схемы
+# длинное число после ОС живёт всю жизнь конкретной установки приложения.
+# Это честный идентификатор устройства: MAC по интернету не виден, а UA-токен — да.
+_DEV_FP_RE = re.compile(r"/(?:android|ios|pc|x|win|mac|linux)/(\d{12,})(?:[/?\s]|$)", re.I)
+
+def _dev_fp(ua):
+    m = _DEV_FP_RE.search(ua or "")
+    return "i:" + m.group(1) if m else ""
 _UA_CLIENTS = [
     ("v2rayng", "v2rayNG"), ("sing-box", "sing-box"), ("xray-core", "Xray"),
     ("hiddify", "Hiddify"), ("nekobox", "NekoBox"), ("someka", "NekoBox"),
@@ -367,12 +381,57 @@ def _subdev_load():
             _SUBDEV = d if isinstance(d, dict) else {}
         except Exception:
             _SUBDEV = {}
+        _subdev_fixup()
     if _SUBPREF is None:
         try:
             d = json.load(open(_SUBPREF_FILE))
             _SUBPREF = d if isinstance(d, dict) else {}
         except Exception:
             _SUBPREF = {}
+
+def _subdev_fixup():
+    """Однократно при загрузке: проставить отпечатки старым записям и склеить
+    одну установку приложения, записанную раньше как несколько IP-строк."""
+    changed = False
+    for token, lst in list((_SUBDEV or {}).items()):
+        if not isinstance(lst, list):
+            continue
+        merged, seen = [], {}
+        for d in lst:
+            if not isinstance(d, dict):
+                continue
+            fp = d.get("fp") or _dev_fp(d.get("ua") or "")
+            if fp and not d.get("fp"):
+                d["fp"] = fp
+                changed = True
+            if not fp:
+                merged.append(d)
+                continue
+            prev = seen.get(fp)
+            if prev is None:
+                seen[fp] = d
+                merged.append(d)
+                continue
+            ip = prev.get("ip") or ""
+            extra = [ip] + (prev.get("ips") or []) + [d.get("ip") or ""] + (d.get("ips") or [])
+            prev["ips"] = list(dict.fromkeys(x for x in extra if x))[:8]
+            prev["n"] = int(prev.get("n") or 0) + int(d.get("n") or 0)
+            if (d.get("last_ts") or "") > (prev.get("last_ts") or ""):
+                prev["last_ts"] = d["last_ts"]
+                for k in ("ua", "client", "version", "os", "type", "old"):
+                    if d.get(k) not in (None, "", False):
+                        prev[k] = d[k]
+            if (d.get("first_ts") or "9") < (prev.get("first_ts") or "9"):
+                prev["first_ts"] = d["first_ts"]
+            prev["ip"] = prev.get("ip") or (prev["ips"][0] if prev["ips"] else "")
+            changed = True
+        merged.sort(key=lambda d: d.get("last_ts", ""), reverse=True)
+        _SUBDEV[token] = merged[:_SUBDEV_MAX_IPS]
+    if changed:
+        try:
+            _save(_SUBDEV_FILE, _SUBDEV)
+        except Exception:
+            pass
 
 def _parse_client(ua, xclient=""):
     u = (ua or "").lower()
@@ -412,14 +471,26 @@ def _subdev_note(token, ip, ua, xclient=""):
     if not token:
         return
     name, ver, os_, old, dtype = _parse_client(ua, xclient)
+    fp = _dev_fp(ua)
     ts = _now_iso()
     with _SUBDEV_LOCK:
         _subdev_load()
         lst = _SUBDEV.get(token) or []
-        dev = next((d for d in lst if d.get("ip") == ip), None)
+        # устройство = отпечаток установки, а не IP: ушёл человек с Wi-Fi на 4G —
+        # это тот же клиент, а не «второе устройство»
+        dev = next((d for d in lst if fp and d.get("fp") == fp), None)
+        if dev is None:
+            dev = next((d for d in lst if d.get("ip") == ip), None)
         if dev:
+            if dev.get("ip") != ip:
+                old_ip = dev.get("ip") or ""
+                dev["ip"] = ip
+                dev["ips"] = ([old_ip] + [x for x in (dev.get("ips") or [])
+                                          if x and x != ip and x != old_ip])[:8]
             dev["last_ts"] = ts
             dev["n"] = int(dev.get("n", 0)) + 1
+            if fp:
+                dev["fp"] = fp
             if ua:
                 dev["ua"] = (ua or "")[:200]
             if name:
@@ -432,7 +503,7 @@ def _subdev_note(token, ip, ua, xclient=""):
                 dev["type"] = dtype
             dev["old"] = bool(old)
         else:
-            lst.append({"ip": ip, "ua": (ua or "")[:200], "client": name,
+            lst.append({"ip": ip, "ips": [], "fp": fp, "ua": (ua or "")[:200], "client": name,
                         "version": ver, "os": os_, "type": dtype, "old": bool(old),
                         "n": 1, "first_ts": ts, "last_ts": ts})
         lst.sort(key=lambda d: d.get("last_ts", ""), reverse=True)
@@ -447,7 +518,8 @@ def _subdev_list(token):
 def _subdev_remove(token, ip):
     with _SUBDEV_LOCK:
         _subdev_load()
-        _SUBDEV[token] = [d for d in (_SUBDEV.get(token) or []) if d.get("ip") != ip]
+        _SUBDEV[token] = [d for d in (_SUBDEV.get(token) or [])
+                          if not (d.get("ip") == ip or ip in (d.get("ips") or []))]
         _save(_SUBDEV_FILE, _SUBDEV)
 
 def _subdev_pref(token):
@@ -478,6 +550,16 @@ def _subdev_prune(valid_tokens):
         if changed:
             _save(_SUBDEV_FILE, _SUBDEV)
             _save(_SUBPREF_FILE, _SUBPREF)
+        try:  # журнал «чем пользуется» чистим вместе с удалёнными подписками
+            with _PROTOACT_LOCK:
+                pa = _protoact_load()
+                stale = [k for k in pa if k not in valid_tokens]
+                for k in stale:
+                    pa.pop(k, None)
+                if stale:
+                    _save(_PROTOACT_FILE, pa)
+        except Exception:
+            pass
 
 # ---------- helpers ----------
 
@@ -1696,7 +1778,15 @@ def _maybe_traffic_alerts(st):
                             lines.append(Bs["sub_a80"] % (nm, sm[2], sm[3]))
                         else:
                             lines.append(Bs["sub_aexp"] % (nm, sm[2]))
-                    _bot_send_message(tgc, "\n".join(lines), "HTML")
+                    kb = None
+                    if c.get("sub_token"):
+                        try:
+                            kb = {"inline_keyboard": [[
+                                {"text": Bs["m_sub_page"],
+                                 "url": _bot_sub_urls(c)[1]}]]}
+                        except Exception:
+                            kb = None
+                    _bot_send_message(tgc, "\n".join(lines), "HTML", kb)
                 except Exception as e:
                     print("[alert-sub] " + str(e), flush=True)
     return changed
@@ -2975,7 +3065,9 @@ _SUB_TXT_RU = {
     "head_valid": "Подписка <b>до %s</b>", "head_never": "Подписка <b>бессрочная</b>",
     "sec_dev": "Устройство", "sec_mydev": "Мои устройства",
     "forget": "Забыть", "client_default": "Клиент",
-    "devnote": "Устройства, которые запрашивали вашу подписку. «Забыть» уберёт запись, пока клиент снова не обновит подписку с этого адреса.",
+    "devnote": "Устройства, которые запрашивали вашу подписку. Приложение узнаётся по себе — смена сети (Wi-Fi → мобильный интернет) не добавляет новое устройство. «Забыть» уберёт запись, пока клиент снова не обновит подписку.",
+    "sec_usage": "Чем вы пользуетесь", "us_line": "%s заходов за 7 дней · последний: %s",
+    "us_note": "По журналу подключений сервера: какими протоколами и как часто вы пользовались за последние 7 дней. WireGuard и Telegram-прокси подключений в этом журнале не отмечают — их здесь нет.",
     "ago_now": "только что", "ago_min": "%d мин назад", "ago_hr": "%d ч назад",
     "ago_day": "%d дн назад",
     "conf_sb": "sing-box · полный конфиг",
@@ -3018,6 +3110,8 @@ _SUB_TXT_RU = {
              "<li><b>INCY</b>: ничего настраивать не нужно — профиль обхода подставляется прямо в подписку и включается сам при её добавлении/обновлении. "
              "Ноду «VLESS + WebSocket» без TLS новые ядра блокируют — используйте ноду «VLESS + WebSocket + TLS» или Reality.</li>"
              "</ul>",
+    "addr_nt": ("🔄 <b>Адрес сервера изменён %s.</b> Если прокси перестал подключаться: обнови подписку "
+                "в приложении (обычно это кнопка «обновить» у профиля) или добавь ссылку заново — все ссылки на этой странице и в боте уже с новым адресом."),
     "rt_ir": "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
              "В <b>Happ</b> и <b>INCY</b> настраивать не нужно: профиль туннеля приходит прямо в подписке и включается сам. "
              "Готовые правила для других приложений — в кнопке «sing-box · полный конфиг». В ссылочных клиентах правило настраивается в самом приложении:"
@@ -3046,7 +3140,9 @@ _SUB_TXT = {
     "head_valid": "Valid <b>until %s</b>", "head_never": "Subscription <b>never expires</b>",
     "sec_dev": "Device", "sec_mydev": "My devices",
     "forget": "Forget", "client_default": "Client",
-    "devnote": "Devices that requested your subscription. “Forget” removes the entry until the client refreshes the subscription from this address again.",
+    "devnote": "Devices that requested your subscription. Each app is recognized by itself — switching networks (Wi-Fi → mobile) does not add a new device. “Forget” removes the entry until the client refreshes the subscription again.",
+    "sec_usage": "What you use", "us_line": "%s connections in 7 days · last: %s",
+    "us_note": "From the server connection log: which protocols you used and how often over the last 7 days. WireGuard and the Telegram proxy don’t appear in this log.",
     "ago_now": "just now", "ago_min": "%d min ago", "ago_hr": "%d h ago",
     "ago_day": "%d d ago",
     "conf_sb": "sing-box · full config",
@@ -3099,6 +3195,8 @@ _SUB_TXT = {
              "<li><b>v2rayNG</b>: “Custom” → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, other rules → Direct.</li>"
              "<li><b>INCY</b>: nothing to configure — the tunnel profile is embedded in the subscription.</li>"
              "</ul>",
+    "addr_nt": ("🔄 <b>The server address changed on %s.</b> If the proxy stopped connecting: refresh the subscription "
+                "in your app (usually an “update” button on the profile) or add the link again — every link on this page and in the bot already uses the new address."),
 },
 "fa": {
     "ttl": "اشتراک", "tagline": "پنل شخصی اشتراک",
@@ -3117,7 +3215,9 @@ _SUB_TXT = {
     "head_valid": "اعتبار اشتراک <b>تا %s</b>", "head_never": "اشتراک <b>بدون انقضا</b>",
     "sec_dev": "دستگاه", "sec_mydev": "دستگاه‌های من",
     "forget": "فراموشی", "client_default": "کلاینت",
-    "devnote": "دستگاه‌هایی که اشتراک شما را درخواست کرده‌اند. «فراموشی» ورودی را پاک می‌کند تا وقتی کلاینت دوباره از همین آدرس اشتراک را تازه‌سازی کند.",
+    "devnote": "دستگاه‌هایی که اشتراک شما را درخواست کرده‌اند. هر اپلیکیشن خودش شناخته می‌شود — تغییر شبکه (Wi-Fi → اینترنت موبایل) دستگاه جدید اضافه نمی‌کند. «فراموشی» ورودی را پاک می‌کند تا وقتی کلاینت دوباره اشتراک را تازه‌سازی کند.",
+    "sec_usage": "با چه چیزی استفاده می‌کنید", "us_line": "%s اتصال در 7 روز · آخرین: %s",
+    "us_note": "از گزارش اتصال سرور: در 7 روز گذشته کدام پروتکل‌ها و چند بار استفاده شده‌اند. WireGuard و پروکسی تلگرام در این گزارش ثبت نمی‌شوند.",
     "ago_now": "همین الان", "ago_min": "%d دقیقه پیش", "ago_hr": "%d ساعت پیش",
     "ago_day": "%d روز پیش",
     "conf_sb": "sing-box · کانفیگ کامل",
@@ -3169,6 +3269,8 @@ _SUB_TXT = {
              "<li><b>v2rayNG</b>: «Custom» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy و بقیه → Direct.</li>"
              "<li><b>INCY</b>: نیازی به تنظیم ندارد — پروفایل تونل خودکار داخل اشتراک است.</li>"
              "</ul>",
+    "addr_nt": ("🔄 <b>نشانی سرور در %s تغییر کرد.</b> اگر پروکسی دیگر وصل نمی‌شود: اشتراک را در برنامه "
+                "به‌روزرسانی کنید (معمولاً دکمهٔ «به‌روزرسانی» روی پروفایل) یا لینک را دوباره اضافه کنید — همهٔ لینک‌های این صفحه و ربات نشانی جدید دارند."),
 },
 "zh": {
     "ttl": "订阅", "tagline": "我的订阅中心",
@@ -3187,7 +3289,9 @@ _SUB_TXT = {
     "head_valid": "订阅<b>有效期至 %s</b>", "head_never": "订阅<b>永久有效</b>",
     "sec_dev": "设备", "sec_mydev": "我的设备",
     "forget": "忘记", "client_default": "客户端",
-    "devnote": "请求过您订阅的设备。「忘记」会删除记录，直到该地址再次刷新订阅。",
+    "devnote": "请求过您订阅的设备。应用可被识别——切换网络（Wi-Fi → 移动网络）不会增加新设备。「忘记」会删除记录，直到该客户端再次刷新订阅。",
+    "sec_usage": "您在用什么", "us_line": "7 天内连接 %s 次 · 最近：%s",
+    "us_note": "来自服务器连接日志：最近 7 天您用过哪些协议、用了多少次。WireGuard 和 Telegram 代理不在此日志中。",
     "ago_now": "刚刚", "ago_min": "%d 分钟前", "ago_hr": "%d 小时前",
     "ago_day": "%d 天前",
     "conf_sb": "sing-box · 完整配置",
@@ -3237,6 +3341,8 @@ _SUB_TXT = {
              "<li><b>v2rayNG</b>：自定义 → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy，其余 → Direct。</li>"
              "<li><b>INCY</b>：无需设置 — 分流配置自动嵌入订阅。</li>"
              "</ul>",
+    "addr_nt": ("🔄 <b>服务器地址已于 %s 变更。</b>如果代理无法连接：请在应用中刷新订阅"
+                "（通常是配置文件上的「更新」按钮），或重新添加链接 — 本页和机器人中的所有链接已是新地址。"),
 },
 }
 
@@ -3368,7 +3474,7 @@ def _avatar_serve(tok):
         return None, None
     return mime, raw
 
-def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
+def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pact=None):
     if lang not in _SUB_LANGS:
         lang = "ru"
     L = _sub_L(lang)
@@ -3464,6 +3570,15 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
     elif split == "ir":
         rt_html = ("<div class='sec'><h2>" + L["lb_rt"] + "</h2><div class='rt'>"
                    + L["rt_ir"] + "</div></div>")
+    addr_html = ""
+    try:
+        _ach = int(CFG_CACHE.get("addr_changed") or 0)
+        if _ach and now - _ach < 7 * 86400:
+            addr_html = ("<div class='sec'><div class='rt' style='border-left:3px solid var(--warn,#f59e0b)'>"
+                         + (L["addr_nt"] % time.strftime(L["datefmt"], time.localtime(_ach)))
+                         + "</div></div>")
+    except Exception:
+        addr_html = ""
     hy2_conf = links.get("hysteria2") or ""
     cat = {k: [dict(a) for a in v
                if not (a.get("wg") and not wg_conf)
@@ -3500,6 +3615,9 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
         ago = _esc(_ago_txt(d.get("last_ts") or ""))
         try: n = int(d.get("n") or 1)
         except Exception: n = 1
+        nets = len({x for x in ([d.get("ip")] + list(d.get("ips") or [])) if x})
+        if nets > 1:
+            ip += " ·IP×%d" % nets
         who = cli + ((" " + ver) if ver else "")
         sub = " · ".join(x for x in (typ or osl, ip,
                      (ago + ((" ×%d" % n) if n > 1 else "")) if ago else "") if x)
@@ -3511,6 +3629,34 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru"):
                      + "".join(drows) + '</div><div class="devnote">' + L["devnote"] + '</div></div>')
     else:
         devs_html = ''
+    urows = []
+    try:
+        for a in (pact or [])[:8]:
+            n = int(a.get("n") or 0)
+            if n <= 0:
+                continue
+            tag = str(a.get("tag") or "")
+            try:
+                lab = _proto_meta(tag)["label"]
+            except Exception:
+                lab = tag
+            lt = int(a.get("last") or 0)
+            ago = _ago_txt(datetime.datetime.fromtimestamp(
+                lt, datetime.timezone.utc).isoformat()) if lt > 0 else ""
+            if lt and now - lt > (_PA_KEEP + 1) * 86400:
+                ago = ""
+            nstr = f"{n:,}".replace(",", "\u202f")
+            urows.append('<div class="devr"><div class="devi"><b>' + _esc(lab) +
+                         '</b><span>' + _esc(L["us_line"] % (nstr, ago or L["ago_now"])) +
+                         '</span></div></div>')
+    except Exception:
+        urows = []
+    if urows:
+        usage_html = ('<div class="sec"><h2>' + L["sec_usage"] + '</h2><div class="devlist">'
+                      + "".join(urows) + '</div><div class="devnote">' + L["us_note"] +
+                      '</div></div>')
+    else:
+        usage_html = ''
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
     langnav = "".join('<a href="?lang=' + lk + '"' + (' class="sel"' if lk == lang else "") +
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
@@ -3713,6 +3859,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="track"><i style="width:__PCT__%"></i></div>
    <div class="tl"><span>__LBUSED__</span><b>__PCTLBL__</b></div>
   </div>
+  __ADDRNT__
   __CONFS__
   <div class="sec">
    <h2>__SECDEV__</h2>
@@ -3720,6 +3867,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div id="apps" class="apps"></div>
   </div>
   __DEVS__
+  __USAGE__
   __RT__
   __PAYBLOCK__
  </main>
@@ -3934,12 +4082,14 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
                 .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
                 .replace("__CONFS__", confs_html)
+                .replace("__ADDRNT__", addr_html)
                 .replace("__HEADLINE__", head_line)
                 .replace("__SECDEV__", L["sec_dev"])
                 .replace("__BTNADD__", L["btn_add"]).replace("__BTNCOPY__", L["btn_copy"])
                 .replace("__BTNSHARE__", L["btn_share"]).replace("__HINTPICK__", L["hint_pick"])
                 .replace("__SUBFT__", L["ft_sub"]).replace("__PAGEFT__", L["ft_page"])
                 .replace("__DEVS__", devs_html)
+                .replace("__USAGE__", usage_html)
                 .replace("__RT__", rt_html)
                 .replace("__PAYBLOCK__", payblock)
                 .replace("__SUBJS__", json.dumps(sub_url))
@@ -4153,18 +4303,36 @@ _BOT_RU = {
                     "(была в сообщении, где тебе выдали подписку). После привязки я:\n"
                     "• покажу статус, срок и трафик (кнопка «📊 Моя подписка»);\n"
                     "• пришлю ссылку и подсказку по приложениям;\n"
+                    "• добавлю прокси в Telegram в один тап (кнопка «➕ Прокси в Telegram»);\n"
+                    "• помогу продлить подписку (кнопка «💳 Продлить»);\n"
                     "• напомню, когда подписка будет заканчиваться.\n\n"
                     "Никакого публичного доступа: по ссылке я вижу только ТВОЮ подписку. "
                     "Отвязать Telegram можно кнопкой «🔗 Отвязать»."),
     "sub_bound": "✅ Готово! Telegram привязан к подписке «<b>%s</b>». Выбери действие:",
     "sub_badlink": ("🤔 Не нашёл в сообщении ссылку подписки.\n"
                     "Нужна ссылка вида <code>https://…/sub/…</code> — скопируй её целиком и отправь одним сообщением.\n\n"
-                    "Команды: /start — помощь, /status — статус, /link — ссылка, /apps — приложения."),
+                    "Команды: /start — помощь, /status — статус, /proxy — прокси в Telegram, "
+                    "/renew — продлить, /link — ссылка, /apps — приложения."),
     "sub_none": "Подписка ещё не привязана. Как привязать — покажет /start.",
     "sub_unbound": "🔓 Telegram отвязан от подписки. Привязать заново — /start.",
     "sub_menu_q": "🤖 Меню подписчика:",
     "m_sub_status": "📊 Моя подписка", "m_sub_link": "🔑 Ссылка",
     "m_sub_apps": "📱 Приложения", "m_sub_unbind": "🔗 Отвязать",
+    "m_sub_tg": "➕ Прокси в Telegram", "m_sub_renew": "💳 Продлить",
+    "sub_tg_hdr": "➕ <b>%s</b> — одно нажатие, и Telegram сам добавит прокси:",
+    "sub_tg_mp": "🔌 MTProto-прокси", "sub_tg_web": "🌐 Веб-прокси",
+    "sub_tg_none": "Персональный Telegram-прокси для тебя пока не настроен — попроси администратора включить его в разделе «Telegram-прокси».",
+    "sub_renew_hdr": "💳 <b>%s</b> · срок: %s — выбери тариф, откроется страница оплаты:",
+    "sub_renew_sent": "✅ Запрос на продление отправлен администратору. Он продлит подписку и пришлёт сюда реквизиты, если нужна оплата.",
+    "sub_renew_wait": "⏳ Запрос уже отправлен несколько минут назад — администратор уведомлён. Попробуй позже.",
+    "sub_renew_none": "Сначала привяжи подписку (/start) — потом попрошу для неё продление.",
+    "sub_renew_admin": ("🔔 <b>Подписчик просит продлить</b>\nКлиент: <b>%s</b>\nЕго Telegram chat id: <code>%s</code>\n%s\nОтветь ему в этом чате или продли срок во вкладке «Клиенты»."),
+    "m_sub_page": "📱 Страница подписки", "noexp": "бессрочно",
+    "addr_admin": ("🔔 <b>Адрес сервера в подписках изменён</b>: <code>%s</code> → <code>%s</code>\n"
+                   "Подписчикам с Telegram отправлено уведомлений: %d. Ссылки /sub пересобираются сами."),
+    "addr_moved": ("🔄 <b>Адрес сервера изменился</b> — теперь <code>%s</code>.\n"
+                   "Если прокси перестал подключаться: нажми «🔑 Ссылка» и добавь ещё раз, "
+                   "либо обнови подписку в приложении (если добавлял по ссылке — она обновляется сам)."),
     "sub_hdr": "📊 <b>Мои подписки:</b>",
     "sub_link_msg": ("🔑 Скопируй и вставь в приложение (Happ, v2rayNG, Streisand, NekoBox…) — "
                      "все серверы импортируются сразу:\n<code>%s</code>"),
@@ -4243,6 +4411,8 @@ _BOT_TXT = {
                     "(it was in the message you received with the subscription). After binding I will:\n"
                     "• show status, expiry and traffic (button «📊 My subscription»);\n"
                     "• send your link and app hints;\n"
+                    "• add the proxy to Telegram in one tap (button «➕ Proxy to Telegram»);\n"
+                    "• help you renew the subscription (button «💳 Renew»);\n"
                     "• remind you when the subscription is about to expire.\n\n"
                     "No public access: a link shows me only YOUR subscription. "
                     "Unbind Telegram any time with «🔗 Unbind»."),
@@ -4255,6 +4425,21 @@ _BOT_TXT = {
     "sub_menu_q": "🤖 Subscriber menu:",
     "m_sub_status": "📊 My subscription", "m_sub_link": "🔑 Link",
     "m_sub_apps": "📱 Apps", "m_sub_unbind": "🔗 Unbind",
+    "m_sub_tg": "➕ Proxy to Telegram", "m_sub_renew": "💳 Renew",
+    "sub_tg_hdr": "➕ <b>%s</b> — one tap and Telegram adds the proxy itself:",
+    "sub_tg_mp": "🔌 MTProto proxy", "sub_tg_web": "🌐 Web proxy",
+    "sub_tg_none": "No personal Telegram proxy for you yet — ask the admin to enable it in the “Telegram proxy” section.",
+    "sub_renew_hdr": "💳 <b>%s</b> · expires: %s — pick a plan, a payment page opens:",
+    "sub_renew_sent": "✅ Renewal request sent to the admin. They will extend the subscription and reply with payment details if needed.",
+    "sub_renew_wait": "⏳ Request already sent a few minutes ago — the admin is notified. Try later.",
+    "sub_renew_none": "Bind your subscription first (/start) — then I can ask for a renewal.",
+    "sub_renew_admin": ("🔔 <b>Subscriber asks for renewal</b>\nClient: <b>%s</b>\nTheir Telegram chat id: <code>%s</code>\n%s\nReply in this chat or extend the expiry in the “Clients” tab."),
+    "m_sub_page": "📱 Subscription page", "noexp": "never",
+    "addr_admin": ("🔔 <b>Server address in subscriptions changed</b>: <code>%s</code> → <code>%s</code>\n"
+                   "Subscribers with Telegram notified: %d. /sub links rebuild themselves."),
+    "addr_moved": ("🔄 <b>The server address has changed</b> — now <code>%s</code>.\n"
+                   "If the proxy stopped connecting: press «🔑 Link» and add it again, "
+                   "or refresh the subscription in your app (if it was added by link, it updates itself)."),
     "sub_hdr": "📊 <b>My subscriptions:</b>",
     "sub_link_msg": ("🔑 Copy and paste into your app (Happ, v2rayNG, Streisand, NekoBox…) — "
                      "all servers are imported at once:\n<code>%s</code>"),
@@ -4343,6 +4528,21 @@ _BOT_TXT = {
     "sub_menu_q": "🤖 منوی مشترک:",
     "m_sub_status": "📊 اشتراک من", "m_sub_link": "🔑 لینک",
     "m_sub_apps": "📱 برنامه‌ها", "m_sub_unbind": "🔗 جدا کردن",
+    "m_sub_tg": "➕ پروکسی در تلگرام", "m_sub_renew": "💳 تمدید",
+    "sub_tg_hdr": "➕ <b>%s</b> — با یک لمس، تلگرام خودش پروکسی را اضافه می‌کند:",
+    "sub_tg_mp": "🔌 پروکسی MTProto", "sub_tg_web": "🌐 پروکسی وب",
+    "sub_tg_none": "هنوز پروکسی شخصی تلگرام برای شما تنظیم نشده — از مدیر بخواهید آن را در بخش «پروکسی تلگرام» فعال کند.",
+    "sub_renew_hdr": "💳 <b>%s</b> · انقضا: %s — یک پلن انتخاب کنید، صفحه پرداخت باز می‌شود:",
+    "sub_renew_sent": "✅ درخواست تمدید برای مدیر ارسال شد. او اشتراک را تمدید می‌کند و در صورت نیاز جزئیات پرداخت را می‌فرستد.",
+    "sub_renew_wait": "⏳ درخواست چند دقیقه پیش ارسال شده — مدیر مطلع است. بعداً تلاش کنید.",
+    "sub_renew_none": "اول اشتراک خود را متصل کنید (/start) — سپس درخواست تمدید ممکن است.",
+    "sub_renew_admin": ("🔔 <b>درخواست تمدید مشترک</b>\nمشترک: <b>%s</b>\nشناسه چت تلگرام او: <code>%s</code>\n%s\nدر همین چت پاسخ دهید یا تاریخ انقضا را از تب «مشترکان» تمدید کنید."),
+    "m_sub_page": "📱 صفحه اشتراک", "noexp": "بدون پایان",
+    "addr_admin": ("🔔 <b>نشانی سرور در اشتراک‌ها تغییر کرد</b>: <code>%s</code> → <code>%s</code>\n"
+                   "به %d مشترک تلگرام‌دار اطلاع داده شد. لینک‌های /sub خودکار بازسازی می‌شوند."),
+    "addr_moved": ("🔄 <b>نشانی سرور تغییر کرد</b> — اکنون <code>%s</code>.\n"
+                   "اگر پروکسی دیگر وصل نمی‌شود: «🔑 لینک» را بزنید و دوباره اضافه کنید، "
+                   "یا اشتراک را در برنامه به‌روزرسانی کنید (اگر با لینک اضافه شده، خودکار نو می‌شود)."),
     "sub_hdr": "📊 <b>اشتراک‌های من:</b>",
     "sub_link_msg": ("🔑 کپی کنید و در برنامه (Happ, v2rayNG, Streisand, NekoBox…) بچسبانید — "
                      "همه سرورها یکجا وارد می‌شوند:\n<code>%s</code>"),
@@ -4430,6 +4630,21 @@ _BOT_TXT = {
     "sub_menu_q": "🤖 订阅用户菜单：",
     "m_sub_status": "📊 我的订阅", "m_sub_link": "🔑 链接",
     "m_sub_apps": "📱 应用", "m_sub_unbind": "🔗 解绑",
+    "m_sub_tg": "➕ 添加代理到 Telegram", "m_sub_renew": "💳 续费",
+    "sub_tg_hdr": "➕ <b>%s</b> — 一键点按，Telegram 会自动添加代理：",
+    "sub_tg_mp": "🔌 MTProto 代理", "sub_tg_web": "🌐 Web 代理",
+    "sub_tg_none": "尚未为你配置个人 Telegram 代理——请管理员在「Telegram 代理」中启用。",
+    "sub_renew_hdr": "💳 <b>%s</b> · 到期：%s — 选择套餐，将打开付款页面：",
+    "sub_renew_sent": "✅ 续费请求已发送给管理员。管理员会延长订阅，如需付款会把详情发到这里。",
+    "sub_renew_wait": "⏳ 请求几分钟前已发送——管理员已收到。请稍后再试。",
+    "sub_renew_none": "请先绑定订阅（/start）——然后才能请求续费。",
+    "sub_renew_admin": ("🔔 <b>订阅者请求续费</b>\n客户：<b>%s</b>\n其 Telegram chat id：<code>%s</code>\n%s\n请在此聊天回复，或在「客户」标签页延长有效期。"),
+    "m_sub_page": "📱 订阅页面", "noexp": "无限期",
+    "addr_admin": ("🔔 <b>订阅中的服务器地址已变更</b>：<code>%s</code> → <code>%s</code>\n"
+                   "已通知 %d 位绑定 Telegram 的订阅者。/sub 链接会自动重建。"),
+    "addr_moved": ("🔄 <b>服务器地址已变更</b> — 现为 <code>%s</code>。\n"
+                   "如果代理无法连接：点击「🔑 链接」重新添加，"
+                   "或在应用中刷新订阅（若是通过链接添加的，会自动更新）。"),
     "sub_hdr": "📊 <b>我的订阅：</b>",
     "sub_link_msg": ("🔑 复制并粘贴到应用（Happ、v2rayNG、Streisand、NekoBox…）——"
                      "所有服务器将一次性导入：\n<code>%s</code>"),
@@ -4485,8 +4700,10 @@ def _main_menu_keyboard(B=None):
 def _bot_sub_keyboard(B):
     return {"inline_keyboard": [
         [{"text": B["m_sub_status"], "callback_data": "sub_status"},
-         {"text": B["m_sub_link"], "callback_data": "sub_link"}],
-        [{"text": B["m_sub_apps"], "callback_data": "sub_apps"}],
+         {"text": B["m_sub_tg"], "callback_data": "sub_tg"}],
+        [{"text": B["m_sub_renew"], "callback_data": "sub_renew"},
+         {"text": B["m_sub_apps"], "callback_data": "sub_apps"}],
+        [{"text": B["m_sub_link"], "callback_data": "sub_link"}],
         [{"text": B["m_sub_unbind"], "callback_data": "sub_unbind"},
          {"text": B["m_lang"], "callback_data": "sub_lang"}],
     ]}
@@ -4573,6 +4790,8 @@ def _bot_sub_status_msg(u, B):
             + "  ⏳ " + L["lb_exp"] + ": " + exp_txt + "\n"
             + "  📈 " + L["lb_trf"] + ": " + trf_txt)
 
+_BOT_RENEW_TS = {}   # chat_id -> ts запроса продления при выключенных платежах
+
 def _bot_sub_cb(chat_id, data, B):
     """Кнопки меню подписчика (callback_data с префиксом sub_)."""
     if data == "sub_lang":
@@ -4593,6 +4812,90 @@ def _bot_sub_cb(chat_id, data, B):
         for u in subs[:5]:
             _bot_send_message(chat_id, B["sub_apps_msg"] % _bot_sub_urls(u)[1], "HTML")
         return
+    if data == "sub_tg":
+        sent = 0
+        for u in subs[:5]:
+            try:
+                tgls = _tg_sub_links(u) or []
+            except Exception:
+                tgls = []
+            mp = next((l for l in tgls if l.startswith("tg://proxy")), "")
+            wb = next((l for l in tgls if l.startswith("tg://webproxy")), "")
+            if not (mp or wb):
+                continue
+            rows = []
+            if mp:
+                rows.append([{"text": B["sub_tg_mp"], "url": mp}])
+            if wb:
+                rows.append([{"text": B["sub_tg_web"], "url": wb}])
+            _bot_send_message(chat_id,
+                              B["sub_tg_hdr"] % _html.escape(str(u.get("name") or "")),
+                              "HTML", {"inline_keyboard": rows})
+            sent += 1
+        if not sent:
+            _bot_send_message(chat_id, B["sub_tg_none"], "HTML", _bot_sub_keyboard(B))
+        return
+    if data == "sub_renew":
+        if not subs:
+            return _bot_send_message(chat_id, B["sub_renew_none"], "HTML",
+                                     _bot_sub_keyboard(B))
+        plans = []
+        try:
+            if _pay_cfg()["enabled"]:
+                plans = _pay_pub_plans()[:8]
+        except Exception:
+            plans = []
+        if plans:
+            base = _pay_base()
+            for u in subs[:3]:
+                ex = int(u.get("expiry") or 0)
+                try:
+                    exp_txt = (time.strftime("%d.%m.%Y", time.localtime(ex))
+                               if ex else B["noexp"])
+                except Exception:
+                    exp_txt = B["noexp"]
+                rows = []
+                cur = []
+                for pl in plans:
+                    lbl = str(pl.get("title") or "")
+                    cost = ("%g %s" % (float(pl.get("price") or 0),
+                                       pl.get("currency") or "RUB")).strip()
+                    rows.append([{"text": (lbl + " · " + cost)[:64],
+                                  "url": base + "/pay/buy/" + urllib.parse.quote(u["sub_token"])
+                                         + "/" + urllib.parse.quote(str(pl["id"]))}])
+                _bot_send_message(chat_id,
+                                  B["sub_renew_hdr"] % (_html.escape(str(u.get("name") or "")),
+                                                        exp_txt),
+                                  "HTML", {"inline_keyboard": rows})
+            return
+        # платежи выключены → низкосервисный путь: запрос администраторам
+        last = _BOT_RENEW_TS.get(str(chat_id), 0)
+        if time.time() - last < 600:
+            return _bot_send_message(chat_id, B["sub_renew_wait"], "HTML")
+        ids = [str(x) for x in (CFG_CACHE.get("bot_chat_ids") or [])]
+        if not ids:
+            return _bot_send_message(chat_id, B["sub_renew_wait"], "HTML")
+        _BOT_RENEW_TS[str(chat_id)] = time.time()
+        if len(_BOT_RENEW_TS) > 500:
+            for k in sorted(_BOT_RENEW_TS, key=_BOT_RENEW_TS.get)[:-400]:
+                _BOT_RENEW_TS.pop(k, None)
+        lines = []
+        for u in subs[:5]:
+            ex = int(u.get("expiry") or 0)
+            exp_txt = (time.strftime("%d.%m.%Y", time.localtime(ex) if ex else time.localtime()))
+            lines.append("• %s — %s" % (u.get("name") or "?",
+                                        exp_txt if ex else B["noexp"]))
+        msg = B["sub_renew_admin"] % (_html.escape(", ".join(
+            str(u.get("name") or "?") for u in subs[:5])), str(chat_id),
+            "\n".join(lines))
+        kb = {"inline_keyboard": [[{"text": B["m_sub_page"],
+                                    "url": _bot_sub_urls(subs[0])[1]}]]}
+        for aid in ids[:8]:
+            try:
+                _bot_send_message(aid, msg, "HTML", kb)
+            except Exception:
+                pass
+        return _bot_send_message(chat_id, B["sub_renew_sent"], "HTML")
     if data == "sub_unbind":
         _bot_unbind(chat_id)
         return _bot_send_message(chat_id, B["sub_unbound"], "HTML", _bot_sub_keyboard(B))
@@ -4611,6 +4914,7 @@ def _bot_sub_msg(chat_id, text, B):
     if low == "/lang":
         return _bot_send_message(chat_id, B["lang_q"], "HTML", _lang_keyboard())
     cmds = {"/status": "sub_status", "/link": "sub_link", "/apps": "sub_apps",
+            "/proxy": "sub_tg", "/renew": "sub_renew",
             "/unsubscribe": "sub_unbind"}
     if low in cmds:
         return _bot_sub_cb(chat_id, cmds[low], B)
@@ -6321,7 +6625,10 @@ def _perm_for(p, m):
         return ["nodes"]
     if p.startswith("/api/hop"):
         return ["hop"]
-    if p.startswith("/api/tg/") or p.startswith("/api/webproxy") or p.startswith("/api/webmux"):
+    if p.startswith("/api/migrate"):
+        return ["owner"]
+    if (p.startswith("/api/tg/") or p.startswith("/api/webproxy")
+            or p.startswith("/api/webmux") or p.startswith("/api/front/")):
         return ["proxy"]
     if (p.startswith("/api/rotate") or p.startswith("/api/dynv6")
             or p.startswith("/api/globalping") or p.startswith("/api/fix/")):
@@ -7206,6 +7513,8 @@ def _tg_status():
             "web_link": web_links.get(u.get("username", ""), ""),
             "ad_tag": u.get("user_ad_tag") or "",
             "connections": u.get("active_unique_ips", 1 if u.get("current_connections", 0) else 0),
+            "max_ips": int(u.get("max_unique_ips") or 0),
+            "conns": int(u.get("current_connections") or 0),
             "total_octets": u.get("total_octets", 0),
         })
     for u in users:
@@ -7457,6 +7766,133 @@ def _tg_mp_preview():
             "marked": bool(_TG_MP_MARK in text),
             "applied": bool((_load(_TGBP_STATE, {}) or {}).get("applied"))}
 
+_MPST = {"ts": 0.0, "res": None}
+
+def _tls_probe(ip, port, sni, timeout=6):
+    """TLS-рукопожатие с SNI=фронт к ip:port (CERT_NONE — facade-сертификат не валиден
+    по определению). Вернуть (ok, detail): detail содержит subject сервера при успехе."""
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        with socket.socket(fam, socket.SOCK_STREAM) as raw:
+            raw.settimeout(timeout)
+            raw.connect((ip, port))
+            s = ctx.wrap_socket(raw, server_hostname=sni)
+            try:
+                der = s.getpeercert(True)
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        if not der:
+            return False, "handshake прошёл, но сертификата нет"
+        fd, p = tempfile.mkstemp(suffix=".der")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(der)
+            r = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout", "-subject"],
+                               capture_output=True, text=True, timeout=8)
+            subj = re.sub(r"^subject=", "", (r.stdout or "").strip())[:90]
+        finally:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+        return True, subj
+    except Exception as e:
+        return False, str(e)[:120]
+
+def _tg_mp_selftest(force=False):
+    """«MTProto под VPN» — самотест: помнит ли мир нашу беду (petlya-2026-09).
+    1) facade-рукопожатие на свой публичный :7443 (v4 и v6) — путь клиента под VPN
+       приходит в этот же порт, но через xray; 2) sniffing xray обязан исключать все
+       фронты, иначе destination перезапишется SNI и сервер начнёт долбить чужой CDN
+       на мёртвом порту (SYN-шторм); 3) synfix: свои SYN не должны упираться в лимит;
+       4) сайт-маска (если настроена) — живой сертификат на :443. Кэш 60 с."""
+    if not force and _MPST["res"] and time.time() - _MPST["ts"] < 60:
+        return _MPST["res"]
+    checks = []
+    def add(id_, label, ok, detail="", warn=False):
+        checks.append({"id": id_, "label": label, "ok": bool(ok),
+                       "detail": (detail or "")[:200], "warn": bool(warn)})
+    if not _tg_available():
+        res = {"ok": False, "ran": int(time.time()),
+               "checks": [{"id": "telemt", "label": "Прокси жив", "ok": False,
+                           "detail": "telemt API не отвечает — сначала включи MTProto-прокси",
+                           "warn": False}]}
+        _MPST.update(ts=time.time(), res=res)
+        return res
+    add("telemt", "Прокси жив", True, "")
+    try:
+        port = int(_tg_mtproto_info().get("port") or 0)
+    except Exception:
+        port = 0
+    add("listener", "Публичный MTProto-порт", bool(port),
+        (":%d" % port) if port else "публичный listener не найден")
+    if not port:
+        res = {"ok": False, "ran": int(time.time()), "checks": checks}
+        _MPST.update(ts=time.time(), res=res)
+        return res
+    fronts = _veil_front_domains()
+    sni = (CFG_CACHE.get("front_domain") or "").strip().lower() or (fronts[0] if fronts else "www.microsoft.com")
+    for ip, fam in ((_pub_ip4(), "IPv4"), (_pub_ip6(), "IPv6")):
+        if not ip:
+            add("tls_" + fam.lower(), "Facade-рукопожатие %s" % fam, True,
+                "сервер без %s — пропускаем" % fam, warn=True)
+            continue
+        ok, detail = _tls_probe(ip, port, sni)
+        add("tls_" + fam.lower(), "Facade-рукопожатие %s на %s:%d (SNI=%s)"
+            % (fam, ip, port, sni), ok, detail)
+    try:
+        with open(XRAY, encoding="utf-8") as f:
+            xc = json.load(f)
+        need = set(fronts)
+        bad = []
+        n_inb = 0
+        for ib in xc.get("inbounds", []):
+            sn = ib.get("sniffing") or {}
+            if not sn.get("enabled"):
+                continue
+            n_inb += 1
+            miss = need - set(d.lower() for d in (sn.get("domainsExcluded") or []))
+            if miss:
+                bad.append("%s: нет %s" % (ib.get("tag") or ib.get("port"), ",".join(sorted(miss))))
+        add("sniffing", "Xray: фронты исключены из подмены адресов", not bad and n_inb > 0,
+            ("all %d inbound'ов в порядке" % n_inb) if not bad and n_inb else
+            ("; ".join(bad[:4]) if bad else "ни одного inbound со sniffing — странно"))
+    except Exception as e:
+        add("sniffing", "Xray: фронты исключены из подмены адресов", False, str(e)[:160])
+    try:
+        t = subprocess.run(["nft", "list", "table", "inet", "veil_synfix"],
+                           capture_output=True, text=True, timeout=10)
+        txt = t.stdout or ""
+        has_own = ("local_accept" in txt) and (("local6_accept" in txt) or not _pub_ip6())
+        has_lim = ("other_accept" in txt) and (("other6_accept" in txt) or not _pub_ip6())
+        add("synfix", "Защита SYN-лимитов: свои проходят, чужие нормируются",
+            t.returncode == 0 and has_own and has_lim,
+            "" if t.returncode == 0 and has_own and has_lim else
+            "нет таблицы veil_synfix или правил (v4/v6) accept/лимит для своих и чужих")
+    except Exception as e:
+        add("synfix", "Защита SYN-лимитов", False, str(e)[:160])
+    try:
+        fs = _front_status()
+        if fs.get("domain"):
+            add("front", "Сайт-маска (свой фронт)", fs.get("active") and fs.get("https_ok"),
+                "%s: cert %s, %s" % (fs["domain"], "ок" if fs.get("cert_ok") else "НЕТ",
+                                      "отвечает на :443" if fs.get("https_ok") else "на :443 не отвечает"))
+        else:
+            add("front", "Сайт-маска (свой фронт)", True,
+                "не настроена — прокси прячется за чужим фронтом; кнопка «Настроить сайт-маску» ниже",
+                warn=True)
+    except Exception:
+        pass
+    res = {"ok": all(c["ok"] for c in checks), "ran": int(time.time()), "checks": checks}
+    _MPST.update(ts=time.time(), res=res)
+    return res
+
 def _tg_mp_firewall_open(port):
     """Best-effort: открыть порт в firewalld, если он активен. Молча игнорируем отсутствие."""
     try:
@@ -7662,6 +8098,24 @@ def _tg_set_adtag(username, tag):
         warn = "нужен general.use_middle_proxy = true в telemt — включи и перезапусти telemt"
     return {"username": name, "ad_tag": tag or None, "warning": warn}
 
+def _tg_set_max_ips(username, n):
+    """Лимит одновременных адресов (устройств) на ссылку TG-прокси.
+
+    Считает telemt: больше N живых IP с одним секретом — новым подключениям отказ.
+    0/пусто = без лимита. Это тот же смысл, что max_devices у подписки VPN."""
+    name = (username or "").strip()
+    if not name:
+        raise RuntimeError("имя пустое")
+    try:
+        n = int(n or 0)
+    except Exception:
+        raise RuntimeError("лимит — целое число")
+    if n < 0 or n > 999:
+        raise RuntimeError("лимит: 0..999 (0 — без ограничений)")
+    _tg_api("PATCH", "/v1/users/" + urllib.parse.quote(name),
+            {"max_unique_ips": n or None})
+    return {"username": name, "max_ips": n}
+
 def _tg_middle_proxy_on():
     try:
         g = _tg_api("GET", "/v1/config").get("data", {}).get("general") or {}
@@ -7762,6 +8216,259 @@ def _tg_sni_set(tls_domain=None, tls_domains=None):
     _SNI_PQ_CACHE.clear()
     _audit("tg_sni", **({"domain": dom} if dom is not None else {}))
     return _tg_sni()
+
+
+FRONT_SITE_DIR = "/opt/vpnpanel/frontsite"
+_NG_FRONT_CONF = "/etc/nginx/conf.d/veil-front.conf"
+
+def _front_dns_ensure(domain):
+    """Фронт обязан жить в зоне Cloudflare панели: серые A/AAAA на этот сервер.
+    Создаёт записи, если их нет; пересоздаёт, если они облачные/уехали."""
+    zid, zone = _cf_zone()
+    if not (domain == zone or domain.endswith("." + zone)):
+        raise RuntimeError("фронт " + domain + " не в Cloudflare-зоне " + (zone or "?") +
+                           " — для своего фронта нужна зона с настроенным токеном (вкладка Сайт)")
+    ip4, ip6 = _pub_ip4() or "", _pub_ip6() or ""
+    rep = []
+    for typ, ip in (("A", ip4), ("AAAA", ip6)):
+        if not ip:
+            continue
+        q = "/zones/%s/dns_records?type=%s&name=%s&per_page=5" % (
+            urllib.parse.quote(zid), typ, urllib.parse.quote(domain))
+        res = _cf_api("GET", q) or []
+        if len(res) == 1 and (res[0].get("content") or "").lower() == ip.lower() \
+                and not res[0].get("proxied"):
+            rep.append("%s %s уже указывает сюда" % (typ, domain))
+            continue
+        for r0 in res:
+            _cf_api("DELETE", "/zones/%s/dns_records/%s" % (
+                urllib.parse.quote(zid), urllib.parse.quote(r0.get("id") or "")))
+        _cf_api("POST", "/zones/%s/dns_records" % urllib.parse.quote(zid),
+                {"type": typ, "name": domain, "content": ip, "ttl": 60, "proxied": False})
+        rep.append("%s %s → %s (создана/обновлена)" % (typ, domain, ip))
+    return rep
+
+def _front_cert_issue(domain):
+    """LE-сертификата произвольного домена через DNS-01 (Cloudflare-хук панели).
+    В отличие от _cert_issue — НЕ трогает настройки панели (cert_domain/panel_domain),
+    продлевается общим циклом certbot renew (имя veil-<domain>)."""
+    live = "%s/live/veil-%s" % (CERT_DIR, domain)
+    certp, keyp = live + "/fullchain.pem", live + "/privkey.pem"
+    if os.path.exists(certp) and os.path.exists(keyp):
+        exp = _cert_expire(certp)
+        if exp and exp > time.time() + 21 * 86400:
+            return certp, keyp
+    if _dns01_provider() != "cloudflare":
+        raise RuntimeError("для своего фронта нужен Cloudflare (токен Zone→DNS:Edit) — "
+                           "только он умеет выпускать TXT-записи для Let's Encrypt")
+    if _CERT_STATE.get("busy"):
+        raise RuntimeError("выпуск сертификата уже идёт — подожди минуту")
+    import sys
+    me = os.path.abspath(__file__)
+    py = sys.executable or "python3"
+    email = (CFG_CACHE.get("cert_email") or "").strip()
+    args = ["certbot", "certonly", "--manual", "--preferred-challenges", "dns",
+            "--manual-auth-hook", "%s %s --dns01-hook auth" % (py, me),
+            "--manual-cleanup-hook", "%s %s --dns01-hook cleanup" % (py, me),
+            "-d", domain, "--non-interactive", "--agree-tos",
+            "--deploy-hook", "systemctl reload nginx"]
+    args += ["--email", email] if email else ["--register-unsafely-without-email"]
+    args += ["--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
+             "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
+    _CERT_STATE["busy"] = True
+    try:
+        os.makedirs(CERT_DIR, exist_ok=True)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=320)
+        if r.returncode != 0:
+            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
+        try:
+            os.chmod(keyp, 0o600)
+        except Exception:
+            pass
+    finally:
+        _CERT_STATE["busy"] = False
+    if not (os.path.exists(certp) and os.path.exists(keyp)):
+        raise RuntimeError("certbot завершился, но fullchain/privkey не найдены")
+    return certp, keyp
+
+_FRONT_SITE_HTML = """<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Блокнот путешественника — заметки, маршруты, фотографии</title>
+<style>
+body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:0 auto;padding:24px 16px;color:#2c2c2c;line-height:1.65;background:#fbfaf7}
+header{border-bottom:1px solid #ddd;padding-bottom:16px;margin-bottom:24px}
+h1{font-size:26px;margin:0}
+.sub{color:#888;font-size:14px;margin-top:4px}
+article{margin-bottom:28px}
+h2{font-size:19px;margin:0 0 6px}
+.d{color:#999;font-size:13px;margin-bottom:6px}
+p{margin:6px 0}
+a{color:#2b6cb0;text-decoration:none}
+footer{margin-top:40px;padding-top:16px;border-top:1px solid #ddd;color:#999;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+<h1>Блокнот путешественника</h1>
+<div class=sub>Заметки, маршруты и фотографии дорог</div>
+</header>
+<article>
+<h2>Как мы пересекали Карелию на велосипедах</h2>
+<div class=d>12 августа · маршруты</div>
+<p>Сорок километров грунтовки, комары размером с воробья и озёра, в которых вода к полудню
+прогревается ровно настолько, чтобы не захотелось плыть дальше. Рассказ о недельном веломаршруте
+от Сортавалы до Ладожских шхер — с картами стоянок и списком того, что мы зря взяли с собой.</p>
+</article>
+<article>
+<h2>Снимок дня: туман над поймой</h2>
+<div class=d>29 июля · фотографии</div>
+<p>Пять утра, минус по градуснику и ноль ожидания чуда: туман лёг над рекой ровно на те восемь
+минут, которые нужны на три кадра. Разбираю настройки камеры, которые спасли сюжет,
+и показываю исходники в RAW.</p>
+</article>
+<article>
+<h2>Чек-лист перед первым походом</h2>
+<div class=d>15 июля · снаряжение</div>
+<p>Что действительно пригодилось за три сезона, а что только прибавило грамм на плечах.
+Костюм от дождя, горелка, аптечка без мифической «на всякий случай» половины — и немного
+математики веса, которая примиряет с компромиссами.</p>
+</article>
+<footer>
+© 2026 Блокнот путешественника · письма на hello@localhost · ни один трекер не пострадал
+</footer>
+</body>
+</html>
+"""
+
+def _front_site_write():
+    os.makedirs(FRONT_SITE_DIR, exist_ok=True)
+    p = FRONT_SITE_DIR + "/index.html"
+    try:
+        if os.path.exists(p) and open(p, encoding="utf-8").read() == _FRONT_SITE_HTML:
+            return
+    except Exception:
+        pass
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(_FRONT_SITE_HTML)
+
+def _front_nginx_apply(domain, cert, key):
+    conf = ("# Veil: сайт-маска для TLS-F (управляет панель — правка руками затрётся)\n"
+            "server {\n"
+            "    listen 443 ssl;\n"
+            "    listen [::]:443 ssl;\n"
+            "    http2 on;\n"
+            "    server_name %s;\n"
+            "    ssl_certificate     %s;\n"
+            "    ssl_certificate_key %s;\n"
+            "    root %s;\n"
+            "    index index.html;\n"
+            "    location / { try_files $uri $uri/ /index.html; }\n"
+            "}\n"
+            "server {\n"
+            "    listen 80;\n"
+            "    listen [::]:80;\n"
+            "    server_name %s;\n"
+            "    return 301 https://$host$request_uri;\n"
+            "}\n" % (domain, cert, key, FRONT_SITE_DIR, domain))
+    if os.path.exists(_NG_FRONT_CONF):
+        try:
+            if open(_NG_FRONT_CONF, encoding="utf-8").read() == conf:
+                return
+        except Exception:
+            pass
+    with open(_NG_FRONT_CONF, "w", encoding="utf-8") as f:
+        f.write(conf)
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=20)
+    if t.returncode != 0:
+        os.remove(_NG_FRONT_CONF)
+        raise RuntimeError("nginx -t с фронтом: " + (t.stderr or t.stdout)[-300:])
+    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
+    else:
+        subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
+
+def _front_apply(domain):
+    """Свой фронт TLS-F: DNS → сертификат LE → сайт-заглушка на :443 → telemt
+    tls_domain → xray (domainsExcluded подхватит новый фронт).
+    Ротация секретов НЕ нужна: домен вшивается в tg://-ссылку в момент её выдачи
+    telemt (список tls_domain + tls_domains), а не в момент создания клиента.
+    Старые ссылки продолжают работать (старые фронты остаются в tls_domains),
+    свежие выдачи /sub автоматически несут новый фронт — плавный перевод людей.
+    Идемпотентно: повторный вызов с тем же доменом — починка недостающих кусков."""
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+",
+                        domain or ""):
+        raise RuntimeError("домен: например front.example.com — без протокола, порта и путей")
+    if not shutil.which("nginx"):
+        raise RuntimeError("nginx не установлен — свой фронт требует сайт на :443 "
+                           "(установка во вкладке Сайт или apt install nginx)")
+    if not _tg_available():
+        raise RuntimeError("telemt не запущен — сначала включи MTProto-прокси")
+    rep = _front_dns_ensure(domain)
+    cert, key = _front_cert_issue(domain)
+    _front_site_write()
+    _front_nginx_apply(domain, cert, key)
+    rep.append("сертификат Let's Encrypt + сайт-заглушка на :443 — готовы")
+    cur = _tg_sni()
+    olds = []
+    for d0 in [cur.get("tls_domain") or ""] + list(cur.get("tls_domains") or []):
+        if d0 and d0 != domain and d0 not in olds:
+            olds.append(d0)
+    _tg_sni_set(tls_domain=domain, tls_domains=olds)
+    subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=60)
+    for _ in range(8):
+        if _tg_available():
+            break
+        time.sleep(2)
+    rep.append("telemt перезапущен — facade теперь притворяется фронтом " + domain)
+    try:
+        _write_xray(_load(STATE, {}) or {})
+        _restart_xray()
+        rep.append("xray обновлён: фронт исключён из подмены адресов (sniffing)")
+    except Exception as e:
+        rep.append("xray: " + str(e)[:140])
+    if olds:
+        rep.append("старые фронты (" + ", ".join(olds) + ") оставлены в tls_domains — "
+                   "разданные ранее tg://-ссылки продолжают работать; свежие подписки "
+                   "понесут новый фронт, перевод клиентов плавный")
+    CFG_CACHE["front_domain"] = domain
+    CFG_CACHE["front_enabled"] = True
+    _save(CFG, CFG_CACHE)
+    _audit("front_apply", domain=domain)
+    return {"ok": True, "domain": domain, "report": rep}
+
+def _front_status():
+    dom = (CFG_CACHE.get("front_domain") or "").strip().lower()
+    sni = _tg_sni()
+    out = {"domain": dom, "tls_domain": sni.get("tls_domain") or "",
+           "tls_domains": sni.get("tls_domains") or [],
+           "active": bool(dom and sni.get("tls_domain") == dom),
+           "enabled": bool(CFG_CACHE.get("front_enabled")),
+           "cert_ok": False, "expire": 0, "nginx_ok": False, "https_ok": False,
+           "dns01": _dns01_provider() == "cloudflare",
+           "cf_zone": (CFG_CACHE.get("cf_zone") or "").strip().lower()}
+    if dom:
+        certp = CERT_DIR + "/live/veil-" + dom + "/fullchain.pem"
+        out["cert_ok"] = os.path.exists(certp)
+        out["expire"] = (_cert_expire(certp) or 0) if out["cert_ok"] else 0
+        try:
+            with open(_NG_FRONT_CONF, encoding="utf-8") as f:
+                out["nginx_ok"] = ("server_name " + dom + ";") in f.read()
+        except Exception:
+            pass
+        try:
+            import ssl as _ssl
+            ctx = _ssl.create_default_context()
+            with socket.create_connection((dom, 443), timeout=6) as s0:
+                with ctx.wrap_socket(s0, server_hostname=dom) as ss0:
+                    out["https_ok"] = bool(ss0.getpeercert())
+        except Exception:
+            pass
+    return out
 
 _TG_TRANS = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
              "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
@@ -8505,7 +9212,7 @@ def _hop_suggest_ports():
     try:
         pp = int(CFG_CACHE.get("panel_port", 8444) or 8444)
         if pp:
-            ports.append(pp)   #否则 подписки /sub по адресу фронта не откроются
+            ports.append(pp)   # иначе подписки /sub по адресу фронта не откроются
     except Exception:
         pass
     try:
@@ -8948,7 +9655,8 @@ def _hop_set_public(host):
     _save(CFG, CFG_CACHE)
     _audit("hop_public_set", host=host or "(reset)")
     return {"hop_public_host": host, "warn": warn,
-            "note": "ссылки подписок и прокси пересоберутся на новый адрес; экспортируй подписки заново"}
+            "note": "ссылки подписок и прокси пересоберутся на новый адрес; подписчикам с Telegram "
+                    "панель отправит уведомление в течение минуты, на /p появится подсказка"}
 
 def _hop_relink(hid):
     hops = _hop_load()
@@ -8978,7 +9686,71 @@ def _hop_public_view():
             "hop_public_host": (CFG_CACHE.get("hop_public_host") or "").strip(),
             "back_ip": _hop_back_ip(),
             "panel_port": int(CFG_CACHE.get("panel_port", 8444) or 8444),
-            "suggest_ports": _hop_suggest_ports()}
+            "suggest_ports": _hop_suggest_ports(),
+            "addr_prev": str(CFG_CACHE.get("addr_prev") or ""),
+            "addr_changed": int(CFG_CACHE.get("addr_changed") or 0)}
+
+def _addr_watch_tick():
+    """Присмотр за адресом сервера в ссылках подписок (ddns/hop/переезд/смена IP):
+    хост изменился — пометка addr_changed (баннер на /p неделю), push подписчикам
+    с tg_chat и отчёт администраторам. Ссылки /sub пересобираются сами при каждой
+    выдаче, поэтому клиенту нужно лишь обновить подписку или взять ссылку заново.
+    Кулдаун 10 мин — адрес может «моргнуть» при переезде, не заспамить клиентов."""
+    try:
+        cur = (_hop_pub_host() or "").strip().lower()
+    except Exception:
+        return
+    if not cur or cur == "127.0.0.1":
+        return
+    last = str(CFG_CACHE.get("addr_host") or "")
+    if not last:
+        CFG_CACHE["addr_host"] = cur
+        _save(CFG, CFG_CACHE)
+        return
+    if last == cur:
+        return
+    now = int(time.time())
+    CFG_CACHE["addr_host"] = cur
+    if now - int(CFG_CACHE.get("addr_changed") or 0) < 600:
+        _save(CFG, CFG_CACHE)
+        return
+    CFG_CACHE["addr_changed"] = now
+    CFG_CACHE["addr_prev"] = last
+    _save(CFG, CFG_CACHE)
+    _audit("addr_change", old=last, new=cur)
+    print("[addr] адрес подписок изменён: %s → %s" % (last, cur), flush=True)
+    try:
+        subs = [x for x in _subs_summary(_load(STATE) or {})
+                if str(x.get("tg_chat") or "")]
+    except Exception:
+        subs = []
+    chats = {}
+    for x in subs:
+        chats.setdefault(str(x["tg_chat"]), x)
+    notified = 0
+    for cid, x in list(chats.items())[:500]:
+        try:
+            Bc = _bot_B(cid)
+            kb = {"inline_keyboard": [
+                [{"text": Bc["m_sub_link"], "callback_data": "sub_link"}],
+                [{"text": Bc["m_sub_page"], "url": _bot_sub_urls(x)[1]}]]}
+            _bot_send_message(cid, Bc["addr_moved"] % _html.escape(cur), "HTML", kb)
+            notified += 1
+            time.sleep(0.05)
+        except Exception:
+            pass
+    ids = [str(v) for v in (CFG_CACHE.get("bot_chat_ids") or [])][:8]
+    if ids:
+        try:
+            Ba = _bot_B(ids[0])
+            msg = Ba["addr_admin"] % (_html.escape(last), _html.escape(cur), notified)
+            for aid in ids:
+                try:
+                    _bot_send_message(aid, msg, "HTML")
+                except Exception:
+                    pass
+        except Exception as e:
+            print("[addr] admin: " + str(e)[:120], flush=True)
 
 def _mux_preview(vpn_domain=None):
     web_domain = (CFG_CACHE.get("panel_domain") or "").strip()
@@ -9498,8 +10270,18 @@ def _synfix_apply():
                  'meter veil_synfix { ip saddr timeout 60s limit rate 54/minute burst 1 packets } '
                  'counter accept comment "other_accept"' % port)
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'tcp dport %d tcp flags & (syn|ack) == syn counter '
+                 'meta nfproto ipv4 tcp dport %d tcp flags & (syn|ack) == syn counter '
                  'reject with icmp type host-unreachable comment "other_reject"' % port)
+        # IPv6 зеркало: без него v6-SYN проваливаются в policy accept — шторм без лимита.
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'meta nfproto ipv6 tcp dport %d tcp flags & (syn|ack) == syn '
+                 'meter veil_synfix6 { ip6 saddr timeout 60s limit rate 54/minute burst 1 packets } '
+                 'counter accept comment "other6_accept"' % port)
+        # IPv6-аналог host-unreachable в ядре называется no-route (type1 code0);
+        # administratively-prohibited/host-unreachable nft здесь не принимает.
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'meta nfproto ipv6 tcp dport %d tcp flags & (syn|ack) == syn counter '
+                 'reject with icmpv6 type no-route comment "other6_reject"' % port)
     return port
 
 def _synfix_tick():
@@ -9511,27 +10293,146 @@ def _synfix_tick():
 
 # ---------- лимит устройств на клиента (P3) ----------
 # Источник — access-лог Xray (в нём email == uuid клиента). Окно активности 15 мин;
-# при превышении max_devices самый «свежий» публичный IP банируется на 2ч через
+# при превышении max_devices самое «молодое» устройство банируется на 2ч через
 # veil_bans. WireGuard/amneziawg идут мимо Xray — для них лимит не применяется.
+# Роуминг: человек вышел из Wi-Fi в мобильную сеть — приложение сменило IP, но это
+# то же устройство. Если новый IP появился, а прежний адрес этого же клиента только
+# что «затих» (пауза 1.5–7 минут — типичная смена сети), новый IP записывается в
+# то же устройство, а не считается отдельным. Бан только если превышение держится
+# дольше 2 минут — одним всплеском не наказываем.
 
 _XRAY_ACCESS = f"{BASE}/logs/xray-access.log"
 _DEV_WIN_SEC = 900
 _DEV_BAN_SEC = 2 * 3600
-_DEVTRACK = {}          # uuid -> {ip: last_seen_ts}
+_DEV_IDLE_LO = 90
+_DEV_IDLE_HI = 420
+_DEV_OVER_SEC = 120
+_DEVTRACK = {}          # uuid -> {gid: {"ips": {ip: last_seen_ts}}}  gid = первый IP группы
+_DEV_OVER = {}          # uuid -> ts, когда заметили превышение
 _DEV_POS = [0, 0]       # [offset чтения, последний размер файла]
+_DEV_POS_FILE = f"{BASE}/logs/xray-access.pos"
+_DEV_POS_INIT = [False]
+
+def _devpos_init():
+    # смещение переживало рестарт панели: иначе после каждого перезапуска
+    # весь журнал перечитывается и счётчики «чем пользуется» удваиваются
+    if _DEV_POS_INIT[0]:
+        return
+    _DEV_POS_INIT[0] = True
+    try:
+        p = json.load(open(_DEV_POS_FILE))
+        if (isinstance(p, list) and len(p) == 2
+                and os.path.getsize(_XRAY_ACCESS) >= int(p[1])):
+            _DEV_POS[:] = [int(p[0]), int(p[1])]
+    except Exception:
+        pass
 
 # Пример строки: `2026-09-22 12:56:32.927 from 1.2.3.4:5678 accepted vless:... [in] [uuid]`
 _ACC_RE = re.compile(r"^\S+\s+\S+\s+(?:from\s+)?(\S+)\s+accepted\b")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# Xray 26.x пишет «... [vless-ws >> direct] email: <uuid>»; раньше uuid был в скобках.
+_ACC_TAG_RE = re.compile(r"\[([a-z][a-z0-9_-]*)")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+_ACC_MAIL_RE = re.compile(
+    r"email:\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
 
 def _acc_email(line):
+    m = _ACC_MAIL_RE.search(line)
+    if m:
+        return m.group(1)
     for b in re.findall(r"\[([^\]]*)\]", line):
         if _UUID_RE.match(b.strip()):
             return b.strip()
     return ""
 
+def _acc_tag(line):
+    """Тег инбаунда из «[vless-ws >> direct]» = какой протоколом воспользовались."""
+    m = _ACC_TAG_RE.search(line)
+    return m.group(1) if m else ""
+
+# Кто чем пользуется: счётчик заходов (sub_token → тег инбаунда → дни).
+_PROTOACT_FILE = f"{BASE}/proto_activity.json"
+_PROTOACT_LOCK = threading.Lock()
+_PROTOACT = None
+_PA_DAYS = 7          # окно статистики на /p
+_PA_KEEP = 30         # держать в файле (для «был N дней назад»)
+
+def _protoact_load():
+    global _PROTOACT
+    if _PROTOACT is None:
+        try:
+            d = json.load(open(_PROTOACT_FILE))
+            _PROTOACT = d if isinstance(d, dict) else {}
+        except Exception:
+            _PROTOACT = {}
+    return _PROTOACT
+
+def _protoact_merge(cnt, now):
+    """cnt: {sub_token: {tag: {дата: n}}}. Сливает в постоянное хранилище,
+    чистит старые дни/токены, сохраняет только при изменениях."""
+    changed = False
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    with _PROTOACT_LOCK:
+        pa = _protoact_load()
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(now - _PA_KEEP * 86400))
+        for tok, tags in cnt.items():
+            e = pa.setdefault(tok, {})
+            for tag, days in tags.items():
+                d = e.setdefault(tag, {"last": 0, "d": {}})
+                for k, n in days.items():
+                    d["d"][k] = int(d["d"].get(k) or 0) + n
+                    changed = True
+                # «в последний раз» двигаем только если сегодня реально были строки
+                # журнала: при отмотке файла назад (первый tick) вчерашние дни
+                # не должны выглядеть как «только что».
+                if today in days:
+                    d["last"] = int(now)
+                    changed = True
+        for tok in list(pa):
+            e = pa[tok]
+            for tag in list(e):
+                dd = e[tag].get("d") or {}
+                for k in [k for k in dd if k < cutoff]:
+                    dd.pop(k, None)
+                    changed = True
+                if not dd and now - int(e[tag].get("last") or 0) > _PA_KEEP * 86400:
+                    e.pop(tag, None)
+                    changed = True
+            if not e:
+                pa.pop(tok, None)
+                changed = True
+        if changed:
+            _save(_PROTOACT_FILE, pa)
+    return changed
+
+def _protoact_view(token):
+    """Последние 7 дней для подписчика: [{tag, n, today, last}] по убыванию."""
+    with _PROTOACT_LOCK:
+        pa = _protoact_load()
+        ent = {k: v for k, v in (pa.get(str(token or "")) or {}).items()}
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    days = {time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
+            for i in range(_PA_DAYS)}
+    out = []
+    for tag, e in ent.items():
+        dd = e.get("d") or {}
+        n = sum(int(v or 0) for k, v in dd.items() if k in days)
+        if n <= 0:
+            continue
+        last = int(e.get("last") or 0)
+        if not last and dd:
+            try:
+                last = int(datetime.datetime.strptime(max(dd), "%Y-%m-%d").replace(
+                    tzinfo=datetime.timezone.utc).timestamp()) + 86399
+            except Exception:
+                last = 0
+        out.append({"tag": tag, "n": n, "today": int(dd.get(today) or 0), "last": last})
+    out.sort(key=lambda x: -x["n"])
+    return out
+
 def _access_log_lines():
+    _devpos_init()
     try:
         sz = os.path.getsize(_XRAY_ACCESS)
     except OSError:
@@ -9556,57 +10457,113 @@ def _strip_port(addr):
         return addr[1:j] if j > 0 else addr
     return addr.rsplit(":", 1)[0] if addr.count(":") == 1 else addr
 
+def _dev_seen(email, ip, now):
+    """Отметить подключение IP у клиента. Новый IP попадает в «роуминг» к самому
+    давно затихшему устройству того же клиента, если пауза похожа на смену сети."""
+    d = _DEVTRACK.setdefault(email, {})
+    for g in d.values():
+        if ip in g["ips"]:
+            g["ips"][ip] = now
+            return
+    cands = [(max(g["ips"].values()), g) for g in d.values()
+             if _DEV_IDLE_LO <= now - max(g["ips"].values()) <= _DEV_IDLE_HI]
+    if cands:
+        min(cands, key=lambda x: x[0])[1]["ips"][ip] = now
+        return
+    d[ip] = {"ips": {ip: now}}
+
 def _device_tick(st):
     limits = {}
     names = {}
+    tok_of = {}
     for proto, inb in (st.get("inbounds") or {}).items():
         for c in inb.get("clients", []):
             names[c["uuid"]] = c.get("name") or str(c["uuid"])[:8]
+            if c.get("sub_token"):
+                tok_of[c["uuid"]] = c["sub_token"]
             if proto in ("wireguard", "amneziawg"):
                 continue
             md = int(c.get("max_devices") or 0)
             if md > 0:
                 limits[c["uuid"]] = max(limits.get(c["uuid"], 0), md)
     now = time.time()
+    pact = {}
     for line in _access_log_lines():
         m = _ACC_RE.match(line)
         if not m:
             continue
         email = _acc_email(line)
-        if not email or email not in limits:
+        if not email:
+            continue
+        tok = tok_of.get(email)
+        if tok:
+            tag = _acc_tag(line)
+            if tag and tag != "api":
+                day = line[:10] if _DATE_RE.match(line[:10]) else \
+                    time.strftime("%Y-%m-%d", time.gmtime(now))
+                pact.setdefault(tok, {}).setdefault(tag, {}).setdefault(day, 0)
+                pact[tok][tag][day] += 1
+        if email not in limits:
             continue
         ip = _strip_port(m.group(1))
         if _f2b_public(ip):
-            _DEVTRACK.setdefault(email, {})[ip] = now
+            _dev_seen(email, ip, now)
+    if pact:
+        try:
+            _protoact_merge(pact, now)
+        except Exception as e:
+            print("[protoact] " + str(e), flush=True)
+    try:
+        _save(_DEV_POS_FILE, list(_DEV_POS))
+    except Exception:
+        pass
     if not limits:
         _DEVTRACK.clear()
+        _DEV_OVER.clear()
         return
+    for email in list(_DEVTRACK):
+        if email not in limits:
+            _DEVTRACK.pop(email, None)
+            _DEV_OVER.pop(email, None)
     for email, md in limits.items():
         d = _DEVTRACK.get(email)
         if not d:
+            _DEV_OVER.pop(email, None)
             continue
-        for ip, ts in list(d.items()):
-            if now - ts > _DEV_WIN_SEC:
-                d.pop(ip, None)
-        while len(d) > md:
-            newest = max(d, key=lambda ip: d[ip])
-            d.pop(newest, None)
-            if _f2b_has_session(newest):
-                continue
-            if not _ban_ip(newest, _DEV_BAN_SEC, "devices:" + str(email)[:8]):
-                break
-            _audit("device_ban", ip=newest, uuid=email, name=names.get(email, ""),
-                   max_devices=md)
-            print("[devices] бан " + newest + " (клиент " + names.get(email, "") + ")",
-                  flush=True)
-            try:
-                ids = CFG_CACHE.get("bot_chat_ids") or []
-                if ids:
-                    _bot_send_message(ids[0],
-                        f"📱 <b>Лимит устройств</b>\nКлиент: {names.get(email, '?')}\n"
-                        f"Разрешено: {md}, новый IP {newest} забанен на 2ч", "HTML")
-            except Exception:
-                pass
+        for gid in list(d):
+            ips = d[gid]["ips"]
+            for ip, ts in list(ips.items()):
+                if now - ts > _DEV_WIN_SEC:
+                    ips.pop(ip, None)
+            if not ips:
+                d.pop(gid, None)
+        if len(d) <= md:
+            _DEV_OVER.pop(email, None)
+            continue
+        since = _DEV_OVER.setdefault(email, now)
+        if now - since < _DEV_OVER_SEC:
+            continue     # превышение могло быть от роуминга — наказываем не сразу
+        _DEV_OVER.pop(email, None)
+        # «нарушитель» — самое молодое устройство (не тот, кто сидит давно)
+        gid = max(d, key=lambda g: max(d[g]["ips"].values()))
+        g = d.pop(gid)
+        vip = max(g["ips"], key=lambda ip: g["ips"][ip])
+        if _f2b_has_session(vip):
+            continue
+        if not _ban_ip(vip, _DEV_BAN_SEC, "devices:" + str(email)[:8]):
+            break
+        _audit("device_ban", ip=vip, uuid=email, name=names.get(email, ""),
+               max_devices=md, roam=len(g["ips"]))
+        print("[devices] бан " + vip + " (клиент " + names.get(email, "") + ")",
+              flush=True)
+        try:
+            ids = CFG_CACHE.get("bot_chat_ids") or []
+            if ids:
+                _bot_send_message(ids[0],
+                    f"📱 <b>Лимит устройств</b>\nКлиент: {names.get(email, '?')}\n"
+                    f"Разрешено: {md}, новое устройство {vip} забанено на 2ч", "HTML")
+        except Exception:
+            pass
 
 def _ensure_logrotate():
     """ротация access-лога Xray (50M, 2 копии) — панель ведёт лог постоянно."""
@@ -10495,7 +11452,9 @@ def _dynv6_create_zone(name, account_token):
         up = {"ok": False, "error": str(e)}
     return {"ok": True, "host": name, "token": account_token, "zone_created": True, "update": up}
 
-def _dynv6_update(force4=None):
+def _dynv6_update(force4=None, force6=None):
+    if not force4 and not force6 and _mv_locked():
+        raise RuntimeError("переезд: самопроизвольные DDNS-обновления приостановлены")
     conf = _dynv6_conf()
     host, token = conf["host"], conf["token"]
     if not host or not token:
@@ -10505,6 +11464,8 @@ def _dynv6_update(force4=None):
     ip4, ip6 = _pub_ip4(), _pub_ip6()
     if force4:
         ip4 = str(force4)
+    if force6:
+        ip6 = str(force6)
     p = [("hostname", host)]
     if ip4: p.append(("ipv4", ip4))
     if ip6: p.append(("ipv6", ip6))
@@ -10941,7 +11902,7 @@ def _rotate_loop():
             cfg = _rot_conf()
             iv = max(300, cfg["check_min"] * 60)
             t0 = time.time()
-            if cfg["enabled"]:
+            if cfg["enabled"] and not _mv_locked():
                 _rot_tick()
             with _ROT_LOCK:
                 busy = _ROT["busy"]
@@ -11311,6 +12272,10 @@ def _limits_loop():
                 except Exception as e:
                     print("[synfix] " + str(e), flush=True)
                 try:
+                    _addr_watch_tick()
+                except Exception as e:
+                    print("[addr] " + str(e), flush=True)
+                try:
                     _device_tick(st)
                 except Exception as e:
                     print("[devices] " + str(e), flush=True)
@@ -11335,6 +12300,9 @@ def _bot_poll_loop():
     last_update_id = 0
     while True:
         try:
+            if _mv_load().get("pause_bot"):
+                time.sleep(30)
+                continue
             token = CFG_CACHE.get("bot_token", "")
             if token:
                 url = f"https://api.telegram.org/bot{token}/getUpdates?offset={last_update_id + 1}&timeout=25"
@@ -11566,6 +12534,957 @@ def _autobk_loop():
         time.sleep(120)
 
 threading.Thread(target=_autobk_loop, daemon=True).start()
+
+# ---------- «Переезд» — автоматическая миграция на новый VPS ----------
+# Старый хост по SSH ставит Veil на новый, переносит ВСЁ состояние (конфиги,
+# подписчики, ключи, секреты telemt, сертификаты, nginx) порты-в-порты, поэтому
+# ссылки подписчиков не меняются. Дальше — самопроверка, переключение DNS и
+# «пенсионирование» старого хоста. Каждое действие пишется в mv_state.json:
+# прерванный процесс продолжается с того же шага, а не с начала.
+import io as _mv_io
+
+MV_FILE = f"{BASE}/mv_state.json"
+MV_JOBS = {}
+MV_LOCK = threading.Lock()
+MV_STEPS = ["Доступ по SSH", "Проверка нового хоста", "Передача файлов",
+            "Установка Veil", "Перенос данных", "Проверка связности"]
+# пока переезд не завершён, хосты сами DNS не трогают (иначе старый будет
+# «тянуть домен назад» при каждом DDNS-цикле, а боты двух хостов — спорить)
+_MV_LOCKED = {"prepared", "precheck", "applied", "verified", "dns_done", "retired", "arrived"}
+_MV_BASE_FILES = ["panel.py", "index.html", "install.sh", "agent.py", "manifest.json",
+                  "config.json", "state.json", "theme.json", "wallpaper.bin", "logo.bin",
+                  "payments.json", "sessions.json", "sessions_meta.json", "passkeys.json",
+                  "bans.json", "sub_devices.json", "sub_prefs.json", "proto_activity.json",
+                  "bot_langs.json", "hops.json", "nodes.json", "mux_state.json",
+                  "tg_mp_port.json", "globalping_history.json", "FIRST-LOGIN.txt",
+                  "audit.json", "login_history.json", "github.token"]
+_MV_BASE_DIRS = ["certs", "avatars", "node_keys", "rulesets", "frontsite", "decoy", "appicons"]
+_MV_PRIVATE = {"config.json", "state.json", "sessions.json", "sessions_meta.json",
+               "passkeys.json", "payments.json", "nodes.json", "hops.json", "bans.json",
+               "sub_devices.json", "sub_prefs.json", "proto_activity.json", "bot_langs.json",
+               "mux_state.json", "tg_mp_port.json", "mv_state.json", "github.token",
+               "FIRST-LOGIN.txt", "audit.json", "login_history.json"}
+_MV_SINGLE = "/tmp/veil-mv.tar.gz"
+
+
+def _mv_load():
+    v = _load(MV_FILE, {})
+    return v if isinstance(v, dict) else {}
+
+
+def _mv_save(st):
+    st["updated"] = int(time.time())
+    _save(MV_FILE, st, 0o600)
+
+
+def _mv_note(msg):
+    st = _mv_load()
+    log = st.get("log")
+    if not isinstance(log, list):
+        log = []
+    log.append({"ts": int(time.time()), "msg": str(msg)[:300]})
+    st["log"] = log[-150:]
+    _mv_save(st)
+    return st
+
+
+def _mv_setp(**kw):
+    st = _mv_load()
+    st.update(kw)
+    _mv_save(st)
+    return st
+
+
+def _mv_step():
+    return _mv_load().get("step") or ""
+
+
+def _mv_locked():
+    """Хост в середине переезда: не толкать свой IP в DNS и не крутить ротацию."""
+    return _mv_step() in _MV_LOCKED
+
+
+def _mv_notify(text):
+    for cid in [str(x) for x in (CFG_CACHE.get("bot_chat_ids") or [])][:8]:
+        try:
+            _bot_send_message(cid, "📦 Переезд: " + text)
+        except Exception:
+            pass
+
+
+def _mv_ports_plan():
+    """Все публичные порты, которые панель займёт на новом хосте."""
+    plan, seen = [], set()
+
+    def add(proto, port):
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            return
+        if 1 <= port <= 65535 and (proto, port) not in seen:
+            seen.add((proto, port))
+            plan.append("%s:%d" % (proto, port))
+
+    add("tcp", CFG_CACHE.get("panel_port") or 8443)
+    st = _load(STATE) or {}
+    for proto, ib in (st.get("inbounds") or {}).items():
+        if not isinstance(ib, dict):
+            continue
+        add("udp" if proto in ("wireguard", "hysteria2", "amneziawg") else "tcp", ib.get("port"))
+    tp = _tg_toml_get_server_port()
+    if tp:
+        add("tcp", tp)
+    if shutil.which("nginx"):
+        add("tcp", 80)
+        add("tcp", 443)
+    for f in ("/etc/wireguard/veilwg.conf", "/etc/amnezia/amneziawg/awg0.conf"):
+        try:
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                m = re.search(r"(?mi)^ListenPort\s*=\s*(\d+)", fh.read())
+            if m:
+                add("udp", m.group(1))
+        except Exception:
+            pass
+    return plan
+
+
+def _mv_archive_bytes(manifest):
+    buf = _mv_io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        raw = json.dumps(manifest, ensure_ascii=False).encode()
+        ti = tarfile.TarInfo("manifest.json")
+        ti.size = len(raw)
+        ti.mode = 0o644
+        ti.mtime = int(time.time())
+        tar.addfile(ti, _mv_io.BytesIO(raw))
+        for name in _MV_BASE_FILES:
+            p = os.path.join(BASE, name)
+            if os.path.isfile(p):
+                tar.add(p, arcname="base/" + name)
+        for d in _MV_BASE_DIRS:
+            p = os.path.join(BASE, d)
+            if os.path.isdir(p):
+                tar.add(p, arcname="base/" + d)
+        td = os.path.join(BASE, "logs", "traffic_days.json")
+        if os.path.isfile(td):
+            tar.add(td, arcname="base/logs/traffic_days.json")
+        for src, arc in ((TELEMT_CONF, "etc/telemt/telemt.toml"),
+                         ("/etc/nginx/nginx.conf", "etc/nginx/nginx.conf"),
+                         ("/etc/nginx/conf.d/webproxy.conf", "etc/nginx/webproxy.conf"),
+                         ("/etc/nginx/conf.d/veil-front.conf", "etc/nginx/veil-front.conf"),
+                         ("/etc/nginx/conf.d/veil-mux-default.conf", "etc/nginx/veil-mux-default.conf"),
+                         ("/etc/nginx/veil-mux-stream.conf", "etc/nginx/veil-mux-stream.conf"),
+                         ("/etc/wireguard/veilwg.conf", "etc/wireguard/veilwg.conf"),
+                         ("/etc/amnezia/amneziawg/awg0.conf", "etc/amnezia/awg0.conf"),
+                         ("/etc/veil-zapret2/mtproto.conf", "etc/veil-zapret2/mtproto.conf")):
+            if os.path.isfile(src):
+                tar.add(src, arcname=arc)
+        for d, arc in (("/usr/local/etc/xray", "etc/xray"), ("/var/lib/telemt", "var/telemt")):
+            if os.path.isdir(d):
+                tar.add(d, arcname=arc)
+    return buf.getvalue()
+
+
+_MV_PRECHECK_SH = r'''
+set -u
+echo "VHOST|$(hostname 2>/dev/null | tr -d "\r" || echo ?)"
+( . /etc/os-release 2>/dev/null || true; echo "VID|${PRETTY_NAME:-?}|$(uname -m)" )
+echo "VDISK|$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')"
+echo "VPY|$(command -v python3 >/dev/null 2>&1 && echo yes || echo no)"
+echo "VAPT|$(command -v apt-get >/dev/null 2>&1 && echo yes || echo no)"
+for s in __PORTS_SP__; do
+  p=${s#*:}; pr=${s%%:*}
+  case "$pr" in
+    udp) line=$(ss -H -lunp "sport = :$p" 2>/dev/null | head -1) ;;
+    *)   line=$(ss -H -ltnp "sport = :$p" 2>/dev/null | head -1) ;;
+  esac
+  if [ -z "$line" ]; then echo "VPORT|$s|free"; continue; fi
+  pid=$(printf '%s' "$line" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+  proc=$(printf '%s' "$line" | grep -oE '\("[A-Za-z0-9_.-]+' | head -1 | tr -d '("')
+  unit=""
+  if [ -n "$pid" ] && [ -r "/proc/$pid/cgroup" ]; then
+    unit=$(grep -m1 -oE '[A-Za-z0-9@:._-]+\.(service|socket)' "/proc/$pid/cgroup" | head -1)
+  fi
+  echo "VPORT|$s|taken|${proc:-?}|${unit:-none}|${pid:-0}"
+done
+for v in xray telemt nginx vpnpanel veil-zapret2; do
+  echo "VSVC|$v|$(systemctl is-active $v 2>/dev/null || true)"
+done
+echo "VDATA|$( [ -f /opt/vpnpanel/config.json ] && echo yes || echo no )"
+echo VEILPRE_DONE
+'''
+
+_MV_TAKEOVER_SH = r'''
+set -u
+for w in __SPECS_SP__; do
+  IFS=, read -r spec unit pid rest <<EOF2
+$w
+EOF2
+  case "$unit" in ssh*|sshd*) continue ;; esac
+  if [ -n "$unit" ] && [ "$unit" != none ]; then
+    systemctl stop "$unit" 2>/dev/null || true
+    systemctl mask "$unit" 2>/dev/null || true
+  fi
+done
+sleep 1
+for w in __SPECS_SP__; do
+  IFS=, read -r spec unit pid rest <<EOF2
+$w
+EOF2
+  if [ -n "$pid" ] && [ "$pid" != 0 ] && kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid" 2>/dev/null || true; fi
+done
+sleep 2
+for w in __SPECS_SP__; do
+  IFS=, read -r spec unit pid rest <<EOF2
+$w
+EOF2
+  if [ -n "$pid" ] && [ "$pid" != 0 ] && kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+done
+for w in __SPECS_SP__; do
+  IFS=, read -r spec unit pid rest <<EOF2
+$w
+EOF2
+  p=${spec#*:}; pr=${spec%%:*}
+  case "$pr" in
+    udp) line=$(ss -H -lunp "sport = :$p" 2>/dev/null | head -1) ;;
+    *)   line=$(ss -H -ltnp "sport = :$p" 2>/dev/null | head -1) ;;
+  esac
+  if [ -n "$line" ]; then
+    proc=$(printf '%s' "$line" | grep -oE '\("[A-Za-z0-9_.-]+' | head -1 | tr -d '("')
+    echo "VSTILL|$spec|${proc:-?}"
+  fi
+done
+echo VEILTAK_DONE
+'''
+
+_MV_INSTALL_SH = r'''
+set -euo pipefail
+mkdir -p /opt/vpnpanel
+tar -xzf /tmp/veil-mv.tar.gz -C /opt/vpnpanel --strip-components=1 base/panel.py base/index.html
+for s in 0 1 2 3 4; do bash /tmp/veil-install.sh --step $s; done
+python3 /opt/vpnpanel/panel.py --migrate-apply /tmp/veil-mv.tar.gz
+'''
+
+_MV_PANEL_UNIT = """[Unit]
+Description=VPN Panel
+After=network-online.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/vpnpanel/panel.py
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _mv_plan(dest_host, ssh_user, ssh_port):
+    dest_host = (dest_host or "").strip()
+    ssh_user = (ssh_user or "root").strip()
+    try:
+        ssh_port = int(ssh_port or 22)
+    except (TypeError, ValueError):
+        ssh_port = 22
+    blockers = []
+    if not dest_host or not _SSH_HOST_RE.fullmatch(dest_host):
+        blockers.append("адрес нового хоста пустой или недопустимый")
+    if not _SSH_USER_RE.fullmatch(ssh_user):
+        blockers.append("SSH-логин содержит недопустимые символы")
+    if not (1 <= ssh_port <= 65535):
+        blockers.append("неверный SSH-порт")
+    own = ""
+    try:
+        own = _pub_ip4() or ""
+    except Exception:
+        pass
+    if own and dest_host == own:
+        blockers.append("это адрес текущего хоста — переехать «в себя» нельзя")
+    ports = _mv_ports_plan()
+    note = ("На новом хосте будут заняты те же порты, что и здесь: " + ", ".join(ports) +
+            ". Панель подключится по SSH, поставит Veil (нужны исходящие к github.com "
+            "для Xray/telemt) и перенесёт всё состояние: подписчики, ссылки, секреты, "
+            "сертификаты — без изменений. Пока ты не переключишь DNS, подписчики идут "
+            "на старый хост; после переключения старый нужно «пенсионировать», иначе "
+            "два хоста будут спорить из-за бота и DDNS. Пароль SSH сохраняется только "
+            "в памяти задания и стирается по завершении.")
+    _mv_setp(dest={"host": dest_host, "user": ssh_user, "ssh_port": ssh_port})
+    return {"dest": {"host": dest_host, "user": ssh_user, "ssh_port": ssh_port},
+            "ports": ports, "blockers": blockers, "can_apply": not blockers, "note": note}
+
+
+def _mv_new_job(params):
+    jid = uuidlib.uuid4().hex[:12]
+    job = {"id": jid,
+           "steps": [{"name": s, "state": "pending", "detail": ""} for s in MV_STEPS],
+           "done": False, "ok": False, "error": None, "created": int(time.time()),
+           "params": params}
+    with MV_LOCK:
+        MV_JOBS[jid] = job
+        old = sorted(MV_JOBS, key=lambda k: MV_JOBS[k]["created"])[:-10]
+        for k in old:
+            if MV_JOBS[k].get("done"):
+                MV_JOBS.pop(k, None)
+    threading.Thread(target=_mv_worker, args=(jid,), daemon=True).start()
+    return jid
+
+
+def _mv_public_job(jid):
+    with MV_LOCK:
+        j = MV_JOBS.get(jid)
+        if not j:
+            return {"error": "задание не найдено"}
+        j = json.loads(json.dumps(j, default=str))
+    j.pop("params", None)
+    return j
+
+
+def _mv_worker(jid):
+    with MV_LOCK:
+        job = MV_JOBS.get(jid) or {}
+        prm = dict(job.get("params") or {})
+    host = (prm.get("host") or "").strip()
+    user = (prm.get("user") or "root").strip()
+    password = prm.get("password") or ""
+    sport = int(prm.get("ssh_port") or 22)
+    confirm_tk = bool(prm.get("confirm_takeover"))
+    ports = _mv_ports_plan()
+
+    def st(i, s, d=""):
+        with MV_LOCK:
+            j = MV_JOBS.get(jid)
+            if j:
+                j["steps"][i]["state"] = s
+                if d:
+                    j["steps"][i]["detail"] = str(d)[:400]
+        if s in ("done", "failed"):
+            _mv_note("шаг %s — %s%s" % (MV_STEPS[i], s, (": " + str(d)[:180]) if d else ""))
+
+    def finish(okv, err=None):
+        with MV_LOCK:
+            job["done"] = True
+            job["ok"] = bool(okv)
+            job["error"] = err
+            jp = job.get("params") or {}
+            jp["password"] = ""
+        stv = _mv_load()
+        stv["finished"] = int(time.time())
+        _mv_save(stv)
+
+    def fail(i, msg):
+        st(i, "failed", msg)
+        finish(False, msg)
+        _mv_setp(step="failed")
+        _mv_notify("установка на %s не удалась: %s" % (host, str(msg)[:160]))
+        try:
+            _audit("mv_fail", host=host, step=i, error=str(msg)[:200])
+        except Exception:
+            pass
+
+    try:
+        # --- шаг 0: SSH (ключ панели, при отсутствии — пароль + установка ключа)
+        st(0, "running")
+        keyfile, pubkey = _boot_host_key("mv:" + host + ":" + str(sport))
+        base = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(keyfile)
+        target = "%s@%s" % (user, host)
+
+        def key_run(cmd, timeout=60, input_txt=None):
+            return subprocess.run(base + [target, cmd], capture_output=True, text=True,
+                                  timeout=timeout, input=input_txt,
+                                  stdin=None if input_txt is not None else subprocess.DEVNULL)
+        try:
+            ok_key = key_run("true", timeout=20).returncode == 0
+        except Exception:
+            ok_key = False
+        if not ok_key:
+            if not password:
+                return fail(0, "нет доступа по ключу панели, а пароль не задан")
+            r = _boot_askpass_run(password, base + [target, "echo VPOK"], timeout=45)
+            if r.returncode != 0 or b"VPOK" not in (r.stdout or b""):
+                etxt = (r.stderr or b"").decode("utf-8", "ignore")
+                if "denied" in etxt.lower() or "permission" in etxt.lower():
+                    etxt = "SSH отклонил логин/пароль"
+                return fail(0, etxt[:200])
+            try:
+                pubtxt = open(pubkey).read().strip().replace("'", "'\\''")
+            except Exception:
+                pubtxt = ""
+            if not pubtxt:
+                return fail(0, "не читается публичный ключ панели")
+            r = _boot_askpass_run(password, base + [target,
+                  "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; "
+                  "grep -qxF '%s' ~/.ssh/authorized_keys || printf '%%s\\n' '%s' "
+                  ">> ~/.ssh/authorized_keys" % (pubtxt, pubtxt)], timeout=45)
+            if r.returncode != 0:
+                return fail(0, "установка ключа: " + (r.stderr or b"").decode("utf-8", "ignore")[:200])
+            try:
+                ok_key = key_run("true", timeout=20).returncode == 0
+            except Exception:
+                ok_key = False
+            if not ok_key:
+                return fail(0, "ключ панели не принимается после установки")
+        st(0, "done", "вход по ключу панели")
+
+        r = key_run('u=$(id -u); p=$(command -v sudo || true); '
+                    'if [ "$u" = 0 ]; then m=root; elif [ -n "$p" ] && sudo -n true 2>/dev/null; '
+                    'then m=sudo_n; elif [ -n "$p" ]; then m=s_s; else m=none; fi; '
+                    'if command -v ss >/dev/null 2>&1; then s=ss; else s=noss; fi; echo "$m $s"',
+                    timeout=30)
+        if r.returncode != 0:
+            return fail(0, "SSH-команда не прошла: " + (r.stderr or r.stdout or "")[:150])
+        parts = (r.stdout or "").split()
+        mode = parts[0] if parts else "none"
+        if len(parts) > 1 and parts[1] == "noss":
+            return fail(0, "на новом хосте нет ss (iproute2) — не проверить порты")
+        if mode == "s_s":
+            try:
+                if key_run("sudo -S -p '' true", timeout=30,
+                           input_txt=password.rstrip("\n") + "\n").returncode == 0:
+                    mode = "sudo_s"
+            except Exception:
+                pass
+        if mode not in ("root", "sudo_n", "sudo_s"):
+            return fail(0, "нужны root или sudo (парольный или без пароля)")
+
+        def root_run(cmd, timeout=120, input_txt=None):
+            if mode == "sudo_n":
+                full = "sudo -n " + cmd
+            elif mode == "sudo_s":
+                full = "sudo -S -p '' " + cmd
+                input_txt = (password.rstrip("\n") + "\n") + (input_txt or "")
+            else:
+                full = cmd
+            return key_run(full, timeout=timeout, input_txt=input_txt)
+
+        def bash_run(script, timeout=120, sudo=True):
+            shell = "bash -s"
+            if sudo and mode != "root":
+                shell = ("sudo -n bash -s" if mode == "sudo_n"
+                         else "sudo -S -p '' bash -s" if mode == "sudo_s" else shell)
+            in_txt = script
+            if sudo and mode == "sudo_s":
+                in_txt = password.rstrip("\n") + "\n" + script
+            return key_run(shell, timeout=timeout, input_txt=in_txt)
+
+        # --- шаг 1: проверка нового хоста
+        st(1, "running")
+        pre = _MV_PRECHECK_SH.replace("__PORTS_SP__", " ".join(ports))
+        r = bash_run(pre, timeout=90)
+        out = (r.stdout or "") + (r.stderr or "")
+        if "VEILPRE_DONE" not in out:
+            return fail(1, "проверка не завершилась: " + out[-250:])
+        occupied, svc, info = [], {}, {}
+        for ln in out.splitlines():
+            f = ln.split("|")
+            if f[0] == "VPORT" and len(f) >= 3 and f[2] == "taken":
+                occupied.append({"spec": f[1], "proc": f[3] if len(f) > 3 else "?",
+                                 "unit": f[4] if len(f) > 4 else "none",
+                                 "pid": f[5] if len(f) > 5 else "0"})
+            elif f[0] == "VSVC":
+                svc[f[1]] = f[2] if len(f) > 2 else ""
+            elif f[0] == "VDATA":
+                svc["data"] = f[1] if len(f) > 1 else "no"
+            elif f[0] in ("VID", "VDISK", "VHOST", "VPY", "VAPT"):
+                info[f[0]] = ln
+        _mv_setp(precheck={"occupied": occupied, "services": svc, "env": info})
+        if svc.get("data") == "yes" and svc.get("vpnpanel") == "active":
+            return fail(1, "на этом хосте уже работает живая Veil-панель — переезд на неё "
+                          "разрушил бы её данные; выбери чистый хост или удали Veil на нём")
+        if occupied and not confirm_tk:
+            who = ", ".join("%s (%s%s)" % (o["spec"], o["proc"],
+                                           " · " + o["unit"] if o["unit"] not in ("", "none") else "")
+                            for o in occupied)
+            return fail(1, "порты заняты: " + who +
+                        " — включи «забрать порты принудительно» и повтори")
+        if occupied:
+            st(1, "running", "забираю %d занятых порта(ов)" % len(occupied))
+            specs = " ".join("%s,%s,%s" % (o["spec"], o["unit"] or "none", o["pid"] or "0")
+                             for o in occupied)
+            tk = _MV_TAKEOVER_SH.replace("__SPECS_SP__", specs)
+            r = bash_run(tk, timeout=120)
+            out = (r.stdout or "") + (r.stderr or "")
+            still = [ln for ln in out.splitlines() if ln.startswith("VSTILL|")]
+            if "VEILTAK_DONE" not in out or still:
+                return fail(1, "порты остались заняты: " +
+                            "; ".join(s.split("|")[1] + "(" + s.split("|")[2] + ")" for s in still)
+                            if still else "захват не подтверждён: " + out[-200:])
+            st(1, "done", "свободно после захвата")
+        else:
+            st(1, "done", "порты свободны: " + ", ".join(ports))
+
+        # --- шаг 2: передача файлов
+        st(2, "running")
+        _mv_setp(step="prepared")
+        manifest = {"app": "veil-mv", "version": VERSION, "created": int(time.time()),
+                    "hostname": socket.gethostname(), "ports": ports,
+                    "dest": _mv_load().get("dest") or {}}
+        try:
+            manifest["source_ip"] = _pub_ip4() or ""
+        except Exception:
+            pass
+        raw = _mv_archive_bytes(manifest)
+        if len(raw) > 200 * 1024 * 1024:
+            return fail(2, "архив больше 200 МБ — так переезжать нельзя, разберись с логами")
+        try:
+            with open("/tmp/veil-mv-cache.tar.gz", "wb") as f:
+                f.write(raw)
+        except Exception:
+            pass
+        r = subprocess.run(base + [target, "cat > " + _MV_SINGLE],
+                           input=raw, capture_output=True, timeout=1800)
+        if r.returncode != 0:
+            return fail(2, "загрузка архива: " +
+                        (r.stderr or b"").decode("utf-8", "ignore")[:200])
+        with open(os.path.join(BASE, "install.sh"), encoding="utf-8") as f:
+            inst_sh = f.read()
+        r = key_run("cat > /tmp/veil-install.sh", timeout=120, input_txt=inst_sh)
+        if r.returncode != 0:
+            return fail(2, "загрузка install.sh: " + (r.stderr or r.stdout or "")[:200])
+        st(2, "done", "архив %d МБ + установщик переданы" % (max(1, len(raw) // (1024 * 1024))))
+
+        # --- шаг 3: установка Veil на новый хост
+        st(3, "running")
+        r = bash_run(_MV_INSTALL_SH, timeout=2400)
+        out = (r.stdout or "") + (r.stderr or "")
+        st(3, "done", "инсталлятор отработал" if "VEILSUM|" in out or r.returncode == 0
+           else "инсталлятор завершился с ошибкой")
+
+        # --- шаг 4: перенос данных (сделал --migrate-apply, читаем VEILSUM)
+        st(4, "running")
+        summary = None
+        for ln in out.splitlines():
+            if ln.startswith("VEILSUM|"):
+                try:
+                    summary = json.loads(ln[len("VEILSUM|"):])
+                except Exception:
+                    summary = None
+        if not summary:
+            err = ""
+            for ln in out.splitlines():
+                if ln.startswith("VEILERR"):
+                    err = ln
+            return fail(4, (err or out)[-350:])
+        _mv_setp(summary=summary, dest_ip=summary.get("dest_ip") or "",
+                 step="applied")
+        if not summary.get("ok"):
+            return fail(4, "перенос применён, но самопроверка нового хоста не прошла: " +
+                        str(summary.get("problems") or []) +
+                        " | недоступные порты: " + str(summary.get("ports_missing") or []))
+        st(4, "done", "данные перенесены, панель нового хоста: %s:%s" %
+           (summary.get("dest_ip") or host, summary.get("panel_port")))
+
+        # --- шаг 5: проверка связности со стороны старого хоста
+        st(5, "running")
+        dip = summary.get("dest_ip") or (host if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host or "") else "")
+        pp = int(summary.get("panel_port") or CFG_CACHE.get("panel_port") or 8443)
+        pub_up, pub_down = [], []
+        if dip:
+            for spec in ports:
+                pr, pv = spec.split(":")
+                if pr != "tcp":
+                    continue
+                if _hop_public(dip, int(pv), timeout=2.0):
+                    pub_up.append(spec)
+                else:
+                    pub_down.append(spec)
+            web_ok = _hop_public(dip, pp)
+        else:
+            web_ok = False
+        ver = {"ip": dip, "web_ok": web_ok, "tcp_up": pub_up, "tcp_down": pub_down,
+               "note_udp": "UDP-порты (WireGuard/Hysteria2) публичной пробой не проверяются",
+               "ts": int(time.time())}
+        _mv_setp(verify=ver, step="verified")
+        detail = ("панель отвечает" if web_ok else "панель НЕ отвечает")
+        if pub_down:
+            detail += "; не открыто: " + ", ".join(pub_down[:8])
+        _mv_note("проверка связности: " + detail)
+        if not web_ok:
+            st(5, "failed", detail + " — проверь security group / firewall нового хоста")
+            finish(False, "новый хост недоступен снаружи: " + detail)
+            _mv_notify("данные на %s перенесены, но снаружи он не виден (%s). "
+                       "Открой порты в панели хостинга и нажми «Проверить ещё раз»." %
+                       (dip or host, ", ".join(pub_down[:6]) or "порт панели"))
+            return
+        st(5, "done", detail)
+        finish(True)
+        _audit("mv_ok", host=dip or host, ports=ports)
+        _mv_notify("новый хост %s готов: данные перенесены, связь есть. "
+                   "Открой https://%s:%s — вход тот же. Дальше: переключить DNS." %
+                   (dip or host, dip or host, pp))
+    except Exception as e:
+        fail(1, "исключение: " + str(e)[:200])
+
+
+def _mv_verify_now():
+    st = _mv_load()
+    summ = st.get("summary") or {}
+    dip = st.get("dest_ip") or summ.get("dest_ip") or ""
+    if not dip:
+        raise RuntimeError("сначала запусти переезд")
+    ports = _mv_ports_plan()
+    pp = int(summ.get("panel_port") or CFG_CACHE.get("panel_port") or 8443)
+    pub_up, pub_down = [], []
+    for spec in ports:
+        pr, pv = spec.split(":")
+        if pr != "tcp":
+            continue
+        (pub_up if _hop_public(dip, int(pv), timeout=2.0) else pub_down).append(spec)
+    web_ok = _hop_public(dip, pp)
+    ver = {"ip": dip, "web_ok": web_ok, "tcp_up": pub_up, "tcp_down": pub_down,
+           "note_udp": "UDP-порты публичной пробой не проверяются", "ts": int(time.time())}
+    _mv_setp(verify=ver, step="verified")
+    _mv_note("повторная проверка: панель %s, tcp вверх %s, вниз %s" %
+             ("ок" if web_ok else "НЕ ОТВЕЧАЕТ", pub_up or "—", pub_down or "—"))
+    return ver
+
+
+def _mv_dns(provider="auto", confirm=False):
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: домен начнёт указывать на новый хост")
+    st = _mv_load()
+    if st.get("step") not in ("applied", "verified", "dns_done"):
+        raise RuntimeError("сначала успешно заверши переезд (есть отчёт нового хоста)")
+    ip4 = st.get("dest_ip") or (st.get("summary") or {}).get("dest_ip") or ""
+    ip6 = (st.get("summary") or {}).get("dest_ip6") or ""
+    if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip4 or ""):
+        raise RuntimeError("не знаю публичный IPv4 нового хоста")
+    c = CFG_CACHE
+    if provider == "auto":
+        provider = "cloudflare" if ((c.get("cf_token") or "").strip() and
+                                    (c.get("cf_records") or c.get("cf_zone"))) else \
+                   ("dynv6" if (c.get("dynv6_host") or "").strip() else "manual")
+    report = []
+    if provider == "cloudflare":
+        try:
+            ch = _cf_set_ip(ip4)
+            report += ["cloudflare: " + (", ".join("%s %s→%s" % (x["name"], x["from"], x["to"])
+                                                   for x in ch) if ch else "записи уже актуальны")]
+        except Exception as e:
+            raise RuntimeError("Cloudflare: " + str(e)[:200])
+        try:
+            wd = _wg_auto_domain()
+            z = (c.get("cf_zone") or "").strip().lower()
+            if wd and z and wd == "wg." + z:
+                _cf_ensure_wg(ip4)
+                report.append("wg-эндпоинт: wg.%s → %s" % (z, ip4))
+        except Exception as e:
+            report.append("wg-эндпоинт: ошибка " + str(e)[:140])
+    elif provider == "dynv6":
+        try:
+            _dynv6_update(force4=ip4, force6=ip6 or None)
+            report.append("dynv6: %s → %s%s" % (_dynv6_conf()["host"], ip4,
+                                                (" (IPv6: %s)" % ip6) if ip6 else ""))
+            if not ip6:
+                report.append("внимание: IPv6 нового хоста не известен — AAAA-запись "
+                              "не обновлена, убери её вручную, если у нового хоста нет v6")
+        except Exception as e:
+            raise RuntimeError("dynv6: " + str(e)[:200])
+    else:
+        report.append("авто-переключение недоступно (DNS-провайдер не настроен): "
+                      "поменяй A-записи вручную на %s, затем нажми «пенсионировать»" % ip4)
+    _mv_setp(step="dns_done", scheduled_ts=0, dns={"provider": provider, "ip": ip4,
+                                                   "report": report, "ts": int(time.time())})
+    _mv_note("DNS переключён на " + ip4 + " (" + provider + ")")
+    _audit("mv_dns", ip=ip4, provider=provider)
+    _mv_notify("домен переведён на %s. Проверь доступность и пенсионзируй старый хост." % ip4)
+    return {"provider": provider, "ip": ip4, "report": report}
+
+
+def _mv_retire(confirm=False):
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: старый хост перестанет обслуживать подписчиков")
+    st = _mv_load()
+    if st.get("step") not in ("dns_done", "verified", "applied"):
+        raise RuntimeError("сначала переключи DNS (или убедись, что новый хост живой)")
+    stopped = []
+    for svc in ("xray", "telemt", "veil-zapret2", "nginx"):
+        try:
+            subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=60)
+            subprocess.run(["systemctl", "disable", svc], capture_output=True, timeout=60)
+            stopped.append(svc)
+        except Exception:
+            pass
+    for iface in (AWG_IFACE, WG_IFACE):
+        try:
+            subprocess.run(["systemctl", "stop", "wg-quick@" + iface], capture_output=True, timeout=30)
+        except Exception:
+            pass
+    _mv_setp(step="retired", retired_ts=int(time.time()), stopped=stopped, pause_bot=True)
+    _mv_note("старый хост пенсионирован: остановлено " + ", ".join(stopped))
+    _audit("mv_retire", stopped=stopped)
+    _mv_notify("этот хост pensionирован (остановлено: %s). Панель на :%s ещё доступна "
+               "для осмотра; после проверки удали хост у хостинга." %
+               (", ".join(stopped), CFG_CACHE.get("panel_port") or 8443))
+    return {"stopped": stopped}
+
+
+def _mv_finish_here():
+    """Вызывается на НОВОМ хосте: переезд завершён, можно включать бота и DDNS."""
+    st = _mv_load()
+    if st.get("step") != "arrived":
+        raise RuntimeError("этот хост не является результатом переезда")
+    _mv_setp(step="idle", pause_bot=False)
+    _mv_note("переезд завершён на новом хосте — DDNS и бот включены")
+    return {"ok": True}
+
+
+def _mv_cancel():
+    with MV_LOCK:
+        live = any((not j.get("done")) for j in MV_JOBS.values())
+    if live:
+        raise RuntimeError("задание ещё идёт — дождись его завершения или ошибки")
+    _mv_setp(step="cancelled")
+    _mv_note("переезд отменён")
+    return {"ok": True}
+
+
+def _mv_view():
+    st = _mv_load()
+    job = None
+    jid = st.get("jid") or ""
+    if jid:
+        job = _mv_public_job(jid)
+        if isinstance(job, dict) and job.get("error") == "задание не найдено":
+            job = None
+    return {"mv": st, "job": job, "ports": _mv_ports_plan(),
+            "dns_provider": _dns01_provider() or ("dynv6" if _dynv6_conf()["host"] else ""),
+            "locked": _mv_locked()}
+
+
+def _mv_loop():
+    time.sleep(20)
+    while True:
+        try:
+            st = _mv_load()
+            sch = int(st.get("scheduled_ts") or 0)
+            if sch and st.get("step") == "verified" and time.time() >= sch:
+                _mv_note("сработало расписание переезда")
+                _mv_dns(provider=st.get("scheduled_provider") or "auto", confirm=True)
+                if st.get("auto_retire"):
+                    _mv_retire(confirm=True)
+        except Exception as e:
+            _mv_note("по расписанию: ошибка " + str(e)[:200])
+        time.sleep(30)
+
+
+threading.Thread(target=_mv_loop, daemon=True).start()
+
+
+def _mv_unpack(tar, root="/"):
+    """Раскладка архива переезда по местам. root — префикс (тест в песочнице)."""
+    problems = []
+
+    def place(m):
+        n = m.name
+        if n == "manifest.json" or "/" not in n:
+            return None
+        if n.startswith("base/"):
+            dest = os.path.join(BASE, n[len("base/"):])
+        elif n.startswith("etc/xray/") or n == "etc/xray":
+            dest = "/usr/local/etc/xray/" + n[len("etc/xray/"):] if n != "etc/xray" \
+                else "/usr/local/etc/xray"
+        elif n.startswith("etc/telemt/"):
+            dest = "/etc/telemt/" + n[len("etc/telemt/"):]
+        elif n.startswith("etc/nginx/webproxy.conf"):
+            dest = "/etc/nginx/conf.d/webproxy.conf"
+        elif n.startswith("etc/nginx/veil-front.conf"):
+            dest = "/etc/nginx/conf.d/veil-front.conf"
+        elif n.startswith("etc/nginx/veil-mux-default.conf"):
+            dest = "/etc/nginx/conf.d/veil-mux-default.conf"
+        elif n.startswith("etc/nginx/veil-mux-stream.conf"):
+            dest = "/etc/nginx/veil-mux-stream.conf"
+        elif n.startswith("etc/nginx/nginx.conf"):
+            dest = "/etc/nginx/nginx.conf"
+        elif n.startswith("etc/wireguard/"):
+            dest = "/etc/wireguard/" + n[len("etc/wireguard/"):]
+        elif n.startswith("etc/amnezia/"):
+            dest = "/etc/amnezia/amneziawg/" + n[len("etc/amnezia/"):]
+        elif n.startswith("etc/veil-zapret2/"):
+            dest = "/etc/veil-zapret2/" + n[len("etc/veil-zapret2/"):]
+        elif n.startswith("var/telemt/") or n == "var/telemt":
+            dest = "/var/lib/telemt/" + n[len("var/telemt/"):].lstrip("/") if n != "var/telemt" \
+                else "/var/lib/telemt"
+        else:
+            return None
+        if root != "/":
+            dest = os.path.join(root, dest.lstrip("/"))
+        if m.isdir():
+            os.makedirs(dest, exist_ok=True)
+            return None
+        data = tar.extractfile(m).read()
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, m.mode & 0o777 or 0o644)
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        return dest
+    for m in tar.getmembers():
+        try:
+            place(m)
+        except Exception as e:
+            problems.append("раскладка %s: %s" % (m.name, str(e)[:100]))
+    return problems
+
+
+def _mv_apply_main():
+    """На НОВОМ хосте: python3 /opt/vpnpanel/panel.py --migrate-apply /tmp/veil-mv.tar.gz"""
+    argv = sys.argv
+    try:
+        path = argv[argv.index("--migrate-apply") + 1]
+    except (ValueError, IndexError):
+        raise RuntimeError("--migrate-apply <архив.tar.gz>")
+    if os.geteuid() != 0:
+        raise RuntimeError("нужен root")
+    if not os.path.isfile(path):
+        raise RuntimeError("нет архива: " + path)
+    problems = []
+    tar = tarfile.open(path, "r:gz")
+    mf = tar.extractfile("manifest.json")
+    manifest = json.loads(mf.read().decode()) if mf else {}
+    if manifest.get("app") != "veil-mv":
+        raise RuntimeError("это не архив переезда Veil")
+    cur4 = ""
+    try:
+        cur4 = _pub_ip4() or ""
+    except Exception:
+        pass
+    if cur4 and manifest.get("source_ip") and cur4 == manifest["source_ip"]:
+        raise RuntimeError("этот хост видит тот же публичный IPv4, что и источник — "
+                           "нельзя переехать «в себя»")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    keep = f"{BASE}/pre-move-{ts}"
+    os.makedirs(keep, exist_ok=True)
+    for name in sorted(os.listdir(BASE)):
+        if name.startswith("pre-move-"):
+            continue
+        try:
+            shutil.move(os.path.join(BASE, name), os.path.join(keep, name))
+        except Exception as e:
+            problems.append("перенос %s: %s" % (name, str(e)[:80]))
+    ng_orig = None
+    if os.path.isfile("/etc/nginx/nginx.conf"):
+        try:
+            shutil.copy2("/etc/nginx/nginx.conf", keep + "/orig-nginx.conf")
+            ng_orig = keep + "/orig-nginx.conf"
+        except Exception:
+            pass
+    problems += _mv_unpack(tar)
+    tar.close()
+    for name in _MV_PRIVATE:
+        try:
+            os.chmod(os.path.join(BASE, name), 0o600)
+        except Exception:
+            pass
+    try:
+        os.chmod(os.path.join(BASE, "panel.py"), 0o755)
+    except Exception:
+        pass
+    global CFG_CACHE
+    CFG_CACHE = _load(CFG, {}) or {}
+    try:
+        import pwd as _pwd, grp as _grp
+        pw = _pwd.getpwnam("telemt")
+        gr = _grp.getgrgid(pw.pw_gid).gr_name
+        for p in ("/etc/telemt", TELEMT_CONF, "/var/lib/telemt"):
+            if not os.path.exists(p):
+                continue
+            if os.path.isdir(p):
+                for root, dirs, files in os.walk(p):
+                    for nm in [root] + dirs + files:
+                        try:
+                            shutil.chown(nm, user=pw.pw_name, group=gr)
+                        except Exception:
+                            pass
+            else:
+                shutil.chown(p, user=pw.pw_name, group=gr)
+    except Exception:
+        pass
+    arrived = {"step": "arrived", "from": manifest.get("source_ip") or "",
+               "from_hostname": manifest.get("hostname") or "",
+               "arrived": int(time.time()), "pause_bot": True,
+               "summary": {}, "log": [{"ts": int(time.time()),
+                                       "msg": "хост получил данные переезда"}]}
+    _mv_save(arrived)
+
+    def unit_active(svc):
+        try:
+            return subprocess.run(["systemctl", "is-active", "--quiet", svc]).returncode == 0
+        except Exception:
+            return False
+
+    def sysctl(*a, to=120):
+        try:
+            return subprocess.run(["systemctl"] + list(a), capture_output=True, timeout=to)
+        except Exception:
+            return None
+    sysctl("daemon-reload", to=60)
+    for svc in ("xray", "telemt"):
+        sysctl("enable", "--now", svc)
+    ng_ok = None
+    if shutil.which("nginx"):
+        t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=30)
+        if t.returncode == 0:
+            sysctl("enable", "--now", "nginx")
+            ng_ok = True
+        else:
+            ng_ok = False
+            problems.append("nginx -t не прошёл — конфиг откатан к прежнему, "
+                            "веб-фронт включи на новом хосте из панели заново")
+            if ng_orig:
+                try:
+                    shutil.copy2(ng_orig, "/etc/nginx/nginx.conf")
+                    os.remove("/etc/nginx/conf.d/webproxy.conf")
+                    sysctl("restart", "nginx") if unit_active("nginx") else None
+                except Exception:
+                    pass
+    if os.path.exists("/etc/systemd/system/veil-zapret2.service"):
+        sysctl("enable", "--now", "veil-zapret2")
+    for cmd in (("wg-quick@" + WG_IFACE,), ("awg-quick@" + AWG_IFACE,)):
+        if os.path.exists("/etc/systemd/system/%s.service" % cmd[0]):
+            sysctl("enable", "--now", cmd[0], to=60)
+    with open("/etc/systemd/system/vpnpanel.service", "w") as f:
+        f.write(_MV_PANEL_UNIT)
+    sysctl("daemon-reload", to=60)
+    sysctl("enable", "--now", "vpnpanel")
+    time.sleep(3)
+    pp = int(CFG_CACHE.get("panel_port") or 8443)
+    web_ok = False
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen("https://127.0.0.1:%d/" % pp, timeout=8, context=ctx) as r:
+            web_ok = r.status == 200
+    except Exception:
+        pass
+    bound, missing = [], []
+    for spec in (manifest.get("ports") or []):
+        pr, pv = spec.split(":")
+        try:
+            out = subprocess.run(["ss", "-H", "-l" + ("un" if pr == "udp" else "tn"),
+                                  "sport = :%s" % pv], capture_output=True, text=True,
+                                 timeout=10).stdout or ""
+        except Exception:
+            out = ""
+        (bound if out.strip() else missing).append(spec)
+    cur6 = ""
+    try:
+        cur6 = _pub_ip6() or ""
+    except Exception:
+        pass
+    ok = bool(web_ok) and not missing and unit_active("xray") and unit_active("telemt")
+    summary = {"ok": ok, "dest_ip": cur4, "dest_ip6": cur6, "panel_port": pp,
+               "services": {"xray": unit_active("xray"), "telemt": unit_active("telemt"),
+                            "nginx": ng_ok, "vpnpanel": unit_active("vpnpanel")},
+               "web_ok": web_ok, "ports_bound": bound, "ports_missing": missing,
+               "problems": problems[:10], "kept": keep}
+    _mv_setp(summary=summary)
+    _mv_note("перенос применён: ok=%s, недоступно портов: %s" % (ok, missing or "нет"))
+    print("VEILSUM|" + json.dumps(summary, ensure_ascii=False))
+    if not ok:
+        raise RuntimeError("самопроверка не прошла: " + str(summary)[:300])
+
 
 # ---------- backup / restore через Telegram-бота ----------
 BOT_BK_PENDING = {}
@@ -12264,7 +14183,8 @@ class H(http.server.BaseHTTPRequestHandler):
             lang = _sub_lang_pick(_lq, _lck, self.headers.get("Accept-Language", ""))
             html = _sub_page_html(u, sub_url, host, panel_port,
                                   self.headers.get("User-Agent", "") or "",
-                                  devs=_subdev_list(tok), lang=lang)
+                                  devs=_subdev_list(tok), lang=lang,
+                                  pact=_protoact_view(tok))
             b = html.encode("utf-8")
             # страница весит ~135 КБ (все ссылки/иконки встроены): по мобильному
             # каналу gzip снимает ~85% трафика и секунды ожидания
@@ -12569,6 +14489,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 u["client_device"] = top.get("type", "")
                 u["client_old"] = bool(top.get("old"))
                 u["last_seen"] = top.get("last_ts", "")
+                try:
+                    u["usage"] = _protoact_view(tok)
+                except Exception:
+                    u["usage"] = []
             return self._send(200, {"subs": subs, "configured": bool(subs),
                                     "active": _proto_of(st)})
         if p == "/api/subs/export":
@@ -12953,6 +14877,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
+        if p == "/api/front/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _front_status())
+            except Exception as e:
+                return self._send(200, {"error": str(e)[:200]})
         if p == "/api/tg/dcs":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -12988,6 +14918,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 j = HOP_JOBS.get(jid)
                 return self._send(200, json.loads(json.dumps(j, default=str)) if j
                                   else {"error": "задание не найдено"})
+        if p == "/api/migrate/status":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _mv_view())
+        if p == "/api/migrate/job":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(200, _mv_public_job((q.get("id") or [""])[0]))
         if p == "/relay.sh":
             # Публичный одноразовый установщик фронта: токен в query = право установки.
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -13122,6 +15059,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._cookies = ["sid=" + t + "; Path=/; HttpOnly; Max-Age=" + str(ma) + "; SameSite=Lax"
                                  + ("; Secure" if self._is_tls() else "")]
                 return self._send(200, {"ok": True, "sid": t, "remember": rem})
+            if p == "/api/passkey/have":
+                db = _pk_load()
+                n = sum(len(v or []) for v in db.values())
+                return self._send(200, {"have": n > 0, "n": n})
             if p == "/api/passkey/login/begin":
                 db = _pk_load()
                 ids = [k.get("id") for lst in db.values() for k in lst if k.get("id")]
@@ -14383,6 +16324,81 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _hop_set_public(b.get("host")))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/plan":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _mv_plan(b.get("host"), b.get("ssh_user"),
+                                                    b.get("ssh_port")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/start":
+                try:
+                    b = self._body() or {}
+                    pl = _mv_plan(b.get("host"), b.get("ssh_user"), b.get("ssh_port"))
+                    if not pl["can_apply"]:
+                        raise RuntimeError("; ".join(pl["blockers"]))
+                    with MV_LOCK:
+                        busy = any((not j.get("done")) for j in MV_JOBS.values())
+                    if busy:
+                        raise RuntimeError("переезд уже устанавливается — дождись завершения")
+                    password = str(b.get("password") or "")
+                    jid = _mv_new_job({"host": pl["dest"]["host"], "user": pl["dest"]["user"],
+                                       "ssh_port": pl["dest"]["ssh_port"], "password": password,
+                                       "confirm_takeover": bool(b.get("confirm_takeover"))})
+                    _mv_setp(jid=jid, step="precheck")
+                    _mv_note("переезд начат: %s@%s:%s" % (pl["dest"]["user"], pl["dest"]["host"],
+                                                          pl["dest"]["ssh_port"]))
+                    _audit("mv_start", host=pl["dest"]["host"],
+                           takeover=bool(b.get("confirm_takeover")))
+                    return self._send(200, {"id": jid})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/verify":
+                try:
+                    return self._send(200, _mv_verify_now())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/dns":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _mv_dns((b.get("provider") or "auto"),
+                                                   bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/schedule":
+                try:
+                    b = self._body() or {}
+                    ts = int(b.get("scheduled_ts") or 0)
+                    if ts and ts < time.time() + 30:
+                        raise RuntimeError("расписание должно быть минимум через минуту")
+                    if ts and _mv_step() not in ("verified", "applied"):
+                        raise RuntimeError("расписание ставится после успешной переноски "
+                                           "(шаг «проверка связности»)")
+                    _mv_setp(scheduled_ts=ts, auto_retire=bool(b.get("auto_retire")),
+                             scheduled_provider=b.get("provider") or "auto")
+                    _mv_note("расписание: " + (time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+                                               if ts else "снято") +
+                             (", авто-пенсия" if b.get("auto_retire") else ""))
+                    return self._send(200, {"scheduled_ts": ts})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/retire":
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _mv_retire(bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/finish":
+                try:
+                    return self._send(200, _mv_finish_here())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/migrate/cancel":
+                try:
+                    _mv_cancel()
+                    return self._send(200, {"ok": True})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             if p == "/api/hop/register":
                 # Публичный, но только по одноразовому токену фронт-скрипта.
                 try:
@@ -14892,6 +16908,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, **res})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/tg/user/limit":
+                b = self._body()
+                try:
+                    res = _tg_set_max_ips(b.get("username", ""), b.get("max_ips"))
+                    _audit("tg_limit", username=res["username"], max_ips=res["max_ips"])
+                    return self._send(200, {"ok": True, **res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             if p == "/api/tg/user/rotate":
                 b = self._body()
                 try:
@@ -14956,6 +16980,18 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, "sni": res})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/tg/mp/selftest":
+                b = self._body()
+                try:
+                    return self._send(200, _tg_mp_selftest(force=bool(b.get("force"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:300]})
+            if p == "/api/front/apply":
+                b = self._body()
+                try:
+                    return self._send(200, _front_apply(b.get("domain")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:300]})
             if p == "/api/tg/user/remove":
                 b = self._body()
                 try:
@@ -15110,6 +17146,13 @@ if __name__ == "__main__":
             sys.exit(0)
         except Exception as e:
             print("dns01-hook: " + str(e), file=sys.stderr)
+            sys.exit(1)
+    if "--migrate-apply" in sys.argv:
+        try:
+            _mv_apply_main()
+            sys.exit(0)
+        except Exception as e:
+            print("VEILERR: переезд(apply): " + str(e), file=sys.stderr)
             sys.exit(1)
     port = CFG_CACHE.get("panel_port", 8443)
     bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
