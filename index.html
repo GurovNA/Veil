@@ -17,7 +17,9 @@
 <link rel=apple-touch-icon sizes=58x58 href=/apple-touch-icon-58x58.png>
 <link rel=apple-touch-icon-precomposed href=/icon-veil.png>
 <link rel=icon type=image/png href=/icon-192.png>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>/* qrcodejs 1.0.0 (MIT) — встроен в панель: раньше страница синхронно ждала cdnjs, который в ряде сетей висит до таймаута и тормозит всю загрузку */
+var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this.parsedData=[];for(var b=[],d=0,e=this.data.length;e>d;d++){var f=this.data.charCodeAt(d);f>65536?(b[0]=240|(1835008&f)>>>18,b[1]=128|(258048&f)>>>12,b[2]=128|(4032&f)>>>6,b[3]=128|63&f):f>2048?(b[0]=224|(61440&f)>>>12,b[1]=128|(4032&f)>>>6,b[2]=128|63&f):f>128?(b[0]=192|(1984&f)>>>6,b[1]=128|63&f):b[0]=f,this.parsedData=this.parsedData.concat(b)}this.parsedData.length!=this.data.length&&(this.parsedData.unshift(191),this.parsedData.unshift(187),this.parsedData.unshift(239))}function b(a,b){this.typeNumber=a,this.errorCorrectLevel=b,this.modules=null,this.moduleCount=0,this.dataCache=null,this.dataList=[]}function i(a,b){if(void 0==a.length)throw new Error(a.length+"/"+b);for(var c=0;c<a.length&&0==a[c];)c++;this.num=new Array(a.length-c+b);for(var d=0;d<a.length-c;d++)this.num[d]=a[d+c]}function j(a,b){this.totalCount=a,this.dataCount=b}function k(){this.buffer=[],this.length=0}function m(){return"undefined"!=typeof CanvasRenderingContext2D}function n(){var a=!1,b=navigator.userAgent;return/android/i.test(b)&&(a=!0,aMat=b.toString().match(/android ([0-9]\.[0-9])/i),aMat&&aMat[1]&&(a=parseFloat(aMat[1]))),a}function r(a,b){for(var c=1,e=s(a),f=0,g=l.length;g>=f;f++){var h=0;switch(b){case d.L:h=l[f][0];break;case d.M:h=l[f][1];break;case d.Q:h=l[f][2];break;case d.H:h=l[f][3]}if(h>=e)break;c++}if(c>l.length)throw new Error("Too long data");return c}function s(a){var b=encodeURI(a).toString().replace(/\%[0-9a-fA-F]{2}/g,"a");return b.length+(b.length!=a?3:0)}a.prototype={getLength:function(){return this.parsedData.length},write:function(a){for(var b=0,c=this.parsedData.length;c>b;b++)a.put(this.parsedData[b],8)}},b.prototype={addData:function(b){var c=new a(b);this.dataList.push(c),this.dataCache=null},isDark:function(a,b){if(0>a||this.moduleCount<=a||0>b||this.moduleCount<=b)throw new Error(a+","+b);return this.modules[a][b]},getModuleCount:function(){return this.moduleCount},make:function(){this.makeImpl(!1,this.getBestMaskPattern())},makeImpl:function(a,c){this.moduleCount=4*this.typeNumber+17,this.modules=new Array(this.moduleCount);for(var d=0;d<this.moduleCount;d++){this.modules[d]=new Array(this.moduleCount);for(var e=0;e<this.moduleCount;e++)this.modules[d][e]=null}this.setupPositionProbePattern(0,0),this.setupPositionProbePattern(this.moduleCount-7,0),this.setupPositionProbePattern(0,this.moduleCount-7),this.setupPositionAdjustPattern(),this.setupTimingPattern(),this.setupTypeInfo(a,c),this.typeNumber>=7&&this.setupTypeNumber(a),null==this.dataCache&&(this.dataCache=b.createData(this.typeNumber,this.errorCorrectLevel,this.dataList)),this.mapData(this.dataCache,c)},setupPositionProbePattern:function(a,b){for(var c=-1;7>=c;c++)if(!(-1>=a+c||this.moduleCount<=a+c))for(var d=-1;7>=d;d++)-1>=b+d||this.moduleCount<=b+d||(this.modules[a+c][b+d]=c>=0&&6>=c&&(0==d||6==d)||d>=0&&6>=d&&(0==c||6==c)||c>=2&&4>=c&&d>=2&&4>=d?!0:!1)},getBestMaskPattern:function(){for(var a=0,b=0,c=0;8>c;c++){this.makeImpl(!0,c);var d=f.getLostPoint(this);(0==c||a>d)&&(a=d,b=c)}return b},createMovieClip:function(a,b,c){var d=a.createEmptyMovieClip(b,c),e=1;this.make();for(var f=0;f<this.modules.length;f++)for(var g=f*e,h=0;h<this.modules[f].length;h++){var i=h*e,j=this.modules[f][h];j&&(d.beginFill(0,100),d.moveTo(i,g),d.lineTo(i+e,g),d.lineTo(i+e,g+e),d.lineTo(i,g+e),d.endFill())}return d},setupTimingPattern:function(){for(var a=8;a<this.moduleCount-8;a++)null==this.modules[a][6]&&(this.modules[a][6]=0==a%2);for(var b=8;b<this.moduleCount-8;b++)null==this.modules[6][b]&&(this.modules[6][b]=0==b%2)},setupPositionAdjustPattern:function(){for(var a=f.getPatternPosition(this.typeNumber),b=0;b<a.length;b++)for(var c=0;c<a.length;c++){var d=a[b],e=a[c];if(null==this.modules[d][e])for(var g=-2;2>=g;g++)for(var h=-2;2>=h;h++)this.modules[d+g][e+h]=-2==g||2==g||-2==h||2==h||0==g&&0==h?!0:!1}},setupTypeNumber:function(a){for(var b=f.getBCHTypeNumber(this.typeNumber),c=0;18>c;c++){var d=!a&&1==(1&b>>c);this.modules[Math.floor(c/3)][c%3+this.moduleCount-8-3]=d}for(var c=0;18>c;c++){var d=!a&&1==(1&b>>c);this.modules[c%3+this.moduleCount-8-3][Math.floor(c/3)]=d}},setupTypeInfo:function(a,b){for(var c=this.errorCorrectLevel<<3|b,d=f.getBCHTypeInfo(c),e=0;15>e;e++){var g=!a&&1==(1&d>>e);6>e?this.modules[e][8]=g:8>e?this.modules[e+1][8]=g:this.modules[this.moduleCount-15+e][8]=g}for(var e=0;15>e;e++){var g=!a&&1==(1&d>>e);8>e?this.modules[8][this.moduleCount-e-1]=g:9>e?this.modules[8][15-e-1+1]=g:this.modules[8][15-e-1]=g}this.modules[this.moduleCount-8][8]=!a},mapData:function(a,b){for(var c=-1,d=this.moduleCount-1,e=7,g=0,h=this.moduleCount-1;h>0;h-=2)for(6==h&&h--;;){for(var i=0;2>i;i++)if(null==this.modules[d][h-i]){var j=!1;g<a.length&&(j=1==(1&a[g]>>>e));var k=f.getMask(b,d,h-i);k&&(j=!j),this.modules[d][h-i]=j,e--,-1==e&&(g++,e=7)}if(d+=c,0>d||this.moduleCount<=d){d-=c,c=-c;break}}}},b.PAD0=236,b.PAD1=17,b.createData=function(a,c,d){for(var e=j.getRSBlocks(a,c),g=new k,h=0;h<d.length;h++){var i=d[h];g.put(i.mode,4),g.put(i.getLength(),f.getLengthInBits(i.mode,a)),i.write(g)}for(var l=0,h=0;h<e.length;h++)l+=e[h].dataCount;if(g.getLengthInBits()>8*l)throw new Error("code length overflow. ("+g.getLengthInBits()+">"+8*l+")");for(g.getLengthInBits()+4<=8*l&&g.put(0,4);0!=g.getLengthInBits()%8;)g.putBit(!1);for(;;){if(g.getLengthInBits()>=8*l)break;if(g.put(b.PAD0,8),g.getLengthInBits()>=8*l)break;g.put(b.PAD1,8)}return b.createBytes(g,e)},b.createBytes=function(a,b){for(var c=0,d=0,e=0,g=new Array(b.length),h=new Array(b.length),j=0;j<b.length;j++){var k=b[j].dataCount,l=b[j].totalCount-k;d=Math.max(d,k),e=Math.max(e,l),g[j]=new Array(k);for(var m=0;m<g[j].length;m++)g[j][m]=255&a.buffer[m+c];c+=k;var n=f.getErrorCorrectPolynomial(l),o=new i(g[j],n.getLength()-1),p=o.mod(n);h[j]=new Array(n.getLength()-1);for(var m=0;m<h[j].length;m++){var q=m+p.getLength()-h[j].length;h[j][m]=q>=0?p.get(q):0}}for(var r=0,m=0;m<b.length;m++)r+=b[m].totalCount;for(var s=new Array(r),t=0,m=0;d>m;m++)for(var j=0;j<b.length;j++)m<g[j].length&&(s[t++]=g[j][m]);for(var m=0;e>m;m++)for(var j=0;j<b.length;j++)m<h[j].length&&(s[t++]=h[j][m]);return s};for(var c={MODE_NUMBER:1,MODE_ALPHA_NUM:2,MODE_8BIT_BYTE:4,MODE_KANJI:8},d={L:1,M:0,Q:3,H:2},e={PATTERN000:0,PATTERN001:1,PATTERN010:2,PATTERN011:3,PATTERN100:4,PATTERN101:5,PATTERN110:6,PATTERN111:7},f={PATTERN_POSITION_TABLE:[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],G15:1335,G18:7973,G15_MASK:21522,getBCHTypeInfo:function(a){for(var b=a<<10;f.getBCHDigit(b)-f.getBCHDigit(f.G15)>=0;)b^=f.G15<<f.getBCHDigit(b)-f.getBCHDigit(f.G15);return(a<<10|b)^f.G15_MASK},getBCHTypeNumber:function(a){for(var b=a<<12;f.getBCHDigit(b)-f.getBCHDigit(f.G18)>=0;)b^=f.G18<<f.getBCHDigit(b)-f.getBCHDigit(f.G18);return a<<12|b},getBCHDigit:function(a){for(var b=0;0!=a;)b++,a>>>=1;return b},getPatternPosition:function(a){return f.PATTERN_POSITION_TABLE[a-1]},getMask:function(a,b,c){switch(a){case e.PATTERN000:return 0==(b+c)%2;case e.PATTERN001:return 0==b%2;case e.PATTERN010:return 0==c%3;case e.PATTERN011:return 0==(b+c)%3;case e.PATTERN100:return 0==(Math.floor(b/2)+Math.floor(c/3))%2;case e.PATTERN101:return 0==b*c%2+b*c%3;case e.PATTERN110:return 0==(b*c%2+b*c%3)%2;case e.PATTERN111:return 0==(b*c%3+(b+c)%2)%2;default:throw new Error("bad maskPattern:"+a)}},getErrorCorrectPolynomial:function(a){for(var b=new i([1],0),c=0;a>c;c++)b=b.multiply(new i([1,g.gexp(c)],0));return b},getLengthInBits:function(a,b){if(b>=1&&10>b)switch(a){case c.MODE_NUMBER:return 10;case c.MODE_ALPHA_NUM:return 9;case c.MODE_8BIT_BYTE:return 8;case c.MODE_KANJI:return 8;default:throw new Error("mode:"+a)}else if(27>b)switch(a){case c.MODE_NUMBER:return 12;case c.MODE_ALPHA_NUM:return 11;case c.MODE_8BIT_BYTE:return 16;case c.MODE_KANJI:return 10;default:throw new Error("mode:"+a)}else{if(!(41>b))throw new Error("type:"+b);switch(a){case c.MODE_NUMBER:return 14;case c.MODE_ALPHA_NUM:return 13;case c.MODE_8BIT_BYTE:return 16;case c.MODE_KANJI:return 12;default:throw new Error("mode:"+a)}}},getLostPoint:function(a){for(var b=a.getModuleCount(),c=0,d=0;b>d;d++)for(var e=0;b>e;e++){for(var f=0,g=a.isDark(d,e),h=-1;1>=h;h++)if(!(0>d+h||d+h>=b))for(var i=-1;1>=i;i++)0>e+i||e+i>=b||(0!=h||0!=i)&&g==a.isDark(d+h,e+i)&&f++;f>5&&(c+=3+f-5)}for(var d=0;b-1>d;d++)for(var e=0;b-1>e;e++){var j=0;a.isDark(d,e)&&j++,a.isDark(d+1,e)&&j++,a.isDark(d,e+1)&&j++,a.isDark(d+1,e+1)&&j++,(0==j||4==j)&&(c+=3)}for(var d=0;b>d;d++)for(var e=0;b-6>e;e++)a.isDark(d,e)&&!a.isDark(d,e+1)&&a.isDark(d,e+2)&&a.isDark(d,e+3)&&a.isDark(d,e+4)&&!a.isDark(d,e+5)&&a.isDark(d,e+6)&&(c+=40);for(var e=0;b>e;e++)for(var d=0;b-6>d;d++)a.isDark(d,e)&&!a.isDark(d+1,e)&&a.isDark(d+2,e)&&a.isDark(d+3,e)&&a.isDark(d+4,e)&&!a.isDark(d+5,e)&&a.isDark(d+6,e)&&(c+=40);for(var k=0,e=0;b>e;e++)for(var d=0;b>d;d++)a.isDark(d,e)&&k++;var l=Math.abs(100*k/b/b-50)/5;return c+=10*l}},g={glog:function(a){if(1>a)throw new Error("glog("+a+")");return g.LOG_TABLE[a]},gexp:function(a){for(;0>a;)a+=255;for(;a>=256;)a-=255;return g.EXP_TABLE[a]},EXP_TABLE:new Array(256),LOG_TABLE:new Array(256)},h=0;8>h;h++)g.EXP_TABLE[h]=1<<h;for(var h=8;256>h;h++)g.EXP_TABLE[h]=g.EXP_TABLE[h-4]^g.EXP_TABLE[h-5]^g.EXP_TABLE[h-6]^g.EXP_TABLE[h-8];for(var h=0;255>h;h++)g.LOG_TABLE[g.EXP_TABLE[h]]=h;i.prototype={get:function(a){return this.num[a]},getLength:function(){return this.num.length},multiply:function(a){for(var b=new Array(this.getLength()+a.getLength()-1),c=0;c<this.getLength();c++)for(var d=0;d<a.getLength();d++)b[c+d]^=g.gexp(g.glog(this.get(c))+g.glog(a.get(d)));return new i(b,0)},mod:function(a){if(this.getLength()-a.getLength()<0)return this;for(var b=g.glog(this.get(0))-g.glog(a.get(0)),c=new Array(this.getLength()),d=0;d<this.getLength();d++)c[d]=this.get(d);for(var d=0;d<a.getLength();d++)c[d]^=g.gexp(g.glog(a.get(d))+b);return new i(c,0).mod(a)}},j.RS_BLOCK_TABLE=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],j.getRSBlocks=function(a,b){var c=j.getRsBlockTable(a,b);if(void 0==c)throw new Error("bad rs block @ typeNumber:"+a+"/errorCorrectLevel:"+b);for(var d=c.length/3,e=[],f=0;d>f;f++)for(var g=c[3*f+0],h=c[3*f+1],i=c[3*f+2],k=0;g>k;k++)e.push(new j(h,i));return e},j.getRsBlockTable=function(a,b){switch(b){case d.L:return j.RS_BLOCK_TABLE[4*(a-1)+0];case d.M:return j.RS_BLOCK_TABLE[4*(a-1)+1];case d.Q:return j.RS_BLOCK_TABLE[4*(a-1)+2];case d.H:return j.RS_BLOCK_TABLE[4*(a-1)+3];default:return void 0}},k.prototype={get:function(a){var b=Math.floor(a/8);return 1==(1&this.buffer[b]>>>7-a%8)},put:function(a,b){for(var c=0;b>c;c++)this.putBit(1==(1&a>>>b-c-1))},getLengthInBits:function(){return this.length},putBit:function(a){var b=Math.floor(this.length/8);this.buffer.length<=b&&this.buffer.push(0),a&&(this.buffer[b]|=128>>>this.length%8),this.length++}};var l=[[17,14,11,7],[32,26,20,14],[53,42,32,24],[78,62,46,34],[106,84,60,44],[134,106,74,58],[154,122,86,64],[192,152,108,84],[230,180,130,98],[271,213,151,119],[321,251,177,137],[367,287,203,155],[425,331,241,177],[458,362,258,194],[520,412,292,220],[586,450,322,250],[644,504,364,280],[718,560,394,310],[792,624,442,338],[858,666,482,382],[929,711,509,403],[1003,779,565,439],[1091,857,611,461],[1171,911,661,511],[1273,997,715,535],[1367,1059,751,593],[1465,1125,805,625],[1528,1190,868,658],[1628,1264,908,698],[1732,1370,982,742],[1840,1452,1030,790],[1952,1538,1112,842],[2068,1628,1168,898],[2188,1722,1228,958],[2303,1809,1283,983],[2431,1911,1351,1051],[2563,1989,1423,1093],[2699,2099,1499,1139],[2809,2213,1579,1219],[2953,2331,1663,1273]],o=function(){var a=function(a,b){this._el=a,this._htOption=b};return a.prototype.draw=function(a){function g(a,b){var c=document.createElementNS("http://www.w3.org/2000/svg",a);for(var d in b)b.hasOwnProperty(d)&&c.setAttribute(d,b[d]);return c}var b=this._htOption,c=this._el,d=a.getModuleCount();Math.floor(b.width/d),Math.floor(b.height/d),this.clear();var h=g("svg",{viewBox:"0 0 "+String(d)+" "+String(d),width:"100%",height:"100%",fill:b.colorLight});h.setAttributeNS("http://www.w3.org/2000/xmlns/","xmlns:xlink","http://www.w3.org/1999/xlink"),c.appendChild(h),h.appendChild(g("rect",{fill:b.colorDark,width:"1",height:"1",id:"template"}));for(var i=0;d>i;i++)for(var j=0;d>j;j++)if(a.isDark(i,j)){var k=g("use",{x:String(i),y:String(j)});k.setAttributeNS("http://www.w3.org/1999/xlink","href","#template"),h.appendChild(k)}},a.prototype.clear=function(){for(;this._el.hasChildNodes();)this._el.removeChild(this._el.lastChild)},a}(),p="svg"===document.documentElement.tagName.toLowerCase(),q=p?o:m()?function(){function a(){this._elImage.src=this._elCanvas.toDataURL("image/png"),this._elImage.style.display="block",this._elCanvas.style.display="none"}function d(a,b){var c=this;if(c._fFail=b,c._fSuccess=a,null===c._bSupportDataURI){var d=document.createElement("img"),e=function(){c._bSupportDataURI=!1,c._fFail&&_fFail.call(c)},f=function(){c._bSupportDataURI=!0,c._fSuccess&&c._fSuccess.call(c)};return d.onabort=e,d.onerror=e,d.onload=f,d.src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==",void 0}c._bSupportDataURI===!0&&c._fSuccess?c._fSuccess.call(c):c._bSupportDataURI===!1&&c._fFail&&c._fFail.call(c)}if(this._android&&this._android<=2.1){var b=1/window.devicePixelRatio,c=CanvasRenderingContext2D.prototype.drawImage;CanvasRenderingContext2D.prototype.drawImage=function(a,d,e,f,g,h,i,j){if("nodeName"in a&&/img/i.test(a.nodeName))for(var l=arguments.length-1;l>=1;l--)arguments[l]=arguments[l]*b;else"undefined"==typeof j&&(arguments[1]*=b,arguments[2]*=b,arguments[3]*=b,arguments[4]*=b);c.apply(this,arguments)}}var e=function(a,b){this._bIsPainted=!1,this._android=n(),this._htOption=b,this._elCanvas=document.createElement("canvas"),this._elCanvas.width=b.width,this._elCanvas.height=b.height,a.appendChild(this._elCanvas),this._el=a,this._oContext=this._elCanvas.getContext("2d"),this._bIsPainted=!1,this._elImage=document.createElement("img"),this._elImage.style.display="none",this._el.appendChild(this._elImage),this._bSupportDataURI=null};return e.prototype.draw=function(a){var b=this._elImage,c=this._oContext,d=this._htOption,e=a.getModuleCount(),f=d.width/e,g=d.height/e,h=Math.round(f),i=Math.round(g);b.style.display="none",this.clear();for(var j=0;e>j;j++)for(var k=0;e>k;k++){var l=a.isDark(j,k),m=k*f,n=j*g;c.strokeStyle=l?d.colorDark:d.colorLight,c.lineWidth=1,c.fillStyle=l?d.colorDark:d.colorLight,c.fillRect(m,n,f,g),c.strokeRect(Math.floor(m)+.5,Math.floor(n)+.5,h,i),c.strokeRect(Math.ceil(m)-.5,Math.ceil(n)-.5,h,i)}this._bIsPainted=!0},e.prototype.makeImage=function(){this._bIsPainted&&d.call(this,a)},e.prototype.isPainted=function(){return this._bIsPainted},e.prototype.clear=function(){this._oContext.clearRect(0,0,this._elCanvas.width,this._elCanvas.height),this._bIsPainted=!1},e.prototype.round=function(a){return a?Math.floor(1e3*a)/1e3:a},e}():function(){var a=function(a,b){this._el=a,this._htOption=b};return a.prototype.draw=function(a){for(var b=this._htOption,c=this._el,d=a.getModuleCount(),e=Math.floor(b.width/d),f=Math.floor(b.height/d),g=['<table style="border:0;border-collapse:collapse;">'],h=0;d>h;h++){g.push("<tr>");for(var i=0;d>i;i++)g.push('<td style="border:0;border-collapse:collapse;padding:0;margin:0;width:'+e+"px;height:"+f+"px;background-color:"+(a.isDark(h,i)?b.colorDark:b.colorLight)+';"></td>');g.push("</tr>")}g.push("</table>"),c.innerHTML=g.join("");var j=c.childNodes[0],k=(b.width-j.offsetWidth)/2,l=(b.height-j.offsetHeight)/2;k>0&&l>0&&(j.style.margin=l+"px "+k+"px")},a.prototype.clear=function(){this._el.innerHTML=""},a}();QRCode=function(a,b){if(this._htOption={width:256,height:256,typeNumber:4,colorDark:"#000000",colorLight:"#ffffff",correctLevel:d.H},"string"==typeof b&&(b={text:b}),b)for(var c in b)this._htOption[c]=b[c];"string"==typeof a&&(a=document.getElementById(a)),this._android=n(),this._el=a,this._oQRCode=null,this._oDrawing=new q(this._el,this._htOption),this._htOption.text&&this.makeCode(this._htOption.text)},QRCode.prototype.makeCode=function(a){this._oQRCode=new b(r(a,this._htOption.correctLevel),this._htOption.correctLevel),this._oQRCode.addData(a),this._oQRCode.make(),this._el.title=a,this._oDrawing.draw(this._oQRCode),this.makeImage()},QRCode.prototype.makeImage=function(){"function"==typeof this._oDrawing.makeImage&&(!this._android||this._android>=3)&&this._oDrawing.makeImage()},QRCode.prototype.clear=function(){this._oDrawing.clear()},QRCode.CorrectLevel=d}();
+</script>
 <style>
 :root{--bg:#0b1023;--bg2:#0d1230;--card:#151c3d;--card2:#1a2350;--fg:#eef2ff;--mut:#a3aede;--mut2:color-mix(in srgb,var(--fg) 85%,var(--card));--br:#333d72;--acc:#6d5df6;--acc2:#22d3ee;--ok:#34d399;--err:#fb7185;--warn:#fbbf24;--g-reality:#22d3ee;--g-vless:#a78bfa;--g-vmess:#34d399;--g-trojan:#fbbf24;--g-ss:#f472b6;--g-hy2:#f97316;--g-wg:#facc15;--font:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--grad:linear-gradient(135deg,#8b5cf6,#6d5df6 45%,#22d3ee);--grad2:linear-gradient(135deg,#34d399,#06b6d4)}
 *{box-sizing:border-box}
@@ -81,6 +83,7 @@ button.tiny{width:auto;padding:7px 12px;margin:0;font-size:13px;font-weight:600;
 .uc-i{width:28px;height:28px;border-radius:8px;border:1px solid var(--br);background:transparent;color:var(--mut);display:inline-flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;padding:0;margin:0;box-shadow:none;font-weight:400}
 .uc-i:hover{color:var(--fg);border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,transparent)}
 .uc-i.del:hover{color:#fff;border-color:transparent;background:linear-gradient(135deg,#fb7185,#e11d48)}
+.uc-i.on{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 55%,transparent);background:color-mix(in srgb,var(--acc) 14%,transparent)}
 .uc-chips{display:flex;gap:5px;flex-wrap:wrap;min-width:0}
 .uc-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--br);color:var(--mut);background:transparent;white-space:nowrap}
 .uc-chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 8%,transparent)}
@@ -585,6 +588,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <button data-tab=proxy>📡 Proxy</button>
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
+    <button data-tab=ai>🤖 Ассистент</button>
     <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🔀 Двойной прыжок</button><button data-tab=migrate>🚚 Переезд</button><button data-tab=security>🔑 Безопасность</button><button data-tab=pay>💳 Оплата</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=logs>🧾 Логи</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
   </nav>
 
@@ -646,6 +650,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         </div>
       </div>
     </div>
+    <details class=expl style="margin:0 2px"><summary>Объяснить простым языком</summary><div>
+      <p><b>Зачем эта страница.</b> Это витрина здоровья сервера: один взгляд — и понятно, всё ли живое. Лечить и настраивать — не здесь, а в соответствующих вкладках; сюда заходишь смотреть.</p>
+      <p><b>На что смотреть в первую очередь.</b> «Статус протоколов» — если напротив протокола зелёный, он работает и принимает клиентов. «Клиенты онлайн» — сколько людей подключены прямо сейчас. «Трафик за сутки» — сколько сервер прогнал сегодня. Три кольца (Процессор / Память / Диск) — нагрузка машины: жёлтый — присмотреть, <b>красный диск — срочно разбираться</b> (кончится место — упадёт всё).</p>
+      <p><b>График трафика</b> — сколько сервер прогнал за 30 дней: резкий всплеск = кто-то качает много (карточки людей — во вкладке «🔗 Подписка»). <b>«Последние события»</b> — журнал того, что делала панель и админы.</p>
+      <p><b>Быстрые действия</b> — кнопки «на каждый день»: добавить клиента, перезапустить Xray (чинит зависший VPN без перезагрузки сервера), открыть диагностику или журналы. Что-то сломалось? Жми «🩺 Диагностика сервера» — она сама прощупает порты, службы и доступность.</p>
+    </div></details>
   </div>
 
   <div id=tab-vpn class="tab-pane active">
@@ -775,6 +785,14 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <option value="off">не добавлять</option>
       </select>
       <label class="fldlbl" style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0" for="newToNodes"><input type=checkbox id=newToNodes> разместить также на Veil-нодах</label>
+      <label class="fldlbl" style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0" for="newFam"><input type=checkbox id=newFam onchange=famNewToggle()> 👨‍👩‍👧 семейная подписка</label>
+      <div id=newFamBox class=hidden style="border:1px dashed var(--brd);border-radius:8px;padding:8px 10px;margin:4px 0 8px">
+        <label for="newFamN">Участников сразу (1–5)</label>
+        <input id=newFamN type=number min=1 max=5 step=1 value=2>
+        <label for="newFamNames">Имена участников через запятую (необязательно)</label>
+        <input id=newFamNames placeholder="например: Мама, Сын" maxlength=120>
+        <p class=mut style="font-size:12px;margin:6px 0 0">Каждый участник — полноценный клиент: своя ссылка подписки, своя страница, свои ключи. При этом тариф один: <b>лимит и срок общие</b> (расход всех складывается, предупреждения и блокировка — по общему расходу), а <b>лимит устройств у каждого свой</b>. Ссылки участников потом копируются в карточке хозяина (секция «👨‍👩‍👧 Семья») или на его странице подписчика; состав семьи можно менять в любой момент — до 5 участников.</p>
+      </div>
       <button onclick=doAdd()>Создать</button>
       <div class=msg id=addMsg></div>
       </div>
@@ -1608,6 +1626,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
     <input type=file id=th-wall accept=image/* onchange=uploadWall()>
     <button class=sec onclick=deleteWall() style="margin-left:8px">Удалить обои</button>
+    <details class=expl style="margin-top:16px"><summary>Объяснить простым языком</summary><div>
+      <p><b>Это только внешность.</b> Ничего из этой вкладки не влияет на VPN, скорость или безопасность — панель можно перекрасить целиком и ничего не сломать.</p>
+      <p><b>«Новый» или «Классический»</b> — два разных расположения одних и тех же функций: в «новом» меню сбоку и есть страница-обзор (Дашборд), в «классическом» — вкладки сверху, как раньше. Кнопки и настройки те же.</p>
+      <p><b>«Раскладка»</b> — число колонок (на телефоне — одна, на широком экране — две). «Авто» выбирает сам по ширине окна. Выбор сохраняется на сервере и действует для всех, кто открывает эту панель. «Свайпы между вкладками» — жест влево-вправо на телефоне; мешает прокручивать списки — выключи.</p>
+      <p><b>Готовые темы</b> — набор цветов в один клик, «Сохранить цвета» — свои цвета вручную. <b>Логотип и обои</b> — картинка у заголовка Veil (и на экране входа) и фон страницы. «Сбросить» возвращает заводскую тёмную тему.</p>
+    </div></details>
 </div></div>
 
   <!-- Вкладка Telegram Bot -->
@@ -1709,6 +1733,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <p><b>Чем это лучше отдельных ссылок?</b> Не надо каждый раз бегать и пересылать обновления. Удалил клиента — доступ пропадёт при ближайшем обновлении подписки. Короче: дал одну ссылку — и дальше всё живёт само.</p>
         <p><b>Как пользоваться?</b> Скопируй ссылку справа (кнопка «Копировать») или покажи QR-код — человек открывает её в своём приложении (v2rayNG, Hiddify, Streisand…) через «Добавить подписку / Add subscription». Готово.</p>
         <p><b>Про экспорт/импорт:</b> «Экспорт JSON» — полный снимок всех клиентов, чтобы перенести на такую же панель без потерь. «Импорт» — загрузка: можно вставить ссылки, JSON или даже файл базы от 3x-ui / x-ui / Marzban (перенесёт людей с их лимитами и сроками).</p>
+        <p><b>Кнопки в карточке подписчика.</b> <b>⏸ / ▶</b> — выключить и включить человека вручную: выключенный не может подключиться (его ссылки открываются, но связи нет), при этом лимит, срок и учёт трафика сохраняются — включишь, всё как было. У хозяина семьи ⏸ выключает и всех участников. <b>🔁 «обновить ключи»</b> — панель выдаёт человеку новые ключи всех протоколов, а <b>ссылка подписки остаётся прежней</b>: если ключ «утёк» (дал не тому, продавил аккаунт), одно нажатие ломает старое и чинит новое — пересылать ссылку заново не надо, приложения подтянут новые ключи сами. Красный чип «🚫 заблокирован» — это автоматика за перерасход трафика или истёкший срок, она отличается от ручного ⏸ и снимается оплатой/разблокировкой.</p>
       </div></details>
        <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
          <input type=text id=subUrlInput readonly style="flex:1;min-width:260px;background:var(--bg2);border:1px solid var(--brd);padding:10px;border-radius:6px;font-family:monospace">
@@ -1726,6 +1751,14 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <div id="subUsersList">
             <p class=mut>Загрузка списка пользователей...</p>
           </div>
+          <details class=expl style="margin-bottom:10px"><summary>👨‍👩‍👧 Семейный режим — одна подписка на семью</summary><div>
+            <p><b>Зачем.</b> Хозяин подписки оплачивает тариф один раз, а пользуются все: добавляешь до 5 участников семьи — каждый получает <b>полноценного клиента</b> на тех же протоколах: свою ссылку подписки, свою страницу, свои ключи.</p>
+            <p><b>Что общее, что личное.</b> Общее: лимит трафика и срок (расход участников плюсуется к расходу хозяина; предупреждения и блокировка срабатывают по суммарному расходу один раз на семью). Личное: лимит устройств у каждого участника свой — сыновья не съедают устройства хозяина.</p>
+            <p><b>Как пользоваться.</b> Проще всего — при создании подписчика: в диалоге «Новый подписчик» отметь «👨‍👩‍👧 семейная подписка», укажи число участников (1–5) и, если хочешь, их имена — панель создаст хозяина и всех участников сразу, со своими ссылками. Дальше в карточке подписчика-хозяина — раскрывающаяся секция «👨‍👩‍👧 Семья»: «＋ Член семьи», копирование его ссылки, открытие его страницы, смена лимита устройств, удаление. Карточка участника помечена чипом «👨‍👩‍👧 семья · <имя хозяина>». Точно так же хозяин управляет семьёй сам — со своей страницы подписчика (кнопки в разделе «Семья»), без входа в панель.</p>
+            <p><b>Оплата.</b> Участник не платит: на его странице оплаты нет, а прямая попытка оплатить его ссылку отклоняется — платит только хозяин. Привязка Telegram по ссылке участника записывает чат на хозяина (ему — алерты и «Продлить»).</p>
+            <p><b>Выключить и включить (⏸ / ▶).</b> Кнопка в карточке подписчика. «Выключить» — человек теряет связь прямо сейчас: его ссылки продолжают открываться, но подключиться нельзя; трафик, срок и настройки при этом хранятся — включишь, и всё вернётся как было. У хозяина семьи выключение отключает и всех участников, включение — возвращает их тоже. Не путать с автоблокировкой за перерасход или истечение срока (чип «🚫»): её тумблер «выкл/вкл» не снимает — для неё кнопка ▶ снимает блокировку с обнулением счётчика (если лимит не поднят, автоблок честно вернётся).</p>
+            <p><b>Нюансы.</b> «🧩 Все протоколы» хозяина добавляет протоколы всей семье. Лимит/срок/цикл сброса, заданный хозяину, обновляет зеркала у участников. Удаление подписчика удаляет и его семью. Участник — не вложенный «семейный родитель»: свои семьи создавать не может.</p>
+          </div></details>
         </details>
        </div>
        
@@ -1996,7 +2029,85 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class=sec onclick=pkAdd()>Добавить ключ</button>
     </div>
     <div class=msg id=pkMsg></div>
-  </div></div>
+  </div>
+  <div class=card style="margin-top:14px" id=termCard>
+    <h3 style="margin:0 0 8px">🖥️ SSH-терминал в браузере <span class=mut style="font-weight:400;font-size:12px">(только владелец; по умолчанию выключен)</span></h3>
+    <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
+      <p><b>Что это.</b> Маленькое окошко терминала прямо в панели: можно набирать команды сервера (ls, systemctl status xray, journalctl, df -h, top) не открывая отдельный SSH-клиент. Это <b>root-оболочка</b> — команда «rm -rf /» удалит всё. Силу имеет ровно такую же, как вход по SSH.</p>
+      <p><b>Зачем выключено.</b> Браузерный рута-шелл — самая опасная кнопка во всей панели: кто угонит твою сессию — получит сервер. Поэтому по умолчанию терминал <b>выключен</b>. Включаешь вручную, работаешь, и обязательно выключаешь обратно. Работает только для владельца (не для менеджеров с частичными правами).</p>
+      <p><b>Как пользоваться.</b> 1) Поставь тумблер «Включить» ниже. 2) Нажми «Открыть терминал» — появится чёрное окно и строка ввода под ним. 3) Печатай в строку ввода, Enter — отправить. 4) Готово — нажми «Отключить» (закрыть окно) и верни тумблер в «Выключить», пока терминал не нужен.</p>
+      <p><b>С телефона.</b> Клавиатура на телефоне появляется <b>только</b> от настоящего поля ввода — в чёрное окно можно тыкать сколько угодно, она молчит. Поэтому под окном есть строка «Печатай здесь»: тапни её (или кнопку «⌨ Ввод» справа), клавиатура вылезет. Строка всегда остаётся пустой — это нормально, напечатанное сразу возвращается в окно как ответ сервера. Под окном же полоса клавиш, которых нет в телефонной раскладке: <b>↑ ↓ ← →</b> (история команд и работа в редакторе), <b>Tab</b> (автодополнение) и <b>⇧Tab</b> (автодополнение назад — ровно как в настоящем SSH), <b>Esc</b>, <b>^C</b> (остановить), <b>^L</b> (очистить экран), <b>⌫</b>, <b>⏎</b>. Размер окна подстраивается под ширину экрана и поворот телефона сам.</p>
+      <p><b>Почему иногда пишется «терминал недоступен», хотя терминал открыт.</b> Надпись относилась не к тумблеру, а к сокету: браузер называет «error» и отказ в рукопожатии, и обрыв уже работающего соединения. Обрывается WebSocket по бытовым причинам: телефон свернул вкладку или погасил экран, сменилась сеть (Wi-Fi ↔ мобильный), панель перезапустилась после изменения конфига, истёк 30-минутный таймаут простоя. Сейчас панель различает эти два случая: «рукопожатие не прошло» (это действительно настройки или путь к панели) и «обрыв связи» (это сеть — просто нажми «▶ Открыть терминал» ещё раз). Кнопка «? почему» под окном показывает честную диагностику: открывался ли сокет, сколько байт успело пройти, есть ли фокус на поле ввода и код закрытия.</p>
+      <p><b>Ограничения.</b> Простой эмулятор терминала: обычные команды, цвета и вывод — да; полноэкранные редакторы вроде <code>vim</code>/<code>htop</code> могут отображаться криво — для них лучше настоящий SSH. Сессия сама закрывается после 30 минут бездействия и не живёт дольше 3 часов. Все открытия/закрытия пишутся в журнал безопасности.</p>
+    </details>
+    <div style="margin:8px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type=checkbox id=termEnabled onchange=termToggle(this.checked)> Включить браузерный терминал</label>
+      <span id=termStatus class=mut style="font-size:13px">—</span>
+    </div>
+    <div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class=sec id=termOpenBtn onclick=termOpen() disabled>▶ Открыть терминал</button>
+      <button class="sec" id=termKbBtn onclick=termKb() style="display:none">⌨ Ввод</button>
+      <button class="tiny sec" id=termWhyBtn onclick=termWhy() style="display:none">? почему</button>
+    </div>
+    <div id=termWrap style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class=mut style="font-size:13px" id=termHint>⚠ Ты в root-оболочке сервера. Команды выполняются немедленно.</span>
+        <button class="tiny sec" onclick=termClose()>■ Отключить</button>
+      </div>
+      <div id=termHost style="background:#0b0e14;border:1px solid var(--br);border-radius:10px;padding:8px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.25;min-height:280px;max-height:60vh;color:#d6e2ff;white-space:pre-wrap;word-break:break-word;outline:none;cursor:text" tabindex=0></div>
+      <div id=termKeys style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px"></div>
+      <textarea id=termInput rows=1 autocomplete=off autocapitalize=none autocorrect=off spellcheck=false
+        placeholder="▌ Печатай здесь — на телефоне это поднимает клавиатуру"
+        style="box-sizing:border-box;width:100%;margin-top:6px;background:#0b0e14;color:#9fe8b8;border:1px solid var(--br);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;line-height:1.2;resize:vertical;min-height:44px"></textarea>
+      <div class=mut style="font-size:12px;margin-top:4px">Строчка ниже — настоящий ввод: на телефоне тапни её (или «⌨ Ввод»), чтобы появилась клавиатура (поле само остаётся пустым — символы возвращаются в чёрное окно). Полоса кнопок — то, чего на телефонной клавиатуре нет: стрелки, Tab, ⇧Tab, Esc, ^C.</div>
+      <div id=termWhy style="display:none;margin-top:8px;padding:9px 10px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 30%,transparent);font-size:12px;line-height:1.55"></div>
+    </div>
+    <div class=msg id=termMsg></div>
+  </div>
+</div>
+
+<div id=tab-ai class="tab-pane"><div class=card>
+    <h3 style="margin:0 0 8px">🤖 AI-ассистент по панели <span class=mut style="font-weight:400;font-size:12px">(только чтение; только владелец)</span></h3>
+    <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
+      <p><b>Что это.</b> Чат, который отвечает на вопросы о твоём сервере понятными словами: «сколько активны подписчиков», «кто съел больше всего трафика», «почему нода offline», «что в последнем журнале безопасности». Он не гадает — дергает внутренние отчёты панели и пересказывает их.</p>
+      <p><b>Он только читает.</b> Ассистент физически не умеет ничего менять: ему доступны лишь отчёты (сводка, подписчики, метрики, самодиагностика, ноды, журнал). Просишь «удали/выключи» — он объяснит, где это сделать руками. Ключи подписчиков и секреты он не показывает.</p>
+      <p><b>Нужен API-ключ.</b> Это надстройка над внешней моделью (OpenAI или любой совместимый сервис). По умолчанию выключено. Заполни ниже URL, модель и ключ — включи тумблер. Ключ хранится только в конфиге панели и наружу из API не отдаётся.</p>
+      <p><b>Откуда взять ключ (главный вопрос).</b> Ассистент — надстройка над чужой моделью, и у каждой модели есть «ключ» — длинная строчка вроде <code>sk-…</code>, которую сервис выдаёт лично тебе. Дешевле всего и без карты: <b>Groq</b> или <b>Google Gemini</b> — регистрируешься по обычному аккаунту, жмёшь «Create API key», копируешь. Совсем без денег и без регистрации — локальная модель через Ollama на этом же сервере. Выбери сервис в списке «Откуда ключ» ниже — панель покажет точную страницу и 3–4 шага. Ключ показывается один раз, копируй сразу.</p>
+      <p><b>Сколько это стоит.</b> Ответ на один вопрос стоит долю цента: на практические вопросы по панели уходят десятки центов в месяц, не доллары. Бесплатных тарифов Groq/Gemini хватает «на каждый день»; если упрёшься в лимит — появится красная строчка про квоту, это не поломка панели.</p>
+      <p><b>Какая модель нужна.</b> Ассистент пользуется внутренними отчётами панели через вызовы инструментов (function calling). Это умеют почти все современные модели, но самая мелкая или экзотическая может отказаться — тогда в ответе будет «заглянуть в отчёты не удалось», а не выдуманные цифры. Проверяется кнопкой «🔑 Проверить ключ», а чинится выбором другой модели в списке.</p>
+      <p><b>Приватность.</b> Вопросы и выбранные инструменты уходят на указанный тобой эндпоинт (по умолчанию api.openai.com) и пишутся в журнал безопасности. Не спрашивай того, что не стал бы отправлять провайдеру модели. Если это смущает — локальный Ollama ничего наружу не отдаёт.</p>
+    </details>
+    <div style="display:grid;gap:8px;max-width:560px">
+      <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=aiEnabled> Включить ассистента</label>
+      <div><span class=mut style="font-size:12px">Откуда ключ</span>
+        <select id=aiProv class=in style="width:100%" onchange=aiProvPick()><option value="">— выбери сервис (подскажет, где зарегистрироваться) —</option></select>
+        <div id=aiProvHelp class=mut style="font-size:12px;line-height:1.5;margin-top:4px"></div>
+      </div>
+      <div><span class=mut style="font-size:12px">URL эндпоинта (OpenAI-совместимый)</span><input id=aiBase class=in style="width:100%" placeholder="https://api.openai.com/v1"></div>
+      <div><span class=mut style="font-size:12px">Модель</span><input id=aiModel class=in style="width:100%" placeholder="gpt-4o-mini"></div>
+      <div><span class=mut style="font-size:12px">API-ключ</span><input id=aiKey class=in type=password style="width:100%" placeholder="sk-… (оставь пустым, чтобы не менять)" autocomplete=off></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class=sec onclick=aiSave()>Сохранить</button>
+        <button class="tiny sec" onclick=aiTestKey()>🔑 Проверить ключ</button>
+        <span id=aiStatus class=mut style="font-size:13px">—</span>
+      </div>
+      <div id=aiTestBox style="display:none;font-size:13px;line-height:1.5;padding:8px 10px;border:1px solid var(--br);border-radius:10px"></div>
+    </div>
+    <div id=aiChatWrap style="display:none;margin-top:14px">
+      <div id=aiLog style="border:1px solid var(--br);border-radius:10px;padding:10px;background:var(--bg2);max-height:46vh;overflow:auto;font-size:14px;line-height:1.5"></div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id=aiInput class=in style="flex:1" placeholder="Спроси про сервер… (Enter — отправить)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();aiAsk();}">
+        <button id=aiAskBtn class=sec onclick=aiAsk()>Спросить</button>
+      </div>
+      <div class="mut" style="font-size:12px;margin-top:6px">Быстрые вопросы:
+        <a href=javascript:void(0) onclick="aiQuick('Сколько сейчас подписчиков и кто самый прожорливый по трафику?')">трафик</a> ·
+        <a href=javascript:void(0) onclick="aiQuick('Xray работает? какие протоколы активны и на каких портах?')">протоколы</a> ·
+        <a href=javascript:void(0) onclick="aiQuick('Что interesting произошло в журнале безопасности за последнее время?')">журнал</a>
+      </div>
+    </div>
+    <div class=msg id=aiMsg></div>
+  </div>
+</div>
 
     <div id=tab-pay class="tab-pane"><div class=card>
     <h2>💳 Приём оплаты</h2>
@@ -2140,6 +2251,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <p><b>Когда нужен?</b> Когда «что-то не работает» и непонятно что. Это как чек-ап у врача: панель сама прогонит диагностику и покажет зелёным/красным, что живо, а что нет — служба xray, открытые порты, сертификаты, нагрузка сервера, место на диске.</p>
       <p><b>Что делать с результатом?</b> Читаешь красные строки — там и проблема. «Самотестирование» дополнительно пытается пройти свой же трафик и находит тонкие места. Если сам не разбираешься — скриншот этой страницы легко скинуть в поддержку или знакомому админу, сразу видно картину.</p>
       <p><b>Это безопасно:</b> диагностика только смотрит, ничего не меняет. Жми «Запросить диагностику» спокойно.</p>
+      <p><b>Строчка «Панель сейчас обслуживает: N из 120»</b> — это про «морда висит». У панели есть потолок живых соединений: если его достигли (пришли сканеры из интернета, шторм переподключений подписчиков или кто-то долбит порт), новым посетителям панель честно отвечает «503 — зайди через 3 секунды», вместо того чтобы молча зависнуть на весь сервер. Видишь красное — это не VPN умер, это очередь; подожди пару секунд и обнови. Проходит само, ничего чинить не надо; рестарт панели имеет смысл, только если красное висит долго — десятки минут без перерыва. Цифра «отказано» рядом — сколько соединений застали панель занятой с момента запуска: несколько на фоне атаки ботов из интернета это норма, «0» — идеально.</p>
     </div></details>
     <div style="display:flex;gap:8px;margin:12px 0 16px">
       <button class=tiny onclick="loadDiagnostics()">🔄 Запросить диагностику</button>
@@ -2187,7 +2299,11 @@ function subCard(c){
   const nm = escapeHtml(c.name);
   // --- статус ---
   let status;
-  if(c.blocked) status='<span class="uc-chip bad">🚫 заблокирован</span>';
+  if(c.blocked){
+    status=(c.blocked_reason==='manual')
+      ? '<span class="uc-chip warn" title="Выключен вручную администратором — ссылки перестают работать, включение — кнопкой ⏯ в карточке">⏸ выключен</span>'
+      : '<span class="uc-chip bad">🚫 заблокирован</span>';
+  }
   else if(c.expiry){
     const left=c.expiry*1000-Date.now();
     if(left<=0) status='<span class="uc-chip bad">⛔ истёк</span>';
@@ -2204,6 +2320,10 @@ function subCard(c){
     : '<span class="uc-chip bad">нет протоколов</span>';
   const cliChip = c.client
     ? '<span class="uc-chip'+(c.client_old?' warn':'')+'" title="клиент">👤 '+escapeHtml(c.client)+(c.client_version?' '+escapeHtml(c.client_version):'')+(c.client_old?' ⚠ старое ядро':'')+'</span>'
+    : '';
+  // --- семейный чип ---
+  const famChip = c.family_of
+    ? '<span class="uc-chip" title="Участник семейного тарифа «'+escapeHtml(c.parent_name||'')+'»: своя ссылка и свои устройства, а трафик, срок и блокировка — общие по семье.">👨‍👩‍👧 семья · '+escapeHtml(c.parent_name||'')+'</span>'
     : '';
   // --- трафик ---
   let tr;
@@ -2240,6 +2360,34 @@ function subCard(c){
     +(devs.length?'<div style="display:flex;flex-direction:column;gap:4px;margin-top:7px">'+devRows+'</div>'
       :'<p class="uc-empty">Ещё не запрашивал подписку — устройства появятся после первого обновления.</p>')
     +'</details>';
+  // --- семья (только у родителя семейного тарифа) ---
+  const fam = Array.isArray(c.family) ? c.family : null;
+  let famDet = '';
+  if(fam){
+    const famRows = fam.map(function(m){
+      const fmn = escapeHtml(m.name || (m.uuid||'').slice(0,8));
+      const mtok = escapeHtml(m.uuid||'');
+      const msub = escapeHtml(m.sub_url || (location.origin + '/sub/' + (m.sub_token||'')));
+      const mpage = escapeHtml(m.page_url || msub.replace('/sub/', '/p/'));
+      const opts = [];
+      for(let i=0;i<=10;i++) opts.push('<option value="'+i+'"'+((m.max_devices||0)===i?' selected':'')+'>'+(i===0?'без лимита':'устройств: '+i)+'</option>');
+      return '<div class="uc-devrow">'
+        + '<span title="участник семьи"><span class="uc-dot'+(m.online>0?' on':'')+'" style="display:inline-block;vertical-align:middle"></span> '+fmn+'</span>'
+        + '<span class="ip" title="израсходовано этим участником">'+fmtBytes((m.up||0)+(m.down||0))+'</span>'
+        + '<select class="uc-pick" style="max-width:130px" title="Сколько устройств этому участнику (личное число — у каждого в семье свой потолок)" onchange="famDevLimit(\''+mtok+'\',this.value)">'+opts.join('')+'</select>'
+        + '<button class="uc-i" title="Скопировать ссылку подписки участника" onclick="copyText(\''+msub+'\',\'Ссылка участника скопирована\')">📋</button>'
+        + '<button class="uc-i" title="Страница участника" onclick="window.open(\''+mpage+'\',\'_blank\')">👤</button>'
+        + '<button class="uc-i del" title="Удалить участника" onclick="famDelMember(\''+mtok+'\',\''+fmn+'\')">✕</button>'
+        + '</div>';
+    }).join('');
+    famDet = '<details class="uc-det"><summary title="Участники пользуются одной оплаченной подпиской: у каждого своя ссылка и свой лимит устройств, но трафик и срок считаются на всю семью. Предупреждения и блокировка — по общему расходу.">👨‍👩‍👧 Семья · '+fam.length+(fam.length>=5?' · максимум':'')+'</summary>'
+      + '<p class="uc-empty" style="margin:7px 0 0">Участники пользуются той же оплатой: каждому — своя ссылка и свой лимит устройств, а расход трафика и срок — складываются на всю семью. Заблокировка и предупреждения срабатывают по общему расходу.</p>'
+      + (fam.length?'<div style="display:flex;flex-direction:column;gap:4px;margin-top:7px">'+famRows+'</div>'
+        : '<p class="uc-empty" style="margin-top:7px">Пока никого — добавьте участника ниже.</p>')
+      + (fam.length<5?'<div class="uc-row" style="margin-top:7px"><button class="uc-raw" onclick="famAdd(\''+tok+'\')">＋ Член семьи</button></div>'
+        : '<p class="uc-empty" style="margin-top:7px">Больше нельзя: в семье максимум 5 участников.</p>')
+      + '</details>';
+  }
   // --- чем пользуется (журнал подключений Xray, 7 дней) ---
   const usage=c.usage||[];
   const useDet=usage.length
@@ -2259,15 +2407,18 @@ function subCard(c){
         + '<button class="uc-i" title="Скопировать ссылку подписки" onclick="copyText(\''+escapeHtml(_su)+'\',\'Ссылка подписки скопирована\')">📋</button>'
         + '<button class="uc-i" title="QR-код" onclick="showQR(\''+escapeHtml(_su)+'\',\'Подписка: '+nm+'\')">📷</button>'
         + '<button class="uc-i" title="Страница подписчика" onclick="window.open(\''+escapeHtml(_pu)+'\',\'_blank\')">👤</button>'
+        + '<button class="uc-i" title="'+(c.blocked?'Включить подписчика (вернётся в конфиг — связь восстановится)':'Выключить подписчика (ссылки перестанут работать; трафик и настройки сохранятся)')+'" onclick="subToggle(\''+tok+'\',\''+escapeHtml(c.uuid||'')+'\','+(c.blocked?'true':'false')+',\''+escapeHtml(c.blocked_reason||'')+'\')">'+(c.blocked?'▶':'⏸')+'</button>'
+        + '<button class="uc-i" title="Обновить ключи (uuid, пароли, WG-ключи). Ссылка подписки НЕ меняется — приложения сами подтянут новое. Полезна, если ссылка «утекла»" onclick="subRotate(\''+tok+'\',\''+nm+'\')">🔁</button>'
         + '<button class="uc-i del" title="Удалить подписчика" onclick="doSubDelete(\''+tok+'\')">🗑</button>'
       + '</span>'
     + '</div>'
-    + '<div class="uc-chips">'+status+expChip+cliChip+'</div>'
+    + '<div class="uc-chips">'+famChip+status+expChip+cliChip+'</div>'
     + '<div class="uc-chips">'+protoChips+'</div>'
     + tr
     + linksDet
     + useDet
     + devDet
+    + famDet
     + '<div class="uc-row">'
       + '<select class="uc-pick" onchange="setSubFmt(\''+tok+'\', this.value)" title="Формат выдачи подписки">'
         +'<option value="auto"'+((c.fmt==='auto'||!c.fmt)?' selected':'')+'>формат: авто</option>'
@@ -2294,9 +2445,53 @@ async function setSubFmt(tok,fmt){
   try{ await api('/api/sub/format',{method:'POST',body:JSON.stringify({sub_token:tok,fmt:fmt})}); toast('Формат подписки: '+fmt,'ok'); }
   catch(e){ toast(e.message,'err'); }
 }
+async function subToggle(tok,uuid_,blocked,reason){
+  try{
+    if(!blocked){
+      await api('/api/clients/disable',{method:'POST',body:JSON.stringify({sub_token:tok})});
+      await loadSub(); toast('Подписчик выключен — его ссылки перестанут работать до включения','ok');
+    } else if(reason==='manual'){
+      await api('/api/clients/enable',{method:'POST',body:JSON.stringify({sub_token:tok})});
+      await loadSub(); toast('Подписчик включён — связь восстановится в течение минуты','ok');
+    } else {
+      // автоблок по лимиту/сроку: обычное включение тут не поможет — снимаем блокировку
+      await api('/api/clients/unblock',{method:'POST',body:JSON.stringify({uuid:uuid_})});
+      await loadSub(); toast('Блокировка снята (лимит/срок). Если лимит не поднят — автоблок вернётся','warn');
+    }
+  }catch(e){ toast(e.message,'err'); }
+}
 async function delSubDevice(tok,ip){
   if(!confirm('Забыть устройство '+ip+'? Оно вернётся в список, если клиент снова запросит подписку с этого IP.')) return;
   try{ await api('/api/sub/devices/del',{method:'POST',body:JSON.stringify({sub_token:tok,ip:ip})}); await loadSub(); toast('Устройство забыто','ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function subRotate(tok,nm){
+  if(!confirm('Обновить ключи подписчика «'+nm+'»?\n\nСменятся uuid и все протокольные секреты (пароли, WireGuard-ключи). Ссылка подписки останется той же — приложения подтянут новые ключи при ближайшем обновлении (обычно сами, максимум — «обновить подписку» вручную). Старое соединение оборвётся на секунду.\n\nКогда полезно: ссылка утекла / её видел кто-то лишней — подписчик продолжит пользоваться тем же адресом, а чужие копии ключей перестанут работать.')) return;
+  try{
+    await api('/api/clients/rotate',{method:'POST',body:JSON.stringify({sub_token:tok})});
+    await loadSub();
+    toast('Ключи обновлены — подписчику не нужно вводить ссылку заново','ok');
+  }catch(e){ toast(e.message,'err'); }
+}
+async function famAdd(tok){
+  let nmv = prompt('Имя участника семьи (например «Жена», «Сын»):','');
+  if(nmv===null) return;
+  nmv = nmv.trim();
+  if(!nmv){ toast('Имя не может быть пустым','err'); return; }
+  try{
+    await api('/api/clients/family/add',{method:'POST',body:JSON.stringify({sub_token:tok,name:nmv})});
+    await loadSub();
+    toast('Участник «'+nmv+'» добавлен — у него своя ссылка подписки; отправьте её ему','ok');
+  }
+  catch(e){ toast(e.message,'err'); }
+}
+async function famDelMember(muuid,nmv){
+  if(!confirm('Удалить участника '+nmv+'? Его ссылка перестанет работать немедленно. Уже потраченный им трафик останется в общем расходе семьи.')) return;
+  try{ await api('/api/clients/family/del',{method:'POST',body:JSON.stringify({member_uuid:muuid})}); await loadSub(); toast('Участник удалён','ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function famDevLimit(muuid,v){
+  try{ await api('/api/clients/family/devlimit',{method:'POST',body:JSON.stringify({member_uuid:muuid,max_devices:parseInt(v,10)||0})}); toast('Лимит устройств участника обновлён','ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 
@@ -3292,7 +3487,8 @@ function clientCard(c){
     </div>
     <div class=limit-row>
     </div>`;
-  div.querySelector('.name').textContent=c.name;
+  div.querySelector('.name').textContent=(c.family_of?'👨‍👩‍👧 ':'')+c.name;
+  if(c.family_of) div.querySelector('.name').title='участник семейного тарифа — лимиты и срок общие у семьи, управляются со страницы хозяина подписки';
   div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
   div.querySelector('.uuid').textContent=isWG?('IP: '+(c.address||c.uuid)):c.uuid;
   const _code=div.querySelector('code');
@@ -4093,7 +4289,14 @@ function hideAdd(){addProto=null;hideModal();$('newName').value='';$('addMsg').t
   const _l=$('newLimit');if(_l)_l.value='';const _e=$('newExpiry');if(_e)_e.value='0';
   const _c=$('newCycle');if(_c)_c.value='';const _d=$('newDevs');if(_d)_d.value='0';
   const _n=$('newToNodes');if(_n)_n.checked=false;
-  const _t=$('newTg');if(_t)_t.value='';}
+  const _t=$('newTg');if(_t)_t.value='';
+  const _f=$('newFam');if(_f)_f.checked=false;
+  const _fb=$('newFamBox');if(_fb)_fb.classList.add('hidden');
+  const _fc=$('newFamN');if(_fc)_fc.value='2';
+  const _fn=$('newFamNames');if(_fn)_fn.value='';}
+function famNewToggle(){
+  const _b=$('newFamBox');if(_b)_b.classList.toggle('hidden',!$('newFam').checked);
+}
 
 async function doAdd(){
   const name=$('newName').value.trim();
@@ -4114,13 +4317,22 @@ async function doAdd(){
     if($('newToNodes')&&$('newToNodes').checked)body.to_nodes=true;
     const _tp=$('newTg').value;
     if(_tp)body.tg_proxy=_tp;
+    if($('newFam')&&$('newFam').checked){
+      const _cnt=Math.max(1,Math.min(5,parseInt($('newFamN').value,10)||1));
+      const _names=$('newFamNames').value.split(',').map(function(x){return x.trim();}).filter(Boolean);
+      body.family_members=_cnt;
+      if(_names.length)body.family_names=_names;
+    }
     const r=await api('/api/clients/add',{method:'POST',body:JSON.stringify(body)});
     hideAdd();
     await refresh();
     await loadSub();
     let _nts='';
     if(r&&r.nodes){const dep=r.nodes.deployed||[];if(dep.length)_nts=' · на нодах: '+dep.map(x=>x.name||x.host).join(', ');}
-    toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами')+_nts,'ok');
+    let _fam='';
+    if(r&&r.family&&r.family.length)_fam=' · семья: '+r.family.map(function(m){return m.name;}).join(', ');
+    if(r&&r.family_errors&&r.family_errors.length)_fam+=' · не создано: '+r.family_errors.length;
+    toast('Пользователь «'+name+'» создан' + (_proto ? (' ('+(protoLabels[_proto]||_proto)+')') : ' со всеми протоколами')+_nts+_fam,'ok');
   }catch(e){
     $('addMsg').textContent=e.message;$('addMsg').className='msg err';
   }
@@ -4817,6 +5029,485 @@ async function loadWebmux(){
   box.innerHTML=h;
 }
 
+// ================= SSH-ТЕРМИНАЛ (встроенный ANSI-эмулятор, без внешних библиотек) =========
+// Рендер в <div white-space:pre-wrap>. Курсорная сетка строк; поддерживаются CR/LF/BS/TAB
+// и CSI: SGR(цвета/атрибуты), движение курсора, ED/EL, сохранение/восстановление курсора,
+// OSC(заголовок — глотаем). Полноэкранные TUI могут искажаться — это честно описано в подсказке.
+function VeilTerm(el, cols, rows){
+  this.el=el; this.cols=cols||100; this.rows=rows||24;
+  this.lines=[]; for(let i=0;i<this.rows;i++) this.lines.push(this.blank());
+  this.cx=0; this.cy=0; this.cur={fg:'',bg:'',b:0,u:0,i:0};
+  this.saved=null; this.state='g'; this.p='/'; this.buf=''; this.scroll_top=0; this.scroll_bot=this.rows-1;
+  this.render();
+}
+VeilTerm.prototype.blank=function(){ const a=[]; for(let i=0;i<this.cols;i++) a.push([' ',{fg:'',bg:'',b:0,u:0,i:0}]); return a; };
+VeilTerm.prototype.clr=function(){ this.cur={fg:'',bg:'',b:0,u:0,i:0}; };
+VeilTerm.prototype.put=function(ch){
+  if(this.cx>=this.cols){ this.cx=0; this.lf(); }
+  let line=this.lines[this.cy]; if(!line){ line=this.blank(); this.lines[this.cy]=line; }
+  line[this.cx]=[ch,this.cur]; this.cx++;
+};
+VeilTerm.prototype.lf=function(){
+  if(this.cy===this.scroll_bot){
+    this.lines.splice(this.scroll_top,1);
+    this.lines.splice(this.scroll_bot,0,this.blank());
+  } else if(this.cy<this.rows-1) this.cy++;
+};
+VeilTerm.prototype.feed=function(s){
+  for(let k=0;k<s.length;k++){
+    const c=s[k], o=s.charCodeAt(k);
+    if(this.state==='g'){
+      if(o===27){ this.state='e'; this.buf=''; }
+      else if(o===10){ this.lf(); }
+      else if(o===13){ this.cx=0; }
+      else if(o===8){ if(this.cx>0) this.cx--; }
+      else if(o===9){ const nx=Math.floor(this.cx/8)*8+8; while(this.cx<nx&&this.cx<this.cols) this.put(' ');}
+      else if(o===7){ /* bell */ }
+      else if(o<32){ /* ignore other ctrl */ }
+      else this.put(c);
+    } else if(this.state==='e'){
+      if(c==='['){ this.state='c'; this.buf=''; this.p='/'; }
+      else if(c===']'){ this.state='o'; this.buf=''; }
+      else if(c==='M'){ // reverse index
+        if(this.cy===this.scroll_top){ this.lines.splice(this.scroll_bot,0,this.blank()); this.lines.splice(this.scroll_top,1);} else if(this.cy>0) this.cy--;
+        this.state='g';
+      } else if(c==='7'){ this.saved={cx:this.cx,cy:this.cy,cur:this.cur}; this.state='g'; }
+      else if(c==='8'){ if(this.saved){ this.cx=this.saved.cx;this.cy=this.saved.cy;this.cur=this.saved.cur;} this.state='g'; }
+      else if(c==='('||c===')'||c==='*'){ this.p=c; this.state='p'; }
+      else this.state='g';
+    } else if(this.state==='p'){ this.state='g'; }
+    else if(this.state==='o'){ // OSC до BEL или ESC \
+      if(o===7){ this.state='g'; }
+      else if(o===27){ if(s[k+1]==='\\') k++; this.state='g'; }
+    }
+    else if(this.state==='c'){
+      if((o>=0x40&&o<=0x7e)){ this.csi(this.buf,c); this.state='g'; }
+      else this.buf+=c;
+    }
+  }
+  this.render();
+};
+VeilTerm.prototype.csi=function(b,f){
+  if(f==='m'){ this.sgr(b); return; }
+  let priv=false; if(b[0]==='?'||b[0]==='>'||b[0]==='!'){ priv=true; b=b.slice(1); }
+  const n=b.split(';').map(x=>x===''?0:parseInt(x,10)||0);
+  const g=(i,d)=> (b===''||isNaN(n[i]))?d:(n[i]||0);
+  switch(f){
+    case 'A': this.cy=Math.max(this.scroll_top,this.cy-(g(0,1))); break;
+    case 'B': this.cy=Math.min(this.scroll_bot,this.cy+(g(0,1))); break;
+    case 'C': this.cx=Math.min(this.cols-1,this.cx+(g(0,1))); break;
+    case 'D': this.cx=Math.max(0,this.cx-(g(0,1))); break;
+    case 'E': this.cx=0; this.cy=Math.min(this.rows-1,this.cy+g(0,1)); break;
+    case 'F': this.cx=0; this.cy=Math.max(0,this.cy-g(0,1)); break;
+    case 'G': case '`': this.cx=Math.max(0,Math.min(this.cols-1,(b===''?0:n[0]-1))); break;
+    case 'd': this.cy=Math.max(0,Math.min(this.rows-1,(b===''?0:n[0]-1))); break;
+    case 'H': case 'f': { let r=b===''?0:(n[0]-1), c=b===''?0:(n[1]-1); this.cy=Math.max(0,Math.min(this.rows-1,r)); this.cx=Math.max(0,Math.min(this.cols-1,c)); break; }
+    case 'J': { if(n[0]===0){ for(let x=this.cx;x<this.cols;x++) this.lines[this.cy][x]=[' ',this.cur]; for(let r=this.cy+1;r<this.rows;r++) this.lines[r]=this.blank(); } else if(n[0]===1){ for(let r=0;r<this.cy;r++) this.lines[r]=this.blank(); for(let x=0;x<=this.cx&&x<this.cols;x++) this.lines[this.cy][x]=[' ',this.cur]; } else { for(let r=0;r<this.rows;r++) this.lines[r]=this.blank(); this.cx=0;this.cy=0; } break; }
+    case 'K': { const L=this.lines[this.cy]; if(n[0]===0){ for(let x=this.cx;x<this.cols;x++) L[x]=[' ',this.cur]; } else if(n[0]===1){ for(let x=0;x<=this.cx&&x<this.cols;x++) L[x]=[' ',this.cur]; } else { this.lines[this.cy]=this.blank(); } break; }
+    case 'L': { for(let i=0;i<g(0,1);i++){ this.lines.splice(this.cy,0,this.blank()); } this.lines.length=this.rows+g(0,1); while(this.lines.length>this.rows) this.lines.pop(); break; }
+    case 'M': { for(let i=0;i<g(0,1);i++){ this.lines.splice(this.cy,1); } while(this.lines.length<this.rows) this.lines.push(this.blank()); break; }
+    case 'r': { this.scroll_top=0; this.scroll_bot=(n[1]?n[1]-1:this.rows-1); this.cx=0;this.cy=0; break; }
+    case 's': this.saved={cx:this.cx,cy:this.cy,cur:this.cur}; break;
+    case 'u': if(this.saved){ this.cx=this.saved.cx;this.cy=this.saved.cy;this.cur=this.saved.cur; } break;
+    case 'h': case 'l': /* modes: ignore (smcup/rmcup и т.п.) */ break;
+    default: break;
+  }
+};
+VeilTerm.prototype.sgr=function(b){
+  if(b===''){ this.clr(); return; }
+  const a=b.split(';').map(x=>x===''?0:parseInt(x,10)); 
+  for(let i=0;i<a.length;i++){
+    const p=a[i];
+    if(p===0) this.clr();
+    else if(p===1) this.cur.b=1;
+    else if(p===4) this.cur.u=1;
+    else if(p===7) this.cur.i=1;
+    else if(p===22) this.cur.b=0;
+    else if(p===24) this.cur.u=0;
+    else if(p===27) this.cur.i=0;
+    else if(p===39) this.cur.fg='';
+    else if(p===49) this.cur.bg='';
+    else if(p>=30&&p<=37) this.cur.fg=this.ansi(p-30,false);
+    else if(p>=40&&p<=47) this.cur.bg=this.ansi(p-40,true);
+    else if(p>=90&&p<=97) this.cur.fg=this.ansi(p-90+8,false);
+    else if(p>=100&&p<=107) this.cur.bg=this.ansi(p-100+8,true);
+    else if(p===38||p===48){ const bg=p===48; if(a[i+1]===5){ this.set254(bg,a[i+2]); i+=2;} else if(a[i+1]===2){ const col='rgb('+a[i+2]+','+a[i+3]+','+a[i+4]+')'; if(bg)this.cur.bg=col; else this.cur.fg=col; i+=4;} }
+  }
+};
+VeilTerm.prototype.ansi=function(idx,bg){
+  const p=['#000000','#b30000','#00a600','#b3ab00','#0057b3','#a1249c','#00a6b3','#bfbfbf',
+           '#4d4d4d','#e60000','#00d900','#e5e500','#0077e6','#e500e5','#00e5e5','#ffffff'];
+  return (idx>=0&&idx<p.length)?p[idx]:'';
+};
+VeilTerm.prototype.set254=function(bg,v){ v=v|0; let c;
+  if(v<16){ c=this.ansi(v); }
+  else if(v<232){ const x=v-16; c='rgb('+Math.floor(x/36)*51+','+Math.floor((x%36)/6)*51+','+(x%6)*51+')'; }
+  else { const q=(v-232)*10+8; c='rgb('+q+','+q+','+q+')'; }
+  if(bg)this.cur.bg=c; else this.cur.fg=c; };
+VeilTerm.prototype.html=function(){
+  let out='';
+  for(let r=0;r<this.lines.length;r++){
+    const L=this.lines[r]; let run=''; let rs=null;
+    const flush=()=>{ if(!run) return; if(rs&&(rs.fg||rs.bg||rs.b||rs.u||rs.i)){ let st=''; if(rs.fg)st+='color:'+rs.fg+';'; if(rs.bg)st+='background:'+rs.bg+';'; if(rs.b)st+='font-weight:700;'; if(rs.u)st+='text-decoration:underline;'; if(rs.i)st+='filter:invert(1);'; out+='<span style="'+st+'">'+esc(run)+'</span>'; } else out+=esc(run); run=''; };
+    for(let x=0;x<L.length;x++){
+      const [ch,cur]=L[x];
+      const same=rs&&rs.fg===cur.fg&&rs.bg===cur.bg&&rs.b===cur.b&&rs.u===cur.u&&rs.i===cur.i;
+      if(!same){ flush(); rs=cur; }
+      run+=ch;
+    }
+    flush();
+    out+= (r<this.lines.length-1)?'\n':'';
+  }
+  return out;
+};
+VeilTerm.prototype.render=function(){ this.el.innerHTML=this.html(); };
+// Новый размер экрана = новая сетка. Старые строки переносим как есть, курсор
+// прижимаем к границам: иначе после поворота телефона курсор «уходил» за экран и
+// shell рисовал приглашение в никуда.
+VeilTerm.prototype.resize=function(cols,rows){
+  cols=Math.max(20,cols|0); rows=Math.max(8,rows|0);
+  if(cols===this.cols && rows===this.rows) return false;
+  const bl=()=>{ const a=[]; for(let i=0;i<cols;i++) a.push([' ',{fg:'',bg:'',b:0,u:0,i:0}]); return a; };
+  const nl=[];
+  for(let r=0;r<rows;r++){
+    const old=this.lines[r];
+    if(!old){ nl.push(bl()); continue; }
+    const line=bl();
+    for(let c=0;c<Math.min(cols,old.length);c++) line[c]=old[c];
+    nl.push(line);
+  }
+  this.lines=nl; this.cols=cols; this.rows=rows;
+  if(this.scroll_top>=rows) this.scroll_top=0;
+  this.scroll_bot=rows-1;
+  this.cx=Math.max(0,Math.min(this.cx,cols-1)); this.cy=Math.max(0,Math.min(this.cy,rows-1));
+  this.render();
+  return true;
+};
+
+let _term=null, _termSock=null;
+const _tenc=new TextEncoder();
+const _tdec=new TextDecoder('utf-8',{fatal:false});
+const TERM_KEYS=[['↑','\x1b[A'],['↓','\x1b[B'],['←','\x1b[D'],['→','\x1b[C'],
+                 ['Tab','\t'],['⇧Tab','\x1b[Z'],['Esc','\x1b'],['⌫','\x7f'],['⏎','\r'],
+                 ['^C','\x03'],['^L','\x0c'],['^U','\x15'],['^D','\x04'],
+                 ['|','|'],['/','/'],['-','-'],['.','.'],['~','~'],['*','*'],['&','&'],['<','<'],['>','>']];
+function _termSend(s){ if(_termSock && _termSock.readyState===1){ try{_termSock.send(_tenc.encode(s)); _termTx+=s.length;}catch(e){} } }
+function _termInput(){ return $('termInput'); }
+function _termKeys(){
+  const box=$('termKeys'); if(!box || box.childElementCount) return;
+  for(const [label,seq] of TERM_KEYS){
+    const b=document.createElement('button');
+    b.className='tiny sec'; b.type='button'; b.textContent=label;
+    b.style.cssText='min-width:34px;padding:6px 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px';
+    // mousedown по кнопке обычно снимает фокус с поля ввода — а без фокуса на
+    // телефоне закрывается клавиатура и следующую команду не набрать.
+    b.onmousedown=(e)=>e.preventDefault();
+    b.onclick=(e)=>{ e.preventDefault(); _termSend(seq); const i=_termInput(); if(i) setTimeout(()=>{try{i.focus();}catch(_){}} ,0); };
+    box.appendChild(b);
+  }
+}
+// Сколько символов влезает в окно — считаем по реальному шрифту, а не угадываем:
+// 100 колонок на телефоне = перенос каждой строки и каша в выводе.
+function _termFit(){
+  const host_el=$('termHost');
+  let cw=7.8, ch=16.2;
+  if(host_el){
+    const probe=document.createElement('span');
+    probe.style.cssText='position:absolute;visibility:hidden;white-space:pre;font:inherit';
+    probe.textContent='MMMMMMMMMM';
+    host_el.appendChild(probe);
+    const r=probe.getBoundingClientRect();
+    host_el.removeChild(probe);
+    if(r.width>4) cw=r.width/10;
+    if(r.height>4) ch=r.height;
+  }
+  const w=(host_el?host_el.clientWidth:800)-18;
+  let cols=Math.floor(w/cw);
+  const vh=(window.visualViewport && window.visualViewport.height) || window.innerHeight || 640;
+  // снизу съедаем полосу клавиш, поле ввода и шапку карточки; сверху — саму
+  // клавиатуру телефона (visualViewport её учитывает, innerHeight — нет)
+  const avail=Math.max(180, vh*0.62);
+  let rows=Math.floor((avail-70)/ch);
+  cols=Math.max(24,Math.min(220,cols));
+  rows=Math.max(9,Math.min(50,rows));
+  if(host_el){ host_el.style.minHeight='0'; host_el.style.height=Math.round(rows*ch+16)+'px'; host_el.style.maxHeight='none'; }
+  return {cols,rows};
+}
+function _termResync(){
+  if(!_term || !_termSock) return;
+  const s=_termFit();
+  if(_term.resize(s.cols,s.rows)) { try{ _termSock.send(JSON.stringify({type:'resize',cols:s.cols,rows:s.rows})); }catch(e){} }
+}
+function loadTermStatus(){
+  const chk=$('termEnabled'), st=$('termStatus'), btn=$('termOpenBtn'), card=$('termCard');
+  if(card && typeof ME!=='undefined' && ME && !ME.owner){ card.style.display='none'; return; }
+  if(card) card.style.display='';
+  api('/api/term').then(d=>{
+    if(chk) chk.checked=!!d.enabled;
+    if(btn) btn.disabled=!d.enabled;
+    if(st) st.innerHTML = d.enabled ? ('<span style="color:var(--ok)">Включён</span>'+(d.active?' · активных сеансов: '+d.active:'')) : '<span class=mut>Выключен</span>';
+  }).catch(e=>{ if(st) st.textContent='—'; });
+}
+async function termToggle(on){
+  const chk=$('termEnabled'), st=$('termStatus'), btn=$('termOpenBtn');
+  if(on && !confirm('Включить браузерный root-терминал?\n\nПока он включён, этот браузер может выполнить на сервере ЛЮБУЮ команду от root. Включай только когда действительно работаешь, и выключай сразу после.')) { chk.checked=false; return; }
+  try{
+    const d=await api('/api/term/toggle',{method:'POST',body:JSON.stringify({enabled:on})});
+    setMsg('termMsg', on?'Терминал включён. Открой его кнопкой ниже и работай.' : 'Терминал выключен.', 'ok', false);
+    loadTermStatus();
+    if(!on) termClose();
+  }catch(e){ if(chk) chk.checked=!on; setMsg('termMsg',e.message,'err',false); }
+}
+let _termOpened=false, _termRx=0, _termTx=0, _termLastClose=null;
+function _termDiag(ws, why){
+  // Честный ответ на «почему надпись появилась, если терминал же запущен»:
+  // различаем «рукопожатие не прошло» и «сокет был живый и оборвался».
+  const rs = ws ? ws.readyState : 3;
+  const opened = _termOpened;
+  const focused = (()=>{ try{ return document.activeElement===_termInput(); }catch(e){ return false; } })();
+  let s = opened
+    ? 'сеанс был открыт и прожил до обрыва · получено '+_termRx+' Б, отправлено '+_termTx+' Б'
+    : 'рукопожатие не прошло сокет так и не открылся (readyState '+rs+')';
+  if(_termLastClose) s += ' · закрытие: код '+_termLastClose[0]+(_termLastClose[1]?' («'+_termLastClose[1]+'»)':'');
+  s += ' · фокус на поле ввода: '+(focused?'да':'нет');
+  if(why) s = why+' — '+s;
+  return s;
+}
+// Кнопки «⌨ Ввод» и «? почему» относятся к ЖИВОМУ сеансу. Раньше их показывали
+// до рукопожатия — и при отказе (501/403, обрыв до onopen) под окном оставалась
+// фантомная кнопка, а «? почему» рассказывала про сеанс, которого не было.
+function _termBtns(on){
+  const kb=$('termKbBtn'); if(kb) kb.style.display = on ? '' : 'none';
+  const wb=$('termWhyBtn'); if(wb) wb.style.display = on ? '' : 'none';
+  if(!on){ const wy=$('termWhy'); if(wy){ wy.style.display='none'; wy.innerHTML=''; } _termWhyOpen=false; }
+}
+// Рукопожатие не прошло: убираем окно и кнопки полностью — от ошибки должен
+// остаться только честный текст, он живёт ВНЕ termWrap и никуда не денется.
+function _termHandshakeFail(){
+  _termBtns(false);
+  const w=$('termWrap'); if(w) w.style.display='none';
+  _termSock=null; _term=null;
+  const b=$('termOpenBtn'); if(b) b.disabled=false;
+}
+function termOpen(){
+  if(_termSock) return;
+  const proto=location.protocol==='http:'?'ws:':'wss:';
+  // location.host сам отдаёт «хост» или «хост:порт» как надо; придумывать порт
+  // руками (||8443) было нельзя — под nginx/Cloudflare панель живёт на 443 и
+  // сокет уходил в несуществующий :8443.
+  _termOpened=false; _termRx=0; _termTx=0; _termLastClose=null;
+  // Клавиатуру телефона поднимает ТОЛЬКО фокус, взятый синхронно внутри жеста
+  // пользователя. Ждём ws.onopen — и жалоба «тапаю, а клавиатуры нет» гарантирована.
+  const inp0=_termInput();
+  if(inp0){ try{ inp0.focus({preventScroll:true}); }catch(e){ try{ inp0.focus(); }catch(_){ } } }
+  let ws;
+  try{ ws=new WebSocket(proto+'//'+location.host+'/api/term'); }catch(e){ setMsg('termMsg','не удалось открыть сокет: '+e.message,'err',false); return; }
+  ws.binaryType='arraybuffer';
+  const host_el=$('termHost'), inp=_termInput();
+  $('termWrap').style.display='';
+  _termKeys();
+  const fit=_termFit();
+  _term=new VeilTerm(host_el, fit.cols, fit.rows);
+  _termSock=ws;
+  const sendSize=()=>{ if(_termSock && _termSock.readyState===1){ try{_termSock.send(JSON.stringify({type:'resize',cols:_term.cols,rows:_term.rows}));}catch(e){} } };
+  ws.onopen=()=>{ if(_termSock!==ws || !_term) return;
+    _termOpened=true; _termBtns(true); sendSize();
+    _term.feed('\r\n\x1b[1;36mVeil\x1b[0m: браузерный терминал. Печатай в строке под окном, Enter — отправить.\r\n');
+    if(inp){ try{inp.focus({preventScroll:true});}catch(e){ inp.focus(); } }
+    setMsg('termMsg','','',false); };
+  ws.onmessage=(ev)=>{ if(!_term) return; let u=new Uint8Array(ev.data); _termRx+=u.length; _term.feed(_tdec.decode(u)); };
+  ws.onclose=(ev)=>{ if(_termSock && _termSock!==ws) return;
+    _termLastClose=[ev&&ev.code, ev&&ev.reason];
+    if(!_termOpened){ _termHandshakeFail(); loadTermStatus(); return; }
+    if(_term){ _term.feed('\r\n[сеанс закрыт'+(ev&&ev.code?' · код '+ev.code:'')+']\r\n'); } _termSock=null; const b=$('termOpenBtn'); if(b) b.disabled=false; loadTermStatus(); };
+  // onerror обязан молчать, когда сеанс уже жил: иначе безобидный обрыв сети
+  // выглядит как «терминал недоступен, иди включи тумблер».
+  ws.onerror=()=>{
+    if(_termSock && _termSock!==ws) return;
+    if(_termOpened){
+      if(_term) _term.feed('\r\n\x1b[33m[связь оборвалась — жми ▶ Открыть заново]\x1b[0m\r\n');
+      setMsg('termMsg', _termDiag(ws, 'обрыв связи'), 'err', false);
+      return;
+    }
+    const hints=[];
+    if(typeof ME!=='undefined' && ME && !ME.owner) hints.push('ты не владелец');
+    const chk=$('termEnabled'); if(chk && !chk.checked) hints.push('тумблер «включён» не поднят');
+    if(navigator.userAgent && /Trident|MSIE/i.test(navigator.userAgent)) hints.push('этот браузер не умеет WebSocket');
+    setMsg('termMsg','рукопожатие с '+location.host+' не прошло'+(hints.length?' · '+hints.join(' · '):'')+
+      ' · causes: заход через обычный HTTP-прокси или Cloudflare-серый (WebSocket не доходит), рестарт панели, не тот адрес. '+_termDiag(ws), 'err', false);
+    _termHandshakeFail();
+  };
+  // Настоящий ввод — textarea, а не div: мобильная клавиатура поднимается ТОЛЬКО
+  // у фокусируемого поля. Див с onkeydown для телефона — немая кнопка.
+  if(inp){
+    inp.onkeydown=(e)=>{
+      // Телефонные раскладки шлют keydown с key='Unidentified'/'Process' и вообще
+      // без текста: такие символы придёт через oninput, не лезь дважды.
+      if(e.key==='Unidentified' || e.key==='Process' || e.key==='Dead' || !e.key) return;
+      let data=null;
+      if(e.key==='Enter') data='\r';
+      else if(e.key==='Backspace') data='\x7f';
+      else if(e.key==='Tab') data = e.shiftKey ? '\x1b[Z' : '\t';
+      else if(e.key==='Escape') data='\x1b';
+      else if(e.key.length===1){ if(e.ctrlKey||e.metaKey){ const m={'a':'\x01','c':'\x03','d':'\x04','l':'\x0c','u':'\x15','k':'\x0b','w':'\x17','r':'\x12','z':'\x1a'}; data=(e.ctrlKey&&m[e.key.toLowerCase()])||null; } else data=e.key; }
+      else if(e.key.startsWith('Arrow')){ data=({ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D'})[e.key]; }
+      else if(e.key==='Home') data='\x1b[H'; else if(e.key==='End') data='\x1b[F';
+      else if(e.key==='Delete') data='\x1b[3~'; else if(e.key==='PageUp') data='\x1b[5~'; else if(e.key==='PageDown') data='\x1b[6~';
+      if(data!==null){ e.preventDefault(); _termSend(data); if(e.key==='Enter') inp.value=''; }
+    };
+    // Мягкие клавиатуры (iOS, Android, Swyft) печатают не в keydown, а в поле:
+    // всё, что туда попало, отправляем и очищаем — эхо вернётся из PTY в окно.
+    inp.oninput=(e)=>{
+      const v=inp.value; inp.value='';
+      if(!v) return;
+      let out='';
+      for(const ch of v) out += (ch==='\n'||ch==='\r') ? '\r' : ch;
+      _termSend(out);
+    };
+    inp.onpaste=(e)=>{ if(!e.clipboardData) return; const t=e.clipboardData.getData('text'); if(t){ e.preventDefault(); inp.value=''; _termSend(t);} };
+  }
+  host_el.onclick=()=>{ if(inp) try{inp.focus({preventScroll:true});}catch(e){ inp.focus(); } };
+  host_el.oncontextmenu=()=>{ if(inp) inp.focus(); };
+  if(!window._termResizeHook){
+    window._termResizeHook=1;
+    const f=()=>{ if(_termSock) _termResync(); };
+    window.addEventListener('resize', f);
+    window.addEventListener('orientationchange', ()=>setTimeout(f,120));
+    if(window.visualViewport) window.visualViewport.addEventListener('resize', f);
+  }
+  $('termOpenBtn').disabled=true;
+}
+function termClose(){ if(_termSock){ try{_termSock.close();}catch(e){} _termSock=null; } $('termWrap').style.display='none';
+  _termBtns(false);
+  loadTermStatus(); }
+// Кнопка «⌨ Ввод»: фокус поля строго внутри жеста тапа — иначе мобильная
+// клавиатура не появится, чем бы она ни была вызвана позже.
+function termKb(){
+  const inp=_termInput();
+  if(!inp){ setMsg('termMsg','поля ввода нет на этой странице','err',false); return; }
+  try{ inp.focus({preventScroll:true}); }catch(e){ try{ inp.focus(); }catch(_){ } }
+  setMsg('termMsg', document.activeElement===inp
+    ? 'Фокус на строке ввода — печатай. Если клавиатура не всплыла, это ограничение оболочки (вебвью без права показывать клавиатуру): открой панель в обычном браузере.'
+    : 'фокус поймать не удалось — тапни прямо по строке ввода под чёрным окном.', 'ok', false);
+}
+// Кнопка «? почему»: чем именно закончился прошлый сеанс. Раньше поверх живого
+// терминала ложилась одна и та же фраза про тумблер и владельца — и она врала.
+let _termWhyOpen = false;
+function termWhy(){
+  const box=$('termWhy'); if(!box) return;
+  if(_termWhyOpen){ _termWhyOpen=false; box.style.display='none'; return; }
+  _termWhyOpen = true;
+  const rs=_termSock?_termSock.readyState:3;
+  const st={0:'соединение ещё не установлено',1:'сокет открыт и жив',2:'сокет закрывается',3:'сокета нет (закрыт)'}[rs]||('readyState '+rs);
+  const foc=(function(){ try{ return document.activeElement===_termInput(); }catch(e){ return false; } })();
+  let h='<b>Что происходит с соединением прямо сейчас</b><div style="margin-top:5px">'
+    +'• состояние сокета: '+esc(st)+'<br>'
+    +'• рукопожатие проходило: '+(_termOpened?'<span style="color:var(--ok)">да</span>':'<span style="color:var(--warn)">нет</span>')
+    +' • байт получено: '+_termRx+' • отправлено: '+_termTx+'<br>'
+    +'• прошлое закрытие: '+(_termLastClose?('код '+_termLastClose[0]+(_termLastClose[1]?' · '+esc(String(_termLastClose[1])):'')):'было')
+    +' • фокус на строке ввода: '+(foc?'да':'нет')+'<br>'
+    +'• адрес, куда идётся сеанс: <code>'+esc(location.host)+'</code> (фактическое окно браузера, не выдуманное)</div>'
+    +'<details style="margin-top:8px"><summary class=mut>Объяснить простым языком</summary><div class=mut style="margin-top:5px">'
+    +'<p>WebSocket — это отдельное долгоживущее соединение, а не обычный HTTP-запрос. Его рвёт по бытовым причинам: телефон свернул вкладку или погасил экран, сменилась сеть (Wi-Fi ↔ мобильный), панель перезапустилась после изменения конфига, истёк 30-минутный простой, либо перед панелью стоит прокси, который не пропускает upgrade-запрос.</p>'
+    +'<p>Раньше браузер называл словом «error» и отказ в рукопожатии, и обрыв уже работающего сеанса — поэтому над окном терминала появлялась фраза про «нужен владелец и тумблер», когда всё было включено и работало. Теперь панель различает два случая: <b>«рукопожатие не прошло»</b> — это действительно про настройки и путь к панели; <b>«обрыв связи»</b> — это сеть, достаточно нажать «▶ Открыть терминал» снова.</p>'
+    +'<p>Важно: команды, отправленные до обрыва, могли успеть исполниться. Перед повтором того, что делал, — проверь вывод.</p>'
+    +'<p>Если сеанс упорно не открывается под Cloudflare: обычный (серый) проксируемый адрес WebSocket не пропускает, а оранжевое облако на порту 443 умеет его вести, но тогда и панель должна лежать на 443. Проще всего открыть панель по её прямому адресу с портом — этот сеанс идёт мимо CDN.</p>'
+    +'</div></details>';
+  box.innerHTML=h; box.style.display='';
+}
+
+// ================= AI-АССИСТЕНТ (клиент) =================
+let _aiHist = [];
+function _aiBubble(role, text){
+  const log=$('aiLog'); if(!log) return;
+  const d=document.createElement('div');
+  d.style.margin='6px 0'; d.style.padding='8px 10px'; d.style.borderRadius='10px';
+  if(role==='user'){ d.style.background='color-mix(in srgb,var(--acc) 18%,transparent)'; d.style.textAlign='right'; }
+  else if(role==='assistant'){ d.style.background='var(--card2)'; }
+  else { d.style.background='transparent'; d.style.color='var(--mut)'; d.style.fontSize='12px'; }
+  d.innerHTML=(role==='user'?'<b>Ты:</b> ':role==='assistant'?'<b>Ассистент:</b> ':'')+esc(text).replace(/\n/g,'<br>');
+  log.appendChild(d); log.scrollTop=log.scrollHeight;
+  return d;
+}
+function loadAi(){
+  api('/api/ai').then(d=>{
+    const en=$('aiEnabled'), base=$('aiBase'), mdl=$('aiModel'), st=$('aiStatus'), wrap=$('aiChatWrap');
+    if(en) en.checked=!!d.enabled;
+    if(base) base.value=d.base||''; if(mdl) mdl.value=d.model||'';
+    _aiProviders = d.providers||[];
+    const sel=$('aiProv');
+    if(sel && sel.options.length<=1){
+      _aiProviders.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; sel.appendChild(o); });
+    }
+    aiProvPick(true);
+    if(st) st.innerHTML = d.enabled&&d.has_key ? '<span style="color:var(--ok)">Готов к работе</span>'
+        : (!d.has_key ? '<span style="color:var(--warn)">нужен API-ключ — выбери «Откуда ключ» выше</span>' : '<span class=mut>выключен</span>');
+    if(wrap) wrap.style.display = (d.enabled&&d.has_key) ? '' : 'none';
+    if((d.enabled&&d.has_key) && $('aiLog') && !$('aiLog').childElementCount){
+      _aiBubble('note','Я читаю состояние панели (подписчики, метрики, ноды, журнал) и отвечаю словами. Менять ничего не могу.');
+    }
+  }).catch(e=>{ if($('aiStatus')) $('aiStatus').textContent='—'; });
+}
+let _aiProviders=[];
+function aiProvPick(keep){
+  const sel=$('aiProv'), help=$('aiProvHelp'); if(!sel) return;
+  const p=_aiProviders.filter(x=>x.id===sel.value)[0];
+  if(!help) return;
+  if(!p){ help.innerHTML = keep?'':'<span class=mut>Выбери сервис — тут появится ссылка, где зарегистрироваться, и шаги по одному клику.</span>'; return; }
+  if(!keep){
+    const b=$('aiBase'), m=$('aiModel');
+    if(b) b.value=p.base||''; if(m) m.value=p.model||'';
+  }
+  help.innerHTML = '<div>'+esc(p.price||'')+'</div>'
+    +(p.keypage?'<div style="margin-top:3px">Ключ получить тут: <a href="'+esc(p.keypage)+'" target=_blank rel="noopener noreferrer nofollow">'+esc(p.keypage)+'</a></div>':'')
+    +'<ol style="margin:4px 0 0 18px;padding:0">'+(p.how||[]).map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol>'
+    +'<div style="margin-top:4px;opacity:.8">Подсказка вписана автоматически; URL и модель можно поправить руками.</div>';
+}
+async function aiTestKey(){
+  const box=$('aiTestBox'), b=$('aiBase'), m=$('aiModel'), k=$('aiKey');
+  if(!box) return;
+  const payload={base:(b||{}).value||'', model:(m||{}).value||''};
+  if((k||{}).value) payload.key=k.value;
+  box.style.display=''; box.innerHTML='<span class=mut>стучусь к эндпоинту…</span>';
+  try{
+    const d=await api('/api/ai/test',{method:'POST',body:JSON.stringify(payload)});
+    const col=d.ok?'var(--ok)':'var(--err)';
+    box.innerHTML='<div style="color:'+col+';font-weight:600">'+(d.ok?'✅ ':'❌ ')+esc(d.msg||'')+'</div>'
+      +(d.detail?'<div class=mut style="margin-top:4px;font-size:12px;word-break:break-word">ответ сервиса: '+esc(String(d.detail).slice(0,300))+'</div>':'')
+      +(d.ok?'':'<div class=mut style="margin-top:4px;font-size:12px">Чинится по-простому: сверь URL эндпоинта (должен кончаться на /v1), имя модели и сам ключ (копируется один раз, лишних пробелов быть не должно). Если ключ от другого сервиса — выбери его в списке «Откуда ключ».</div>');
+  }catch(e){ box.innerHTML='<span style="color:var(--err)">проверка не удалась: '+esc(e.message)+'</span>'; }
+}
+async function aiSave(){
+  const b={enabled:!!($('aiEnabled')||{}).checked, base:($('aiBase')||{}).value||'', model:($('aiModel')||{}).value||''};
+  const k=($('aiKey')||{}).value; if(k) b.key=k;
+  setMsg('aiMsg','сохраняю…','ok',false);
+  try{
+    await api('/api/ai/config',{method:'POST',body:JSON.stringify(b)});
+    if($('aiKey')) $('aiKey').value='';
+    setMsg('aiMsg','сохранено.','ok',false);
+    loadAi();
+  }catch(e){ setMsg('aiMsg',e.message,'err',false); }
+}
+function aiQuick(q){ const i=$('aiInput'); if(i){ i.value=q; } aiAsk(); }
+async function aiAsk(){
+  const i=$('aiInput'); const q=(i.value||'').trim(); if(!q) return;
+  i.value=''; _aiBubble('user',q); _aiHist.push({role:'user',content:q});
+  const btn=$('aiAskBtn'); if(btn) btn.disabled=true;
+  const t=_aiBubble('note','думаю…'); 
+  try{
+    const d=await api('/api/ai/chat',{method:'POST',body:JSON.stringify({messages:_aiHist})});
+    if(t&&t.parentNode) t.remove();
+    const a=(d.answer||'(пусто)');
+    _aiHist.push({role:'assistant',content:a});
+    if(_aiHist.length>12) _aiHist=_aiHist.slice(-12);
+    _aiBubble('assistant',a);
+    if(d.tools&&d.tools.length) _aiBubble('note','инструменты: '+d.tools.join(', '));
+  }catch(e){ if(t&&t.parentNode) t.remove(); _aiBubble('note','ошибка: '+e.message); }
+  if(btn) btn.disabled=false;
+}
+
+
+
 function _muxRenderPrev(d){
   const box=$('muxPreviewBox'); if(!box) return;
   const okc='var(--ok)', errc='var(--err)', mutc='var(--mut)';
@@ -5364,6 +6055,8 @@ async function loadFront(){
       if (!d.domain){ bd.textContent = 'не настроено (сейчас фронт: '+(d.tls_domain||'—')+')'; bd.style.color='var(--mut)'; }
       else if (d.active && d.cert_ok && d.nginx_ok && d.https_ok){ bd.textContent = 'активен: '+d.domain+' · сертификат до '+new Date(d.expire*1000).toLocaleDateString(); bd.style.color='var(--ok)'; }
       else { bd.textContent = d.domain+': '+(d.active?'фронт включён':'tls_domain не совпадает')+', cert:'+(d.cert_ok?'ок':'нет')+', nginx:'+(d.nginx_ok?'ок':'нет')+', проверка:'+(d.https_ok?'ок':'нет'); bd.style.color='var(--warn)'; }
+      // маску может убить чужой occupant на :443 (nginx -t конфликта портов не видит) — сказать сразу
+      if (d.blocker443){ bd.textContent = '⚠ ' + d.blocker443; bd.style.color='var(--warn)'; }
     }
     renderTgMain();
     if (typeof renderTg === 'function' && typeof tgUsers !== 'undefined' && tgUsers.length) renderTg();
@@ -5544,7 +6237,8 @@ document.querySelectorAll('.tabs button').forEach(b=>{
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
        if(b.dataset.tab==='proxy'){loadTgVerInfo();loadTgDcs();}
-       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();}
+       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();}
+       if(b.dataset.tab==='ai')loadAi();
        if(b.dataset.tab==='site'){loadMyIps();loadWebmux();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
@@ -5814,7 +6508,7 @@ async function payCheck(id){
 function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('Скопировано','ok');}catch(e){}}
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
-var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"]};
+var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
 var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
@@ -6258,17 +6952,20 @@ async function loadDiagnostics(){
       api('/api/selftest').catch(()=>({}))
     ]);
     if(mBox){
+      const pw = (self && self._panel) || {};
+      const pover = (pw.max && pw.busy >= pw.max);
       mBox.innerHTML = `
         <div style="margin-bottom:6px">🧠 Использование RAM: <b>${met.ram_percent || 0}%</b></div>
         <div style="margin-bottom:6px">💻 Загрузка CPU: <b>${met.cpu_percent || 0}%</b> (Load Avg: ${met.load1 || 0})</div>
         <div style="margin-bottom:6px">💽 Диск: <b>${met.disk_used_percent || 0}%</b> (Свободно: ${met.disk_free_gb || 0} GB)</div>
-        <div>🛡 Xray служба: <b style="color:${met.xray_running?'var(--ok)':'var(--err)'}">${met.xray_running?'АКТИВНА':'ОСТАНОВЛЕНА'}</b></div>
+        <div style="margin-bottom:6px">🛡 Xray служба: <b style="color:${met.xray_running?'var(--ok)':'var(--err)'}">${met.xray_running?'АКТИВНА':'ОСТАНОВЛЕНА'}</b></div>
+        <div>🚦 Панель сейчас обслуживает: <b style="color:${pover?'var(--err)':'var(--ok)'}">${pw.busy ?? '?'} из ${pw.max ?? '?'}</b>${pover?' — всё занято, новым соединениям временно отказываем (503)':''}${pw.refused?` · с момента запуска отказано <b>${pw.refused}</b>`:''}</div>
       `;
     }
     if(pBox){
       let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:6px">';
       for(let [port, info] of Object.entries(self)){
-        if(port === 'ok') continue;
+        if(port === 'ok' || port === '_panel') continue;
         const status = typeof info === 'string' ? info : (info.status || '');
         const label = typeof info === 'object' && info.label ? info.label : '';
         const ok = status.includes('OK');
