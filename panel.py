@@ -22,7 +22,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.4"
+VERSION = "2.16.5"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -2218,10 +2218,15 @@ def _fam_member_uuids(st, parent_uuid):
     _, members = _fam(st, parent_uuid)
     return members
 
-def _fam_release(st, uuid_):
+def _fam_release(st, uuid_, keep_manual=False):
     """Снять blocked со всего семейства; если причина была «limit» — обнулить
     up/down/last_* и флаги предупреждений у хозяина и каждого члена, оттолкнувшись
-    от теперешних счётчиков Xray (иначе совокупный расход перескочит порог за 60с)."""
+    от теперешних счётчиков Xray (иначе совокупный расход перескочит порог за 60с).
+
+    keep_manual=True оставляет нетронутыми записи, выключенные руками (тумблер
+    «⏸»): иначе подписчику достаточно купить любой тариф, чтобы вернуться после
+    того, как его выгнали за злоупотребление. Решение человека снимает только
+    оператор кнопкой «разблокировать»."""
     parent, members = _fam(st, uuid_)
     ids = [parent] + members
     cleared = False
@@ -2229,6 +2234,8 @@ def _fam_release(st, uuid_):
     for u in ids:
         for c in _fam_group(st, u):
             if c.get("blocked"):
+                if keep_manual and c.get("blocked_reason") == "manual":
+                    continue
                 cleared = True
                 if c.get("blocked_reason") == "limit":
                     need_reset = True
@@ -2646,6 +2653,14 @@ def _stop_xray():
 # должно: при двух одноимённых def нижняя молча побеждает, и правка верхней
 # превращается в украшение.
 _XRAY_APPLY_LOCK = f"{BASE}/.xray-apply.lock"
+
+# Один замок на всю последовательность «прочитали state.json → поменяли → записали».
+# Файковый `_xray_apply_gate` бережёт только перезапуск xray, а голые `_save(STATE, …)`
+# его не берут: два изменения состояния в одну секунду съедали друг друга (живьём:
+# из восьми одновременных «создать подписчика» в файле оставался один). Руки морды
+# держат этот замок на время всего POST, фоновые тики — вокруг своих секций.
+# RLock: обработчик вправе вызвать хелпер, который берёт его же.
+_STATE_LOCK = threading.RLock()
 
 @contextlib.contextmanager
 def _xray_apply_gate(seconds=180):
@@ -6317,8 +6332,9 @@ def _pay_extend(inv):
             c["warned_days"] = []
     if days > 0:
         # продлили хозяина — вся семья разблокируется
-        # (limit-блок при этом снимается с обнулением совокупного расхода)
-        _fam_release(st, uid)
+        # (limit-блок при этом снимается с обнулением совокупного расхода),
+        # кроме выключенных вручную: деньги не отменяют решение оператора
+        _fam_release(st, uid, keep_manual=True)
     for c in grp:
         if gb > 0:
             c["limit_gb"] = gb
@@ -6820,6 +6836,15 @@ def _pay_handle_public(self, p):
         inv = _pay_load()["invoices"].get(str(b.get("invoice_id") or ""))
         if not inv:
             self._send(404, {"error": "invoice not found"})
+            return True
+        # Подпись этим ключом означает «я — своя касса», а не «я — любой счёт».
+        # Раньше хук проходил по любому счёту, и старый секрет generic-кассы,
+        # который никто не стирал при переходе на cryptobot/YooKassa, дарил
+        # оплату их счетов: подписка продлевалась без денег.
+        if pc["provider"] != "generic" or inv.get("provider") != "generic":
+            _audit("pay_hook_foreign", invoice=inv["id"], invoice_provider=inv.get("provider"),
+                   configured=pc["provider"], ip=ip)
+            self._send(403, {"error": "этот счёт принадлежит другому способу оплаты"})
             return True
         inv = _pay_mark_paid(inv["id"], "api")
         if not inv:
@@ -7692,6 +7717,13 @@ def _perm_for(p, m):
         return None
     if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook", "/api/hop/register"):
         return None
+    if p == "/api/onboard/dismiss":
+        # Значение живёт в config.json и ОДНО на всю панель: «первый запуск
+        # просмотрен». Сотрудник без права «настройки» прятал этим подсказку
+        # хозяина — и наоборот, хозяин сбрасывал её под оператора. Морда
+        # вызывает ручку в try/catch, поэтому 403 для не-владельца ничего не
+        # ломает:banner просто остаётся видимым тому, кому он и показан.
+        return ["owner"]
     if p.startswith("/api/ext/") or p.startswith("/pay/"):
         return None
     if p == "/api/theme" and m == "GET":
@@ -8628,10 +8660,10 @@ def _node_agent_purge(node):
         return (False, str(e)[:160])
 
 def _node_apply_remove(n, uuid):
+    # (ok, ошибка): отозвать ключ на ноде и не узнать, вышло ли, — это не отзыв.
     if (n.get("type") or "agent") == "agent":
-        _node_call(n, "/agent/apply", {"action": "remove", "uuid": uuid}, timeout=6)
-    else:
-        _node_call(n, "/api/ext/clients/delete", {"uuid": uuid}, timeout=6)
+        return _node_call(n, "/agent/apply", {"action": "remove", "uuid": uuid}, timeout=6)[:2]
+    return _node_call(n, "/api/ext/clients/delete", {"uuid": uuid}, timeout=6)[:2]
 
 def _undeploy_client_from_nodes(st, u):
     ents = _client_node_entries(st, u)
@@ -11353,6 +11385,18 @@ def _login_ok(client_ip):
 
 BANS_FILE = f"{BASE}/bans.json"
 BANS = {}
+# BANS живёт в памяти и пишется из трёх мест одновременно: нити входа (_ban_ip),
+# фоновый тик очистки (_bans_cleanup) и морда (/api/bans, /api/dashboard, Prometheus).
+# Без замка это не только «RuntimeError: dictionary changed size during iteration»
+# в ответе на 500: _save(BANS_FILE, BANS) сериализовал словарь, который кто-то
+# в эту же секунду менял, — в bans.json попадала половина банов, а после рестарта
+# панели nft-правила переставали совпадать с персистом. Чтение — снимком.
+_BANS_LOCK = threading.RLock()
+
+def _bans_snapshot():
+    """Копия словаря под замком: морда и метрика не видят половины записей."""
+    with _BANS_LOCK:
+        return {ip: dict(v) for ip, v in BANS.items() if isinstance(v, dict)}
 
 def _bans_load():
     global BANS
@@ -11360,23 +11404,28 @@ def _bans_load():
         d = json.load(open(BANS_FILE)) or {}
         if isinstance(d, dict):
             now = time.time()
-            BANS = {ip: v for ip, v in d.items()
-                    if isinstance(v, dict) and int(v.get("until") or 0) > now}
+            with _BANS_LOCK:
+                BANS = {ip: v for ip, v in d.items()
+                        if isinstance(v, dict) and int(v.get("until") or 0) > now}
     except Exception:
-        BANS = {}
+        with _BANS_LOCK:
+            BANS = {}
 
 def _bans_save():
     try:
-        _save(BANS_FILE, BANS)
+        # снимок, а не живой словарь: json.dump под виским nft не ждёт замок
+        with _BANS_LOCK:
+            _save(BANS_FILE, dict(BANS))
     except Exception as e:
         print("[f2b] bans save: " + str(e), flush=True)
 
 def _bans_cleanup():
     """Убирает просроченные записи из BANS. True = были удаления."""
-    now = time.time()
-    gone = [ip for ip, v in BANS.items() if int(v.get("until") or 0) <= now]
-    for ip in gone:
-        BANS.pop(ip, None)
+    with _BANS_LOCK:
+        now = time.time()
+        gone = [ip for ip, v in BANS.items() if int(v.get("until") or 0) <= now]
+        for ip in gone:
+            BANS.pop(ip, None)
     if gone:
         _bans_save()
     return bool(gone)
@@ -11428,22 +11477,24 @@ def _f2b_bootstrap():
     _f2b_nft("add", "rule", "inet", "veil_bans", "input",
              'iifname != "lo" meta nfproto ipv6 ip6 saddr @b6 drop')
     now = time.time()
-    for ip, v in list(BANS.items()):
-        left = int(v.get("until") or 0) - now
-        if left <= 0:
-            BANS.pop(ip, None)
-            continue
-        fam = "b6" if ":" in ip else "b4"
-        _f2b_nft("add", "element", "inet", "veil_bans", fam,
-                 "{ " + ip + " timeout " + str(int(left)) + "s }")
-    _bans_save()
+    with _BANS_LOCK:
+        for ip, v in list(BANS.items()):
+            left = int(v.get("until") or 0) - now
+            if left <= 0:
+                BANS.pop(ip, None)
+                continue
+            fam = "b6" if ":" in ip else "b4"
+            _f2b_nft("add", "element", "inet", "veil_bans", fam,
+                     "{ " + ip + " timeout " + str(int(left)) + "s }")
+        _bans_save()
 
 def _ban_ip(ip, secs, reason):
     """Общий бан IP через inet/veil_bans + bans.json. False = уже забанен."""
-    if ip in BANS:
-        return False
-    BANS[ip] = {"until": int(time.time()) + secs, "reason": reason, "fails": 0}
-    _bans_save()
+    with _BANS_LOCK:
+        if ip in BANS:
+            return False
+        BANS[ip] = {"until": int(time.time()) + secs, "reason": reason, "fails": 0}
+        _bans_save()
     fam = "b6" if ":" in ip else "b4"
     _f2b_nft("add", "element", "inet", "veil_bans", fam,
              "{ " + ip + " timeout " + str(secs) + "s }")
@@ -11451,8 +11502,11 @@ def _ban_ip(ip, secs, reason):
 
 def _f2b_maybe_ban(ip):
     cfgf = _f2b_cfg()
-    if not cfgf or ip in BANS:
+    if not cfgf:
         return
+    with _BANS_LOCK:
+        if ip in BANS:
+            return
     thr, win, ban_sec = cfgf
     now = time.time()
     fails = [x for x in _LOGIN_FAILS.get(ip, []) if x > now - win]
@@ -11462,8 +11516,11 @@ def _f2b_maybe_ban(ip):
         return
     if not _ban_ip(ip, ban_sec, "login fails"):
         return
-    BANS[ip]["fails"] = len(fails)
-    _bans_save()
+    with _BANS_LOCK:
+        # между «забанить» и «дописать счётчик» записью мог завладеть тик очистки
+        if ip in BANS:
+            BANS[ip]["fails"] = len(fails)
+            _bans_save()
     _audit("f2b_ban", ip=ip, fails=len(fails), hours=ban_sec // 3600)
     print("[f2b] бан " + ip + " на " + str(ban_sec // 3600) + "ч", flush=True)
     try:
@@ -11476,10 +11533,11 @@ def _f2b_maybe_ban(ip):
         pass
 
 def _f2b_unban(ip):
-    if ip not in BANS:
-        return False
-    BANS.pop(ip, None)
-    _bans_save()
+    with _BANS_LOCK:
+        if ip not in BANS:
+            return False
+        BANS.pop(ip, None)
+        _bans_save()
     fam = "b6" if ":" in ip else "b4"
     _f2b_nft("delete", "element", "inet", "veil_bans", fam, "{ " + ip + " }")
     _audit("f2b_unban", ip=ip)
@@ -11700,7 +11758,15 @@ def _protoact_view(token):
     """Последние 7 дней для подписчика: [{tag, n, today, last}] по убыванию."""
     with _PROTOACT_LOCK:
         pa = _protoact_load()
-        ent = {k: v for k, v in (pa.get(str(token or "")) or {}).items()}
+        raw = pa.get(str(token or ""))
+        raw = raw if isinstance(raw, dict) else {}
+        # копия обязана быть ГЛУБОКОЙ: merger и чистка в фоне правят вложенные
+        # словари «день → счётчик» по тем же ссылкам. С одним верхним уровнем
+        # морда /p/<токен> ловила «dictionary changed size during iteration» —
+        # то есть 500 на ровно том экране, где подписчик смотрит, чем пользуется.
+        ent = {tag: {"last": (e or {}).get("last") if isinstance(e, dict) else None,
+                     "d": dict(e.get("d") or {}) if isinstance(e, dict) else {}}
+               for tag, e in raw.items()}
     today = time.strftime("%Y-%m-%d", time.gmtime())
     days = {time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
             for i in range(_PA_DAYS)}
@@ -13288,6 +13354,10 @@ _veil_busy = 0                        # сколько соединений па
 _veil_max_workers = 120               # сверх — честный 503, а не зависший на весь сервер поток
 _veil_rejects = 0                     # сколько соединений пришлось отказать с момента старта
 _veil_reject_logged = 0.0             # когда в последний раз писали об этом в аудит
+# Сколько соединений мы готовы ВЕЖЛИВО покормить отказом (TLS-handshake + 503)
+# одновременно. Дальше — молча закрываем: под флудом объяснять каждому дорого,
+# а без этого лимита отказы сами стали бы способом занять потоки.
+_veil_refusers = threading.Semaphore(32)
 
 
 def _veil_overload(client_address):
@@ -13679,46 +13749,51 @@ def _ddns_loop():
 def _limits_loop():
     while True:
         try:
-            st = _load(STATE)
-            if st:
+            # Сначала то, что state.json не трогает. Под замком их держать нельзя:
+            # `_addr_watch_tick` ходит в DNS, `_synfix_tick` — в командную строку,
+            # и «оператор нажал кнопку» превратилось бы в «ждёт, пока страховка
+            # сходит наружу».
+            for _fn, _tag in ((_bans_cleanup, "f2b"), (_synfix_tick, "synfix"),
+                              (_addr_watch_tick, "addr")):
                 try:
-                    if _traffic_tick(st):
-                        _save(STATE, st)
+                    _fn()
                 except Exception as e:
-                    print("[traffic] " + str(e), flush=True)
-                try:
-                    if _maybe_traffic_alerts(st):
-                        _save(STATE, st)
-                except Exception as e:
-                    print("[alert] " + str(e), flush=True)
-                try:
-                    _bans_cleanup()
-                except Exception as e:
-                    print("[f2b] " + str(e), flush=True)
-                try:
-                    _synfix_tick()
-                except Exception as e:
-                    print("[synfix] " + str(e), flush=True)
-                try:
-                    _addr_watch_tick()
-                except Exception as e:
-                    print("[addr] " + str(e), flush=True)
-                try:
-                    _device_tick(st)
-                except Exception as e:
-                    print("[devices] " + str(e), flush=True)
-                bl = _autoblock_limits(st)
-                if bl:
-                    _save(STATE, st)
+                    print(f"[{_tag}] " + str(e), flush=True)
+            bl = []
+            # Одно состояние на весь тик: раньше файл читался здесь, а писался в
+            # конце, и всё, что морда успела изменить между этими моментами,
+            # тик перезаписывал своей копией (подписчик исчезал из state.json,
+            # продолжая работать в xray до ближайшей пересборки).
+            with _STATE_LOCK:
+                st = _load(STATE)
+                if st:
                     try:
-                        _awg_sync(st)
-                        _wg_sync(st)
-                        _apply_state(st)
+                        if _traffic_tick(st):
+                            _save(STATE, st)
                     except Exception as e:
-                        print("[limits] " + str(e), flush=True)
-                    print("[limits] автоблок: " +
-                          ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
-                    _notify_blocked(bl)
+                        print("[traffic] " + str(e), flush=True)
+                    try:
+                        if _maybe_traffic_alerts(st):
+                            _save(STATE, st)
+                    except Exception as e:
+                        print("[alert] " + str(e), flush=True)
+                    try:
+                        _device_tick(st)
+                    except Exception as e:
+                        print("[devices] " + str(e), flush=True)
+                    bl = _autoblock_limits(st)
+                    if bl:
+                        _save(STATE, st)
+                        try:
+                            _awg_sync(st)
+                            _wg_sync(st)
+                            _apply_state(st)
+                        except Exception as e:
+                            print("[limits] " + str(e), flush=True)
+                        print("[limits] автоблок: " +
+                              ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
+            if bl:
+                _notify_blocked(bl)   # Telegram наружу — уже после того, как блокировка сохранена
         except Exception as e:
             print("[limits] " + str(e), flush=True)
         time.sleep(60)
@@ -13740,7 +13815,8 @@ def _bot_poll_loop():
                     for update in data.get("result", []):
                         last_update_id = max(last_update_id, update["update_id"])
                         try:
-                            _process_bot_update(update)
+                            with _STATE_LOCK:
+                                _process_bot_update(update)
                         except Exception as e:
                             print("[bot] poll update error: " + str(e), flush=True)
                 elif data.get("description"):
@@ -15657,6 +15733,19 @@ def _ai_answer(user_msgs, user_login):
     return {"answer": "Слишком длинная цепочка запросов — переформулируй короче.", "tools": used}
 
 
+class _BodyError(ValueError):
+    """Тело запроса непригодно. Отдельный класс нужен затем, чтобы do_POST
+    отвечал честные 400/413, а не «внутренняя ошибка панели»: мусорный JSON,
+    не-UTF-8 и тело на гигабайт присылает сканер или чужой клиент, а не морда.
+    500 на такое — это и сломанная диагностика, и бесплатный сигнал для
+    фингерпринта (по списку 500-х ручек сканер рисует карту панели).
+    Наследник ValueError: полтора десятка местных `except ValueError: 400`
+    продолжат работать как работали."""
+    def __init__(self, msg, code=400):
+        ValueError.__init__(self, msg)
+        self.code = code
+
+
 class H(http.server.BaseHTTPRequestHandler):
     # HTTP/1.1 = keep-alive: без него каждый <script>/<img>/fetch открывает
     # грузилась секундами. timeout освобождает зависшие потоки через 30 с.
@@ -15785,6 +15874,22 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, _pay_summary())
         return self._send(404, {"error": "not found"})
 
+    def _read_exact(self, n):
+        """Прочитать n байт и ЗАПИСАТЬ их в счётчик съеденного тела. Ручки,
+        которые дёргают rfile сами (обои, логотип, крупные настройки,
+        восстановление из файла), без этого сбивали бы `_drain_body`: он видел
+        бы «тело не прочитано» и честно закрывал бы живое соединение."""
+        data = b""
+        rem = max(0, int(n or 0))
+        while rem > 0:
+            ch = self.rfile.read(min(rem, 65536))
+            if not ch:
+                break
+            data += ch
+            rem -= len(ch)
+        self._body_read = int(getattr(self, "_body_read", 0) or 0) + len(data)
+        return data
+
     def _raw_body(self, maxb=8 * 1024 * 1024):
         """Отдать тело запроса байтом. Заголовок Content-Length присылает клиент,
         а браузеры его не шлют вообще ни при каких обстоятельствах: «abc», «-5» и
@@ -15796,11 +15901,57 @@ class H(http.server.BaseHTTPRequestHandler):
         except ValueError:
             n = 0
         if n < 0 or n > maxb:
-            raise ValueError("тело запроса слишком большое")
-        return self.rfile.read(n) if n else b""
+            raise _BodyError("тело запроса слишком большое", 413)
+        got = self.rfile.read(n) if n else b""
+        self._body_read = int(getattr(self, "_body_read", 0) or 0) + len(got)
+        return got
+
+    def _declared_len(self):
+        try:
+            return max(0, int((self.headers.get("Content-Length") or "0").strip() or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    def _drain_body(self, cap=32 * 1024 * 1024):
+        """Дочитать и выбросить тело, которое обработчик не забрал.
+        Молчаливый возврат из do_POST без чтения тела ломает keep-alive:
+        браузер остаётся на том же соединении, а его следующий запрос сервер
+        прочитает из хвоста прошлого — то есть ответ уйдёт не тому запросу.
+        Именно так «оплата не проходит» и «кнопка срабатывает дважды» выглядят
+        для пользователя, тогда как всё, что нужно было, — дочитать байты."""
+        n = self._declared_len() - int(getattr(self, "_body_read", 0) or 0)
+        if n <= 0:
+            return
+        if n > cap:
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(n)
+            self._body_read = int(getattr(self, "_body_read", 0) or 0) + n
+        except Exception:
+            self.close_connection = True
+
+    def _reject_chunked(self):
+        """chunked панель не раскодует: остаток тела остался бы в сокете и
+        следующий запрос этого же соединения читался бы из него. Поэтому —
+        отказ и закрытие соединения, а не «как-нибудь обработаем»."""
+        te = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if not te or te == "identity":
+            return False
+        self.close_connection = True
+        self._send(501, {"error": "Transfer-Encoding не поддерживается, нужен Content-Length"})
+        return True
 
     def _body(self, maxb=8 * 1024 * 1024):
-        return json.loads(self._raw_body(maxb) or b"{}")
+        raw = self._raw_body(maxb)
+        try:
+            d = json.loads(raw or b"{}")
+        except Exception as e:
+            raise _BodyError("тело запроса — не JSON (" + type(e).__name__ + ")") from e
+        if not isinstance(d, dict):
+            # 94 ручки читают b.get(...) — на списке или числе они падают в 500
+            raise _BodyError("тело запроса — JSON-объект, а не список или число")
+        return d
 
     def _is_cur_pw(self, cur):
         return _pw_match(CFG_CACHE.get("salt", ""), cur, CFG_CACHE.get("pass_hash"))
@@ -15878,11 +16029,19 @@ class H(http.server.BaseHTTPRequestHandler):
             inb = (st.get("inbounds") or {}).get(proto)
             if not inb:
                 return self._send(400, {"error": "inbound не найден; допустимы только существующие"})
-            limit_gb = float(b.get("limit_gb") or 0) or None
             try:
-                _edays = int(b.get("expiry_days") or 0)
-            except Exception:
-                return self._send(400, {"error": "expiry_days не число"})
+                _lg = float(b.get("limit_gb") or 0)
+            except (TypeError, ValueError, OverflowError):
+                return self._send(400, {"error": "limit_gb — число гигабайт или 0 (без лимита)"})
+            if _lg < 0 or _lg != _lg or _lg == float("inf"):
+                return self._send(400, {"error": "limit_gb не может быть отрицательным"})
+            limit_gb = _lg or None
+            try:
+                _edays = int(float(b.get("expiry_days") or 0))
+            except (TypeError, ValueError, OverflowError):
+                return self._send(400, {"error": "expiry_days — целое число дней или 0 (бессрочно)"})
+            if _edays < 0 or _edays > 36500:
+                return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
             expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
             reset_cycle = (b.get("reset_cycle") or "").strip().lower()
             try:
@@ -16018,6 +16177,18 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # GET с телом юридически возможен (и его шлют сканеры и некоторые
+        # прокси). Обработчик его не читает, поэтому тело доедаем здесь —
+        # иначе keep-alive склеит хвост с следующим запросом.
+        self._body_read = 0
+        if self._reject_chunked():
+            return
+        try:
+            self._do_GET()
+        finally:
+            self._drain_body()
+
+    def _do_GET(self):
         p = urllib.parse.urlparse(self.path).path
         g = _perm_gate(self, p, "GET")
         if g:
@@ -17038,7 +17209,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "protos": protos,
                 "active": _proto_of(st),
                 "inbounds": len(st.get("inbounds") or {}),
-                "bans": len([1 for ip, v in BANS.items()
+                "bans": len([1 for ip, v in _bans_snapshot().items()
                              if int(v.get("until") or 0) > time.time()]),
                 "xray": bool(running),
                 "version": VERSION,
@@ -17048,7 +17219,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             now = time.time()
             out = []
-            for ip, v in sorted(BANS.items(), key=lambda x: -int(x[1].get("until") or 0)):
+            for ip, v in sorted(_bans_snapshot().items(), key=lambda x: -int(x[1].get("until") or 0)):
                 out.append({"ip": ip, "until": int(v.get("until") or 0),
                             "reason": v.get("reason", ""), "fails": int(v.get("fails") or 0),
                             "left_min": max(0, int((int(v.get("until") or 0) - now) / 60))})
@@ -17229,7 +17400,14 @@ class H(http.server.BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
+        _lk = False
+        # соединение keep-alive, и обработчик на нём один на все запросы:
+        # счётчик прочитанного обнуляем на каждый запрос, иначе второе тело
+        # «доедалось» бы по остаткам первого
+        self._body_read = 0
         try:
+            if self._reject_chunked():
+                return
             p = urllib.parse.urlparse(self.path).path
             if p == "/api/login":
                 b = self._body()
@@ -17298,6 +17476,13 @@ class H(http.server.BaseHTTPRequestHandler):
             g = _perm_gate(self, p, "POST")
             if g:
                 return self._send(*g)
+            # Ниже — только изменённые ручки, и все они читают состояние целиком.
+            # Ждём до 240 с (длинное применение конфига/сертификата), но не вечно:
+            # отказ наружу честнее зависшего соединения.
+            _lk = _STATE_LOCK.acquire(timeout=240)
+            if not _lk:
+                return self._send(503, {"error": "панель применяет другое изменение, попробуй через 15 секунд",
+                                        "retry_after": 15})
             if p == "/api/term/toggle":
                 u = _auth_user(self)
                 if not u or not u["owner"]:
@@ -18074,8 +18259,22 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 sub_token = secrets.token_urlsafe(16)
                 client_uuid = str(uuidlib.uuid4())
-                limit_gb = float(b.get("limit_gb") or 0) or None
-                _edays = int(b.get("expiry_days") or 0) or 0
+                # Раньше здесь стояли голые float()/int(): «limit_gb»: «десять»
+                # роняло обработчик в 500, а «-5» молча означало «без лимита» —
+                # оператор опечатался минусом и подписчик получил бесконечные ГБ.
+                try:
+                    _lg = float(b.get("limit_gb") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    return self._send(400, {"error": "limit_gb — число гигабайт или 0 (без лимита)"})
+                if _lg < 0 or _lg != _lg or _lg == float("inf"):
+                    return self._send(400, {"error": "limit_gb не может быть отрицательным"})
+                limit_gb = _lg or None
+                try:
+                    _edays = int(float(b.get("expiry_days") or 0))
+                except (TypeError, ValueError, OverflowError):
+                    return self._send(400, {"error": "expiry_days — целое число дней или 0 (бессрочно)"})
+                if _edays < 0 or _edays > 36500:
+                    return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
                 expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
                 reset_cycle = (b.get("reset_cycle") or "").strip().lower()
                 try: max_devices = max(0, int(b.get("max_devices") or 0))
@@ -18093,7 +18292,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 added_links = []
                 first_link = ""
                 if want_proto:
-                    target_proto = want_proto if (want_proto in (st.get("inbounds") or {})) else (_proto_of(st) or "reality")
+                    # Проверяем и «нет такого транспорта вовсе», и «есть, но входа ещё
+                    # нет»: второе раньше молча выдавало подписчика на активный протокол,
+                    # хотя морде отвечало именем запрошенного.
+                    target_proto = want_proto if want_proto in _VALID_PROTOCOLS else (_proto_of(st) or "reality")
                     inb = (st.get("inbounds") or {}).get(target_proto)
                     if not inb:
                         inb = _alloc_inbound(st, target_proto)
@@ -18242,16 +18444,29 @@ class H(http.server.BaseHTTPRequestHandler):
                 for mu in _fam_member_uuids(st, u):
                     mg = _fam_group(st, mu)
                     if mg: targets.append((mu, mg[0].get("fam_name") or mg[0].get("name"), mg[0]))
+                norm = []
                 for tu, tname, tsrc in targets:
-                    thave = {pr for pr, inb in (st.get("inbounds") or {}).items()
-                             for c in (inb.get("clients") or []) if c.get("uuid") == tu}
+                    trows = [(pr, inb, c) for pr, inb in (st.get("inbounds") or {}).items()
+                             for c in (inb.get("clients") or []) if c.get("uuid") == tu]
+                    thave = {pr for pr, _i, _c in trows}
+                    # Одна личность = одна подписка. Токен брали «если у образца
+                    # есть»: запись без sub_token (созданная вручную или раньше,
+                    # чем токены появились) рождала в каждом новом протоколе свой
+                    # собственный, и у клиента их становилось несколько. Подписчик
+                    # получал ссылку, которая показывает не все его транспорты,
+                    # а остальные его ссылки молча устаревали.
+                    ttok = next((c.get("sub_token") for _p, _i, c in trows
+                                 if c.get("sub_token")), "") or (tsrc.get("sub_token") or "")
                     for proto, inb in (st.get("inbounds") or {}).items():
                         if proto in thave: continue
                         c = _new_client(tname or "Клиент", proto, inb,
                                         limit_gb=tsrc.get("limit_gb"), expiry=tsrc.get("expiry") or 0,
                                         reset_cycle=tsrc.get("reset_cycle"), max_devices=tsrc.get("max_devices"))
                         c["uuid"] = tu
-                        if tsrc.get("sub_token"): c["sub_token"] = tsrc["sub_token"]
+                        if ttok:
+                            c["sub_token"] = ttok
+                        else:
+                            ttok = c.get("sub_token") or ""
                         for k in ("tg_proxy", "tg_user"):
                             if tsrc.get(k): c[k] = tsrc[k]
                         if tu != u:
@@ -18263,8 +18478,19 @@ class H(http.server.BaseHTTPRequestHandler):
                                 c["blocked_reason"] = tsrc.get("blocked_reason") or ""
                         inb.setdefault("clients", []).append(c)
                         if proto not in added: added.append(proto)
+                    # если токен всё-таки придумали — им теперь закрываем и старые
+                    # записи этого uuid, иначе «раздваивание» останется навечно
+                    if trows and ttok:
+                        for _p, _i, c in trows:
+                            if c.get("sub_token") != ttok:
+                                c["sub_token"] = ttok
+                                norm.append(tu)
                 if not added:
-                    return self._send(200, {"added": [], "note": "уже во всех протоколах"})
+                    if norm:
+                        _save(STATE, st)
+                        _audit("client_expand_tokens", uuid=u, merged=",".join(sorted(set(norm))))
+                    return self._send(200, {"added": [], "note": "уже во всех протоколах",
+                                             "tokens_merged": sorted(set(norm))})
                 try: _awg_sync(st)
                 except Exception: pass
                 try: _wg_sync(st)
@@ -18474,6 +18700,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 group = _fam_group(st, rec["uuid"])
                 old_uuid = rec["uuid"]
                 new_uuid = str(uuidlib.uuid4())
+                parent, members = _fam(st, old_uuid)
                 had_nodes = any((c.get("nodes") or {}) for c in group)
                 for c in group:
                     proto = next((pr for pr, ib2 in (st.get("inbounds") or {}).items()
@@ -18488,6 +18715,39 @@ class H(http.server.BaseHTTPRequestHandler):
                         c["client_private_key"] = _wg_key_std(priv)
                         c["client_public_key"] = _wg_key_std(pub)
                         # адрес оставляем: он уже выдан из next_address и зашит вAllowedIPs
+                # Семья привязана к хозяину его uuid. Повернули именно хозяина —
+                # перепривязываем участников: иначе family_of остаётся смотреть в
+                # мёртвый uuid, хозяин перестаёт видеть семью (совокупный лимит,
+                # зеркало тарифа, «удалить хозяина вместе с членами» — всё отваливается),
+                # а каждый участник становится сам себе подпиской.
+                _par, _mem = parent, members
+                if _par == old_uuid and _mem:
+                    for _mu in _mem:
+                        for _mc in _fam_group(st, _mu):
+                            _mc["family_of"] = new_uuid
+                # Нода помнит клиента по uuid. Раньше после ротации записи о нодах
+                # оставались как были, а `_deploy_client_to_nodes` на «уже размещён»
+                # просто пропускал все узлы: отзыв доступа не отзывал ничего — на
+                # ноде продолжал жить прежний ключ и прежняя ссылка, а морда
+                # рапортовала «размещено». Сначала гасим старые ключи, потом выпускаем новые.
+                _old_ents = {h: (e.get("uuid") or "") for h, e in
+                             _client_node_entries(st, old_uuid).items() if e.get("uuid")}
+                nodes_warn = ""
+                if _old_ents:
+                    _nh = _nodes_by_host()
+                    for c in group:
+                        c["nodes"] = {}
+                    _save(STATE, st)
+                    _bad = []
+                    for _h, _ou in _old_ents.items():
+                        _n = _nh.get(_h.strip().lower())
+                        if not _n:
+                            _bad.append(_h + " (нода удалена из списка)"); continue
+                        _ok, _err = _node_apply_remove(_n, _ou)
+                        if not _ok and "не найден" not in str(_err or ""):
+                            _bad.append(f"{_h}: {str(_err)[:60]}")
+                    if _bad:
+                        nodes_warn = "старые ключи остались на нодах: " + "; ".join(_bad)
                 _awg_sync(st); _wg_sync(st)
                 _apply_state(st)
                 nodes_res = None
@@ -18500,7 +18760,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 _audit("client_rotate", old=old_uuid, new=new_uuid, name=rec.get("name"))
                 return self._send(200, {"ok": True, "uuid": new_uuid,
                                         "sub_token": rec.get("sub_token") or "",
-                                        "nodes": nodes_res})
+                                        "nodes": nodes_res,
+                                        **({"warning": nodes_warn} if nodes_warn else {})})
 
             if p == "/api/clients/rename":
                 b = self._body()
@@ -18528,14 +18789,21 @@ class H(http.server.BaseHTTPRequestHandler):
                          for c in inb.get("clients", []) if c["uuid"] == u]
                 if not group: return self._send(404, {"error": "клиент не найден"})
                 if "limit_gb" in b:
-                    try: group[0]["limit_gb"] = max(0.0, float(b.get("limit_gb") or 0))
-                    except Exception: return self._send(400, {"error": "limit_gb не число"})
+                    try: _ul = float(b.get("limit_gb") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        return self._send(400, {"error": "limit_gb не число"})
+                    if _ul < 0 or _ul != _ul or _ul == float("inf"):
+                        return self._send(400, {"error": "limit_gb не может быть отрицательным"})
+                    group[0]["limit_gb"] = _ul
                     for c in group: c["limit_gb"] = group[0]["limit_gb"]
                     if float(group[0]["limit_gb"]) > 0:
                         for c in group: c["warned_80"] = False
                 if "expiry_days" in b:
-                    try: d = max(0, int(b.get("expiry_days") or 0))
-                    except Exception: return self._send(400, {"error": "expiry_days не число"})
+                    try: d = int(float(b.get("expiry_days") or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        return self._send(400, {"error": "expiry_days не число"})
+                    if d < 0 or d > 36500:
+                        return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
                     group[0]["expiry"] = (int(time.time()) + d * 86400) if d > 0 else 0
                     for c in group:
                         c["expiry"] = group[0]["expiry"]; c["warned_days"] = []
@@ -18546,8 +18814,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     for c in group: c["reset_cycle"] = rc
                     # смена цикла обнулит накопанный трафик на следующем тике
                 if "max_devices" in b:
-                    try: md = max(0, int(b.get("max_devices") or 0))
-                    except Exception: return self._send(400, {"error": "max_devices не число"})
+                    try: md = int(float(b.get("max_devices") or 0))
+                    except (TypeError, ValueError, OverflowError):
+                        return self._send(400, {"error": "max_devices не число"})
+                    if md < 0 or md > 1000:
+                        return self._send(400, {"error": "max_devices от 0 до 1000"})
                     for c in group: c["max_devices"] = md
                 if "tg_proxy" in b:
                     tm = (b.get("tg_proxy") or "").strip().lower()
@@ -19159,12 +19430,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             # ---- update ----
             if p == "/api/settings":
-                n = int(self.headers.get("Content-Length", "0") or 0)
-                raw = b""; rem = n
-                while rem > 0:
-                    ch = self.rfile.read(min(rem, 65536))
-                    if not ch: break
-                    raw += ch; rem -= len(ch)
+                raw = self._read_exact(self._declared_len())
                 try: body = json.loads(raw.decode("utf-8", "replace") or "{}")
                 except Exception: body = {}
                 sni = (body.get("sni") or "").strip()
@@ -19248,8 +19514,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/theme":
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
-                n = int(self.headers.get("Content-Length", "0") or 0)
-                raw = self.rfile.read(n) if n else b""
+                raw = self._read_exact(self._declared_len())
                 try: body = json.loads(raw.decode() or "{}")
                 except Exception: body = {}
                 t = _load(THEME, {}) or {}
@@ -19260,12 +19525,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/wallpaper":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
-                n = int(self.headers.get("Content-Length", "0") or 0)
-                data = b""; rem = n
-                while rem > 0:
-                    ch = self.rfile.read(min(rem, 65536))
-                    if not ch: break
-                    data += ch; rem -= len(ch)
+                data = self._read_exact(self._declared_len())
                 try: body = json.loads(data.decode() or "{}")
                 except Exception: body = {}
                 b64 = body.get("data","")
@@ -19291,12 +19551,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/logo":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
-                n = int(self.headers.get("Content-Length", "0") or 0)
-                data = b""; rem = n
-                while rem > 0:
-                    ch = self.rfile.read(min(rem, 65536))
-                    if not ch: break
-                    data += ch; rem -= len(ch)
+                data = self._read_exact(self._declared_len())
                 try: body = json.loads(data.decode() or "{}")
                 except Exception: body = {}
                 b64 = body.get("data","")
@@ -19322,12 +19577,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b'{"ok":true}'); return
             if p == "/api/network/settings":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
-                n = int(self.headers.get("Content-Length", "0") or 0)
-                data = b""; rem = n
-                while rem > 0:
-                    ch = self.rfile.read(min(rem, 65536))
-                    if not ch: break
-                    data += ch; rem -= len(ch)
+                data = self._read_exact(self._declared_len())
                 try: body = json.loads(data.decode() or "{}")
                 except Exception: body = {}
                 xray_changed = False
@@ -19668,6 +19918,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"files": _autobk_files()})
 
             return self._send(404, {"error": "not found"})
+        except _BodyError as e:
+            # Кривое тело — это вина отправителя, а не панели: честный 400/413
+            # вместо 500, без трейсбека в stderr и без записи в аудит сбоев.
+            return self._send(e.code, {"error": str(e)[:200]})
         except Exception as e:
             # 500 = непредвиденный сбой; текст исключения (пути, значения) наружу не
             # отдаём — он бывает на неаутентицированных ветках (login, публичные /pay).
@@ -19677,6 +19931,15 @@ class H(http.server.BaseHTTPRequestHandler):
             _audit("post_error", path=urllib.parse.urlparse(self.path).path,
                    detail=type(e).__name__ + ": " + str(e)[:200])
             return self._send(500, {"error": "внутренняя ошибка панели"})
+        finally:
+            # Тело обязано быть съедено до последнего байта, каким бы ответом ни
+            # закончился путь (401 до чтения, 429 во время, 500 в исключении).
+            # Иначе HTTP/1.1 keep-alive склеит хвост этого запроса со следующим:
+            # клиент получит ответ чужого запроса или «не распознанный ответ»,
+            # а через nginx это ещё и подмешивание одного запроса в другой.
+            self._drain_body()
+            if _lk:
+                _STATE_LOCK.release()
 
 class S(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
@@ -19686,50 +19949,20 @@ class S(socketserver.ThreadingTCPServer):
     # её, ядро включает SYN-cookies и веб-морда «висит», хотя сервер жив.
     request_queue_size = 256
 
-    def get_request(self):
-        sock, addr = super().get_request()
-        if _WEB_CTX is not None:
-            # MSG_PEEK выполняется в НИТЬЮ ПРИЁМА, а не в рабочем потоке: молчаливое
-            # соединение (сканер, half-open, медленный телефон в метро) блокирует accept
-            # на всё время таймаута, и морда висит у всех сразу. Поэтому ждём первый байт
-            # недолго — клиенту TLS хватает одного RTT, — а длинный таймаут чтения
-            # (30 с) выставит сам обработчик, когда соединение уже принято.
-            sock.settimeout(2)
-            try:
-                first = sock.recv(1, socket.MSG_PEEK)
-            except Exception:
-                try: sock.close()
-                except Exception: pass
-                raise
-            if first == b"\x16":
-                try:
-                    sock = _WEB_CTX.wrap_socket(sock, server_side=True)
-                except Exception:
-                    try: sock.close()
-                    except Exception: pass
-                    raise
-            else:
-                # plain-HTTP запрос на HTTPS-порт → 301 на https
-                host = (CFG_CACHE.get("panel_domain") or "127.0.0.1").strip()
-                port = CFG_CACHE.get("panel_port", 8443)
-                try:
-                    sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
-                                  "Location: https://%s:%s/\r\n"
-                                  "Content-Length: 0\r\n"
-                                  "Connection: close\r\n\r\n"
-                                  % (host, int(port))).encode())
-                except Exception: pass
-                try: sock.close()
-                except Exception: pass
-                raise ConnectionRefusedError("plain http -> https")
-        return sock, addr
-
     # Потолки на «висящую морду»: потоков на соединение у ThreadingTCPServer нет,
     # поэтому всплеск сканеров или дождливых подписчиков за минуту превращается в
     # сотни живых потоков. Сверх порога соединению честно отказываем, а не ждём,
     # пока сдохнет весь сервер. Счётчик — в модульных _veil_busy/_veil_max_workers;
     # в перегрузке панель отвечает 503 + Retry-After, а её текущее значение видно
     # в /api/selftest (ключ «_panel») — рядом с портами, на вкладке Диагностика.
+    #
+    # ГЛАВНОЕ ПРАВИЛО ЭТОГО КЛАССА: в нитю приёма (get_request, accept) нельзя
+    # ничего ставить даже на секунду — она на сервере одна. Раньше здесь читались
+    # первый байт и TLS-рукопожатие; замер на VPS дал ровно 2.00 с простоя ПРИЁМА
+    # на каждое молчаливое соединение: 4 молчуна — панель недоступна 8 с, 12 — 24 с,
+    # 30 — минуту. А молчит любой сканер портов, half-open и speculative-коннект
+    # браузера, то есть достаточно открыть сокет и ничего не писать. Ожидание
+    # переехало в рабочий поток соединения — _veil_handshake().
 
     def _veil_slot(self, take):
         global _veil_busy
@@ -19749,31 +19982,102 @@ class S(socketserver.ThreadingTCPServer):
             self.close_request(request)
             return
         try:
-            super().process_request_thread(request, client_address)
+            sock = self._veil_handshake(request)
+            if sock is None:
+                # соединение уже некому обслуживать (молчало, ушло, не TLS, кривой
+                # handshake) — закрываем свои и выходим без обработчика запроса
+                self.shutdown_request(request)
+                return
+            super().process_request_thread(sock, client_address)
         finally:
             self._veil_slot(False)
 
-    def _veil_reject(self, request, client_address):
-        # Ответ — обычный HTTP-текст: на TLS он уйдёт внутрь уже готового handshake,
-        # и отказ выглядит честным 503, а не «сервер сбросил соединение».
+    _VEIL_WAIT_FIRST = 3.0      # секунд ждём первый байт, сидя в своём потоке
+    _VEIL_HANDSHAKE_WAIT = 10.0  # секунд на само TLS-рукопожатие
+
+    def _veil_handshake(self, sock):
+        """Первый байт и TLS-рукопожатие — в рабочем потоке соединения, не в нити
+        приёма. Возвращает сокет для обработчика (обёрнутый, если TLS) или None,
+        если обслуживать уже нечего: такой сокет закрывает вызывающий."""
+        if _WEB_CTX is None:
+            return sock
         try:
-            # Linux на close() с НЕПРОЧИТАННЫМИ данными от клиента шлёт RST — браузер
-            # увидел бы «reset by peer» вместо 503. Сначала вычитаем то, что клиент
-            # уже успел прислать (несколько читок, не больше: под перегрузкой не мы
-            # должны ждать, а клиент).
+            if not select.select([sock], [], [], self._VEIL_WAIT_FIRST)[0]:
+                return None
+            first = sock.recv(1, socket.MSG_PEEK)
+        except Exception:
+            return None
+        if not first:
+            return None
+        if first != b"\x16":
+            # plain-HTTP запрос на HTTPS-порт → 301 на https и закрываем
             try:
-                request.settimeout(0.2)
-                for _ in range(4):
-                    if not request.recv(8192):
+                host = (CFG_CACHE.get("panel_domain") or "127.0.0.1").strip()
+                port = CFG_CACHE.get("panel_port", 8443)
+                sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
+                              "Location: https://%s:%s/\r\n"
+                              "Content-Length: 0\r\n"
+                              "Connection: close\r\n\r\n"
+                              % (host, int(port))).encode())
+            except Exception:
+                pass
+            return None
+        try:
+            sock.settimeout(self._VEIL_HANDSHAKE_WAIT)
+            return _WEB_CTX.wrap_socket(sock, server_side=True)
+        except Exception:
+            # недовёрнутое или оборванное рукопожатие: сокет ещё наш, закрывает
+            # вызывающий через shutdown_request(request)
+            return None
+
+    def _veil_reject(self, request, client_address):
+        # Отказ при перегрузке. Соединение сюда приходит ещё ГОЛЫМ (handshake
+        # теперь позже), поэтому надо понять, кто на том конце: TLS-клиенту честные
+        # 503 + Retry-After пишутся ВНУТРИ TLS, иначе он увидит «соединение
+        # сброшено» или мусор вместо объяснения. Но и работать на отказанное
+        # соединение бесплатно нельзя: рукопожатие ради одного 503 делаем не больше
+        # чем для 32 отказов сразу (см. _veil_refusers; дальше — молча закрываем: под
+        # флудом это и есть правильный дешёвый ответ).
+        if not _veil_refusers.acquire(blocking=False):
+            return
+        try:
+            first = b""
+            try:
+                if select.select([request], [], [], 0.5)[0]:
+                    first = request.recv(1, socket.MSG_PEEK)
+            except Exception:
+                first = b""
+            sock = request
+            if first == b"\x16" and _WEB_CTX is not None:
+                try:
+                    request.settimeout(2)
+                    sock = _WEB_CTX.wrap_socket(request, server_side=True)
+                except Exception:
+                    return
+            elif not first:
+                return              # кто это — неизвестно, выдумывать ответ не будем
+            # Linux на close() с НЕПРОЧИТАННЫМИ данными от клиента шлёт RST — браузер
+            # увидел бы «reset by peer» вместо 503. Вычитываем то, что клиент прислал.
+            try:
+                sock.settimeout(0.2)
+                for _ in range(2):
+                    if not sock.recv(8192):
                         break
             except Exception:
                 pass
-            request.settimeout(2)
-            request.settimeout(2)
-            request.sendall(b"HTTP/1.1 503 Overloaded\r\nRetry-After: 3\r\n"
-                            b"Connection: close\r\nContent-Length: 0\r\n\r\n")
+            sock.sendall(b"HTTP/1.1 503 Overloaded\r\nRetry-After: 3\r\n"
+                         b"Connection: close\r\nContent-Length: 0\r\n\r\n")
+            if sock is not request:
+                # снимаем TLS-обёртку: descriptor закрывает вызывающий по исходному
+                # сокету, и разрыв будет без unanswered close_notify
+                try:
+                    sock.unwrap()
+                except Exception:
+                    pass
         except Exception:
             pass
+        finally:
+            _veil_refusers.release()
 
     def handle_error(self, request, client_address):
         # сканеры и plain-HTTP проббы — штатная жизнь публичного порта;
