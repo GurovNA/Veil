@@ -22,7 +22,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.2"
+VERSION = "2.16.4"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -411,11 +411,16 @@ SESSIONS_META = {}
 SESSIONS_META_FILE = f"{BASE}/sessions_meta.json"
 
 def _save_sessions():
-    _save(SESSIONS_FILE, dict(SESSIONS))
+    # Мета пишется ПЕРВОЙ. Раньше наоборот: sessions.json успевал записаться,
+    # а запись меты проглатывалась except:pass — и в файл лез токен без
+    # «паспорта». _auth_user из отсутствия меты читал пользователя как "",
+    # а "" — это владелец, то есть такая сессия получала полный доступ.
     try:
         _save(SESSIONS_META_FILE, SESSIONS_META)
-    except Exception:
-        pass
+    except Exception as e:
+        print("SESSIONS META SAVE FAIL: " + str(e) + " — sessions.json не пишем", flush=True)
+        return
+    _save(SESSIONS_FILE, dict(SESSIONS))
 
 def _load_sessions():
     try:
@@ -431,6 +436,18 @@ def _load_sessions():
             SESSIONS_META.update(m)
     except Exception:
         pass
+    # Токен без меты — это «неизвестно кто», а не «владелец». Снимаем такие
+    # при загрузке и говорим сколько: иначе молча живёт запас ключей от всего.
+    if SESSIONS_META:
+        orph = [k for k in list(SESSIONS) if k not in SESSIONS_META]
+        for k in orph:
+            SESSIONS.pop(k, None)
+        if orph:
+            print(f"[sessions] токенов без меты (неизвестно чьи) снято: {len(orph)}", flush=True)
+            try:
+                _save(SESSIONS_FILE, dict(SESSIONS))
+            except Exception:
+                pass
 
 AUDIT = []
 AUDIT_FILE = f"{BASE}/audit.json"
@@ -5227,6 +5244,13 @@ def _install_update():
         for fn in ("panel.py", "index.html"):
             if not os.path.exists(os.path.join(exdir, fn)):
                 raise RuntimeError("в архиве нет " + fn)
+        # sha256 архива сходится — значит файл тот. Но «тот» не значит «рабочий»:
+        # если релиз содержит панель, которая не стартует, мы сами себя похороним
+        # (копия-то есть, а поднять её через морду уже нельзя). Проверка на диске
+        # ПЕРЕД заменой боевого файла.
+        sane, err = _py_sane(os.path.join(exdir, "panel.py"))
+        if not sane:
+            raise RuntimeError("panel.py из релиза не компилируется: " + err)
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
         bdir = f"{BASE}/backup-v{VERSION}-{ts}"
         os.makedirs(bdir, exist_ok=True)
@@ -5236,9 +5260,7 @@ def _install_update():
         for fn in ("panel.py", "index.html"):
             shutil.copy2(os.path.join(exdir, fn), os.path.join(BASE, fn))
         os.chmod(os.path.join(BASE, "panel.py"), 0o755)
-    subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
+    _panel_restart_soon()
     return {"ok": True, "from": VERSION, "to": tag, "restarting": True}
 
 # ---------- Telegram Bot Processing ----------
@@ -7626,13 +7648,25 @@ def _auth_sid(self):
     if not t:
         return None
     e = SESSIONS.get(t)
-    return t if (e and e > time.time()) else None
+    if not (e and e > time.time()):
+        return None
+    # Сессия жива, только если у неё есть «паспорт» (мета с владельцем или
+    # логином). Без этого ключ от /api/state и подобных «_authed-ручек»
+    # оставался бы действителен, а _auth_user уже не даёт владельца из пустоты.
+    if not isinstance(SESSIONS_META.get(t), dict):
+        return None
+    return t
 
 def _auth_user(self):
     sid = _auth_sid(self)
     if not sid:
         return None
-    uname = (SESSIONS_META.get(sid) or {}).get("user") or ""
+    m = SESSIONS_META.get(sid)
+    if not isinstance(m, dict):
+        # Паспорт сессии потерялся — это не «владелец по умолчанию», а «никто».
+        # Раньше `({}).get("user") or ""` превращал пустоту в владельца.
+        return None
+    uname = m.get("user") or ""
     if not uname:
         return {"owner": True, "login": str(CFG_CACHE.get("login") or "owner"), "perms": {}}
     for x in (CFG_CACHE.get("users") or []):
@@ -7662,7 +7696,14 @@ def _perm_for(p, m):
         return None
     if p == "/api/theme" and m == "GET":
         return None
-    if p == "/api/backup" or p.startswith("/api/backups"):
+    if p == "/api/backup":
+        # Тот же URL, что и «скачать резервную копию», но по POST — это ПОЛНОЕ
+        # восстановление: config.json (там права операторов), state.json (ключи и
+        # подписчики) и конфиг xray заменяются присланным файлом целиком. Раньше
+        # обоим глаголам хватало права «резервные копии», так что сотруднику,
+        # которому доверили только забирать файлы, открывался и вход хозяина.
+        return ["restore"] if m == "POST" else ["backups"]
+    if p.startswith("/api/backups"):
         return ["restore"] if p == "/api/backups/restore" else ["backups"]
     if p.startswith("/api/users"):
         return ["owner"]
@@ -7817,6 +7858,32 @@ def _node_host_ok(node):
         if ip.is_loopback or ip.is_link_local or (ip.version == 4 and ip in ipaddress.IPv4Network("169.254.169.254/32")):
             return None
     return host
+
+_TRUSTED_PROXY_NETS = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"),
+                       ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"),
+                       ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("fe80::/10"))
+
+def _req_client_ip(self):
+    """Адрес, который пишем в журнал «устройства подписки». X-Forwarded-For
+    слушаем ТОЛЬКО когда соединение пришло от собственного фронта (петля или
+    RFC1918): панель наружу отдаётся на прямом :8443, и без этой оговорки
+    подписчик вписывает себе в устройство любой IP, а владелец видит ровно то,
+    что клиент сам напечатал в заголовке. Сети перечислены явно, а не через
+    is_private: туда входят и служебные диапазоны вроде 203.0.113.0/24, которые
+    по факту маршрутизируются."""
+    try:
+        peer = str((self.client_address or [""])[0] or "")
+    except Exception:
+        peer = ""
+    xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()[:64]
+    if xff and peer:
+        try:
+            ip = ipaddress.ip_address(peer)
+            if any(ip in n for n in _TRUSTED_PROXY_NETS):
+                return xff
+        except ValueError:
+            pass
+    return peer or "?"
 
 def _dial_addr_ok(host):
     """Один ответ для всех мест, где панель САМА идёт по адресу, который вписал
@@ -12353,14 +12420,22 @@ def _xray_switch(version):
 def _panel_backups():
     res = []
     try:
-        entries = sorted(os.listdir(BASE), reverse=True)
+        entries = os.listdir(BASE)
     except Exception:
         return res
     for d in entries:
         dd = os.path.join(BASE, d)
-        m = re.fullmatch(r"backup-v([0-9]+\.[0-9]+\.[0-9]+)-.*", d)
+        m = re.fullmatch(r"backup-v([0-9]+)\.([0-9]+)\.([0-9]+)-(.*)", d)
         if m and os.path.isdir(dd) and os.path.isfile(os.path.join(dd, "panel.py")):
-            res.append({"version": m.group(1), "dir": d})
+            res.append({"version": "%s.%s.%s" % m.groups()[:3], "dir": d,
+                        "_k": (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4))})
+    # Сортировка — ПО НОМЕРУ ВЕРСИИ, а не по алфавиту имён. Лексикографически
+    # «backup-v2.9.0» идёт ПЕРЕД «backup-v2.16.3», и прунинг [7:] в _panel_backup_now
+    # резал как раз самые свежие копии: после семи обновлений, пересекающих разряд
+    # версии, на машине оставались древние v2.9.x, а v2.16.x стирались.
+    res.sort(key=lambda x: x["_k"], reverse=True)
+    for r in res:
+        r.pop("_k", None)
     return res
 
 def _xray_backups():
@@ -12372,6 +12447,40 @@ def _xray_backups():
         if os.path.isfile(os.path.join(base, d, "xray")):
             res.append({"version": d})
     return res
+
+def _py_sane(path):
+    """Компилируется ли этот panel.py вообще. Нужно ДО того, как файл ляжет в
+    боевой путь: копия панели берётся shutil.copy2 с живого диска, и если в момент
+    копирования кончилось место (или файл дописывали), копия обрезана. Ставить
+    обрезанный код на место рабочего и перезапустить себя — это гарантированная
+    падение панели: systemd не поднимет её с SyntaxError, а починить можно только
+    с консоли, то есть единственный способ «вернуться после сбоя» сам всё ломает."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        compile(src, path, "exec")
+        return True, ""
+    except Exception as e:
+        return False, type(e).__name__ + ": " + str(e)[:260]
+
+
+def _unit_forget_failures(unit):
+    """Снять накопленный лимит перезапусков systemd перед своим рестартом."""
+    try:
+        subprocess.run(["systemctl", "reset-failed", unit], capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
+def _panel_restart_soon(delay=1):
+    """Перезапустить панель, не бросая её на полуслове: сначала снимаем счётчик
+    отказов (иначе пятый рестарт подряд упрётся в StartLimitBurst и сервис
+    останется failed), потом рестарт."""
+    _unit_forget_failures("vpnpanel")
+    subprocess.Popen(["bash", "-c", f"sleep {delay} && systemctl restart vpnpanel"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
 
 def _panel_backup_now():
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -12393,12 +12502,28 @@ def _panel_restore(version):
     for b in _panel_backups():
         if b["version"] == version:
             dd = os.path.join(BASE, b["dir"])
-            shutil.copy2(os.path.join(dd, "panel.py"), os.path.join(BASE, "panel.py"))
+            cand = os.path.join(dd, "panel.py")
+            # Проверка ДО замены рабочего файла: обрезанная или пустая копия
+            # (диск кончился в момент copy2) подняла бы панель, которая не
+            # стартует, — и вернуться назад через морду уже нельзя.
+            if os.path.getsize(cand) < 1000:
+                raise RuntimeError("копия панели пуста или обрезана — не восстанавливаем")
+            sane, err = _py_sane(cand)
+            if not sane:
+                raise RuntimeError("копия панели не компилируется: " + err)
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+            keep = os.path.join(BASE, "backup-pre-restore-" + ts)
+            os.makedirs(keep, exist_ok=True)
+            for fn in ("panel.py", "index.html"):
+                if os.path.exists(os.path.join(BASE, fn)):
+                    shutil.copy2(os.path.join(BASE, fn), os.path.join(keep, fn))
+            shutil.copy2(cand, os.path.join(BASE, "panel.py"))
             os.chmod(os.path.join(BASE, "panel.py"), 0o755)
             if os.path.exists(os.path.join(dd, "index.html")):
                 shutil.copy2(os.path.join(dd, "index.html"), os.path.join(BASE, "index.html"))
-            subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"])
-            return {"ok": True, "type": "panel", "version": version}
+            _panel_restart_soon()
+            _audit("panel_restored", version=version, from_dir=b["dir"], safety=os.path.basename(keep))
+            return {"ok": True, "type": "panel", "version": version, "safety": os.path.basename(keep)}
     raise RuntimeError("бэкап панели v" + version + " не найден")
 
 def _xray_restore(version):
@@ -13674,6 +13799,75 @@ def _stats():
 
 # ---------- backup / restore ----------
 
+_BK_FILES = {"hops.json": HOPS_FILE, "nodes.json": NODES_CONFIG_FILE,
+             "passkeys.json": PASSKEYS_FILE, "bans.json": BANS_FILE,
+             "sub_prefs.json": _SUBPREF_FILE, "sub_devices.json": _SUBDEV_FILE,
+             "proto_activity.json": _PROTOACT_FILE, "mux_state.json": _MUX_STATE,
+             "tg_mp_port.json": _TGBP_STATE, "bot_langs.json": BOT_LANGS}
+_FRONT_DOM = re.compile(r"^veil-[a-z0-9._-]{1,180}$")
+_FRONT_CERT_RE = re.compile(r"^veil-[a-z0-9._-]{1,180}/(?:fullchain|privkey|chain|cert|key)\.pem$")
+_RENEW_RE = re.compile(r"^renewal/veil-[a-z0-9._-]{1,180}\.conf$")
+
+
+def _backup_files():
+    """Мелкие файлы состояния. Переезд (_MV_BASE_FILES) считает их частью «всего»,
+    а резервная копия раньше молча их пропускала: после восстановления на пустой
+    машине подписчики есть, а подключённые ноды, переезды, passkey-ключи, баны,
+    лимиты устройств и выбранная подписчиком формат-настройка — нет."""
+    out = {}
+    for name, path in _BK_FILES.items():
+        try:
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    raw = f.read()
+                if raw:
+                    out[name] = base64.b64encode(raw).decode()
+        except Exception:
+            pass
+    return out
+
+
+def _front_key_ok(name):
+    """Разрешённое имя сертификата во входящем файле. «..» отрезается совсем:
+    регулярка и без того не пускает слэши внутрь, но явный запрет дешевле, чем
+    разбирать, что получится из `veil-a/../../x.pem` на чужой машине."""
+    if not isinstance(name, str) or ".." in name or name.startswith("/"):
+        return False
+    return bool(_FRONT_CERT_RE.match(name)) or bool(_RENEW_RE.match(name))
+
+
+def _front_certs():
+    """Сертификат самой панели (:8443) и конфиг её продления. Протокольные пары
+    certs/<протокол>.crt|.key их не покрывают: фронт лежит в certs/live/veil-<домен>/,
+    и без него восстановление отдаёт машину, у которой HTTPS-вход вообще без ключа."""
+    out = {}
+    live = os.path.join(CERT_DIR, "live")
+    try:
+        for dom in sorted(os.listdir(live)):
+            d = os.path.join(live, dom)
+            if not os.path.isdir(d) or ".." in dom or not _FRONT_DOM.match(dom):
+                continue
+            for fn in sorted(os.listdir(d)):
+                if not _FRONT_CERT_RE.match(dom + "/" + fn):
+                    continue
+                try:
+                    with open(os.path.join(d, fn), "rb") as f:
+                        out[dom + "/" + fn] = base64.b64encode(f.read()).decode()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    ren = os.path.join(CERT_DIR, "renewal")
+    try:
+        for fn in sorted(os.listdir(ren)):
+            if _FRONT_DOM.match(fn[:-5] if fn.endswith(".conf") else "x"):
+                with open(os.path.join(ren, fn), "rb") as f:
+                    out["renewal/" + fn] = base64.b64encode(f.read()).decode()
+    except Exception:
+        pass
+    return out
+
+
 def _backup():
     data = {
         "meta": {"version": VERSION, "created": int(time.time()), "app": "Veil"},
@@ -13684,6 +13878,7 @@ def _backup():
         "xray_config": _load(XRAY),
         "wallpaper": None,
         "certs": {},
+        "files": {},
     }
     if os.path.exists(WALL):
         with open(WALL, "rb") as f:
@@ -13696,51 +13891,99 @@ def _backup():
             if os.path.exists(p):
                 with open(p, "rb") as f:
                     data["certs"][f"{proto}.{ext}"] = base64.b64encode(f.read()).decode()
+    data["certs"].update(_front_certs())
+    data["files"] = _backup_files()
     return data
 
 def _restore(data):
+    global CFG_CACHE, _SUBDEV, _SUBPREF, _PROTOACT
     if not isinstance(data, dict) or "state" not in data:
         raise RuntimeError("это не файл резервной копии Veil")
+    st = data.get("state")
+    # Форма важнее содержимого. state с `inbounds` списком/строкой вместо словаря
+    # (обрезанный файл, копия из другой ветки) панель раньше молча собирала в
+    # КОНФИГ БЕЗ ВХОДОВ: синтаксически верный, `xray run -test` его принимает,
+    # сервис поднимается, а VPN нет ни у кого. Ответ был «ok», подпись — «клиентов: 0».
+    if not isinstance(st, dict) or not isinstance(st.get("inbounds"), dict) or not st["inbounds"]:
+        raise RuntimeError("в копии нет раздела inbounds (или он пустой) — такое состояние "
+                           "оставило бы конфиг xray пустым и всех подписчиков без VPN")
+    if not isinstance(data.get("panel_config"), dict) or not data["panel_config"]:
+        raise RuntimeError("в копии нет конфига панели")
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     bdir = f"{BASE}/restore-backup-{ts}"
     os.makedirs(bdir, exist_ok=True)
-    for src, name in ((CFG, "panel_config.json"), (STATE, "state.json"), (XRAY, "xray_config.json")):
-        if os.path.exists(src):
+    snap = {}
+    for src, name in ((CFG, "panel_config.json"), (STATE, "state.json"), (XRAY, "xray_config.json"),
+                      (THEME, "theme.json"), (PAYMENTS_F, "payments.json")):
+        blob = open(src, "rb").read() if os.path.exists(src) else None
+        snap[src] = blob
+        if blob is not None:
             shutil.copy2(src, os.path.join(bdir, name))
-    if isinstance(data.get("panel_config"), dict):
+    try:
         _save(CFG, data["panel_config"], 0o600)
-    st = data.get("state")
-    if isinstance(st, dict):
         _save(STATE, st, 0o600)
         _write_xray(st)
-    if isinstance(data.get("theme"), dict):
-        _save(THEME, data["theme"], 0o644)
-    if isinstance(data.get("payments"), dict) and data["payments"]:
-        _save(PAYMENTS_F, data["payments"], 0o600)
-    if data.get("wallpaper"):
-        try:
+        if isinstance(data.get("theme"), dict):
+            _save(THEME, data["theme"], 0o644)
+        if isinstance(data.get("payments"), dict) and data["payments"]:
+            _save(PAYMENTS_F, data["payments"], 0o600)
+        if data.get("wallpaper"):
             with open(WALL, "wb") as f:
                 f.write(base64.b64decode(data["wallpaper"]))
-        except Exception:
-            pass
-    for fname, b64 in (data.get("certs") or {}).items():
-        if not re.fullmatch(r"[A-Za-z0-9_-]+\.(crt|key)", fname or ""):
-            continue
-        try:
-            p = os.path.join(CERT_DIR, fname)
+        for fname, b64 in (data.get("files") or {}).items():
+            path = _BK_FILES.get(fname)
+            if not path:
+                continue
+            blob = base64.b64decode(b64)
+            json.loads(blob.decode("utf-8"))          # битый JSON наружу не пускаем
+            _restore_raw(path, blob)
+        for fname, b64 in (data.get("certs") or {}).items():
+            if re.fullmatch(r"[A-Za-z0-9_-]+\.(crt|key)", fname or ""):
+                p = os.path.join(CERT_DIR, fname)
+            elif _front_key_ok(fname) and _FRONT_CERT_RE.match(fname):
+                p = os.path.join(CERT_DIR, "live", fname)
+            elif _front_key_ok(fname) and _RENEW_RE.match(fname):
+                p = os.path.join(CERT_DIR, fname)
+            else:
+                continue
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "wb") as f:
                 f.write(base64.b64decode(b64))
-            os.chmod(p, 0o600 if fname.endswith(".key") else 0o644)
+            os.chmod(p, 0o600 if fname.endswith((".key", "privkey.pem")) else 0o644)
+    except Exception as e:
+        # Половина файлов уже заменена — иначе остаётся конфиг от одного бэкапа и
+        # состояние от другого, а морда показывает ошибку и живёт дальше.
+        for src, blob in snap.items():
+            _restore_raw(src, blob)
+        try:
+            CFG_CACHE = _load(CFG, {}) or {}
         except Exception:
             pass
-    global CFG_CACHE
+        _audit("backup_restore_failed", detail=str(e)[:200])
+        raise RuntimeError("восстановление отменено, файлы возвращены на место: " + str(e)[:200])
     CFG_CACHE = _load(CFG, {}) or {}
+    _SUBDEV = _SUBPREF = _PROTOACT = None
+    for rel in (_subdev_load, _protoact_load, _bans_load):
+        try:
+            rel()
+        except Exception:
+            pass
     try:
-        _restart_xray()
+        _cert_tree_perms()
     except Exception:
         pass
-    return {"ok": True, "restored_at": ts, "clients": _client_count(st)}
+    warning = ""
+    try:
+        _restart_xray()
+    except Exception as e:
+        # Раньше эта ветка была `except: pass`: панель возвращала «ok», а подписчики
+        # оставались на старом конфиге (или без него) и узнавали об этом только завтра.
+        warning = "файлы восстановлены, но xray не перезапущен: " + str(e)[:200]
+    _audit("backup_restore", restored_at=ts, clients=_client_count(st),
+           files=len(data.get("files") or {}), certs=len(data.get("certs") or {}),
+           warning=warning or None)
+    return {"ok": True, "restored_at": ts, "clients": _client_count(st),
+            "safety": os.path.basename(bdir), "warning": warning or None}
 
 # ---------- авто-резервные копии ----------
 _AUTOBK_DIR = os.path.join(BASE, "backups", "auto")
@@ -15941,8 +16184,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 is_incy = (not use_sb and not force_v2 and sub_path
                            and _is_incy_client(ua, xc))
                 if sub_path:
-                    _xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-                    _dip = _xff or (self.client_address[0] if getattr(self, "client_address", None) else "?")
+                    _dip = _req_client_ip(self)
                     try:
                         _subdev_note(sub_path, _dip, ua, xc)
                     except Exception:
@@ -16269,6 +16511,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if p.startswith("/api/ext/"):
             return self._ext_get(p)
         if p == "/api/metrics":
+            # Анониму тут делать нечего: кроме нагрузки машины ручка отдаёт
+            # карту портов всех входов (это «здесь VPN») и на каждый запрос
+            # поднимает systemctl и перебирает порты — бесплатный усилитель
+            # для того, кто просто долбит URL.
+            if not _authed(self):
+                return self._send(401, {"error": "unauthorized"})
             return self._send(200, get_system_metrics())
         if p == "/api/selftest":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -19397,7 +19645,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "файл не найден"})
                 except Exception:
                     return self._send(400, {"error": "файл повреждён или это не бэкап Veil"})
-                res = _restore(data)
+                try:
+                    res = _restore(data)
+                except ValueError as e:
+                    # отказ по форме (пустой inbounds, битый JSON) — это не сбой панели
+                    return self._send(400, {"error": str(e)[:300]})
+                except RuntimeError as e:
+                    return self._send(400, {"error": str(e)[:300]})
                 _audit("auto_backup_restore", file=name, clients=res.get("clients"))
                 return self._send(200, res)
 
