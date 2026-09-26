@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket, hmac, struct
+import contextlib
 import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime, gzip
+import select
+import ipaddress
 import html as _html
 import zipfile
 
@@ -19,7 +22,147 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.13.0"
+VERSION = "2.16.2"
+# 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
+#        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
+#        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
+#        Cloudflare (2053/2083/2087/2096 — или 443 через уже умеющий всё SNI-мюкс), выпускает
+#        на это имя сертификат (без него Cloudflare отвечает 525/526), добавляет подключение
+#        выбранным подписчикам и тут же честно проверяет, доходит ли трафик через CDN. Всё
+#        изменение проходит xray run -test и сериализованный flock; не принял — откат назад и
+#        повторный запуск прежнего конфига (подписки живут). Форму строит новый read-only
+#        _cf_provision_form: какие транспорты годятся, какие порты реально свободны (ss), кто
+#        держит 443, кого можно подключить. DNS-запись под облаком — только по явной галке.
+#        Попутно исправлен настоящий дефект ссылок: после веб-мюкса nginx переносит вход на
+#        loopback :4443, а панель продолжала печатать этот порт подписчикам — ссылки вели на
+#        127.0.0.1. Новый _pub_port() (5 мест сборки ссылок + аудит) наружу всегда отдаёт 443.
+#        Терминал: «терминал недоступен… нужен тумблер» ложился поверх УЖЕ РАБОТАЮЩЕГО сеанса,
+#        потому что браузер называет словом error и отказ в рукопожатии, и обрыв живого сокета
+#        (свернул телефон, сменилась сеть, рестарт панели, 30-минутный простой). Теперь эти
+#        два случая разделены: счётчики байт, readyState, код закрытия, фокус поля — в кнопке
+#        «? почему»; отказ сервера пишется в аудит term_denied (в браузере его не увидеть).
+#        Добавлен Shift+Tab (ESC[Z, обратное автодополнение) — и на полосе клавиш, и в keydown;
+#        фокус строки ввода теперь берётся синхронно в обработчике тапа (iOS поднимает
+#        клавиатуру только так) + кнопка «⌨ Ввод». WARP (выход в Cloudflare) удалён совсем по
+#        просьбе пользователя: UI, API, process-fuse, ветка в _build_xray_cfg, warp.json
+#        (архив в backups/removed-warp), мусор из telemt.toml. Карантин: /tmp/w215 (52 проверки
+#        облачного входа) + /tmp/w214/term_test.mjs (A–G). NOT PUSHED.
+# 2.14.0: «🩺 три непонятных места стали понятными».
+#        WARP перестал откатывать сам себя: у бесплатного туннеля Cloudflare нет IPv6,
+#        а проверка ходила по доменному имени — Xray резолвил его в AAAA,
+#        клал IPv6-пакет в туннель, которому v6 не положен, и висел ~6 с. Страховка
+#        принимала это за смерть туннеля и через 90 с откатывала РАБОТАЮЩИЙ WARP (то самое
+#        «зависает, но восстанавливается»). Теперь: allowedIPs только 0.0.0.0/0, на время
+#        активного WARP xray резолвит только IPv4 (dns.queryStrategy), а сам тест идёт на
+#        числовые адреса Cloudflare (1.1.1.1/1.0.0.1) и различает «туннель молчит», «Xray не
+#        поднял вход» и «нет аккаунта» — причину пишет словами в warp.json.fuse.reason,
+#        /api/warp/test и UI. Плюс тумблер Telegram-прокси больше не может врать: GET
+#        /api/warp отдаёт tg_effective/tg_mismatch (что реально записано в telemt.toml), а
+#        применение конфига сериализовано файловым flock (_xray_apply_gate) — панель и
+#        страховка больше не дергают systemctl restart xray в одну секунду.
+#        Жёлтое облако получило ответ на «сделал поддомен — и что дальше»:
+#        GET /api/cf/front/check?domain= (только имена своей зоны) реально шлёт
+#        WebSocket-handshake через Cloudflare на 443 и по коду ответаorigin объясняет шаг
+#        словами (101 = работает, 522 = на порту тихо, 404 = имя не под облаком, 400 = путь не
+#        тот), показывает параметры ручного ввода и кнопку к подписчикам; автостарт после
+#        «➕ Создать сразу под облаком». А сам вердикт «это адрес Cloudflare или нет» был
+#        сломан: панель брала список edge-сетей с www.cloudflare.com/ips-v4, который теперь
+#        отдаёт обычному запросу 403, — список оказывался пустым и облачные адреса
+#        классифицировались как «прямой IP сервера»/«DNS ещё расходится». Живой прогон
+#        2026-09-26 на w2.myproxyru.vip это и показал. Теперь берём
+#        api.cloudflare.com/client/v4/ips, а рядом лежит вечный пол из официальных
+#        префиксов: каприз сети больше не может превратить облако в «что-то чужое».
+#        Порядок ответа в «что дальше» тоже почестнее: если через CDN нечего везти
+#        (нет ws/xhttp/gRPC+TLS на порту Cloudflare), панель говорит это сразу, а не
+#        отправляет «подождать распространения DNS».
+#        SSH-терминал на телефоне: ввод переехал в настоящую <textarea> (клавиатура
+#        поднимается только у фокусируемого поля, div с onkeydown для телефона немой), плюс
+#        полоса быстрых клавиш (стрелки/Tab/Esc/^C/^L/^U/^D/⌫/⏎ и |/-/~/&), размеры PTY
+#        считаются из реальной ширины экрана и пересылаются при повороте телефона вместо
+#        вечных 100×24. NOT PUSHED.
+# 2.13.9: «🩺 перестало виснуть» — панель больше не может зависнуть молча, а падение
+#        видно и объяснено. Очередь accept поднята 5→256 (всплеск реконнектов больше
+#        не включает SYN-cookies), живых обработчиков не больше 120 — сверх этого
+#        соединение получает честный 503 + Retry-After (не RST: перед отказом
+#        дочитываем то, что клиент успел прислать), MSG_PEEK первого байта ждёт 2 с
+#        вместо 5 (молчаливый сканер больше не блокирует нить приёма на весь таймаут),
+#        TRACE и остальные глаголы честно возвращают 501. Добавлены OPTIONS (204 +
+#        CORS с Origin==Host) и HEAD — без них предполётный CORS-запрос браузера из-за
+#        заголовка X-Sid) вешал браузерный SSH-терминал на HTTP 501. Счётчик
+#        «занято/потолок/отказано» показан на Диагностике и в /api/selftest (_panel),
+#        сам отказ пишется в аудит (web_overload, не чаще раза в минуту).
+#        WARP: страховка-предохранитель (--warp-fuse, откат через 90 с, если туннель
+#        не поднялся) — включил и потерял сервер больше не вариант; состояние
+#        страховки видно в UI. SSH-защита сервера: лимит новых соединений к :22
+#        поднят 5→20/мин, успешный вход сам заносит IP в @healed на 8 ч, дропы
+#        считаются и пишутся в syslog (VEIL-SSH-DROP) — инцидент теперь доказуем.
+#        Жёлтое облако: мастер с пошаговым планом (чек-лист ✓/▶/⤼) и отдельный
+#        поддомен под Cloudflare (/api/cf/front/sub, owner, только имя своей зоны,
+#        запись A+proxied, удаление только того, что создала панель) — раньше тумблер
+#        не мог заработать на домене вне зоны, и это теперь сказано прямо.
+#        AI-ассистент: список провайдеров ключа (OpenAI/OpenRouter/Groq/Gemini/Ollama)
+#        с тем, где регистрировать и сколько стоит, и кнопка «🔑 Проверить ключ»
+#        (/api/ai/test) — один короткий тестовый запрос ДО сохранения, ключ в ответ
+#        не возвращается ни в одном случае.
+# 2.13.8: «🤖 AI-ассистент по панели» — чат на OpenAI-совместимом эндпоинте, только ЧТЕНИЕ.
+#        Модели выдан фиксированный whitelist read-only инструментов (overview/list_clients/
+#        system_stats/selftest/list_nodes/recent_audit) — ни одного write-хука, поэтому
+#        ассистент физически не может ничего изменить; неавторизованные имена инструментов
+#        отклоняются. Только владелец (TAB_PERM ai:['owner'] + _perm_for + явная проверка).
+#        Выключен по умолчанию и не работает без API-ключа (CFG_CACHE ai_enabled/ai_key/
+#        ai_base/ai_model; ключ наружу не отдаётся). GET /api/ai — статус; POST /api/ai/config
+#        — настройки; POST /api/ai/chat — цикл tools-loop (≤4 раунда) с системным промптом
+#        «только чтение, не выдумывай, секреты не показывай». Аудит ai_config/ai_chat/ai_error.
+#        Фронт: вкладка «🤖 Ассистент» (чат + форма ключа) в index.html.
+# 2.13.7: «🖥️ SSH-терминал в браузере» — root-шелл через WebSocket (PTY) прямо в панели.
+#        POST /api/term/toggle вкл/выкл (только владелец, по умолчанию ВЫКЛЮЧЕН, флаг
+#        CFG_CACHE["ssh_terminal"]); GET /api/term — статус/активные сеансы; GET /api/term с
+#        Upgrade: websocket угоняет соединение под RFC6455: рукопожатие (Sec-WebSocket-Accept=
+#        SHA1(key+GUID)), далее pty.fork + /bin/bash -i от root, два направления через select:
+#        кадры клиента→stdin pty (бинарные) и текстовый JSON {type:resize}→TIOCSWINSZ; вывод
+#        pty→бинарные кадры. Потолок 4 сеанса, простой 30 мин, жёсткий лимит 3 ч; каждый сеанс
+#        в аудит (term_open/term_close user/peer/dur), тумблер — term_toggle. Фронт: свой
+#        ANSI-эмулятор в index.html (без внешних библиотек — клавиши рута не уходят на чужой
+#        CDN), карточка на вкладке «Безопасность» с объяснением и честным варнингом про root.
+# 2.13.6: «🟡 Жёлтое облако Cloudflare — скрытие реального IP». Мастер на вкладке Сайт:
+#        read-only аудит (_cf_front_audit) показывает, что резолвится по домену панели —
+#        IPs Cloudflare (прокси активно, IP скрыт) или IPs сервера (серая зона, IP открыт),
+#        сверяя с актуальными edge-сетями cloudflare.com/ips-v4|v6 (кэш 12ч). Показывает
+#        A/AAAA/CNAME-записи зоны, кандидаты WebSocket-транспорта (только ws/xhttp/grpc на
+#        портах CF держат прокси; Reality/RAW/WG — нет). Кнопка-тумблер proxied (confirm,
+#        PUT dns_records, только A/AAAA/CNAME). Честное предупреждение про ToS §2.8 (CF не
+#        разрешает VPN/не-HTML через бесплатный CDN — могут снять прокси). Ничего не меняет
+#        без подтверждённого POST /api/cf/front/proxy; аудит GET /api/cf/front.
+# 2.13.5: «🌀 WARP — выход через Cloudflare». Панель регистрирует бесплатные WARP-аккаунты
+#        Cloudflare (api.cloudflareclient.com, padded-b64 X25519-ключи), поднимает wireguard-
+#        outbound «warp» + локальный socks5h-вход 127.0.0.1:10999 (тег warpsocks) — ядро
+#        держит туннель внутри процесса, системные маршруты/интерфейсы не трогаются.
+#        Per-subscriber: via_warp на клиенте → маршрут inboundTag=warp→outbound warp (после
+#        ru_bypass, чтобы РФ-домены шли напрямую). До 8 аккаунтов, переключение в один клик,
+#        «📡 Проверить туннель» (cdn-cgi/trace ждёт warp=on). Telegram-прокси: telemt
+#        [[upstreams]] socks5 через тот же вход (между маркерами veil-warp), рестарт telemt.
+#        UI: карточка WARP на Настройках + тумблер 🌀 и чип в карточках подписчиков;
+#        все операции через _validate_and_apply (xray run -test) с откатом, аудит warp_*.
+# 2.13.4: аудит понятности описаний: добавлены блоки «Объяснить простым языком» там,
+#        где их не было — Дашборд (на что смотреть, что значит красный диск),
+#        Оформление (Новый/Классический, раскладка, темы — «только внешность»),
+#        и на вкладке Подписка объяснены новые кнопки карточки ⏸/▶ и 🔁
+#        (чем ручной тумблер отличается от автоблокировки «🚫»).
+# 2.13.3: тумблер «⏸ выключить / ▶ включить» подписчика (ручная блокировка с
+#        каскадом на семью, счётчики и трафик сохраняются) и «🔁 обновить ключи» —
+#        новый uuid + новые ключи протокола при НЕИЗМЕННОЙ ссылке подписки;
+#        попутно закрыта дыра: заблокированные клиенты xray-протоколов (лимит/срок/
+#        вручную) теперь реально исключаются из конфига — автоблок заработал как обещан.
+# 2.13.2: семейная подписка при создании: в диалоге «Новый подписчик» чекбокс
+#        «👨‍👩‍👧 семейная подписка» + число участников (1–5) и имена через запятую —
+#        /api/clients/add создаёт хозяина и участников в одной транзакции (один
+#        рестарт xray), ссылки участников — сразу в карточке семьи.
+# 2.13.1: «Семейный режим» — одна подписка на семью: до 5 участников у платящего хозяина,
+#        у каждого своя ссылка/ключи и свой лимит устройств, а трафик, срок, алерты и
+#        блокировка — общие по семье (считается суммой, переблокировка после оплаты — вся
+#        семья); члены не платят, страницы /p участников показывают семейный чип, хозяин
+#        управляет семьёй со своей страницы (токен вместо входа), админ — из карточки
+#        подписчика; удаление родителя каскадом убирает семью, «Все протоколы» растит всю семью.
 # 2.13.0: «Переезд» — автоматическая миграция на новый VPS (порт-в-порт, ссылки не меняются,
 #        захват портов по подтверждению, DNS по часам, журнал шагов — продолжение с места остановки);
 #        сайт-маска TLS-F (свой фронт) + «Главная ссылка Telegram»; устройства — по токену
@@ -53,10 +196,13 @@ import base64, hashlib, hmac, struct, time, os, json, socket
 
 NODES_CONFIG_FILE = f"{BASE}/nodes.json"
 
+_NODES_LOCK = threading.Lock()
+
 def get_nodes():
     if os.path.exists(NODES_CONFIG_FILE):
         try:
-            return json.load(open(NODES_CONFIG_FILE))
+            with open(NODES_CONFIG_FILE, encoding="utf-8") as f:
+                return json.load(f)
         except Exception:
             return []
     return []
@@ -64,6 +210,35 @@ def get_nodes():
 def save_nodes(nodes):
     # содержит токены нод — только 0600
     _save(NODES_CONFIG_FILE, nodes)
+
+# Поля, которые опрос нод ИЗМЕРЯЕТ сам. Всё остальное в записи (token, name,
+# порт, тип) принадлежит владельцу панели, и фоновый цикл на него не имеет права.
+_NODE_OBSERVED = ("online", "err", "remote_version", "node_clients", "node_online",
+                  "node_xray", "node_caps", "agent_params", "pin", "last_check",
+                  "status_cache")
+
+def _nodes_merge_observed(observed):
+    """observed: {"хост": {поле: значение}} — наложить измерения поверх ТОГО файла,
+    который на диске сейчас.
+
+    Раньше опрос делал так: снял nodes.json, 45 секунд ходил по нодам (каждый
+    запрос — до 8 секунд), потом вернул СВОЙ снимок целиком. Заявка ноды по SSH,
+    добавление или удаление ноды в эти секунды исчезало вместе с снимком — нода
+    либо пропадала, либо возвращалась живой, хотя её удалили.»"""
+    with _NODES_LOCK:
+        nodes = get_nodes()
+        touched = False
+        for n in nodes:
+            f = observed.get(n.get("host") or "")
+            if not f:
+                continue
+            for k in _NODE_OBSERVED:
+                if k in f and n.get(k) != f[k]:
+                    n[k] = f[k]
+                    touched = True
+        if touched:
+            save_nodes(nodes)
+        return touched
 
 def generate_totp(secret_key, interval=30):
     try:
@@ -120,7 +295,7 @@ def get_system_metrics():
     except Exception:
         pass
     try:
-        metrics["xray_running"] = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+        metrics["xray_running"] = _unit_active("xray")
     except Exception:
         metrics["xray_running"] = False
     try:
@@ -166,6 +341,13 @@ def run_protocol_self_test():
                     results[str(port)] = {"label": label, "status": "FAIL: закрыт"}
             finally:
                 s.close()
+    # «не висит ли панель» раньше можно было только угадать. Теперь честно показываем,
+    # сколько соединений она обслуживает прямо сейчас и где её потолок: упёрся в
+    # максимум — значит пришли сканеры/шторм подписчиков и новым честно 503.
+    results["_panel"] = {"label": "Панель: живых обработчиков",
+                         "status": f"{_veil_busy}/{_veil_max_workers}",
+                         "busy": _veil_busy, "max": _veil_max_workers,
+                         "refused": _veil_rejects}
     return results
 
 # ==================================================
@@ -275,15 +457,47 @@ def _save_audit():
     except Exception:
         pass
 
+# Имена полей, чьё значение — секрет или bearer-креденциал. Аудит читается
+# через /api/audit человеком с правом «security», и раньше туда попадали живые
+# подписочные токены и API-ключи: этой галки хватало, чтобы получить чужую подписку.
+_SECRET_KEYS = {"token", "tok", "sub", "secret", "password", "passwd", "pass",
+                "psk", "salt", "hash", "otp", "totp", "key", "cookie",
+                "authorization", "private", "private_key", "privkey", "priv_pem",
+                "api_key", "apikey", "session", "sid", "pin", "cvv", "token_hint",
+                "client_private_key", "cert_pem", "sub_token", "sub_path"}
+_SECRET_SUFFIX = ("_token", "_secret", "_password", "_passwd", "_psk",
+                  "_private_key", "_api_key", "_apikey", "_hash", "_salt", "_key")
+
+def _secret_key(k):
+    kl = str(k).lower()
+    return kl in _SECRET_KEYS or kl.endswith(_SECRET_SUFFIX)
+
 def _audit_redact(v):
-    if isinstance(v, str) and ("tok=" in v or "token=" in v):
-        v = re.sub(r"(tok|token)=[A-Za-z0-9_.\-]{8,}", r"\1=***", v)
+    """Скрывает секреты в строке; внутри dict/list идёт рекурсивно (события
+    передают словари: тело запроса, конфиг, срез состояния)."""
+    if isinstance(v, dict):
+        return {k: ("sha1:" + hashlib.sha1(str(val).encode("utf-8", "replace")).hexdigest()[:10]
+                    if isinstance(val, str) and _secret_key(k) else _audit_redact(val))
+                for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_audit_redact(x) for x in v]
+    if isinstance(v, str):
+        v = re.sub(r"(tok|token|secret|key|password|psk)[=\"\s:]+[A-Za-z0-9_.+\-/]{6,}",
+                   r"\1=***", v, flags=re.I)
+        # ссылки подписчика: scheme://<пароль или id>@host — секрет до @
+        v = re.sub(r"((?:vless|vmess|trojan|ss|hy2|hysteria2|wireguard|amneziawg)://"
+                   r")[^@]+@", r"\1***@", v, flags=re.I)
     return v
+
+def _audit_val(k, v):
+    if isinstance(v, str) and _secret_key(k):
+        return "sha1:" + hashlib.sha1(v.encode("utf-8", "replace")).hexdigest()[:10]
+    return _audit_redact(v)
 
 def _audit(ev, **kw):
     """Запись в аудит-журнал. ev — событие, kw — детали (имя клиента, uuid, ip и т.п.)."""
     entry = {"ts": _now_iso(), "ev": ev}
-    entry.update({k: _audit_redact(v) for k, v in kw.items() if v is not None})
+    entry.update({k: _audit_val(k, v) for k, v in kw.items() if v is not None})
     AUDIT.append(entry)
     if len(AUDIT) > AUDIT_LIMIT + 64:
         del AUDIT[: len(AUDIT) - AUDIT_LIMIT]
@@ -565,13 +779,78 @@ def _subdev_prune(valid_tokens):
 
 def _load(p, d=None):
     try:
-        with open(p) as f: return json.load(f)
-    except Exception: return d
+        with open(p, encoding="utf-8") as f: return json.load(f)
+    except FileNotFoundError: return d
+    except Exception as e:
+        # файл есть, но не читается: молча отдать значение по умолчанию означает,
+        # что следующий _save запишет пустое состояние поверх настоящего
+        print("LOAD CORRUPT " + p + ": " + str(e), flush=True)
+        try:
+            keep = p + ".corrupt-" + time.strftime("%Y%m%d-%H%M%S")
+            if not os.path.exists(keep): shutil.copy2(p, keep)
+            print("LOAD CORRUPT: копию положил в " + keep, flush=True)
+        except Exception: pass
+        return d
 
 def _save(p, o, mode=0o600):
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-    with open(p, "w") as f: json.dump(o, f, indent=2, ensure_ascii=False)
-    os.chmod(p, mode)
+    """Атомарная запись: временный файл в той же папке, fsync, os.replace.
+    Раньше был open(p, "w"): процесс умер (или кончилось место) посреди json.dump —
+    и на диске остаётся обрезанный state.json, который _load читает как «пусто»,
+    а первое же сохранение хоронит всех подписчиков. Плюс окно, пока секретный
+    файл уже усёк и ещё не получил 0600."""
+    d = os.path.dirname(os.path.abspath(p))
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, "." + os.path.basename(p) + ".tmp%d" % threading.get_ident())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode & 0o777)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(o, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    finally:
+        try:
+            if os.path.exists(tmp): os.unlink(tmp)
+        except Exception: pass
+
+_CFG_SNAP_LK = threading.Lock()
+
+def _cfg_save():
+    """CFG_CACHE -> config.json.
+
+    json.dump обходит живой словарь, а в него в эту секунду другая нить вставляет
+    ключ (бот, фоновый тик, сохранение настройки) — и посреди сериализации вылетало
+    RuntimeError(«dictionary changed size during iteration»). Ручка, которая
+    приходила сюда просто сохранить настройку, отдавала 500, а часть настроек
+    оставалась непрописанной. Здесь снимок копируется в приватный словарь,
+    а пишется уже тем же атомарным _save()."""
+    last = None
+    snap = None
+    for _ in range(5):
+        try:
+            with _CFG_SNAP_LK:
+                snap = json.loads(json.dumps(CFG_CACHE, ensure_ascii=False))
+            break
+        except (RuntimeError, TypeError) as e:
+            last = e
+            time.sleep(0.02)
+    if snap is None:
+        _audit("cfg_save_race", detail=str(last)[:160])
+        return False
+    _save(CFG, snap)
+    return True
+
+def _unit_active(svc):
+    """Жив ли systemd-юнит. Отдельная функция потому, что это спрашивает морда
+    каждые несколько секунд, а `systemctl` на перегруженном/заблокированном
+    D-Bus может не вернуться никогда: обработчик живёт в нити, нитей потолок,
+    и несколько таких «никогда» превращают панель в 503 на всех."""
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", svc],
+                              capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
 
 def _hash(salt, pw):
     # старый формат (sha256 за проход) — нужен только для проверки унаследованных hash'ей
@@ -594,7 +873,7 @@ def _pw_match(salt, pw, stored):
     if ok:  # прозрачная миграция старого формата — установку не ломаем, пароль не теряем
         try:
             CFG_CACHE["pass_hash"] = _hash2(salt, pw)
-            _save(CFG, CFG_CACHE)
+            _cfg_save()
         except Exception:
             pass
     return ok
@@ -702,11 +981,14 @@ def _last_line(out, *keys):
     return None
 
 def _gen_keys():
-    out = subprocess.run(["xray", "x25519"], capture_output=True, text=True).stdout
+    out = subprocess.run(["xray", "x25519"], capture_output=True, text=True, timeout=30).stdout
     priv = _last_line(out, "private")
     pub = _last_line(out, "public", "password")
     if priv and pub: return priv.strip(), pub.strip()
-    raise RuntimeError("не разобрал xray x25519: " + out)
+    # сам вывод не печатаем: там PrivateKey, а эта строка доезжает до клиента как
+    # текст ошибки 500 (xray менял подписи значений между версиями — случай живой)
+    raise RuntimeError("не разобрал вывод xray x25519 (" + str(len(out))
+                       + " байт) — обновите панель под эту версию xray")
 
 # ---------- AmneziaWG (системный kernel-интерфейс awg0) ----------
 AWG_IFACE = "awg0"
@@ -808,7 +1090,10 @@ def _awg_read_conf():
 def _awg_write_conf(inb):
     os.makedirs(os.path.dirname(AWG_CONF), exist_ok=True)
     jk = AWG_JUNK
-    with open(AWG_CONF, "w") as f:
+    # приватный ключ интерфейса: 0600 с момента создания файла, не post-factum
+    fd = os.open(AWG_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    f = os.fdopen(fd, "w")
+    try:
         f.write("[Interface]\n"
                 f"Address = {(inb.get('address') or AWG_ADDR)}, {AWG_ADDR6}\n"
                 f"ListenPort = {inb['port']}\n"
@@ -833,7 +1118,8 @@ def _awg_write_conf(inb):
                     f"PublicKey = {c['client_public_key']}\n"
                     f"AllowedIPs = {c['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
                     "PersistentKeepalive = 25\n")
-    os.chmod(AWG_CONF, 0o600)
+    finally:
+        f.close()
 
 def _awg_iface_synced(inb):
     try:
@@ -855,7 +1141,7 @@ def _awg_iface_synced(inb):
                     return False
         except Exception:
             return False
-        r = subprocess.run(["ip", "link", "show", AWG_IFACE], capture_output=True, text=True)
+        r = subprocess.run(["ip", "link", "show", AWG_IFACE], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return False
         return True
@@ -875,7 +1161,7 @@ def _awg_restart_iface(st):
             new = f.read()
         # мягкий путь, как у veilwg: peers без разрыва активных сессий
         exists = subprocess.run(["ip", "link", "show", AWG_IFACE],
-                                capture_output=True).returncode == 0
+                                capture_output=True, timeout=10).returncode == 0
         if old and exists and old.partition("[Peer]")[0] == new.partition("[Peer]")[0]:
             if _soft_sync(AWG_IFACE, new):
                 return True
@@ -911,7 +1197,8 @@ def _awg_sync(st, force=False):
     if not _awg_iface_synced(inb) or force:
         if not inb.get("public_key"):
             inb["public_key"] = _awg_pubof(inb.get("private_key", ""))
-        _awg_restart_iface(st)
+        if not _awg_restart_iface(st):
+            return False
     # Применяем peers
     try:
         cur = subprocess.run(["/usr/bin/awg", "show", AWG_IFACE, "peers"],
@@ -984,7 +1271,7 @@ def _wg_conf_text(inb):
 
 def _wg_iface_synced(inb):
     try:
-        r = subprocess.run(["ip", "link", "show", WG_IFACE], capture_output=True, text=True)
+        r = subprocess.run(["ip", "link", "show", WG_IFACE], capture_output=True, text=True, timeout=10)
         with open(WG_CONF) as f:
             live = f.read()
         return r.returncode == 0 and live == _wg_conf_text(inb) and _wg_listen_port() == inb.get("port")
@@ -993,9 +1280,11 @@ def _wg_iface_synced(inb):
 
 def _wg_write_conf(inb):
     os.makedirs("/etc/wireguard", exist_ok=True)
-    with open(WG_CONF, "w") as f:
+    # право ставим при открытии: с open(...,"w") файл с приватным ключом
+    # несколько мгновений живёт под umask (0644), и только потом chmod(0600)
+    fd = os.open(WG_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(_wg_conf_text(inb))
-    os.chmod(WG_CONF, 0o600)
 
 def _wg_iface_section(text):
     return text.partition("[Peer]")[0]
@@ -1005,7 +1294,10 @@ def _soft_sync(iface, conf_text):
     директивы wg-quick (Address/MTU) — подаём копию без них. Бинарник wg ограничен
     AppArmor и читает только из /etc/wireguard — временный файл кладём туда же.
     Ошибка -> False, вызывающий пойдёт жёстким путём."""
-    path = "/etc/wireguard/.veil-soft-%d.conf" % os.getpid()
+    # имя уникальное по нити: панель — ThreadingTCPServer, у всех нитей один PID,
+    # и два параллельных добавления подписчика писали бы в один файл, а затем
+    # чужой finally стирал бы его из-под ещё не запустившегося syncconf
+    path = "/etc/wireguard/.veil-soft-%d-%d.conf" % (os.getpid(), threading.get_ident())
     try:
         lines = [l for l in conf_text.splitlines()
                  if l.split("=", 1)[0].strip() not in ("Address", "MTU")]
@@ -1038,7 +1330,7 @@ def _wg_restart_iface(st):
         # обновляет только peers — активные туннели (и роумящие клиенты) не
         # рвутся. Полный down/up только при смене порта/ключа/MTU/адреса.
         exists = subprocess.run(["ip", "link", "show", WG_IFACE],
-                                capture_output=True).returncode == 0
+                                capture_output=True, timeout=10).returncode == 0
         if old and exists and _wg_iface_section(old) == _wg_iface_section(new):
             if _soft_sync(WG_IFACE, new):
                 return True
@@ -1072,7 +1364,8 @@ def _wg_sync(st, force=False):
     if not inb.get("public_key"):
         inb["public_key"] = _wg_pubof(inb.get("private_key", ""))
     if not _wg_iface_synced(inb) or force:
-        _wg_restart_iface(st)
+        if not _wg_restart_iface(st):
+            return False
     return True
 
 def _ensure_wg_net():
@@ -1147,23 +1440,12 @@ def _wg_key_std(k):
     except Exception:
         return k
 
-def _gen_wg_psk():
-    return _wg_key_std(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
-
 def _wg_is_wireguard(inb):
     if str(inb.get("proto", "")) == "wireguard":
         return True
     if "public_key" in inb and any(c.get("client_public_key") for c in inb.get("clients", [])):
         return True
     return False
-
-def _ensure_wg_psk(st):
-    changed = False
-    for inb in (st or {}).get("inbounds", {}).values():
-        if inb.get("proto") == "wireguard" or "public_key" in inb:
-            if not inb.get("psk"):
-                inb["psk"] = _gen_wg_psk(); changed = True
-    return changed
 
 def _ensure_wg_std(st):
     changed = False
@@ -1292,7 +1574,11 @@ def _migrate_state(st):
     for k in ("port", "private_key", "public_key", "sid", "sni", "dest", "password"):
         v = st.pop(k, None)
         if v is None: continue
-        if k == "port": inb["port"] = v
+        if k == "port":
+            # порт обязан быть числом: строка «2443» из чужого state не совпадёт с
+            # настоящим 2443 в проверках занятости, и порт выдадут дважды
+            try: inb["port"] = int(v)
+            except (TypeError, ValueError): inb["port"] = v
         else: inb[k] = v
     st["inbounds"] = {proto: inb}
     return True
@@ -1321,7 +1607,7 @@ def _gen_selfsigned(proto):
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
              "-keyout", key, "-out", crt, "-days", "3650",
              "-subj", "/CN=Veil", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             raise RuntimeError("openssl: " + (r.stderr or r.stdout))
     os.chmod(crt, 0o644)
@@ -1432,8 +1718,14 @@ def _stream_settings(proto, inb):
     snis = _as_list(inb.get("snis")) or [inb.get("sni") or "www.samsung.com"]
     sids = _as_list(inb.get("sids")) or ([inb.get("sid")] if inb.get("sid") else [])
     def _reality():
+        pk = inb.get("private_key")
+        if not pk:
+            # без ключа вход не поднимется; молчаливый KeyError превращался в
+            # «конфиг невалиден» без объяснения, что сломано и в каком inbound
+            raise RuntimeError("у входа %s нет privateKey — включите и выключите Reality заново "
+                               "или восстановите state.json из backups/" % proto)
         return {"show": False, "dest": inb.get("dest") or "www.samsung.com:443", "xver": 0,
-                "serverNames": snis, "privateKey": inb["private_key"],
+                "serverNames": snis, "privateKey": pk,
                 "shortIds": sids}
     if proto == "reality":
         return _deep_merge({"network": "tcp", "security": "reality",
@@ -1465,12 +1757,15 @@ def _stream_settings(proto, inb):
 
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
+    # blocked (лимит/срок/ручное отключение) — клиент НЕ попадает в конфиг:
+    # ядро не знает его id — соединения отваливаются сразу после перезаписи
+    cs = [c for c in inb["clients"] if not c.get("blocked")]
     ib = {"listen": inb.get("listen") or "0.0.0.0", "port": inb["port"], "tag": proto}
     if proto == "hysteria2":
         ib["protocol"] = "hysteria"
         ib["settings"] = {"version": 2, "clients": [
             {"auth": c.get("auth") or c["uuid"], "email": c["uuid"]}
-            for c in inb["clients"]]}
+            for c in cs]}
         ib["sniffing"] = {"enabled": False}
         ib["streamSettings"] = _stream_settings(proto, inb)
         return ib
@@ -1485,7 +1780,7 @@ def _inbound(proto, inb):
                        "preSharedKey": inb.get("psk", ""),
                        "allowedIPs": ["0.0.0.0/0", "::/0"],
                        "email": c["uuid"]}
-                      for c in inb["clients"]]}
+                      for c in cs]}
         ib["sniffing"] = {"enabled": False}
         return ib
     # facade-фронт не должен становиться destination'ом при sniffing (см. _veil_front_domains)
@@ -1506,12 +1801,12 @@ def _inbound(proto, inb):
         ib["settings"] = {"clients": [
             {"password": c.get("password") or inb.get("password"), "flow": "",
              "email": c["uuid"]}
-            for c in inb["clients"]], "decryption": "none"}
+            for c in cs], "decryption": "none"}
     elif proto.startswith("vmess"):
         ib["protocol"] = "vmess"
         ib["settings"] = {"clients": [
             {"id": c["uuid"], "alterId": 0, "email": c["uuid"]}
-            for c in inb["clients"]]}
+            for c in cs]}
     else:
         ib["protocol"] = "vless"
         if "flow" in inb:
@@ -1520,7 +1815,7 @@ def _inbound(proto, inb):
             flow = "xtls-rprx-vision" if proto == "reality" else ""
         ib["settings"] = {"clients": [
             {"id": c["uuid"], "flow": flow, "email": c["uuid"]}
-            for c in inb["clients"]],
+            for c in cs],
             "decryption": "none"}
     ib["streamSettings"] = _stream_settings(proto, inb)
     return _deep_merge(ib, inb.get("_adv_ib"))
@@ -1543,27 +1838,44 @@ _STATS_PORT = 10088
 
 def _autoblock_limits(st, force=False):
     """Автоблокировка: лимит ГБ или истёк срок -> клиент убирается из конфига.
+    Расход считаем СОВОКУПНО по семье (хозяин + члены, поле family_of); решение
+    всегда принимает хозяйская группа, записи членов клеймятся тем же ts/reason.
     Возвращает список {uuid, name, reason} только что заблокированных (пусто = без изменений)."""
     import urllib.parse as _up_  # не нужно — urllib уже в коде
     if not st: return []
-    t = not force
     out = []
     now = time.time()
+    groups = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            groups.setdefault(c["uuid"], []).append(c)
+    parents = {}  # parent uuid -> [member uuid...]
+    for u, cs in groups.items():
+        p = cs[0].get("family_of")
+        if p and p in groups:
+            parents.setdefault(p, []).append(u)
     for proto, inb in (st.get("inbounds") or {}).items():
         for c in inb.get("clients", []):
             if c.get("blocked"): continue
+            u = c["uuid"]
+            if c.get("family_of") and c.get("family_of") in groups:
+                continue  # решение принимает хозяин, семья блокируется разом
+            members = parents.get(u, [])
+            used = sum(_user_traffic(groups[x][0]) for x in ([u] + members))
             why = None
-            up = float(c.get("up") or 0); down = float(c.get("down") or 0)
             lim = float(c.get("limit_gb") or 0)
-            if lim > 0 and (up + down) >= lim * 1024 ** 3 * 0.95:
+            if lim > 0 and used >= lim * 1024 ** 3 * 0.95:
                 why = "limit"
             ex = int(c.get("expiry") or 0)
             if ex and now > ex:
                 why = why or "expired"
             if not why: continue
-            c["blocked"] = int(now)
-            c["blocked_reason"] = why
-            out.append({"uuid": c["uuid"], "name": c["name"], "reason": why})
+            ts = int(now)
+            for x in ([u] + members):
+                for cc in groups[x]:
+                    cc["blocked"] = ts
+                    cc["blocked_reason"] = why
+            out.append({"uuid": u, "name": c["name"], "reason": why})
     return out
 
 def _build_xray_cfg(st, force_proto=None):
@@ -1602,18 +1914,117 @@ def _build_xray_cfg(st, force_proto=None):
                              "statsUserOnline": True}},
             "system": {"statsInboundUplink": True, "statsInboundDownlink": True}}}
 
+def _xray_cfg_valid(cfg):
+    """True, если сборку можно доверить xray. Проверка идёт на ВРЕМЕННОМ файле:
+    тот, что лежит на диске, при этом остаётся прежний (рабочий)."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(XRAY), prefix="panel.check.", suffix=".json")
+    os.close(fd)
+    try:
+        _save(tmp, cfg, 0o644)
+        t = subprocess.run(["xray", "run", "-test", "-config", tmp],
+                           capture_output=True, text=True, timeout=30)
+        if t.returncode:
+            return False, ("конфиг Xray невалиден: "
+                           + (t.stderr or t.stdout or "").strip()[:600])
+        return True, None
+    except subprocess.TimeoutExpired:
+        return False, "xray run -test: таймаут проверки конфига"
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
 def _write_xray(st):
+    """Кладёт собранную конфигурацию в XRAY — но только если xray её принимает.
+
+    Раньше порядок был обратный: конфиг писали на диск, а проверяли уже в
+    _restart_xray(). Невалидная сборка успевала занять место рабочей, xray
+    падал с «address already in use»/«invalid config» и оставался на прежнем
+    файле только до следующей перезагрузки или next systemctl restart xray —
+    то есть подписчики теряли VPN после ребута, молча. Теперь плохой конфиг
+    не попадает на диск вообще, а вызывающий код честной ошибкой откатывает
+    и state.json (его пишут строкой позже)."""
     try:
         os.makedirs(os.path.dirname(_XRAY_ACCESS), exist_ok=True)
     except Exception:
         pass
-    _save(XRAY, _build_xray_cfg(st), 0o644)
+    cfg = _build_xray_cfg(st)
+    ok, err = _xray_cfg_valid(cfg)
+    if not ok:
+        raise RuntimeError(err)
+    _save(XRAY, cfg, 0o644)
+
+_XRAY_LAST_RESTART = [0.0]
+# xray.service живёт с дефолтным лимитом systemd: не больше 5 запусков за 10 секунд.
+_XRAY_RESTART_GAP = 2.2
+
+
+def _xray_active():
+    try:
+        return subprocess.run(["systemctl", "is-active", "xray"], capture_output=True,
+                              text=True, timeout=15).stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def _xray_forget_failures():
+    """Забыть накопленные отказы юнита. Ничего не запускает и не останавливает —
+    просто снимает счётчик, которым systemd меряет «слишком часто»."""
+    try:
+        subprocess.run(["systemctl", "reset-failed", "xray"], capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+
+def _xray_restart():
+    """systemctl restart xray, устойчивый к лимиту перезапусков systemd.
+
+    Пять применений конфига за десять секунд — обычная работа морды: добавили
+    клиента, сняли участника семьи, повернули ключ, включили мюкс, отключили мюкс.
+    Без защиты на пятом systemd отвечает «Start request repeated too quickly» и
+    ОТКАЗЫВАЕТСЯ поднимать xray; юнит остаётся failed, а вместе с ним лежат ВСЕ
+    подписки, пока кто-то не дёрнет руками. Откат в _validate_and_apply только
+    подливает масла: он сам вызывает рестарт. Поэтому держим паузу между
+    перезапусками, перед каждым снимаем накопленные отказы и верим не коду
+    возврата systemctl, а is-active. Бросает RuntimeError с тем, что сказал
+    systemctl, — вызывающий честно откатит конфиг."""
+    gap = time.time() - _XRAY_LAST_RESTART[0]
+    if 0 <= gap < _XRAY_RESTART_GAP:
+        time.sleep(_XRAY_RESTART_GAP - gap)
+    why = ""
+    for _ in range(2):
+        _xray_forget_failures()
+        r = subprocess.run(["systemctl", "restart", "xray"], capture_output=True,
+                           text=True, timeout=90)
+        _XRAY_LAST_RESTART[0] = time.time()
+        if r.returncode == 0 and _xray_active():
+            return
+        why = (((r.stderr or "") + (r.stdout or "")).strip()[:300]
+               or ("is-active: " + ("active" if _xray_active() else "не active")))
+        time.sleep(1.5)
+    raise RuntimeError(why)
+
+
+def _restart_xray():
+    """Перезапуск xray. Проверка конфига здесь — страховка на случай, если файл
+    на диске меняли не через _write_xray (руки, другой процесс, миграция)."""
+    t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
+                       capture_output=True, text=True, timeout=30)
+    if t.returncode:
+        raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
+    _xray_restart()
 
 def _statsquery():
     try:
         r = subprocess.run(
-            ["xray", "api", "statsquery", "--server", f"127.0.0.1:{_STATS_PORT}",
-             "--pattern", "user>>>", "--reset", "false"],
+            # ВАЖНО: здесь нет флага --reset. Xray разбирает аргументы флагом Go,
+            # а `--reset` у него булев: «--reset false» означает reset=TRUE плюс
+            # брошенный позиционный «false». То есть каждый опрос обнулил бы
+            # счётчики, и дельта «сейчас минус прошлый снимок» превратилась бы в
+            # «интервал минус предыдущий интервал» — при ровном трафике 0, и
+            # лимит перестал бы считаться совсем. Сброс нам не нужен: накопление
+            # ведём в state (up/down), а базой служит last_up/last_down.
             capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return {}
@@ -1636,6 +2047,25 @@ def _statsquery():
         out[email][direction] = int(s.get("value", 0) or 0)
     return out
 
+def _traffic_reset_now(st, uuids, tr=None):
+    """Обнулить накопленное, оттолкнувшись от ТЕПЕРЯШНИХ счётчиков Xray.
+
+    Раньше здесь звали `xray api statsreset` и ставили last_*=0. Команды
+    `statsreset` в этой сборке Xray нет (её не показывает `xray help api`),
+    subprocess без check=True молча проходил, и оставался худший вариант:
+    last_*=0 при счётчиках, намотанных с запуска xray. На следующем тике
+    «дельта» равнялась всему трафику за всё время — клиент, которому только что
+    разблокировали лимит или начали новый цикл, упирался в него заново за минуту."""
+    if tr is None:
+        tr = _statsquery()
+    for u in uuids:
+        t = tr.get(u) or {}
+        cu = int(t.get("uplink", 0) or 0); cd = int(t.get("downlink", 0) or 0)
+        for c in _fam_group(st, u):
+            c["up"] = 0; c["down"] = 0
+            c["last_up"] = cu; c["last_down"] = cd
+            c["warned_80"] = False; c["warned_days"] = []
+
 def _cycle_key(kind, ts=None):
     """Ключ текущего цикла трафика (UTC). '' = lifetime (без сброса)."""
     if kind not in ("day", "week", "month"):
@@ -1649,8 +2079,8 @@ def _cycle_key(kind, ts=None):
 def _traffic_tick(st):
     """Накапливает дельты счётчиков Xray в cycle-полях клиента (up/down).
     Счётчики Xray живут в памяти и обнуляются при рестарте — поэтому ведём
-    last_up/last_down и копим дельты. На границе цикла обнуляем накопленное
-    и делаем xray api statsreset. Значения зеркалятся во ВСЕ записи одного
+    last_up/last_down и копим дельты. На границе цикла обнуляем накопленное,
+    а базой делаем теперешний снимок счётчиков. Значения зеркалятся во ВСЕ записи одного
     uuid (клиент может быть в нескольких инбаундах с одним uuid). True = изменения."""
     tr = _statsquery()
     if not tr:
@@ -1664,18 +2094,14 @@ def _traffic_tick(st):
         c0 = cs[0]
         ck = _cycle_key(c0.get("reset_cycle"))
         if c0.get("cycle") != ck:
+            base = tr.get(key) or {}
+            bu = int(base.get("uplink", 0) or 0); bd = int(base.get("downlink", 0) or 0)
             for c in cs:
                 c["cycle"] = ck
                 c["up"] = 0; c["down"] = 0
-                c["last_up"] = 0; c["last_down"] = 0
+                # новый цикл считается от текущего снимка, а не от нуля счётчика
+                c["last_up"] = bu; c["last_down"] = bd
                 c["warned_80"] = False
-            try:
-                subprocess.run(
-                    ["xray", "api", "statsreset", "--server", f"127.0.0.1:{_STATS_PORT}",
-                     "--pattern", f"user>>>{key}>>>"],
-                    capture_output=True, text=True, timeout=8)
-            except Exception:
-                pass
             changed = True
             continue
         t = tr.get(key) or {}
@@ -1715,6 +2141,205 @@ _GB = 1024 ** 3
 def _user_traffic(c):
     return int(c.get("up") or 0) + int(c.get("down") or 0)
 
+# ---------- СЕМЕЙНЫЙ РЕЖИМ ----------
+# Член семьи = обычная запись клиента со своим uuid + sub_token, но с полем
+# family_of=<uuid «хозяйской» подписки>. Тариф (лимит ГБ и срок) считается по
+# хозяйину и его совокупному расходу (он + все члены), предупреждения и
+# автоблокировка бьют по семье целиком; лимит устройств — у каждого свой.
+# Записи членов держат ЗЕРКАЛО limit_gb/expiry/reset_cycle хозяина (чтобы
+# legacy-пути не врли), но loops пропускают их — истина всегда в хозяйской группе.
+_FAMILY_MAX = 5
+
+def _fam(st, uuid_):
+    """-> (parent_uuid, [member_uuid...]). Для соло-клиента -> (uuid_, []).
+    Принимает uuid хозяина ИЛИ члена — результат одинаковый (семейное скоуп-ядро)."""
+    if not st or not uuid_:
+        return uuid_, []
+    recs = {}
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            r = recs.setdefault(c["uuid"], c)
+    c0 = recs.get(uuid_)
+    if c0 is None:
+        return uuid_, []
+    parent = c0.get("family_of") or uuid_
+    members = []
+    for u, c in recs.items():
+        if c.get("family_of") == parent and u != parent:
+            members.append(u)
+    return parent, members
+
+def _fam_group(st, uuid_):
+    """Все записи uuid-группы клиента (хозяин или член) из state."""
+    out = []
+    for proto, inb in (st.get("inbounds") or {}).items():
+        for c in inb.get("clients", []):
+            if c["uuid"] == uuid_:
+                out.append(c)
+    return out
+
+def _fam_parent_record(st, uuid_):
+    """Первая запись хозяйской группы — источник истины limit_gb/expiry, либо None."""
+    parent, _ = _fam(st, uuid_)
+    g = _fam_group(st, parent)
+    return g[0] if g else None
+
+def _fam_ud(st, uuid_):
+    """Совокупный расход семьи: (parent_uuid, fam_up, fam_down). Каждый uuid
+    считается ОДИН РАЗ (up/down зеркалятся во все инбаунды одной группы)."""
+    parent, members = _fam(st, uuid_)
+    pg = _fam_group(st, parent)
+    up = int(pg[0].get("up") or 0) if pg else 0
+    dn = int(pg[0].get("down") or 0) if pg else 0
+    for mu in members:
+        mg = _fam_group(st, mu)
+        if mg:
+            up += int(mg[0].get("up") or 0); dn += int(mg[0].get("down") or 0)
+    return parent, up, dn
+
+def _fam_member_uuids(st, parent_uuid):
+    _, members = _fam(st, parent_uuid)
+    return members
+
+def _fam_release(st, uuid_):
+    """Снять blocked со всего семейства; если причина была «limit» — обнулить
+    up/down/last_* и флаги предупреждений у хозяина и каждого члена, оттолкнувшись
+    от теперешних счётчиков Xray (иначе совокупный расход перескочит порог за 60с)."""
+    parent, members = _fam(st, uuid_)
+    ids = [parent] + members
+    cleared = False
+    need_reset = False
+    for u in ids:
+        for c in _fam_group(st, u):
+            if c.get("blocked"):
+                cleared = True
+                if c.get("blocked_reason") == "limit":
+                    need_reset = True
+            c.pop("blocked", None); c.pop("blocked_reason", None)
+    if need_reset:
+        _traffic_reset_now(st, [u for u in ids if u])
+    return cleared
+
+def _fam_mirror(st, parent_uuid):
+    """Перенести limit_gb/expiry/reset_cycle хозяина на все записи членов (зеркало
+    для legacy-путей). Возвращает число обновлённых записей."""
+    parent, members = _fam(st, parent_uuid)
+    pg = _fam_group(st, parent)
+    if not pg:
+        return 0
+    p = pg[0]
+    n = 0
+    for mu in members:
+        for c in _fam_group(st, mu):
+            c["limit_gb"] = float(p.get("limit_gb") or 0)
+            c["expiry"] = int(p.get("expiry") or 0)
+            c["reset_cycle"] = p.get("reset_cycle") or ""
+            n += 1
+    return n
+
+def _fam_resolve_parent(st, key):
+    """По uuid или sub_token -> хозяйская запись (или None, если ключ — член семьи)."""
+    for inb in (st.get("inbounds") or {}).values():
+        for c in inb.get("clients", []):
+            if c["uuid"] == key or c.get("sub_token") == key:
+                return None if c.get("family_of") else c
+    return None
+
+def _fam_add(st, parent_key, name, max_devices=0):
+    """Создать участника семьи: полноценный клиент (свой uuid/токен/ключи по всем
+    протоколам хозяина), но тариф, алерты и блокировка — общие с хозяином.
+    -> (ok, dict-участника | текст ошибки)."""
+    name = (name or "").strip()[:40]
+    if not name:
+        return False, "имя пустое"
+    parent = _fam_resolve_parent(st, parent_key)
+    if parent is None:
+        return False, "подписка-хозяин не найдена"
+    pu = parent["uuid"]
+    if len(_fam_member_uuids(st, pu)) >= _FAMILY_MAX:
+        return False, f"не больше {_FAMILY_MAX} участников"
+    try:
+        md = max(0, min(10, int(max_devices or 0)))
+    except Exception:
+        md = 0
+    host_inbs = [(proto, inb) for proto, inb in (st.get("inbounds") or {}).items()
+                 for c in inb.get("clients", []) if c["uuid"] == pu]
+    if not host_inbs:
+        return False, "подписка-хозяин не найдена"
+    member_uuid = str(uuidlib.uuid4())
+    member_token = secrets.token_urlsafe(16)
+    for proto, inb in host_inbs:
+        c = _new_client(name, proto, inb, limit_gb=parent.get("limit_gb"),
+                        expiry=int(parent.get("expiry") or 0),
+                        reset_cycle=parent.get("reset_cycle"), max_devices=md)
+        c["uuid"] = member_uuid
+        c["sub_token"] = member_token
+        c["fam_name"] = name
+        c["family_of"] = pu
+        # цикл берём хозяйский (а не свежий _cycle_key), иначе создание участника
+        # посреди цикла бесплатно обнулило бы накопанный трафик всей семьи
+        c["cycle"] = parent.get("cycle") or "lifetime"
+        if parent.get("blocked"):
+            c["blocked"] = parent["blocked"]
+            c["blocked_reason"] = parent.get("blocked_reason") or ""
+        inb.setdefault("clients", []).append(c)
+    return True, {"uuid": member_uuid, "name": name, "sub_token": member_token,
+                  "max_devices": md}
+
+def _fam_del(st, member_key):
+    """Удалить участника семьи (хозяина этим путём удалить нельзя)."""
+    rec = None
+    for inb in (st.get("inbounds") or {}).values():
+        for c in inb.get("clients", []):
+            if c["uuid"] == member_key or c.get("sub_token") == member_key:
+                rec = c
+                break
+        if rec: break
+    if rec is None:
+        return False, "участник не найден"
+    if not rec.get("family_of"):
+        return False, "это не участник семьи"
+    mu, tok = rec["uuid"], (rec.get("sub_token") or "")
+    for proto, inb in list((st.get("inbounds") or {}).items()):
+        inb["clients"] = [c for c in inb.get("clients", []) if c["uuid"] != mu]
+        if not inb["clients"] and proto != "amneziawg":
+            del st["inbounds"][proto]
+    try:
+        _subdev_prune({c.get("sub_token")
+                       for inb in (st.get("inbounds") or {}).values()
+                       for c in inb.get("clients", []) if c.get("sub_token")})
+    except Exception:
+        pass
+    try:
+        if tok: _avatar_remove(tok)
+    except Exception:
+        pass
+    return True, {"uuid": mu, "name": rec.get("fam_name") or rec.get("name") or ""}
+
+def _fam_devlimit(st, member_key, max_devices):
+    """Лимит устройств участника (per-uuid — _device_tick считает каждого сам)."""
+    try:
+        md = max(0, min(10, int(max_devices or 0)))
+    except Exception:
+        return False, "max_devices не число"
+    grp = [c for inb in (st.get("inbounds") or {}).values()
+           for c in inb.get("clients", [])
+           if c["uuid"] == member_key or c.get("sub_token") == member_key]
+    uuids = {c["uuid"] for c in grp}
+    if not grp or not all(c.get("family_of") for c in grp):
+        return False, "это не участник семьи"
+    for inb in (st.get("inbounds") or {}).values():
+        for c in inb.get("clients", []):
+            if c["uuid"] in uuids:
+                c["max_devices"] = md
+    return True, {"uuids": sorted(uuids), "max_devices": md}
+
+def _fam_urls(tok):
+    host = _hop_pub_host()
+    host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+    bp = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    return {"sub_url": f"{bp}/sub/{tok}", "page_url": f"{bp}/p/{tok}"}
+
 def _maybe_traffic_alerts(st):
     """TG-предупреждения: 80% лимита, скорая блокировка (3/1 день), сброс цикла.
     Возвращает True, если выставили новые флаги (state надо сохранять)."""
@@ -1726,8 +2351,8 @@ def _maybe_traffic_alerts(st):
     seen = set()
     for proto, inb in (st.get("inbounds") or {}).items():
         for c in inb.get("clients", []):
-            if c["uuid"] in seen or c.get("blocked"):
-                continue
+            if c["uuid"] in seen or c.get("blocked") or c.get("family_of"):
+                continue  # предупреждения — раз на семью, от имени хозяина
             seen.add(c["uuid"])
             group = []
             for p2, i2 in (st.get("inbounds") or {}).items():
@@ -1738,14 +2363,16 @@ def _maybe_traffic_alerts(st):
             tgc = str(c.get("tg_chat") or "")
             sub_msgs = []
             lim = float(c.get("limit_gb") or 0)
+            _, fam_up, fam_down = _fam_ud(st, c["uuid"])
+            fam_used = fam_up + fam_down
             if lim > 0 and not c.get("warned_80"):
-                if _user_traffic(c) >= lim * _GB * 0.8:
+                if fam_used >= lim * _GB * 0.8:
                     msgs.append(
                         f"⚠️ <b>80% лимита</b>\nКлиент: {c.get('name')}\n"
-                        f"Использовано: {_user_traffic(c) / _GB:.2f} из {lim:g} ГБ")
+                        f"Использовано: {fam_used / _GB:.2f} из {lim:g} ГБ")
                     if tgc:
                         sub_msgs.append(("a80", c.get("name") or "",
-                                         f"{_user_traffic(c) / _GB:.2f}", f"{lim:g}"))
+                                         f"{fam_used / _GB:.2f}", f"{lim:g}"))
                     for g in group: g["warned_80"] = True
                     changed = True
             ex = int(c.get("expiry") or 0)
@@ -1831,6 +2458,74 @@ def _online_count(email):
         _ONLINE_CACHE.clear()
     return v
 
+_STATE_TOKENS_LOCK = threading.Lock()
+
+def _ensure_identities(st):
+    """Инвариант подписчика: у каждой записи есть uuid, имя и РОВНО ОДИН sub_token
+    на uuid; недостающее дописывается на диск.
+
+    Две причины, почему это вынесено из читающих ручек. Первая: дальше по коду
+    (их сотни) клиент читается как c["uuid"] — одна кривая запись из чужого
+    state.json или из импорта превращала любой GET в 500. Вторая раньше была
+    видна хуже: ручки /sub/<tok>, /api/clients и «подписчики» на пустом токене
+    генерировали новый и сохраняли ЦЕЛИКОМ свой снимок state.json, снятый при
+    входе. Параллельная запись, случившаяся за эти миллисекунды, пропадала, а
+    подписчик, который живёт в нескольких входах, получал несколько разных
+    токенов — его подписка показывала только часть протоколов.
+
+    Сюда приходит снимок, снятый при входе в ручку. На диск уходит не он, а
+    слияние в актуальный файл: поле меняется только если на диске оно пустое, и
+    только в той записи, чей uuid совпадает (или на диске ещё пуст — та самая
+    чинимая запись).
+    """
+    if not st: return False
+    fixes = []
+    inbs = st.get("inbounds") or {}
+    for proto, inb in inbs.items():
+        cl = inb.get("clients")
+        if not isinstance(cl, list): continue
+        for i, c in enumerate(cl):
+            if not isinstance(c, dict): continue
+            if not c.get("uuid"):
+                c["uuid"] = str(uuidlib.uuid4())
+                fixes.append((proto, i, c, "uuid", c["uuid"]))
+            if not c.get("name"):
+                c["name"] = "Клиент"
+                fixes.append((proto, i, c, "name", c["name"]))
+    have = {}
+    for inb in inbs.values():
+        for c in (inb.get("clients") or []):
+            if isinstance(c, dict) and c.get("uuid") and c.get("sub_token"):
+                have.setdefault(c["uuid"], c["sub_token"])
+    fresh = {}
+    for proto, inb in inbs.items():
+        cl = inb.get("clients")
+        if not isinstance(cl, list): continue
+        for i, c in enumerate(cl):
+            if not isinstance(c, dict) or c.get("sub_token") or not c.get("uuid"):
+                continue
+            if c["uuid"] not in fresh:
+                fresh[c["uuid"]] = have.get(c["uuid"]) or secrets.token_urlsafe(16)
+            c["sub_token"] = fresh[c["uuid"]]
+            fixes.append((proto, i, c, "sub_token", c["sub_token"]))
+    if not fixes: return False
+    with _STATE_TOKENS_LOCK:
+        cur = _load(STATE) or {}
+        cinb = cur.get("inbounds") or {}
+        for proto, i, mem, field, val in fixes:
+            rec = (cinb.get(proto) or {}).get("clients")
+            if not isinstance(rec, list) or i >= len(rec) or not isinstance(rec[i], dict):
+                continue
+            disk = rec[i]
+            if disk.get(field):
+                continue      # на диске значение есть — значит запись уже дописали
+            duuid, muuid = disk.get("uuid"), mem.get("uuid")
+            if duuid and muuid and duuid != muuid:
+                continue      # на этом месте уже другой подписчик — адрес протух
+            disk[field] = val
+        _save(STATE, cur)
+    return True
+
 def _subs_summary(st, for_display=False):
     """Агрегированный список подписчиков (как в 3x-ui): по одному на sub_token/uuid,
     со ссылками на ВСЕ протоколы и суммарным трафиком."""
@@ -1840,16 +2535,14 @@ def _subs_summary(st, for_display=False):
     panel_port = CFG_CACHE.get("panel_port", 8444)
     ipv6 = _my_ipv6()
     users = {}
-    state_changed = False
+    _ensure_identities(st)
     for proto, inb in (st.get("inbounds") or {}).items():
         for c in inb.get("clients", []):
-            if not c.get("sub_token"):
-                c["sub_token"] = secrets.token_urlsafe(16)
-                state_changed = True
-            key = c["sub_token"]
+            key = c.get("sub_token") or c.get("uuid")
+            if not key: continue
             u = users.get(key)
             if u is None:
-                u = {"uuid": c["uuid"], "name": c["name"], "sub_token": key,
+                u = {"uuid": c.get("uuid") or "", "name": c.get("name") or "", "sub_token": key,
                      "created": c.get("created", 0),
                      "limit_gb": float(c.get("limit_gb") or 0),
                      "expiry": int(c.get("expiry") or 0),
@@ -1859,6 +2552,8 @@ def _subs_summary(st, for_display=False):
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
                      "tg_chat": str(c.get("tg_chat") or ""),
+                     "family_of": c.get("family_of") or "",
+                     "fam_name": c.get("fam_name") or "",
                      "links": {}, "protos": [], "up": 0, "down": 0}
                 users[key] = u
             elif not u.get("tg_chat") and c.get("tg_chat"):
@@ -1879,36 +2574,99 @@ def _subs_summary(st, for_display=False):
                 u["_tr_taken"] = True
                 u["up"] = int(c.get("up") or 0)
                 u["down"] = int(c.get("down") or 0)
-    if state_changed:
-        _save(STATE, st)
+    # Семья: у членов лимит/срок — живые значения хозяина, расход — общий на семью
+    by_uuid = {u["uuid"]: u for u in users.values()}
+    fam_members = {}
+    for u in users.values():
+        fo = u.get("family_of")
+        if fo and fo in by_uuid:
+            fam_members.setdefault(fo, []).append(u)
+            u["parent_name"] = by_uuid[fo].get("name") or ""
+            prec = _fam_parent_record(st, fo)
+            if prec is not None:
+                u["limit_gb"] = float(prec.get("limit_gb") or 0)
+                u["expiry"] = int(prec.get("expiry") or 0)
+                u["reset_cycle"] = prec.get("reset_cycle") or ""
+    fam_used = {}
+    for pu in fam_members:
+        _, fu, fd = _fam_ud(st, pu)
+        fam_used[pu] = fu + fd
     out = []
+    base_url = _pb(host, panel_port)
     for u in users.values():
         u.pop("_tr_taken", None)
-        u["used_gb"] = round((u["up"] + u["down"]) / (1024 ** 3), 3)
-        u["sub_url"] = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
-        u["sb_url"] = f"{_pb(host, panel_port)}/sb/{u['sub_token']}"
+        used = fam_used.get(u["uuid"])
+        if used is None and u.get("family_of") in by_uuid:
+            used = fam_used.get(u["family_of"])
+        if used is None:
+            used = u["up"] + u["down"]
+        u["used_gb"] = round(used / (1024 ** 3), 3)
+        u["sub_url"] = f"{base_url}/sub/{u['sub_token']}"
+        u["sb_url"] = f"{base_url}/sb/{u['sub_token']}"
+        u["page_url"] = f"{base_url}/p/{u['sub_token']}"
         u["online"] = int(_online_count(u["uuid"]) or 0)
         out.append(u)
+    by_out = {u["uuid"]: u for u in out}
+    for pu, mems in fam_members.items():
+        parent = by_out.get(pu)
+        if parent is not None:
+            parent["family"] = [
+                {"uuid": m["uuid"], "name": m.get("fam_name") or m["name"],
+                 "sub_token": m["sub_token"], "sub_url": m["sub_url"],
+                 "page_url": m["page_url"], "max_devices": m["max_devices"],
+                 "online": m["online"], "up": m["up"], "down": m["down"]}
+                for m in mems]
     return out
 
 def _start_xray():
-    subprocess.run(["systemctl", "start", "xray"], check=True, capture_output=True)
+    _xray_forget_failures()
+    subprocess.run(["systemctl", "start", "xray"], check=True, capture_output=True, timeout=90)
 
 def _stop_xray():
-    subprocess.run(["systemctl", "stop", "xray"], check=True, capture_output=True)
+    subprocess.run(["systemctl", "stop", "xray"], check=True, capture_output=True, timeout=90)
 
-def _restart_xray():
-    t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
-                       capture_output=True, text=True)
-    if t.returncode:
-        raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
-    subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
+# _restart_xray определён выше, рядом с _write_xray. Второй копии здесь быть не
+# должно: при двух одноимённых def нижняя молча побеждает, и правка верхней
+# превращается в украшение.
+_XRAY_APPLY_LOCK = f"{BASE}/.xray-apply.lock"
+
+@contextlib.contextmanager
+def _xray_apply_gate(seconds=180):
+    """Одиночный пропуск к «перезаписать конфиг xray + systemctl restart».
+
+    Два изменения Xray могли прийтись в одну секунду: получалось два рестарта
+    подряд и гонка за state.json. Блокировка файловая — она видит и нити панели,
+    и любой отдельный процесс, который решит применить конфиг."""
+    import fcntl
+    fd = os.open(_XRAY_APPLY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    t0 = time.time()
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() - t0 > seconds:
+                    raise TimeoutError("другое изменение Xray не применяется уже %d с" % seconds)
+                time.sleep(0.3)
+        yield time.time() - t0
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(fd)
+
 
 def _validate_and_apply(st, force_proto=None):
     """Проверяет candidate-конфиг через `xray run -test` на временном файле.
     Если валиден — коммитит config.json и state.json и перезапускает xray.
     Если нет — ничего не трогает (STATE на диске остаётся прежним). Возвращает (ok, err)."""
-    tmp = os.path.join(os.path.dirname(XRAY), "panel.validate.json")
+    # имя временного файла уникальное: с фиксированным два параллельных изменения
+    # перетирали бы файл друг у друга, поток A проверял бы байты потока B, а на
+    # диск клал свои — «проверено» без проверки
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(XRAY), prefix="panel.validate.", suffix=".json")
+    os.close(fd)
     try:
         cfg = _build_xray_cfg(st, force_proto=force_proto)
         _save(tmp, cfg, 0o644)
@@ -1917,13 +2675,43 @@ def _validate_and_apply(st, force_proto=None):
         if t.returncode:
             return False, ("конфиг Xray невалиден: "
                            + (t.stderr or t.stdout or "").strip()[:600])
-        _save(XRAY, cfg, 0o644)
-        _save(STATE, st)
         try:
-            subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True)
-        except Exception as e:
-            return False, "xray не перезапустился: " + str(e)
-        return True, None
+            with _xray_apply_gate() as waited:
+                prev = (_read_raw(XRAY), _read_raw(STATE))
+                _save(XRAY, cfg, 0o644)
+                _save(STATE, st)
+                try:
+                    _xray_restart()
+                except subprocess.TimeoutExpired:
+                    # зависший рестарт обычно означает, что VPN сейчас поднят или стоит —
+                    # поднимаем отдельной командой и честно сообщаем, а не молчим
+                    try:
+                        _xray_forget_failures()
+                        subprocess.run(["systemctl", "start", "xray"], capture_output=True, timeout=30)
+                    except Exception:
+                        pass
+                    _restore_raw(XRAY, prev[0]); _restore_raw(STATE, prev[1])
+                    return False, ("xray перезапускался дольше 90 секунд — конфигурацию "
+                                   "откатил к прежней, подписки живут как раньше")
+                except Exception as e:
+                    # конфиг уже на диске, а xray его не поднял. Без отката на диске
+                    # осталась бы неработающая версия, и любой следующий
+                    # systemctl restart xray (или перезагрузка ОС) уронил бы VPN
+                    _restore_raw(XRAY, prev[0]); _restore_raw(STATE, prev[1])
+                    try:
+                        # откат обязан реально поднять xray: без сброса счётчика
+                        # systemd отказал бы и этому запуску, и VPN лежал бы уже
+                        # прежним конфигом
+                        _xray_forget_failures()
+                        subprocess.run(["systemctl", "start", "xray"], capture_output=True, timeout=30)
+                    except Exception:
+                        pass
+                    return False, "xray не перезапустился: " + str(e) + " — откатил прежний конфиг"
+                if waited > 2:      # значит кто-то уже перекладывал xray прямо сейчас
+                    _audit("xray_apply_contend", waited=round(waited, 1))
+                return True, None
+        except TimeoutError as e:
+            return False, str(e)
     except subprocess.TimeoutExpired:
         return False, "xray -test: таймаут проверки конфига"
     except Exception as e:
@@ -1932,11 +2720,39 @@ def _validate_and_apply(st, force_proto=None):
         try: os.remove(tmp)
         except Exception: pass
 
+def _apply_state(st):
+    """To же, что `_validate_and_apply`, но с честной ошибкой вместо кортежа.
+
+    Нужен потому, что в файле больше полутора десятков мест с рукописной
+    последовательностью `_write_xray(st); _save(STATE, st); _restart_xray()`.
+    Она трижды платит за одну и ту же ошибку: конфиг и state коммитятся ДО
+    проверки, файловый гейт `_xray_apply_gate` не берётся (значит два изменения
+    Xray в одну секунду дают два рестарта и гонку за файл), а `xray run -test`
+    делается дважды. Здесь — одна валидация, один гейт, один рестарт."""
+    ok, err = _validate_and_apply(st)
+    if not ok:
+        raise RuntimeError(err)
+
 _FP_VALUES = {"firefox", "chrome", "safari", "ios", "android", "edge", "randomized", "random"}
 
 def _fp():
     v = (CFG_CACHE.get("fp") or "").strip().lower()
     return v if v in _FP_VALUES else "firefox"
+
+def _pub_port(inb):
+    """Порт для ссылок подписчика. SNI-мюкс nginx переносит вход на loopback-порт,
+    а снаружи по-прежнему 443: без этой поправки ссылки, выпущенные после мюкса,
+    вели бы на 127.0.0.1:4443, где клиенту делать нечего."""
+    return 443 if inb.get("_mux_enabled") else inb["port"]
+
+
+def _pub_host(inb, host, proto=""):
+    """Хост в ССЫЛКЕ на этот вход. Сейчас он всегда общий — домен панели: вход,
+    прилепленный к чужому проксируемому имени, был бы доступен только тому, кто
+    знает это имя и называет его в SNI, а прямой IP сервера при этом перестаёт
+    работать на нестандартных портах. Сигнатура сохранена: хелпер зовут из всех
+    сборок ссылок и sing-box."""
+    return host
 
 def _link(inb, host, client, proto, std=False):
     """Ссылка подключения. std=True — канонический Xray-формат (строгий парсер
@@ -1944,6 +2760,7 @@ def _link(inb, host, client, proto, std=False):
     base64 в vmess, реальные path/service из inbound. По умолчанию std=False —
     исторический формат, который понимают Happ/Shadowrocket/v2rayNG."""
     meta = _proto_meta(proto)
+    host = _pub_host(inb, host, proto)
     fp = _fp()
     _base = client.get("name") or "Veil"
     name = f"{_base} · {meta['label']}"
@@ -1951,7 +2768,7 @@ def _link(inb, host, client, proto, std=False):
         dom = (CFG_CACHE.get("panel_domain") or "").strip() or host
         auth = client.get("auth") or client["uuid"]
         q = urllib.parse.urlencode({"sni": dom})
-        return f"hy2://{auth}@{host}:{inb['port']}/?{q}#{urllib.parse.quote(name)}"
+        return f"hy2://{auth}@{host}:{_pub_port(inb)}/?{q}#{urllib.parse.quote(name)}"
     if proto == "amneziawg":
         jk = AWG_JUNK
         cli_junk = ("\n"
@@ -1997,7 +2814,7 @@ def _link(inb, host, client, proto, std=False):
     if proto.startswith("vmess"):
         add = host.strip("[]")
         if std:
-            p = {"v": "2", "ps": name, "add": add, "port": inb["port"],
+            p = {"v": "2", "ps": name, "add": add, "port": _pub_port(inb),
                  "id": client["uuid"], "aid": "0", "scy": "auto",
                  "net": meta["net"], "type": "none", "host": inb.get("host") or "",
                  "path": (inb.get("path") or "/veil") if meta["net"] == "ws"
@@ -2010,9 +2827,15 @@ def _link(inb, host, client, proto, std=False):
                 # могут согласовать http/1.1 и молча не открыть соединение.
                 p["alpn"] = "h2"
             return "vmess://" + base64.b64encode(json.dumps(p, separators=(",", ":")).encode()).decode()
-        p = {"v": "2", "ps": name, "add": add, "port": int(inb["port"]), "id": client["uuid"],
-             "aid": "0", "scy": "auto", "net": meta["net"], "type": "none", "host": "",
-             "path": "/veil" if meta["net"] == "ws" else ("veil" if meta["net"] == "grpc" else ""),
+        # «не стандартный» вариант — просто старый формат vmess-JSON, а не старый
+         # транспорт: путь/хост/сервис берём настоящие из входа, иначе после
+         # правки path подписчик на обычном/base64-импорте молча получает 404,
+         # тогда как INCY и sing-box у него работают (и вина кажется случайной).
+        p = {"v": "2", "ps": name, "add": add, "port": int(_pub_port(inb)), "id": client["uuid"],
+             "aid": "0", "scy": "auto", "net": meta["net"], "type": "none",
+             "host": inb.get("host") or "",
+             "path": (inb.get("path") or "/veil") if meta["net"] == "ws"
+                     else ((inb.get("service") or "veil") if meta["net"] == "grpc" else ""),
              "tls": "tls" if meta["tls"] else ""}
         # allowInsecure НЕ добавляем: сертификат валидный LE, а свежие ядра
         # (Happ 5.9+, INCY) удалили флаг и роняют весь vmess-JSON при его виде.
@@ -2022,29 +2845,28 @@ def _link(inb, host, client, proto, std=False):
             p["alpn"] = "h2"
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
     if proto.startswith("trojan"):
-        scheme = "trojan://" + urllib.parse.quote(client.get("password") or inb.get("password") or "") + "@"
+        scheme = "trojan://" + urllib.parse.quote(client.get("password") or inb.get("password") or "", safe="") + "@"
     else:
         scheme = f"vless://{client['uuid']}@"
     qparts = {"type": meta["net"]}
     if std and not proto.startswith("trojan"):
         qparts["encryption"] = "none"
     if meta["net"] == "ws":
-        qparts["path"] = (inb.get("path") or "/veil") if std else "/veil"
-        if std and inb.get("host"):
+        qparts["path"] = inb.get("path") or "/veil"
+        if inb.get("host"):
             qparts["host"] = inb["host"]
     elif meta["net"] == "grpc":
-        qparts["serviceName"] = (inb.get("service") or "veil") if std else "veil"
+        qparts["serviceName"] = inb.get("service") or "veil"
         qparts["alpn"] = "h2"
-        if std:
-            md = inb.get("mode")
-            if md and md != "gun":
-                qparts["mode"] = md
-            if inb.get("host"):
-                qparts["authority"] = inb["host"]
-        else:
+        md = inb.get("mode")
+        if md and md != "gun":
+            qparts["mode"] = md
+        elif not std:
             qparts["mode"] = "gun"
+        if inb.get("host"):
+            qparts["authority"] = inb["host"]
     elif meta["net"] in ("xhttp", "splithttp"):
-        qparts["path"] = (inb.get("path") or "/veil") if std else "/veil"
+        qparts["path"] = inb.get("path") or "/veil"
     if proto in ("reality", "vless-xhttp-reality"):
         qparts.update({"security": "reality", "pbk": inb["public_key"],
                        "fp": fp, "sni": inb["sni"], "sid": inb["sid"],
@@ -2062,7 +2884,7 @@ def _link(inb, host, client, proto, std=False):
     else:
         qparts["security"] = "none"
     q = urllib.parse.urlencode(qparts)
-    return f"{scheme}{host}:{inb['port']}?{q}#{urllib.parse.quote(name)}"
+    return f"{scheme}{host}:{_pub_port(inb)}?{q}#{urllib.parse.quote(name)}"
 
 # ---------- экспорт / импорт подписчиков (B2) ----------
 # Два формата обмена между панелями:
@@ -2305,13 +3127,30 @@ def _url_host_is_public(url):
             return False
     return True
 
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """SSRF-guard обязан посмотреть на КАЖДЫЙ переход, а не только на первый URL.
+
+    urllib молча догоняет 30x сам: разрешённый публичный хост одной строчкой
+    «Location: http://169.254.169.254/» уводил запрос внутрь локальной сети
+    (метаданные облака, loopback, панель на 8443). Здесь каждый новый адрес
+    проходит ту же проверку, что и исходный, а число переходов ограничено.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_host_is_public(newurl):
+            raise urllib.error.HTTPError(newurl, code,
+                                         "redirect на внутренний адрес запрещён", headers, fp)
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl)
+
 def _fetch_subscription(url):
     """Бounded server-side GET подписки по URL администратора (для импорта ссылок)."""
     if not _url_host_is_public(url):
         raise ValueError("разрешены только внешние http/https адреса")
     req = urllib.request.Request(url, headers={"User-Agent": "veil-panel-import"})
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=12, context=ctx) as r:
+    op = urllib.request.build_opener(_SafeRedirect(), urllib.request.HTTPSHandler(context=ctx))
+    with op.open(req, timeout=12) as r:
         raw = r.read(2 * 1024 * 1024)
     return raw.decode("utf-8", "replace")
 
@@ -2676,23 +3515,6 @@ _SB_UA_HINTS = ("incy", "happ", "streisand", "sing-box", "singbox", "sfi", "sfa"
                 "sfm", "stray", "nekobox", "foxray", "hiddify", "mysterium",
                 "metacube", "v2box", "flutter")
 
-def _need_singbox_sub(ua="", fmt=""):
-    fmt = (fmt or "").lower()
-    if fmt in ("sing-box", "singbox", "sbox", "json"):
-        return True
-    if fmt in ("v2ray", "base64", "text", ""):
-        return fmt in ("v2ray", "base64", "text")  # явный выбор наоборот
-    return False
-
-def _is_singbox_client(ua=""):
-    u = (ua or "").lower()
-    if not u:
-        return False
-    for hint in _SB_UA_HINTS:
-        if hint in u:
-            return True
-    return False
-
 def _is_incy_client(ua="", xclient=""):
     # INCY — Xray-клиент (UA: INCY/<version>/<platform>, x-client: INCY).
     # Его подписка — открытые ссылки/база, НЕ sing-box outbound'ы.
@@ -2801,10 +3623,11 @@ def _incy_link(proto, inb, c, host):
 
 def _singbox_outbound(proto, inb, c, host):
     meta = _proto_meta(proto)
+    host = _pub_host(inb, host, proto)
     fp = _fp()
     base = c.get("name") or "Veil"
     tag = f"{base} · {meta['label']}"
-    port = int(inb["port"])
+    port = int(_pub_port(inb))
     def _tls():
         if not meta["tls"]:
             return {"enabled": False}
@@ -2825,6 +3648,11 @@ def _singbox_outbound(proto, inb, c, host):
             return {"type": "xhttp", "path": inb.get("path") or "/veil"}
         return None
     if proto in ("amneziawg", "wireguard"):
+        if proto == "amneziawg":
+            # AmneziaWG — это WireGuard с «мусорными» пакетами (Jc/Jmin/S*/H*), а
+            # sing-box таких директив не знает: рукопожатие не соберётся никогда.
+            # Поэтому для sing-box AWG не существует (полный конфиг его тоже пропускает).
+            return None
         raw_priv = c.get("client_private_key") or ""
         priv = urllib.parse.unquote(raw_priv).replace("%2F", "/").replace("%2B", "+").replace("%3D", "=")
         raw_pub = inb.get("public_key") or ""
@@ -2837,15 +3665,19 @@ def _singbox_outbound(proto, inb, c, host):
             addr = "10.10.0.2/32"
         a6 = _tun6(c, "fd20:10::" if proto == "amneziawg" else "fd10:10::")
         addrs = [addr] + ([a6 + "/128"] if a6 else [])
+        # sing-box НЕ понимает xray-овскую форму (secretKey/address/peers[].publicKey/
+        # endpoint): он отвергает неизвестные поля, и тогда не запускается ВЕСЬ конфиг,
+        # то есть подписчик теряет разом все протоколы, а не только WireGuard.
         ob = {"type": "wireguard", "tag": tag,
-              "secretKey": priv,
-              "address": addrs,
-              "peers": [{
-                  "publicKey": pub,
-                  "endpoint": f"{_wg_ep(host)}:{port}",
-                  "preSharedKey": inb.get("psk", "")
-              }],
+              "server": _wg_ep(host),
+              "server_port": int(port),
+              "local_address": addrs,
+              "private_key": priv,
+              "peer_public_key": pub,
               "mtu": int(inb.get("mtu", WG_MTU))}
+        psk = inb.get("psk", "")
+        if psk:
+            ob["pre_shared_key"] = psk
         return ob
     if proto.startswith("shadowsocks"):
         return {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
@@ -2866,7 +3698,11 @@ def _singbox_outbound(proto, inb, c, host):
         ob = {"type": "vless", "tag": tag, "server": host, "server_port": port,
               "uuid": c["uuid"]}
     if proto in ("reality", "vless-xhttp-reality"):
-        ob["flow"] = "xtls-rprx-vision"
+        # flow xtls-rprx-vision держит только чистый TCP-Reality. На xhttp он
+        # ломает рукопожатие (и строго ядро отвергает конфиг целиком), поэтому
+        # ровно там, где его добавляет сервер, — см. _build_xray_cfg и _link.
+        if proto == "reality":
+            ob["flow"] = "xtls-rprx-vision"
         ob["tls"] = {"enabled": True, "server_name": inb.get("sni") or host,
                      "reality": {"enabled": True, "public_key": inb.get("public_key") or "",
                                  "short_id": inb.get("sid", "")},
@@ -2877,39 +3713,6 @@ def _singbox_outbound(proto, inb, c, host):
     if tr:
         ob["transport"] = tr
     return ob
-
-def _singbox_subscription(st, sub_path, host, tr):
-    """JSON-массив sing-box outbound'ов для всех протоколов подписчика.
-    tr — результат _statsquery(). Возвращает (outbounds, up, down, total, expiry, sub_name)."""
-    outbounds = []
-    up = down = total = 0
-    expiry = 0
-    sub_name = ""
-    seen = set()
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            match = (not sub_path) or (c.get("sub_token") == sub_path) or (c["uuid"] == sub_path)
-            if not match:
-                continue
-            if inb.get("disabled"):
-                continue
-            sub_name = c.get("name") or sub_name
-            key = c["uuid"]
-            if key not in seen:
-                seen.add(key)
-                up += int(c.get("up") or 0)
-                down += int(c.get("down") or 0)
-                lim = float(c.get("limit_gb") or 0)
-                if lim > 0:
-                    total = max(total, int(lim * 1024 ** 3))
-                ex = int(c.get("expiry") or 0)
-                if ex:
-                    expiry = max(expiry, ex)
-            try:
-                outbounds.append(_singbox_outbound(proto, inb, c, host))
-            except Exception:
-                continue
-    return outbounds, up, down, total, expiry, sub_name
 
 # Логотип проекта (файл icon-veil.png из поставки) — отдаётся странице /p/<token>.
 _LOGO_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon-veil.png")
@@ -3013,7 +3816,8 @@ def _sub_status(u, now=None):
     now = now or time.time()
     if u.get("blocked"):
         reason = u.get("blocked_reason") or ""
-        key = {"limit": "st_block_limit", "expired": "st_block_expired"}.get(reason, "st_block")
+        key = {"limit": "st_block_limit", "expired": "st_block_expired",
+               "manual": "st_block_manual"}.get(reason, "st_block")
         return "disabled", key
     ex = int(u.get("expiry") or 0)
     if ex and now > ex:
@@ -3054,6 +3858,7 @@ _SUB_TXT_RU = {
     "st_block_limit": "Отключена — исчерпан лимит трафика",
     "st_block_expired": "Отключена — подписка истекла",
     "st_block": "Отключена — заблокирован",
+    "st_block_manual": "Отключена администратором",
     "lb_exp": "Окончание", "lb_trf": "Трафик", "lb_onl": "Онлайн",
     "lb_conns": "Протоколов", "lb_used": "использовано трафика", "lb_rt": "Маршрутизация",
     "noexp": "Без ограничения", "exp_over": "срок истёк",
@@ -3121,6 +3926,23 @@ _SUB_TXT_RU = {
              "<li><b>v2rayNG</b>: «Пользовательские» → <code>geoip:ir</code> / <code>geosite:ir</code> → Proxy, остальные правила → Direct.</li>"
              "<li><b>INCY</b>: настраивать не нужно — профиль туннеля добавляется прямо в подписку автоматически.</li>"
              "</ul>",
+    "fam_hd": "Семья",
+    "fam_chip": "часть семейного тарифа «%s»",
+    "fam_note": "У каждого — своя ссылка и свой лимит устройств, а трафик, срок и "
+                "предупреждения общие: семья считается и блокируется по общему расходу. "
+                "Скопируй ссылку участника и отправь ему — страница обновится сама.",
+    "fam_none": "Пока никого. Добавь участника — у него появится своя подписка с общим тарифом.",
+    "fam_add": "＋ Добавить участника",
+    "fam_name_prompt": "Имя участника (например: Жена)",
+    "fam_del_q": "Удалить участника семьи? Его ссылка перестанет работать.",
+    "fam_share": "личных %s GB",
+    "fam_full": "Больше нельзя: в семье максимум %d участника.",
+    "fam_added": "Участник добавлен, страница обновится…",
+    "fam_del_ok": "Участник удалён.",
+    "fam_err": "Не получилось: %s",
+    "fam_copy_ok": "Ссылка участника скопирована — отправьте её ему.",
+    "fam_dev_tip": "Лимит устройств участника (0 — без лимита)",
+    "fam_on": "онлайн",
 }
 _SUB_TXT = {
 "en": {
@@ -3129,6 +3951,7 @@ _SUB_TXT = {
     "st_limit": "Disabled — traffic limit reached",
     "st_block_limit": "Disabled — traffic limit reached",
     "st_block_expired": "Disabled — subscription expired", "st_block": "Disabled — blocked",
+    "st_block_manual": "Disabled by the administrator",
     "lb_exp": "Expiry", "lb_trf": "Traffic", "lb_onl": "Online",
     "lb_conns": "Protocols", "lb_used": "traffic used", "lb_rt": "Routing",
     "noexp": "No limit", "exp_over": "expired",
@@ -3197,6 +4020,23 @@ _SUB_TXT = {
              "</ul>",
     "addr_nt": ("🔄 <b>The server address changed on %s.</b> If the proxy stopped connecting: refresh the subscription "
                 "in your app (usually an “update” button on the profile) or add the link again — every link on this page and in the bot already uses the new address."),
+    "fam_hd": "Family",
+    "fam_chip": "part of the family plan “%s”",
+    "fam_note": "Each member gets a personal link and their own device limit, while traffic, "
+                "expiry and alerts stay shared: the family is metered (and blocked) by total usage. "
+                "Copy a member's link and send it to them — the page updates itself.",
+    "fam_none": "No members yet. Add one — they get their own subscription on the shared plan.",
+    "fam_add": "＋ Add member",
+    "fam_name_prompt": "Member name (e.g., Wife)",
+    "fam_del_q": "Remove this family member? Their link will stop working.",
+    "fam_share": "%s GB personal",
+    "fam_full": "Limit reached: up to %d members per family.",
+    "fam_added": "Member added — the page will reload…",
+    "fam_del_ok": "Member removed.",
+    "fam_err": "Failed: %s",
+    "fam_copy_ok": "Member link copied — send it to them.",
+    "fam_dev_tip": "Member device limit (0 = unlimited)",
+    "fam_on": "online",
 },
 "fa": {
     "ttl": "اشتراک", "tagline": "پنل شخصی اشتراک",
@@ -3204,6 +4044,7 @@ _SUB_TXT = {
     "st_limit": "غیرفعال — ترافیک مصرف شده",
     "st_block_limit": "غیرفعال — ترافیک مصرف شده",
     "st_block_expired": "غیرفعال — اشتراک منقضی شده", "st_block": "غیرفعال — مسدود",
+    "st_block_manual": "غیرفعال توسط مدیر",
     "lb_exp": "انقضا", "lb_trf": "ترافیک", "lb_onl": "آنلاین",
     "lb_conns": "پروتکل‌ها", "lb_used": "ترافیک مصرف‌شده", "lb_rt": "مسیریابی",
     "noexp": "بدون محدودیت", "exp_over": "منقضی شده",
@@ -3271,6 +4112,23 @@ _SUB_TXT = {
              "</ul>",
     "addr_nt": ("🔄 <b>نشانی سرور در %s تغییر کرد.</b> اگر پروکسی دیگر وصل نمی‌شود: اشتراک را در برنامه "
                 "به‌روزرسانی کنید (معمولاً دکمهٔ «به‌روزرسانی» روی پروفایل) یا لینک را دوباره اضافه کنید — همهٔ لینک‌های این صفحه و ربات نشانی جدید دارند."),
+    "fam_hd": "خانواده",
+    "fam_chip": "بخشی از پلن خانوادگی «%s»",
+    "fam_note": "هر عضو لینک شخصی و سقف دستگاه مخصوص خود را دارد؛ اما حجم، مهلت و هشدارها "
+                "مشترک است: خانواده مجموعاً شمارش و در اتمام حجم یکجا مسدود می‌شود. "
+                "لینک عضو را کپی کنید و برایش بفرستید — صفحه خودکار تازه می‌شود.",
+    "fam_none": "هنوز عضو‌ای نیست. بیفزایید — لینک شخصی با پلن مشترک می‌گیرد.",
+    "fam_add": "＋ افزودن عضو",
+    "fam_name_prompt": "نام عضو (مثلاً همسر)",
+    "fam_del_q": "این عضو حذف شود؟ لینک او از کار می‌افتد.",
+    "fam_share": "%s گیگ شخصی",
+    "fam_full": "بیشتر نمی‌شود: حداکثر %d عضو در خانواده.",
+    "fam_added": "عضو افزوده شد — صفحه تازه می‌شود…",
+    "fam_del_ok": "عضو حذف شد.",
+    "fam_err": "ناموفق: %s",
+    "fam_copy_ok": "لینک عضو کپی شد — برایش بفرستید.",
+    "fam_dev_tip": "سقف دستگاه عضو (۰ = بدون سقف)",
+    "fam_on": "آنلاین",
 },
 "zh": {
     "ttl": "订阅", "tagline": "我的订阅中心",
@@ -3278,6 +4136,7 @@ _SUB_TXT = {
     "st_limit": "已停用 — 流量用尽",
     "st_block_limit": "已停用 — 流量用尽",
     "st_block_expired": "已停用 — 订阅到期", "st_block": "已停用 — 已封禁",
+    "st_block_manual": "已由管理员停用",
     "lb_exp": "到期", "lb_trf": "流量", "lb_onl": "在线",
     "lb_conns": "协议数", "lb_used": "已用流量", "lb_rt": "分流路由",
     "noexp": "无限制", "exp_over": "已过期",
@@ -3343,6 +4202,22 @@ _SUB_TXT = {
              "</ul>",
     "addr_nt": ("🔄 <b>服务器地址已于 %s 变更。</b>如果代理无法连接：请在应用中刷新订阅"
                 "（通常是配置文件上的「更新」按钮），或重新添加链接 — 本页和机器人中的所有链接已是新地址。"),
+    "fam_hd": "家庭共享",
+    "fam_chip": "「%s」家庭套餐成员",
+    "fam_note": "每位成员都有独立链接和自己的设备数上限，但流量、有效期和提醒按家庭总用量计算，超额会一起停用。"
+                "复制成员链接发给对方即可 — 页面会自动刷新。",
+    "fam_none": "还没有成员。添加后，对方将获得共享同一套餐的独立订阅。",
+    "fam_add": "＋ 添加成员",
+    "fam_name_prompt": "成员名称（如：妻子）",
+    "fam_del_q": "删除该成员？其链接将立即失效。",
+    "fam_share": "个人 %s GB",
+    "fam_full": "已达上限：每个家庭最多 %d 位成员。",
+    "fam_added": "成员已添加 — 页面即将刷新…",
+    "fam_del_ok": "成员已删除。",
+    "fam_err": "失败：%s",
+    "fam_copy_ok": "成员链接已复制，请发给对方。",
+    "fam_dev_tip": "成员设备数上限（0 = 不限）",
+    "fam_on": "在线",
 },
 }
 
@@ -3415,28 +4290,6 @@ def _avatar_remove(tok):
         os.remove(_avatar_path(tok))
     except OSError:
         pass
-
-def _avatar_data_url(tok):
-    """data: URL для встраивания в <img>, или '' если аватара нет."""
-    path = _avatar_path(tok)
-    if not path:
-        return ""
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return ""
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        mime = "image/png"
-    elif data[:3] == b"\xff\xd8\xff":
-        mime = "image/jpeg"
-    elif data[:6] in (b"GIF87a", b"GIF89a"):
-        mime = "image/gif"
-    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        mime = "image/webp"
-    else:
-        return ""
-    return "data:" + mime + ";base64," + base64.b64encode(data).decode()
 
 def _avatar_version(tok):
     """Метка времени файла аватара для cache-busting URL (?v=...), или 0 если файла нет."""
@@ -3657,11 +4510,51 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                       '</div></div>')
     else:
         usage_html = ''
+    # ---- семья: чип на странице участника + секция управления у хозяина ----
+    fam_chip = ""
+    if u.get("family_of"):
+        fam_chip = ("<div class='chip-fam'>" +
+                    _esc(L["fam_chip"] % (str(u.get("parent_name") or "") or "Veil")) + "</div>")
+    fam = u.get("family") or []
+    fam_rows = []
+    for f in fam[:_FAMILY_MAX]:
+        try: mb = int(f.get("up") or 0) + int(f.get("down") or 0)
+        except Exception: mb = 0
+        seg = L["fam_share"] % f"{mb / (1024 ** 3):.2f}"
+        try:
+            if int(f.get("online") or 0):
+                seg += " · " + L["fam_on"]
+        except Exception:
+            pass
+        try: mdv = max(0, min(10, int(f.get("max_devices") or 0)))
+        except Exception: mdv = 0
+        opts = "".join('<option value="%d"%s>%s</option>' % (
+            i, " selected" if i == mdv else "", ("∞" if i == 0 else str(i)))
+            for i in range(11))
+        fam_rows.append(
+            '<div class="devr famr" data-m="' + _esc(f.get("uuid") or "") + '">'
+            '<div class="devi"><b>' + _esc(f.get("name") or "") + '</b><span>' + _esc(seg) +
+            '</span></div>'
+            '<select class="famdev" title="' + _esc(L["fam_dev_tip"]) + '">' + opts + '</select>'
+            '<button type="button" class="devx famcopy" data-l="' + _esc(f.get("sub_url") or "") + '">🔗</button>'
+            '<a class="devx" href="' + _esc(f.get("page_url") or "#") + '" target="_blank" rel="noopener">👤</a>'
+            '<button type="button" class="devx famdel">✕</button></div>')
+    fam_html = ""
+    if u.get("family") is not None:
+        inner = "".join(fam_rows) or ('<div class="devr"><div class="devi"><span>' +
+                                      _esc(L["fam_none"]) + '</span></div></div>')
+        foot = (('<button type="button" class="famadd">' + _esc(L["fam_add"]) + '</button>')
+                if len(fam) < _FAMILY_MAX else
+                ('<div class="devnote">' + _esc(L["fam_full"] % _FAMILY_MAX) + '</div>'))
+        fam_html = ('<div class="sec"><h2>' + _esc(L["fam_hd"]) + '</h2><div class="devlist">'
+                    + inner + '</div>' + foot
+                    + '<div class="devnote">' + _esc(L["fam_note"]) + '</div></div>')
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
     langnav = "".join('<a href="?lang=' + lk + '"' + (' class="sel"' if lk == lang else "") +
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
     js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
                "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
+               "fam_add fam_name_prompt fam_del_q fam_added fam_del_ok fam_err fam_copy_ok fam_full "
                "btn_add btn_install btn_how tag_paid store_dl").split()
     ljs_json = json.dumps({k: L[k] for k in js_keys}, ensure_ascii=False)
     tpl = """<!DOCTYPE html><html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
@@ -3722,6 +4615,17 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .meta .name{font-size:22px;font-weight:800;color:#f2f5ff;margin:0;line-height:1.2;word-break:break-word}
 .meta .sub{font-size:12.5px;color:#8b94b5;margin-top:6px;word-break:break-word}
 .meta .sub b{color:#a5b4fc;font-weight:600}
+.chip-fam{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:#c4b5fd;
+  background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.4);border-radius:999px;padding:3px 10px}
+.famdev{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;color:#c4b5fd;cursor:pointer;
+  background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.35);border-radius:99px;padding:5px 6px}
+.famadd{display:block;width:100%;margin-top:12px;padding:10px;border-radius:13px;cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:700;color:#c4b5fd;border:1px dashed rgba(139,92,246,.5);
+  background:rgba(139,92,246,.07)}
+.famadd:disabled{opacity:.5;cursor:default}
+.famcopy,a.devx{color:#7dd3fc;background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
+  text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.famcopy:hover,a.devx:hover{background:rgba(56,189,248,.18)}
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 20px 0}
 .stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:rgba(22,29,52,.85);
   border:1px solid rgba(66,84,130,.4);overflow:hidden}
@@ -3847,6 +4751,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="meta">
     <div class="name">__NAMEHT__</div>
     <div class="sub">__HEADLINE__</div>
+    __FAMCHIP__
    </div>
   </div>
   <div class="stats">
@@ -3868,6 +4773,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
   </div>
   __DEVS__
   __USAGE__
+  __FAMILY__
   __RT__
   __PAYBLOCK__
  </main>
@@ -4010,6 +4916,47 @@ document.addEventListener('DOMContentLoaded',function(){
         .catch(function(){hint(L.js_net,'#fb7185'); btn.disabled=false;});
     });
   });
+  function famPost(act,body,cb){
+    fetch('/p/'+encodeURIComponent(TOK)+'/family/'+act,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();})
+      .then(function(j){cb(j&&j.ok?null:((j&&j.error)||L.js_err),j);})
+      .catch(function(){cb(L.js_net,null);});
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.famr'),function(row){
+    var mu=row.getAttribute('data-m');
+    var sel=row.querySelector('.famdev');
+    if(sel)sel.addEventListener('change',function(){
+      sel.disabled=true;
+      famPost('devlimit',{member_uuid:mu,max_devices:parseInt(sel.value,10)||0},function(err){
+        sel.disabled=false; if(err)hint(F(L.fam_err,err),'#fb7185');});
+    });
+    var cp=row.querySelector('.famcopy');
+    if(cp)cp.addEventListener('click',function(){
+      var lk=cp.getAttribute('data-l')||'';
+      if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'#4ade80');},function(){prompt('',lk);});}
+      else{prompt('',lk);}
+    });
+    var del=row.querySelector('.famdel');
+    if(del)del.addEventListener('click',function(){
+      if(!confirm(L.fam_del_q))return;
+      del.disabled=true;
+      famPost('del',{member_uuid:mu},function(err){
+        if(err){del.disabled=false;hint(F(L.fam_err,err),'#fb7185');}
+        else{row.remove();hint(L.fam_del_ok,'#4ade80');}
+      });
+    });
+  });
+  var famAdd=document.querySelector('.famadd');
+  if(famAdd)famAdd.addEventListener('click',function(){
+    var nm=prompt(L.fam_name_prompt,'');
+    if(nm===null)return;
+    nm=(nm||'').trim(); if(!nm)return;
+    famAdd.disabled=true;
+    famPost('add',{name:nm},function(err){
+      if(err){famAdd.disabled=false;hint(F(L.fam_err,err),'#fb7185');}
+      else{hint(L.fam_added,'#4ade80'); setTimeout(function(){location.reload();},700);}
+    });
+  });
   (function(){
     var f=document.getElementById('avaFile'),b=document.getElementById('avaBtn'),rb=document.getElementById('avaRm');
     if(!f||!b)return;
@@ -4049,10 +4996,11 @@ document.addEventListener('DOMContentLoaded',function(){
 });
 </script></body></html>"""
     payblock = ""
-    try:
-        payblock = _pay_block_html(u.get("sub_token") or "", L)
-    except Exception:
-        pass
+    if not u.get("family_of"):  # участник не платит — тарифом владеет хозяин
+        try:
+            payblock = _pay_block_html(u.get("sub_token") or "", L)
+        except Exception:
+            pass
     # аватар — отдельным кэшируемым файлом: base64 внутри страницы добавлял ~95 КБ
     # к каждому показу /p, и страница с ним не кэшировалась вообще
     _av = _avatar_version(tok)
@@ -4084,26 +5032,88 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__CONFS__", confs_html)
                 .replace("__ADDRNT__", addr_html)
                 .replace("__HEADLINE__", head_line)
+                .replace("__FAMCHIP__", fam_chip)
                 .replace("__SECDEV__", L["sec_dev"])
                 .replace("__BTNADD__", L["btn_add"]).replace("__BTNCOPY__", L["btn_copy"])
                 .replace("__BTNSHARE__", L["btn_share"]).replace("__HINTPICK__", L["hint_pick"])
                 .replace("__SUBFT__", L["ft_sub"]).replace("__PAGEFT__", L["ft_page"])
                 .replace("__DEVS__", devs_html)
                 .replace("__USAGE__", usage_html)
+                .replace("__FAMILY__", fam_html)
                 .replace("__RT__", rt_html)
                 .replace("__PAYBLOCK__", payblock)
-                .replace("__SUBJS__", json.dumps(sub_url))
-                .replace("__B64JS__", json.dumps(sub64))
-                .replace("__NAMEJS__", json.dumps(name_plain, ensure_ascii=False))
-                .replace("__WGCONF__", json.dumps(wg_b64))
-                .replace("__AWGCONF__", json.dumps(awg_b64))
-                .replace("__WGDOWN__", json.dumps(wg_url))
-                .replace("__AWGDOWN__", json.dumps(awg_url))
+                .replace("__SUBJS__", _js(sub_url))
+                .replace("__B64JS__", _js(sub64))
+                .replace("__NAMEJS__", _js(name_plain))
+                .replace("__WGCONF__", _js(wg_b64))
+                .replace("__AWGCONF__", _js(awg_b64))
+                .replace("__WGDOWN__", _js(wg_url))
+                .replace("__AWGDOWN__", _js(awg_url))
                 .replace("__CAT__", catalog_json)
                 .replace("__PLATS__", plats_json)
                 .replace("__LJS__", ljs_json)
-                .replace("__TOK__", json.dumps(u["sub_token"]))
-                .replace("__PLATDEFAULT__", json.dumps(plat_default)))
+                .replace("__TOK__", _js(u["sub_token"]))
+                .replace("__PLATDEFAULT__", _js(plat_default)))
+
+def _read_raw(path):
+    try:
+        with open(path, "rb") as f: return f.read()
+    except Exception:
+        return None
+
+def _restore_raw(path, data):
+    """Вернуть файл к снимку байтов (или удалить, если файла не было)."""
+    try:
+        if data is None:
+            if os.path.exists(path): os.unlink(path)
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+        os.chmod(path, 0o644 if path == XRAY else 0o600)
+    except Exception as e:
+        print("restore " + path + ": " + str(e), flush=True)
+
+def _js(v):
+    """JSON для вставки прямо в <script>. Обычный json.dumps не спасает от </script:
+    имя подписчика попадает в JS-строку, а `</` раньше времени закрывает элемент, и
+    браузер читает всё, что после него, как HTML — то есть чужой код на странице
+    человека, который открыл свою ссылку. Экранируем <, >, & и JS-переносы строк."""
+    return (json.dumps(v, ensure_ascii=False)
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+def _wg_addr(inb, default):
+    """Первый свободный /32 в /24-пулу туннеля.
+
+    Прежний счётчик next_address только рос: после 253 выдач (даже если клиентов
+    удаляли) адрес стал бы 10.10.0.256 — невалидный, и ядро отвергло бы весь
+    конфиг, то есть одна лишняя кнопка «создать» роняла бы VPN целиком. Здесь
+    освободившийся адрес возвращается в оборот, а когда пул правда заполнен,
+    слышно честное «не осталось свободных», а не молчаливую ерунду."""
+    used = set()
+    for c in (inb.get("clients") or []):
+        a = str(c.get("address") or "").split("/")[0]
+        if a:
+            used.add(a)
+        for x in str(c.get("allowed_ips") or "").split(","):
+            b = x.strip().split("/")[0]
+            if b:
+                used.add(b)
+    pre = (str(inb.get("address") or "").split("/")[0].rsplit(".", 1)[0] + "."
+           or default.rsplit(".", 2)[0] + ".")
+    try:
+        start = int(inb.get("next_address") or 2)
+    except Exception:
+        start = 2
+    for k in range(2, 254):
+        i = 2 + ((start - 2 + k) % 252)
+        cand = pre + str(i)
+        if cand not in used:
+            inb["next_address"] = i + 1
+            return cand
+    raise RuntimeError("в пуле туннеля " + pre + "x/24 не осталось свободных адресов — "
+                       "расширьте подсеть входа")
 
 def _new_client(name, proto=None, inb=None, **kw):
     c = {"uuid": str(uuidlib.uuid4()),
@@ -4125,18 +5135,14 @@ def _new_client(name, proto=None, inb=None, **kw):
         c["auth"] = secrets.token_hex(16)
     if proto == "wireguard" and inb is not None:
         priv, pub = _gen_keys()
-        addr = inb.get("next_address", 2)
-        inb["next_address"] = addr + 1
         c["client_private_key"] = _wg_key_std(priv)
         c["client_public_key"] = _wg_key_std(pub)
-        c["address"] = f"10.10.0.{addr}/32"
+        c["address"] = _wg_addr(inb, WG_ADDR) + "/32"
     if proto == "amneziawg" and inb is not None:
         priv, pub = _gen_keys()
-        addr = inb.get("next_address", 2)
-        inb["next_address"] = addr + 1
         c["client_private_key"] = _wg_key_std(priv)
         c["client_public_key"] = _wg_key_std(pub)
-        c["address"] = f"{AWG_POOL}{addr}/32"
+        c["address"] = _wg_addr(inb, AWG_ADDR) + "/32"
     return c
 
 # ---------- github / update ----------
@@ -4724,10 +5730,20 @@ def _bot_bind(chat_id, tok):
     for inb in (st.get("inbounds") or {}).values():
         for c in inb.get("clients", []):
             if c.get("sub_token") == t or c.get("uuid") == t:
-                if str(c.get("tg_chat") or "") != str(chat_id):
-                    c["tg_chat"] = str(chat_id)
-                    changed = True
-                name = c.get("name") or name
+                if c.get("family_of"):
+                    # привязался через ссылку члена семьи — подписка и алерты у хозяина
+                    grp = _fam_group(st, c["family_of"])
+                    for g in grp:
+                        if str(g.get("tg_chat") or "") != str(chat_id):
+                            g["tg_chat"] = str(chat_id)
+                            changed = True
+                    if grp:
+                        name = grp[0].get("name") or name
+                else:
+                    if str(c.get("tg_chat") or "") != str(chat_id):
+                        c["tg_chat"] = str(chat_id)
+                        changed = True
+                    name = c.get("name") or name
     if name and changed:
         _save(STATE, st)
         try:
@@ -5155,7 +6171,7 @@ def _pay_cb_sig_ok(raw, sig):
     if not tok or not sig:
         return False
     mac = hmac.new(tok.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(mac, str(sig).lower())
+    return hmac.compare_digest(mac.encode("utf-8"), str(sig).lower().encode("utf-8"))
 
 def _pay_cb_create(inv):
     r = _pay_cb_api("createInvoice", {
@@ -5191,7 +6207,7 @@ def _pay_pay_sig_ok(raw, sig, secret):
     if not secret or not sig:
         return False
     mac = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(mac, str(sig).lower())
+    return hmac.compare_digest(mac.encode("utf-8"), str(sig).lower().encode("utf-8"))
 
 # ---------- продление ----------
 def _pay_shop_deliver(inv):
@@ -5266,33 +6282,36 @@ def _pay_extend(inv):
                 grp.append(c)
     if not grp:
         return False
+    if grp[0].get("family_of"):
+        return False  # токен члена семьи не покупается — тарифом рулит хозяин
     days = int(inv.get("days") or 0)
     gb = float(inv.get("gb") or 0)
+    uid = grp[0].get("uuid")
+    _, _mems = _fam(st, uid)
     for c in grp:
         if days > 0:
             ex = int(c.get("expiry") or 0)
             c["expiry"] = (max(now, ex) if ex else now) + days * 86400
             c["warned_days"] = []
-            c["blocked"] = False
-            c["blocked_reason"] = ""
+    if days > 0:
+        # продлили хозяина — вся семья разблокируется
+        # (limit-блок при этом снимается с обнулением совокупного расхода)
+        _fam_release(st, uid)
+    for c in grp:
         if gb > 0:
             c["limit_gb"] = gb
             c["warned_80"] = False
+    if days > 0 or gb > 0:
+        _fam_mirror(st, uid)
+    for mu in _mems:
+        for g in _fam_group(st, mu):
+            if days > 0: g["warned_days"] = []
+            if gb > 0: g["warned_80"] = False
     if gb > 0 and inv.get("reset"):
-        uid = grp[0].get("uuid")
-        for c in grp:
-            c["up"] = 0; c["down"] = 0; c["last_up"] = 0; c["last_down"] = 0
-        if uid:
-            try:
-                subprocess.run(["xray", "api", "statsreset",
-                                "--server", f"127.0.0.1:{_STATS_PORT}",
-                                "--pattern", f"user>>>{uid}>>>"],
-                               capture_output=True, text=True, timeout=8)
-            except Exception:
-                pass
+        # расход семейный — обнулять надо все uuid семьи, иначе sum не упадёт
+        _traffic_reset_now(st, [x for x in ([uid] + _mems) if x])
     _awg_sync(st); _wg_sync(st)
-    _write_xray(st); _save(STATE, st)
-    _restart_xray()
+    _apply_state(st)
     _audit("pay_extend", inv=inv["id"], sub=inv.get("sub_token"), days=days, gb=gb)
     return True
 
@@ -5345,17 +6364,24 @@ def _pay_find_by_ext(provider, ext):
             return v
     return None
 
+# id счёта — единственная защита публичной страницы /pay/i/<id>: на ней печать
+# /p/<токен> и /sub/<токен> подписчика. Старый id был V + шесть цифр от времени
+# (V%06d от now+seq*7919): соседний счёт угадывался, а всё пространство — перебором.
+_PAY_IID_RE = re.compile(r"V[0-9a-fA-F]{6,40}")
+
 def _pay_mkv(tok, plan, src="page", kind="renew", tg=""):
     pc = _pay_cfg()
     u = None if kind == "shop" else _pay_sub_find(tok)
     if kind != "shop" and not u:
         raise ValueError("подписка не найдена")
+    if kind != "shop" and u.get("family_of"):
+        raise ValueError("у семейного тарифа платит хозяин основной подписки")
     with PAY_LOCK:
         d = _pay_load()
         d["seq"] += 1
         now = int(time.time())
         for _try in range(50):
-            iid = "V%06d" % ((now + d["seq"] * 7919) % 1000000)
+            iid = "V" + secrets.token_hex(8)
             if iid not in d["invoices"]:
                 break
             d["seq"] += 1
@@ -5626,6 +6652,14 @@ _PAY_TL_LK = threading.Lock()
 def _pay_throttle(ip, limit=60):
     now = int(time.time())
     with _PAY_TL_LK:
+        if len(_PAY_TL) > 4000:
+            # ключ карты — адрес клиента, а их бывает много (LTE-раздача, чужие
+            # прокси, поддельные источники за CDN): без чистки карта росла бы до
+            # конца жизни процесса. Окно счётчика — минута, всё старше выбрасываем.
+            for k in [k for k, v in _PAY_TL.items() if now - v[0] > 60]:
+                _PAY_TL.pop(k, None)
+            if len(_PAY_TL) > 8000:
+                _PAY_TL.clear()
         e = _PAY_TL.get(ip)
         if not e or now - e[0] > 60:
             _PAY_TL[ip] = [now, 1]
@@ -5673,7 +6707,7 @@ def _pay_handle_public(self, p):
     # GET /pay/i/<id> — страница счёта
     if p.startswith("/pay/i/"):
         inv_id = p[len("/pay/i/"):].strip("/")
-        inv = _pay_load()["invoices"].get(inv_id) if re.fullmatch(r"V\d{6}", inv_id or "") else None
+        inv = _pay_load()["invoices"].get(inv_id) if _PAY_IID_RE.fullmatch(inv_id or "") else None
         if not inv:
             self._send(404, {"error": "not found"})
             return True
@@ -5698,11 +6732,11 @@ def _pay_handle_public(self, p):
         self.wfile.write(b)
         return True
     # POST-маршруты ниже
-    n = int(self.headers.get("Content-Length") or 0)
-    if n < 0 or n > 262144:
+    try:
+        raw = self._raw_body(262144)
+    except ValueError:
         self._send(400, {"error": "bad body"})
         return True
-    raw = self.rfile.read(n) if n else b""
     if p == "/pay/hook/cryptobot":
         if not pc["cb_token"]:
             self._send(404, {"error": "not found"})
@@ -5766,6 +6800,10 @@ def _pay_handle_public(self, p):
             self._send(404, {"error": "invoice not found"})
             return True
         inv = _pay_mark_paid(inv["id"], "api")
+        if not inv:
+            # счёт успели вычистить между чтением и отметкой — не ронять обработчик на None
+            self._send(404, {"error": "invoice not found"})
+            return True
         self._send(200, {"invoice_id": inv["id"], "status": "paid" if inv.get("applied") else inv.get("status")})
         return True
     if p == "/pay/shop/buy":
@@ -5835,9 +6873,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
             first_link = lnk
     _awg_sync(st)
     _wg_sync(st)
-    _write_xray(st)
-    _save(STATE, st)
-    _restart_xray()
+    _apply_state(st)
     sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
     return {"name": name, "sub_token": sub_token, "sub_url": sub_url,
             "link": first_link or "", "limit_gb": float(limit_gb) or 0,
@@ -5857,11 +6893,11 @@ def _onboard_ensure():
             st = _load(STATE)
             if _client_count(st or {}) > 0:
                 CFG_CACHE["onboarded"] = "clients"
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 return False
             r = _create_subscription("Я")
             CFG_CACHE["onboarded"] = r["sub_token"]
-            _save(CFG, CFG_CACHE)
+            _cfg_save()
             try:
                 _audit("onboard_first_sub", client=r["name"])
             except Exception:
@@ -5959,16 +6995,25 @@ def _process_bot_update(update):
     callback_query = update.get("callback_query")
     
     if callback_query:
-        callback_query_id = callback_query["id"]
+        callback_query_id = callback_query.get("id")
+        cb_from = callback_query.get("from") or {}
+        cb_data = callback_query.get("data")
+        if not callback_query_id or not cb_from.get("id") or not cb_data:
+            # неполный/чужой update (ручку может трогать не только Telegram): выходим
+            # молча, чем падать KeyError на []-индексации внешних полей
+            return
         message = callback_query.get("message")
-        tg_code = (callback_query.get("from") or {}).get("language_code") or ""
+        tg_code = cb_from.get("language_code") or ""
         if not message:
             # Answer callback query even if no message (shouldn't happen but safety)
             _bot_answer_callback(callback_query_id, _BOT_RU["nocallback"], show_alert=True)
             return
-        chat_id = message["chat"]["id"]
-        from_id = callback_query["from"]["id"]
-        data = callback_query["data"]
+        msg_chat = (message.get("chat") or {})
+        if not msg_chat.get("id"):
+            return
+        chat_id = msg_chat["id"]
+        from_id = cb_from["id"]
+        data = cb_data
         B = _bot_B(chat_id, tg_code)
         _cb_un = (callback_query.get("from") or {}).get("username") or ""
         if _cb_un:
@@ -6126,7 +7171,7 @@ def _process_bot_update(update):
             _bot_send_message(chat_id, B["help"], "HTML", _main_menu_keyboard(B))
         elif cmd in ("/status", "/stats"):
             st = _load(STATE, {}) or {}
-            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+            running = _unit_active("xray")
             clients = _client_count(st)
             uptime = _service_active_since("xray")
             gp = _gp_last_history()
@@ -6270,6 +7315,7 @@ def _tail_lines(path, count):
 # т.е. биометрия/PIN на устройстве).
 PASSKEYS_FILE = f"{BASE}/passkeys.json"
 _PK_LOCK = threading.Lock()
+_PK_DB_LOCK = threading.Lock()  # passkeys.json: чтобы две операции не перетёрли друг друга
 _PK_PENDING = {}  # token -> {"ch": bytes, "exp": ts, "host": str}
 
 def _b64u_dec(s):
@@ -6486,15 +7532,16 @@ def _pk_reg_end(self, b, uid):
                 return 400, {"error": "packed-аттестация не разобрана"}
     name = str(b.get("name") or "").strip()[:40] or \
         ((self.headers.get("User-Agent") or "ключ")[:40])
-    db = _pk_load()
-    lst = db.get(uid) or []
-    if len(lst) >= 12: return 400, {"error": "слишком много ключей (макс. 12)"}
-    cid = _b64u_enc(ad["cred"]["id"])
-    if any(c.get("id") == cid for c in lst): return 409, {"error": "такой ключ уже привязан"}
-    lst.append({"id": cid, "x": "%064x" % xy[0], "y": "%064x" % xy[1],
-                "name": name, "rp": p["host"], "created": _now_iso(), "counter": 0})
-    db[uid] = lst
-    _save(PASSKEYS_FILE, db)
+    with _PK_DB_LOCK:   # одна правка файла на всю операцию
+            db = _pk_load()
+            lst = db.get(uid) or []
+            if len(lst) >= 12: return 400, {"error": "слишком много ключей (макс. 12)"}
+            cid = _b64u_enc(ad["cred"]["id"])
+            if any(c.get("id") == cid for c in lst): return 409, {"error": "такой ключ уже привязан"}
+            lst.append({"id": cid, "x": "%064x" % xy[0], "y": "%064x" % xy[1],
+                        "name": name, "rp": p["host"], "created": _now_iso(), "counter": 0})
+            db[uid] = lst
+            _save(PASSKEYS_FILE, db)
     _audit("passkey_add", user=uid or "owner", name=name)
     return 200, {"ok": True, "keys": _pk_public(lst)}
 
@@ -6510,60 +7557,61 @@ def _pk_login_end(self, b):
     if not p: return 400, {"error": "попытка истекла — начни заново"}
     rb = b.get("response") or b
     found, fuid = None, None
-    db = _pk_load()
-    ckey = None
-    try:
-        ckey = _b64u_enc(_b64u_dec(b.get("id")))
-    except Exception:
-        pass
-    for uid, lst in db.items():
-        for c in lst:
-            if ckey and c.get("id") == ckey:
-                found, fuid = c, uid
-    if not found:
-        _login_fail(cip)
-        _login_history("fail", ip=cip, ua=ua_h, err="passkey_unknown_cred")
-        return 401, {"error": "ключ не привязан к этой панели"}
-    cd, err, raw = _pk_clientdata(rb, "webauthn.get", _b64u_enc(p["ch"]), p["host"])
-    if cd is None:
-        _login_fail(cip)
-        _login_history("fail", ip=cip, ua=ua_h, err="passkey_clientdata")
-        return 401, {"error": err}
-    try:
-        ad_raw = _b64u_dec(rb.get("authenticatorData"))
-        a = _pk_authdata(ad_raw)
-        sig = _der_rs(_b64u_dec(rb.get("signature")))
-    except Exception:
-        a, sig = None, None
-    if not a or not sig:
-        return 400, {"error": "ответ устройства не разобран"}
-    if not (a["flags"] & 0x01):
-        return 401, {"error": "устройство не подтвердило присутствие (UP)"}
-    if not (a["flags"] & 0x04):
-        return 401, {"error": "биометрия не подтверждена (UV) — на устройстве должен быть настроен Face ID/Touch ID или PIN"}
-    if a["rp"] != hashlib.sha256((found.get("rp") or "").encode()).digest():
-        return 401, {"error": "ключ выпущен для другого адреса"}
-    old = int(found.get("counter") or 0)
-    if old and a["counter"] and a["counter"] <= old:
-        return 401, {"error": "возможно клонирование ключа — привяжи заново"}
-    blob = ad_raw + hashlib.sha256(raw).digest()
-    if not _ecdsa_verify(int.from_bytes(hashlib.sha256(blob).digest(), "big"),
-                         sig[0], sig[1], int(found["x"], 16), int(found["y"], 16)):
-        _login_fail(cip)
-        _login_history("fail", ip=cip, ua=ua_h, err="passkey_bad_sig")
-        return 401, {"error": "подпись не прошла"}
-    if fuid:
-        x = next((u for u in (CFG_CACHE.get("users") or []) if u.get("login") == fuid), None)
-        if not x or x.get("disabled"):
-            return 403, {"error": "оператор удалён или заблокирован"}
-    _login_ok(cip)
-    t = secrets.token_hex(32)
-    SESSIONS[t] = time.time() + 30 * 86400
-    SESSIONS_META[t] = {"ip": cip, "ua": ua_h, "created": _now_iso(),
-                        "last_seen": _now_iso(), "remember": True,
-                        "user": fuid, "passkey": True}
-    found["counter"] = a["counter"] or old
-    _save(PASSKEYS_FILE, db)
+    with _PK_DB_LOCK:   # одна правка файла на всю операцию
+            db = _pk_load()
+            ckey = None
+            try:
+                ckey = _b64u_enc(_b64u_dec(b.get("id")))
+            except Exception:
+                pass
+            for uid, lst in db.items():
+                for c in lst:
+                    if ckey and c.get("id") == ckey:
+                        found, fuid = c, uid
+            if not found:
+                _login_fail(cip)
+                _login_history("fail", ip=cip, ua=ua_h, err="passkey_unknown_cred")
+                return 401, {"error": "ключ не привязан к этой панели"}
+            cd, err, raw = _pk_clientdata(rb, "webauthn.get", _b64u_enc(p["ch"]), p["host"])
+            if cd is None:
+                _login_fail(cip)
+                _login_history("fail", ip=cip, ua=ua_h, err="passkey_clientdata")
+                return 401, {"error": err}
+            try:
+                ad_raw = _b64u_dec(rb.get("authenticatorData"))
+                a = _pk_authdata(ad_raw)
+                sig = _der_rs(_b64u_dec(rb.get("signature")))
+            except Exception:
+                a, sig = None, None
+            if not a or not sig:
+                return 400, {"error": "ответ устройства не разобран"}
+            if not (a["flags"] & 0x01):
+                return 401, {"error": "устройство не подтвердило присутствие (UP)"}
+            if not (a["flags"] & 0x04):
+                return 401, {"error": "биометрия не подтверждена (UV) — на устройстве должен быть настроен Face ID/Touch ID или PIN"}
+            if a["rp"] != hashlib.sha256((found.get("rp") or "").encode()).digest():
+                return 401, {"error": "ключ выпущен для другого адреса"}
+            old = int(found.get("counter") or 0)
+            if old and a["counter"] and a["counter"] <= old:
+                return 401, {"error": "возможно клонирование ключа — привяжи заново"}
+            blob = ad_raw + hashlib.sha256(raw).digest()
+            if not _ecdsa_verify(int.from_bytes(hashlib.sha256(blob).digest(), "big"),
+                                 sig[0], sig[1], int(found["x"], 16), int(found["y"], 16)):
+                _login_fail(cip)
+                _login_history("fail", ip=cip, ua=ua_h, err="passkey_bad_sig")
+                return 401, {"error": "подпись не прошла"}
+            if fuid:
+                x = next((u for u in (CFG_CACHE.get("users") or []) if u.get("login") == fuid), None)
+                if not x or x.get("disabled"):
+                    return 403, {"error": "оператор удалён или заблокирован"}
+            _login_ok(cip)
+            t = secrets.token_hex(32)
+            SESSIONS[t] = time.time() + 30 * 86400
+            SESSIONS_META[t] = {"ip": cip, "ua": ua_h, "created": _now_iso(),
+                                "last_seen": _now_iso(), "remember": True,
+                                "user": fuid, "passkey": True}
+            found["counter"] = a["counter"] or old
+            _save(PASSKEYS_FILE, db)
     _login_history("ok", ip=cip, ua=ua_h, user=fuid or "owner")
     _audit("login_passkey", ip=cip, user=fuid or "owner", ok=True)
     _save_sessions()
@@ -6608,8 +7656,7 @@ def _drop_user_sessions(login):
 def _perm_for(p, m):
     if not p.startswith("/api/"):
         return None
-    if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook", "/api/hop/register",
-             "/api/2fa/status"):
+    if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook", "/api/hop/register"):
         return None
     if p.startswith("/api/ext/") or p.startswith("/pay/"):
         return None
@@ -6635,6 +7682,10 @@ def _perm_for(p, m):
         return ["rotation"]
     if p.startswith("/api/cert"):
         return ["site"]
+    if p.startswith("/api/term"):
+        return ["owner"]
+    if p.startswith("/api/ai"):
+        return ["owner"]
     if p.startswith("/api/pay"):
         return ["pay"]
     if p.startswith("/api/bot/"):
@@ -6688,7 +7739,7 @@ def _node_tokens():
 
 def _save_node_tokens(toks):
     CFG_CACHE["node_tokens"] = toks
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
 
 def _ext_rate_ok(ip):
     now = time.time()
@@ -6742,14 +7793,59 @@ def _ext_owned_group(st, tid, u):
 
 # ---------- node federation: исходящий вызов мастер→нода ----------
 
+def _node_host_ok(node):
+    """SSRF-guard для федерации нод: хост ноды задаёт оператор, и по нему мастер
+    ходит HTTPS (а при диагностике — ещё и HTTP) и пересылает Bearer-токен.
+    Прячем самые опасные направления: loopback (метаданные облачной сети, панель
+    на своём 8443) и link-local/metadata 169.254/16. Приватные RFC1918-ноды
+    (домашняя/внутренняя сеть) — легитимны, их не режем. Хост резолвится; если это
+    уже IP — проверяется напрямую. None, если адрес запрещён."""
+    import ipaddress
+    host = (node.get("host") or "").strip()
+    if not host:
+        return None
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        # резолв не прошёл — не блокируем: проверку сделает сам коннект
+        return host
+    for _fam, _t, _p, _c, sa in infos:
+        try:
+            ip = ipaddress.ip_address(sa[0])
+        except Exception:
+            continue
+        if ip.is_loopback or ip.is_link_local or (ip.version == 4 and ip in ipaddress.IPv4Network("169.254.169.254/32")):
+            return None
+    return host
+
+def _dial_addr_ok(host):
+    """Один ответ для всех мест, где панель САМА идёт по адресу, который вписал
+    оператор: нода, фронт, SSH-бустрап. Loopback и link-local/metadata облачной
+    сети запрещены, приватные RFC1918 легитимны (домашний/внутренний сервер).
+    Тот же guard, что стоит в _node_call на federation-пути; раньше он был только
+    там, и обходными дверями оставались /api/nodes/bootstrap (панель уходила
+    ssh root@127.0.0.1) и hop-фронт (проба портов с бэка в 127.0.0.1:*, 169.254.*)."""
+    return _node_host_ok({"host": (host or "").strip()}) is not None
+
+def _node_port(node):
+    """Порт ноды с числом по умолчанию: приводим к int, мусор/вне-диапазона → 8443,
+    чтобы int() на дисковых данных не ронял обработчик."""
+    try:
+        p = int(node.get("port") or 8443)
+    except (TypeError, ValueError):
+        return 8443
+    return p if 1 <= p <= 65535 else 8443
+
 def _node_call(node, path, body=None, timeout=8, need_token=True):
     """HTTPS-запрос к Node API ноды. (data, err, fp): fp — sha256 дерта сертификата.
     Pin-нинг: если у ноды задан pin, чужой сертификат отсекается до отправки токена."""
     import http.client
     host = (node.get("host") or "").strip()
-    port = int(node.get("port") or 8443)
+    port = _node_port(node)
     if not host:
         return None, "нода без адреса", ""
+    if _node_host_ok(node) is None:
+        return None, "адрес ноды запрещён (loopback/metadata)", ""
     token = (node.get("token") or "").strip()
     if need_token and not token:
         return None, "у ноды не задан токен", ""
@@ -6792,8 +7888,8 @@ def _veil_plain_http_hint(node):
     подсказку или None. Сам транспорт это не ослабляет: связь с нодой по-прежнему только HTTPS."""
     import http.client
     host = (node.get("host") or "").strip()
-    port = int(node.get("port") or 8443)
-    if not host:
+    port = _node_port(node)
+    if not host or _node_host_ok(node) is None:
         return None
     try:
         c = http.client.HTTPConnection(host, port, timeout=6)
@@ -6886,9 +7982,12 @@ def _nodes_poll_loop():
         try:
             nodes = get_nodes()
             if nodes:
+                observed = {}
                 for n in nodes:
                     _node_poll_one(n)
-                save_nodes(nodes)
+                    observed[n.get("host") or ""] = {k: n.get(k) for k in _NODE_OBSERVED
+                                                     if k in n}
+                _nodes_merge_observed(observed)
         except Exception:
             try:
                 with open(f"{BASE}/logs/panel.err", "a") as f:
@@ -6965,9 +8064,18 @@ def _boot_new_job(params):
     with BOOT_LOCK:
         BOOT_JOBS[jid] = job
         if len(BOOT_JOBS) > 50:
+            # Держим ~40 свежих. Из старых убираем завершённые, а зависшие (поток
+            # worker мог так и не стартовать — тогда «done» не выставится никогда) —
+            # по предельному возрасту: иначе словарь рос бы бесконечно и хранил
+            # SSH-пароли незавершённых задач.
+            now = int(time.time())
             old = sorted(BOOT_JOBS, key=lambda k: BOOT_JOBS[k]["created"])[:-40]
-            for k in [x for x in old if BOOT_JOBS[x]["done"]]:
+            for k in [x for x in old
+                      if BOOT_JOBS[x]["done"] or now - BOOT_JOBS[x]["created"] > 1800]:
                 BOOT_JOBS.pop(k, None)
+            if len(BOOT_JOBS) > 200:
+                for k in sorted(BOOT_JOBS, key=lambda k: BOOT_JOBS[k]["created"])[:-40]:
+                    BOOT_JOBS.pop(k, None)
     return jid
 
 def _boot_step(jid, idx, state, detail=""):
@@ -7013,6 +8121,15 @@ def _node_bootstrap_worker(jid):
         # --- 0. SSH-доступ: своим ключом, при отказе — пароль однократно + ssh-copy-id
         if not _ssh_target_ok(user, host):
             return fail(0, "недопустимые SSH-логин или адрес")
+        try:
+            own = _pub_ip4() or ""
+        except Exception:
+            own = ""
+        if own and host == own:
+            # «внешняя нода», оказавшаяся этим же хостом: агент встанет на панель,
+            # его xray столкнётся с живым xray и подписчики упадут. Тот же случай,
+            # что и «переехать в себя» в _mv_plan, поэтому и ответ тот же.
+            return fail(0, "это адрес текущего хоста — подключить панель к самой себе нельзя")
         st(0, "running")
         keyfile, pubkey = _boot_host_key(host)
         base = ["/usr/bin/ssh", "-p", str(sport)] + _ssh_opts(keyfile)
@@ -7240,7 +8357,10 @@ echo "${{ok:-не активно}}"
             if entry.get("online"):
                 break
             time.sleep(2)
-        save_nodes(nodes)
+        # до этого места мы крутили запись 25 секунд — за это время список на
+        # диске мог измениться чужой рукой, поэтому возврат всего снимка сюда
+        # не годится: накладываем только свои измерения
+        _nodes_merge_observed({host: {k: entry.get(k) for k in _NODE_OBSERVED if k in entry}})
         if entry.get("online"):
             st(8, "done", f"нода онлайн, отпечаток {str(entry.get('pin') or '')[:12]}… закреплён")
         else:
@@ -7328,7 +8448,10 @@ def _deploy_client_to_nodes(st, u):
         skipped.extend(sk)
     if deployed:
         _save(STATE, st)
-        save_nodes(nodes)
+        # из записей нод мы здесь поменяли только status_cache/agent_params, а
+        # между чтением списка и этим местом ушло время на сетевые вызовы
+        _nodes_merge_observed({(n.get("host") or ""):
+                               {k: n[k] for k in _NODE_OBSERVED if k in n} for n in nodes})
     return deployed, skipped
 
 def _deploy_client_to_veil(n, host, recs, by_proto, u):
@@ -8161,6 +9284,7 @@ def _veil_front_domains():
     соединения. Отсюда и «прокси не работает под VPN» в клиентах без
     DirectIp-исключений (Incy)."""
     doms = []
+    text = ""
     try:
         with open(TELEMT_CONF, "r", encoding="utf-8") as f:
             text = f.read()
@@ -8281,11 +9405,7 @@ def _front_cert_issue(domain):
         r = subprocess.run(args, capture_output=True, text=True, timeout=320)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
-        subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
-        try:
-            os.chmod(keyp, 0o600)
-        except Exception:
-            pass
+        _cert_tree_perms()
     finally:
         _CERT_STATE["busy"] = False
     if not (os.path.exists(certp) and os.path.exists(keyp)):
@@ -8386,10 +9506,37 @@ def _front_nginx_apply(domain, cert, key):
     if t.returncode != 0:
         os.remove(_NG_FRONT_CONF)
         raise RuntimeError("nginx -t с фронтом: " + (t.stderr or t.stdout)[-300:])
-    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+    if _unit_active("nginx"):
         subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
     else:
         subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
+
+def _front_443_blocker():
+    """Почему сайт-маска НЕ сможет занять :443 прямо сейчас ('' — сможет).
+
+    nginx -t конфликт порта НЕ ловит (он не биндит сокеты), поэтому «успешный»
+    apply с занятым :443 означало бы: файл записан, nginx -t зелёный, а при reload
+    рабочий процесс не смог забрать порт — фронт мёртв, панель об этом молчит, а
+    `_front_status` рапортует nginx_ok=true. Сказывать это надо ДО того, как
+    полезли в DNS-зону и за сертификатом.
+    """
+    try:
+        ms = _mux_status()
+    except Exception:
+        return ""
+    if ms.get("applied"):
+        return ("на :443 работает SNI-мюкс (nginx stream/ssl_preread). Сайт-маска просит "
+                "тот же порт в http-секции — nginx не поднимет оба сразу. Отключите мюкс "
+                "(«Отключить SNI-мюкс») и заведите маску, либо оставьте 443 за мюксом")
+    occ = ms.get("occupant443") or {}
+    proc = (occ.get("proc") or "").strip()
+    if occ.get("free"):
+        return ""
+    if "nginx" in proc:
+        return ""
+    return ("порт :443 занят «%s». Маска обязана отвечать на 443 — иначе ни TLS-F, ни "
+            "обычный сайт не работают. Освободите порт (перенесите Reality на другой порт "
+            "во вкладке Протоколы) и повторите" % (proc or "?"))
 
 def _front_apply(domain):
     """Свой фронт TLS-F: DNS → сертификат LE → сайт-заглушка на :443 → telemt
@@ -8408,6 +9555,9 @@ def _front_apply(domain):
                            "(установка во вкладке Сайт или apt install nginx)")
     if not _tg_available():
         raise RuntimeError("telemt не запущен — сначала включи MTProto-прокси")
+    blk = _front_443_blocker()
+    if blk:
+        raise RuntimeError(blk)
     rep = _front_dns_ensure(domain)
     cert, key = _front_cert_issue(domain)
     _front_site_write()
@@ -8437,7 +9587,7 @@ def _front_apply(domain):
                    "понесут новый фронт, перевод клиентов плавный")
     CFG_CACHE["front_domain"] = domain
     CFG_CACHE["front_enabled"] = True
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
     _audit("front_apply", domain=domain)
     return {"ok": True, "domain": domain, "report": rep}
 
@@ -8451,6 +9601,10 @@ def _front_status():
            "cert_ok": False, "expire": 0, "nginx_ok": False, "https_ok": False,
            "dns01": _dns01_provider() == "cloudflare",
            "cf_zone": (CFG_CACHE.get("cf_zone") or "").strip().lower()}
+    try:
+        out["blocker443"] = _front_443_blocker()
+    except Exception:
+        out["blocker443"] = ""
     if dom:
         certp = CERT_DIR + "/live/veil-" + dom + "/fullchain.pem"
         out["cert_ok"] = os.path.exists(certp)
@@ -8706,7 +9860,7 @@ def _tg_web_ensure():
     """
     for p in ("/etc/telemt", "/etc/telemt/telemt.toml"):
         if os.path.exists(p):
-            subprocess.run(["chown", "telemt:telemt", p], capture_output=True)
+            subprocess.run(["chown", "telemt:telemt", p], capture_output=True, timeout=20)
     domain = (CFG_CACHE.get("panel_domain") or "").strip()
     if not domain or ":" in domain or "//" in domain or "/" in domain:
         raise RuntimeError("нет домена — внеси его во вкладке Сайт (раздел DDNS)")
@@ -8860,7 +10014,7 @@ def _ng_certs(domain):
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
              "-keyout", key, "-out", crt, "-days", "3650",
              "-subj", "/CN=" + domain, "-addext", "subjectAltName=DNS:" + domain],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             raise RuntimeError("openssl: " + (r.stderr or r.stdout))
     return crt, key
@@ -8870,7 +10024,7 @@ def _webproxy_status():
     ng_conf = os.path.exists(_NG_CONF)
     ng_active = False
     if nginx_bin:
-        r = subprocess.run(["systemctl", "is-active", "--quiet", "nginx"])
+        r = subprocess.run(["systemctl", "is-active", "--quiet", "nginx"], timeout=10)
         ng_active = r.returncode == 0
     installed = bool(nginx_bin and ng_conf and ng_active)
     free80 = _port_free(80)
@@ -8893,7 +10047,7 @@ def _webproxy_status():
 
 def _webproxy_apply(domain):
     _tg_web_ensure()
-    subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True)
+    subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True, timeout=10)
     cert, key = _ng_certs(domain)
     conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
     os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
@@ -8902,7 +10056,7 @@ def _webproxy_apply(domain):
     t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=20)
     if t.returncode != 0:
         raise RuntimeError("nginx -t: " + (t.stderr or t.stdout)[-400:])
-    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
+    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True, timeout=40)
     subprocess.run(["systemctl", "restart", "nginx"], check=True, capture_output=True, timeout=60)
 
 def _webproxy_install():
@@ -8965,7 +10119,7 @@ def _nginx_stream_info():
         return info
     info["installed"] = True
     try:
-        info["active"] = subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0
+        info["active"] = _unit_active("nginx")
     except Exception:
         pass
     try:
@@ -8991,7 +10145,7 @@ def _mux_status():
     has_cert = bool(cp["cert"] and os.path.exists(cp["cert"]))
     cert_dns = _cert_renewal_is_dns(cp["domain"] or domain)
     st = _load(STATE, {}) or {}
-    reality_port = None
+    reality_ports = []
     tls_ports = []
     for proto, inb in (st.get("inbounds") or {}).items():
         p = inb.get("port")
@@ -8999,10 +10153,16 @@ def _mux_status():
             continue
         meta = _proto_meta(proto) or {}
         if meta.get("group") == "reality":
-            reality_port = p
+            try:
+                reality_ports.append(int(p))
+            except (TypeError, ValueError):
+                pass
         if meta.get("tls"):
             tls_ports.append(p)
-    xray_holds_443 = ("xray" in (o443.get("proc") or "")) or (reality_port == 443)
+    # Reality у панелей бывает несколько (reality + vless-xhttp-reality): «последний
+    # победил» давал ложный ответ, когда на :443 сидит первый из них, а проверяли второй
+    reality_port = reality_ports[0] if reality_ports else None
+    xray_holds_443 = ("xray" in (o443.get("proc") or "")) or (443 in reality_ports)
     can_mux = bool(ng["installed"] and ng["stream"] and ng["ssl_preread"])
     our_nginx_443 = (not o443["free"] and "nginx" in (o443.get("proc") or "")
                      and ng["active"] and os.path.exists(_NG_CONF))
@@ -9015,8 +10175,9 @@ def _mux_status():
             plan.append("остановить текущий сервис на :443 (%s) — он будет отключён" % (o443["proc"] or "?"))
     plan.append("поднять наш stream/ssl_preread nginx на :443 (SNI-развилка по сертификату домена)")
     plan.append("cert-TLS inbound'ы (%s) завести на общий :443 через SNI" % (",".join(map(str, tls_ports)) or "—"))
-    if reality_port:
-        plan.append("Reality (: %s) через ssl_preread НЕ mux-ится (общий SNI с реальным сайтом) — оставить на отдельном порту" % reality_port)
+    if reality_ports:
+        plan.append("Reality (: %s) через ssl_preread НЕ mux-ится (общий SNI с реальным сайтом) — оставить на отдельном порту"
+                    % ", :".join(str(x) for x in reality_ports))
     warnings = []
     if not o443["free"] and not our_nginx_443:
         warnings.append("На :443 сейчас чужой сервис (%s). При включении мюкса панель ОСТАНОВИТ его и не несёт ответственности за его работу после." % (o443["proc"] or "?"))
@@ -9032,7 +10193,8 @@ def _mux_status():
             warnings.append("stream-модуль динамический (--with-stream=dynamic) — при применении панель автоматически добавит «%s» в nginx.conf (с бэкапом и авто-откатом)." % directive)
     return {"free443": o443["free"], "occupant443": o443, "free80": o80["free"], "occupant80": o80,
             "nginx": ng, "can_mux": can_mux, "xray_holds_443": xray_holds_443, "our_nginx_443": our_nginx_443,
-            "reality_port": reality_port, "tls_ports": tls_ports, "domain": domain,
+            "reality_port": reality_port, "reality_ports": reality_ports,
+            "tls_ports": tls_ports, "domain": domain,
             "has_cert": has_cert, "cert_dns": cert_dns, "applied": applied,
             "plan": plan, "warnings": warnings}
 
@@ -9102,7 +10264,7 @@ def _mux_cert(web_domain, vpn_domain):
          "-keyout", key, "-out", crt, "-days", "825",
          "-subj", "/CN=" + (names[0] if names else "veil-mux"),
          "-addext", "subjectAltName=" + (san or "DNS:localhost")],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise RuntimeError("openssl self-signed: " + (r.stderr or r.stdout)[-300:])
     os.chmod(key, 0o600)
@@ -9115,7 +10277,7 @@ def _mux_stream_module_state():
     Возвращает (available, directive): directive=="" — грузится сам (built-in или modules-enabled);
     иначе — строка load_module для вставки."""
     try:
-        v = subprocess.run(["nginx", "-V"], capture_output=True, text=True).stderr or ""
+        v = subprocess.run(["nginx", "-V"], capture_output=True, text=True, timeout=20).stderr or ""
     except Exception:
         v = ""
     built_in = ("--with-stream" in v) and ("--with-stream=dynamic" not in v)
@@ -9124,7 +10286,7 @@ def _mux_stream_module_state():
     try:
         linked = subprocess.run(
             ["grep", "-RliE", r"stream", "/etc/nginx/modules-enabled/"],
-            capture_output=True, text=True).stdout.strip()
+            capture_output=True, text=True, timeout=20).stdout.strip()
     except Exception:
         linked = ""
     if linked:
@@ -9357,6 +10519,9 @@ def _hop_preview(front_ip, ports):
     pl = _hop_valid_ports(ports)
     if not _hop_is_ip4(front_ip):
         blockers.append("адрес ФРОНТа — не IPv4 (релей работает по IPv4)")
+    elif not _dial_addr_ok(front_ip):
+        blockers.append("адрес ФРОНТа — loopback или адрес метаданных облачной сети; "
+                        "релей на сам себя не ставят")
     if pl is None:
         blockers.append("порты: от 1 до %d значений 1..65535, без повторов" % _HOP_MAX_PORTS)
         pl = []
@@ -9411,6 +10576,11 @@ def _hop_check(hid=None):
         raise RuntimeError("хоп не найден")
     out = []
     for h in targets:
+        if not _dial_addr_ok(h.get("front_ip") or ""):
+            # запись могла остаться с прошлых версий панели — пробуем только внешние адреса
+            out.append({"id": h["id"], "front_ip": h.get("front_ip"), "state": h.get("state"),
+                        "check": [], "error": "адрес запрещён (loopback/metadata) — пробу не делаем"})
+            continue
         res = [{"port": p, "tcp": _hop_public(h["front_ip"], p)} for p in (h.get("ports") or [])]
         h["last_check"] = {"ts": int(time.time()), "tcp_up": [r["port"] for r in res if r["tcp"]],
                            "tcp_down": [r["port"] for r in res if not r["tcp"]]}
@@ -9425,6 +10595,9 @@ def _hop_check(hid=None):
                     "Не забудь открыть порты в security group облака фронта."}
 
 def _hop_ssh_job(hid, user, password, ssh_port):
+    hop = next((x for x in _hop_load() if x.get("id") == hid), None)
+    if hop and not _dial_addr_ok(hop.get("front_ip") or ""):
+        raise RuntimeError("адрес ФРОНТа запрещён (loopback или метаданные облачной сети)")
     jid = uuidlib.uuid4().hex[:12]
     steps = ["SSH-доступ", "Права root", "Установка релея", "Проверка"]
     job = {"id": jid, "hop": hid,
@@ -9610,7 +10783,8 @@ def _hop_remove(hid, confirm=False):
         raise RuntimeError("хоп не найден")
     note = ""
     key = h.get("ssh_key") or ""
-    if key and os.path.exists(key) and _ssh_target_ok(h.get("ssh_user") or "root", h.get("front_ip")):
+    if key and os.path.exists(key) and _ssh_target_ok(h.get("ssh_user") or "root", h.get("front_ip")) \
+            and _dial_addr_ok(h.get("front_ip") or ""):
         try:
             base = ["/usr/bin/ssh", "-p", str(int(h.get("ssh_port") or 22))] + _ssh_opts(key)
             target = "%s@%s" % (h.get("ssh_user") or "root", h.get("front_ip"))
@@ -9627,14 +10801,18 @@ def _hop_remove(hid, confirm=False):
         except Exception:
             note = "фронт недоступен по SSH — удалил только запись"
     else:
-        note = ("ключа SSH нет (установка была через curl) — на фронте останься: "
-                "systemctl disable --now veil-relay && nft delete table ip veil_relay && "
-                "rm -rf /etc/veil-relay /usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf")
+        if key and os.path.exists(key) and not _dial_addr_ok(h.get("front_ip") or ""):
+            note = ("адрес ФРОНТа — loopback или метаданные: по SSH на него не идём, "
+                    "снята только запись панели")
+        else:
+            note = ("ключа SSH нет (установка была через curl) — на фронте останься: "
+                    "systemctl disable --now veil-relay && nft delete table ip veil_relay && "
+                    "rm -rf /etc/veil-relay /usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf")
     hops = [x for x in hops if x.get("id") != hid]
     _hop_save(hops)
     if (CFG_CACHE.get("hop_public_host") or "").strip() == (h.get("front_ip") or ""):
         CFG_CACHE.pop("hop_public_host", None)
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
         note += "; публичный адрес сброшен (он принадлежал этому фронту)"
     _audit("hop_remove", id=hid, front_ip=h.get("front_ip"))
     return {"ok": True, "note": note}
@@ -9652,7 +10830,7 @@ def _hop_set_public(host):
         CFG_CACHE["hop_public_host"] = host
     else:
         CFG_CACHE.pop("hop_public_host", None)
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
     _audit("hop_public_set", host=host or "(reset)")
     return {"hop_public_host": host, "warn": warn,
             "note": "ссылки подписок и прокси пересоберутся на новый адрес; подписчикам с Telegram "
@@ -9705,18 +10883,18 @@ def _addr_watch_tick():
     last = str(CFG_CACHE.get("addr_host") or "")
     if not last:
         CFG_CACHE["addr_host"] = cur
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
         return
     if last == cur:
         return
     now = int(time.time())
     CFG_CACHE["addr_host"] = cur
     if now - int(CFG_CACHE.get("addr_changed") or 0) < 600:
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
         return
     CFG_CACHE["addr_changed"] = now
     CFG_CACHE["addr_prev"] = last
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
     _audit("addr_change", old=last, new=cur)
     print("[addr] адрес подписок изменён: %s → %s" % (last, cur), flush=True)
     try:
@@ -9772,19 +10950,37 @@ def _mux_preview(vpn_domain=None):
     inb = (st.get("inbounds") or {}).get(_MUX_INBOUND)
     if inb is None:
         blockers.append("нет inbound «%s» — включите любой cert-TLS inbound" % _MUX_INBOUND)
-    if ms["reality_port"] == 443 or (ms["xray_holds_443"] and not ms["our_nginx_443"]):
+    rps = [int(x) for x in (ms.get("reality_ports") or [])] or \
+          ([int(ms["reality_port"])] if ms.get("reality_port") else [])
+    if 443 in rps or (ms["xray_holds_443"] and not ms["our_nginx_443"]):
         blockers.append("xray/Reality держит :443 — сначала перенесите Reality на другой порт (мюкс не трогает Reality)")
     web_held = ms["our_nginx_443"]
     foreign = (not ms["free443"]) and (not web_held) and ("xray" not in (ms["occupant443"].get("proc") or ""))
+    # мюкс терминирует TLS тем же сертификатом, что и панель: если в нём нет SNI-имени
+    # VPN, подписчики со строгой проверкой сертификата отвалятся — сказать ДО применения
+    warns = []
+    cp = _cert_pathes()
+    exp = _cert_expire(cp["cert"]) if cp["cert"] else None
+    if exp and exp > time.time() + 86400:
+        names = _cert_dns_names(cp["cert"])
+        miss = [d for d in (web_domain, vpn_domain) if d and not _host_covered_by(names, d)]
+        if names and miss:
+            warns.append("Сертификат панели покрывает «%s», а мюксу нужны SNI «%s» — подписчики со строгой "
+                         "проверкой сертификата отвалятся. Выпустите сертификат на оба имени (Cloudflare "
+                         "DNS-01 умеет несколько доменов в одном), либо назовите vpn-домен из уже покрытых."
+                         % (", ".join(names[:5]), ", ".join(miss)))
     if ms["applied"]:
-        note = "Мюкс уже применён — apply перепишет конфигурацию (идемпотентно)."
+        note = ("Мюкс уже применён — apply перепишет конфигурацию теми же портами (идемпотентно), "
+                "nginx при этом не останавливается.")
     else:
         note = ("nginx stream на :443 разведёт SNI: %s→xray(loopback :%s), %s/default→веб(:%s). "
                 "Reality остаётся на :%s. Сертификат: %s."
                 % (vpn_domain or "?", 4443, web_domain or "?", 8445,
-                   ms["reality_port"] or "—", "LE" if ms["has_cert"] else "self-signed (SAN на оба имени)"))
+                   ", ".join(str(x) for x in rps) or "—",
+                   "LE" if ms["has_cert"] else "self-signed (SAN на оба имени)"))
     return {"web_domain": web_domain, "vpn_domain": vpn_domain, "can_apply": not blockers,
-            "blockers": blockers, "reality_port": ms["reality_port"],
+            "blockers": blockers, "reality_port": ms["reality_port"], "reality_ports": rps,
+            "warnings": warns, "applied": bool(ms.get("applied")),
             "web_front_on443": web_held, "foreign443": (ms["occupant443"] if foreign else None),
             "cert_kind": ("le" if ms["has_cert"] else "self-signed"), "note": note}
 
@@ -9796,8 +10992,12 @@ def _mux_apply(vpn_domain=None, confirm=False, force=False):
         raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"]))
     web_domain, vpn_domain = pv["web_domain"], pv["vpn_domain"]
     occ = _sock_occupant(443)
+    ms0 = _load(_MUX_STATE, {}) or {}
+    mux_live = bool(ms0.get("applied"))
     web_held = ("nginx" in (occ.get("proc") or "")) and os.path.exists(_NG_CONF)
-    if not occ["free"] and not web_held:
+    # повторный apply: на :443 стоит НАШ же stream-мюкс — останавливать нечего, а
+    # требование force ломало идемпотентность, которую обещает preview
+    if not occ["free"] and not web_held and not (mux_live and "nginx" in (occ.get("proc") or "")):
         if not force:
             raise RuntimeError("на :443 процесс %s — передайте force, чтобы остановить (с бэкапом unit)"
                                % (occ.get("proc") or "?"))
@@ -9813,8 +11013,14 @@ def _mux_apply(vpn_domain=None, confirm=False, force=False):
     if not avail:
         raise RuntimeError("stream-модуль nginx не установлен — выполните apt-get install -y libnginx-mod-stream")
     used = _mux_ports_in_use()
-    web_port = _find_free_port(pref=[8445], avoid=used)
-    tls_port = _find_free_port(pref=[4443], avoid=used | {web_port})
+    if mux_live:
+        # те же порты, что уже заняты НАМИ (8445 держит наш nginx, 4443 — наш xray):
+        # «ищи свободный» при каждом повторном apply уводил бы мюкс на случайный порт
+        web_port = int(ms0.get("web_port") or 0) or _find_free_port(pref=[8445], avoid=used)
+        tls_port = int(ms0.get("tls_port") or 0) or _find_free_port(pref=[4443], avoid=used | {web_port})
+    else:
+        web_port = _find_free_port(pref=[8445], avoid=used)
+        tls_port = _find_free_port(pref=[4443], avoid=used | {web_port})
 
     if not os.path.exists(_NG_MAIN_BAK):
         shutil.copy2(_NG_MAIN, _NG_MAIN_BAK)
@@ -9851,7 +11057,12 @@ def _mux_apply(vpn_domain=None, confirm=False, force=False):
     # xray: переводим cert-TLS inbound на loopback:tls_port с нашим сертификатом
     st = _load(STATE, {}) or {}
     inb = st["inbounds"][_MUX_INBOUND]
-    prev = {k: inb.get(k) for k in ("listen", "port", "cert", "key")}
+    # повторный apply: вход УЖЕ смотрит на loopback, поэтому снимок «как было» надо взять
+    # из первой записи. Переснимать с замуксованного входа — значит записать prev=127.0.0.1
+    # и после отката оставить вход глухим (слушает петлю, а ссылки наружу идут на :4443).
+    prev0 = ms0.get("prev") if isinstance(ms0.get("prev"), dict) else None
+    prev = dict(prev0) if (mux_live and prev0 and "port" in prev0) else \
+        {k: inb.get(k) for k in ("listen", "port", "cert", "key")}
     inb["listen"] = "127.0.0.1"; inb["port"] = tls_port; inb["cert"] = cert; inb["key"] = key
     inb["_mux_enabled"] = True
     ok, err = _validate_and_apply(st)
@@ -9865,11 +11076,15 @@ def _mux_apply(vpn_domain=None, confirm=False, force=False):
     if t.returncode != 0:
         inb.update(prev); inb.pop("_mux_enabled", None)
         _save(STATE, st)
-        _save(XRAY, _build_xray_cfg(st), 0o644); subprocess.run(["systemctl", "restart", "xray"], capture_output=True)
+        _save(XRAY, _build_xray_cfg(st), 0o644)
+        try:    # откат мюкса не должен прятаться за отказом systemd
+            _xray_restart()
+        except Exception as e:
+            print("xray rollback after mux revert: " + str(e), flush=True)
         _revert_nginx_files(web_held)
         raise RuntimeError("nginx -t упал, откатили: " + (t.stderr or t.stdout)[-400:])
-    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True)
-    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+    subprocess.run(["systemctl", "enable", "nginx"], capture_output=True, timeout=40)
+    if _unit_active("nginx"):
         subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
     else:
         subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
@@ -9906,6 +11121,7 @@ def _mux_revert(confirm=False):
     if not ms.get("applied"):
         return {"ok": True, "already": True, "message": "Мюкс не применён — откатывать нечего"}
     web_held = bool(ms.get("moved_web"))
+    had_prev = isinstance(ms.get("prev"), dict) and "port" in (ms.get("prev") or {})
     st = _load(STATE, {}) or {}
     inb = (st.get("inbounds") or {}).get(ms.get("inbound") or _MUX_INBOUND)
     if inb is not None:
@@ -9915,12 +11131,19 @@ def _mux_revert(confirm=False):
             else:
                 inb[k] = v
         inb.pop("_mux_enabled", None)
+        # страховка: снимка «как было» нет (mux_state затёрт/записан уже замуксованным
+        # старой версией) — значит петлю сюда поставили МЫ, и оставлять её нельзя:
+        # вход слушает 127.0.0.1, а ссылки идут наружу на публичный порт.
+        # Свой loopback пользовательский prev сохраняет — его не трогаем.
+        if not had_prev and (str(inb.get("listen") or "")).strip().lower() in (
+                "127.0.0.1", "localhost", "::1"):
+            inb.pop("listen", None)
         ok, err = _validate_and_apply(st)
         if not ok:
             return {"ok": False, "message": "xray после отката невалиден: " + (err or "")}
     _revert_nginx_files(web_held)
     subprocess.run(["nginx", "-t"], capture_output=True, timeout=25)
-    if subprocess.run(["systemctl", "is-active", "--quiet", "nginx"]).returncode == 0:
+    if _unit_active("nginx"):
         subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
     else:
         subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
@@ -9941,20 +11164,20 @@ def _find_free_port(pref=None, avoid=()):
         prefs = (pref,)
     else:
         prefs = tuple(pref) or (7443, 2443, 8843, 6443, 9443)
+    # проверяем И TCP, и UDP: WireGuard/AmneziaWG слушают UDP, а голая bind() на
+    # SOCK_STREAM («порт свободен») для них врёт — сосед по UDP не мешает, а
+    # wg-quick потом не поднимает интерфейс, и подписчик получает мёртвый конфиг
     for port in prefs:
         if port in avoided: continue
-        s = socket.socket()
-        try:
-            s.bind(("", port)); s.close(); return port
-        except OSError:
-            s.close()
+        if _port_free(port):
+            return port
     for _ in range(200):
         s = socket.socket()
         try:
             s.bind(("", 0)); port = s.getsockname()[1]; s.close()
         except OSError:
             s.close(); continue
-        if port not in avoided:
+        if port not in avoided and _port_free(port):
             return port
     raise RuntimeError("нет свободного порта")
 
@@ -10859,7 +12082,7 @@ def _sb_config(st, sub_path, host, panel_port):
                 ob = _singbox_outbound(proto, inb, c, host)
             except Exception:
                 continue
-            if ob["tag"] in tags:
+            if not ob or ob["tag"] in tags:
                 continue
             # приоритет WG-туннелю: он стабильнее TCP-протоколов на мобильных
             if proto == "wireguard":
@@ -11124,7 +12347,7 @@ def _xray_switch(version):
         shutil.copy2(newbin, tmpbin)
         os.chmod(tmpbin, 0o755)
         os.replace(tmpbin, XRAY_BIN)
-        subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
+        _xray_restart()
     return {"ok": True, "from": cur, "to": version}
 
 def _panel_backups():
@@ -11198,7 +12421,7 @@ def _xray_restore(version):
     shutil.copy2(src, tmpbin)
     os.chmod(tmpbin, 0o755)
     os.replace(tmpbin, XRAY_BIN)
-    subprocess.run(["systemctl", "restart", "xray"], check=True, capture_output=True, timeout=60)
+    _xray_restart()
     return {"ok": True, "type": "xray", "version": version}
 
 # ---------- telemt version / update / rollback ----------
@@ -11426,11 +12649,11 @@ def _dynv6_create_zone(name, account_token):
     # Сохраняем зону и токен в конфиг сразу, чтобы пользователь не ждал таймаутов
     CFG_CACHE["dynv6_host"] = name
     CFG_CACHE["dynv6_token"] = account_token
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
     if not (CFG_CACHE.get("panel_domain") or "").strip():
         CFG_CACHE["panel_domain"] = name
         CFG_CACHE["dynv6_host"] = name
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
 
     # Быстрая попытка создания через API v2 с коротким таймаутом
     try:
@@ -11481,7 +12704,7 @@ def _dynv6_update(force4=None, force6=None):
         _DDNS["updated"] = time.time()
         if not CFG_CACHE.get("panel_domain"):
             CFG_CACHE["panel_domain"] = host
-            _save(CFG, CFG_CACHE)
+            _cfg_save()
         if ip4 and _wg_auto_domain() == "wg." + host.lower():
             try:
                 _dynv6_ensure_wg(host, ip4)
@@ -11683,7 +12906,7 @@ def _cf_zone():
     zid = res[0].get("id") or ""
     if zid:
         CFG_CACHE["cf_zone_id"] = zid
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
     return zid, z
 
 
@@ -11764,6 +12987,8 @@ def _cf_ensure_wg(ip):
     return changed
 
 
+
+
 def _rot_apply(ip):
     """Применить новый IP к выбранным провайдерам DNS. Вернуть отчёт."""
     cfg = _rot_conf()
@@ -11813,7 +13038,7 @@ def _rotate_ip(reason=""):
         return False, "нет свободных IP в пуле (текущий %s)" % (cur or "?")
     rep = _rot_apply(new)
     CFG_CACHE["rot_last_ip"] = new
-    _save(CFG, CFG_CACHE)
+    _cfg_save()
     with _ROT_LOCK:
         _ROT["last_swap"] = time.time()
         _ROT["ip"] = new
@@ -11933,6 +13158,26 @@ def _rot_status():
 
 
 _WEB_CTX = None
+_WEB_ACCEPT_LOCK = threading.Lock()   # защищает счётчик живых обработчиков запросов
+_veil_busy = 0                        # сколько соединений панель обслуживает прямо сейчас
+_veil_max_workers = 120               # сверх — честный 503, а не зависший на весь сервер поток
+_veil_rejects = 0                     # сколько соединений пришлось отказать с момента старта
+_veil_reject_logged = 0.0             # когда в последний раз писали об этом в аудит
+
+
+def _veil_overload(client_address):
+    """Отказ при перегрузке — не молча. Считаем всегда, а в аудит пишем не чаще
+    раза в минуту: иначе атака сама по себе съест и журнал, и диск."""
+    global _veil_rejects, _veil_reject_logged
+    with _WEB_ACCEPT_LOCK:
+        _veil_rejects += 1
+        now = time.time()
+        do_log = now - _veil_reject_logged >= 60
+        if do_log:
+            _veil_reject_logged = now
+    if do_log:
+        _audit("web_overload", ip=(client_address[0] if client_address else ""),
+               busy=_veil_busy, max=_veil_max_workers, refused=_veil_rejects)
 
 def _web_tls_ctx():
     """SSLContext из сохранённого серта (или None). Вызывать при старте и после перевыпуска."""
@@ -11974,6 +13219,61 @@ def _cert_expire(path):
         return datetime.datetime.strptime(t, "%b %d %H:%M:%S %Y %Z").timestamp()
     except Exception:
         return None
+
+def _cert_dns_names(path):
+    """DNS-имена сертификата (SAN, а без SAN — CN). Пустой список, если не читается."""
+    def _openssl(*extra):
+        try:
+            return subprocess.run(["openssl", "x509", "-noout", "-in", path] + list(extra),
+                                  capture_output=True, text=True, timeout=10).stdout or ""
+        except Exception:
+            return ""
+    names = re.findall(r"DNS:([^,()\s]+)", _openssl("-ext", "subjectAltName"))
+    if not names:
+        m = re.search(r"CN\s*=\s*([^,/]+)", _openssl("-subject"))
+        names = [m.group(1).strip()] if m else []
+    return [n.lower().strip() for n in names if n]
+
+def _host_covered_by(names, host):
+    """Годится ли сертификат с этими SAN для конкретного SNI (включая *.example.com)."""
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    for n in names or []:
+        n = (n or "").strip().lower()
+        if n == host:
+            return True
+        if n.startswith("*.") and host.endswith(n[1:]):
+            prefix = host[:-len(n[1:])]
+            if prefix and "." not in prefix:
+                return True
+    return False
+
+_CERT_PUBLIC_FILES = re.compile(
+    r"(?i)^((fullchain|chain|cert|issuers|root)\d*\.pem|README|options-ssl[\w.-]*|.*\.csr)")
+def _cert_tree_perms():
+    """Порядок в каталоге сертификатов: каталоги проходимы, публичная часть (цепочки,
+    README, CSR) читается всеми, ЛЮБОЙ закрытый ключ — только root.
+    Раньше вместо этого стоял «chmod -R o+rX CERT_DIR», и выпуск ОДНОГО сертификата
+    делал читаемыми всеми чужие privkey.pem: ключи сайтов-маск (_front_cert_issue),
+    аккаунтный ключ ACME в accounts/ и архивные копии privkey.pemN — certbot создаёт
+    их 0600 специально. Каталоги certbot местами оставляет 0700 — их как раз и делаем
+    0755, чтобы путь к цепочке был проходим не только от root."""
+    try:
+        for root, dirs, files in os.walk(CERT_DIR):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o755)
+                except Exception:
+                    pass
+            for fn in files:
+                p = os.path.join(root, fn)
+                try:
+                    os.chmod(p, 0o644 if _CERT_PUBLIC_FILES.search(fn or "") else 0o600)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 def _cert_status():
     _CERT_STATE["email"] = (CFG_CACHE.get("cert_email") or "").strip()
@@ -12113,14 +13413,9 @@ def _cert_issue(email=None, mode="auto"):
         r = subprocess.run(args, capture_output=True, text=True, timeout=320)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
-        subprocess.run(["chmod", "-R", "o+rX", CERT_DIR], capture_output=True)
+        _cert_tree_perms()
         if not (os.path.exists(certp) and os.path.exists(keyp)):
             raise RuntimeError("certbot завершился, но no fullchain/privkey")
-        # nginx читает ключ в master (root) — приватному ключу не нужен o+r, оставим только каталог проходимым
-        try:
-            os.chmod(keyp, 0o600)
-        except Exception:
-            pass
         if email:
             CFG_CACHE["cert_email"] = email
         CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
@@ -12128,7 +13423,7 @@ def _cert_issue(email=None, mode="auto"):
         CFG_CACHE["panel_cert_path"] = certp
         CFG_CACHE["panel_key_path"] = keyp
         CFG_CACHE["panel_domain"] = domain
-        _save(CFG, CFG_CACHE)
+        _cfg_save()
         _CERT_STATE.update(domain=domain, cert=certp, key=keyp,
                            issued=os.path.getmtime(certp), expire=_cert_expire(certp), error="")
         _attach_cert_to_tls()
@@ -12150,12 +13445,11 @@ def _attach_cert_to_tls():
             inb["cert"], inb["key"] = cp["cert"], cp["key"]
             changed = True
     if changed:
-        _save(STATE, st)
         try:
-            _write_xray(st)
-            _restart_xray()
-        except Exception:
-            pass
+            _apply_state(st)
+        except Exception as e:
+            print("attach cert: xray не применил новый сертификат: " + str(e), flush=True)
+            _audit("cert_attach_fail", err=str(e)[:200])
 
 def _reload_cert_runtime():
     """После перевыпуска/изменения сертификата: обновить TLS-контекст панели и рестартовать Xray."""
@@ -12195,7 +13489,10 @@ def _cert_maybe_renew():
         return
     r = subprocess.run(["certbot", "renew", "--config-dir", CERT_DIR,
                         "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                        "--non-interactive"], capture_output=True, text=True, timeout=320)
+                        "--non-interactive"], capture_output=True, text=True, timeout=1200)
+    # certbot пишет новые файлы сам 0600; чиним только то, что осталось от старого
+    # «chmod -R o+rX» — чтобы плановое продление само лечило права на все ключи
+    _cert_tree_perms()
     if r.returncode == 0:
         _cert_status()
         _reload_cert_runtime()
@@ -12213,11 +13510,17 @@ def _cert_renew_now():
     _CERT_STATE["busy"] = True
     try:
         r = subprocess.run(["certbot", "renew", "--force-renewal",
+                            # без этой опции certbot в неинтерактивном режиме сначала
+                            # спит случайные 0–8 минут — и панель успевает убить его по
+                            # таймауту, так и не продлив сертификат
+                            "--no-random-sleep-on-renew",
                             "--config-dir", CERT_DIR,
                             "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                            "--non-interactive"], capture_output=True, text=True, timeout=320)
+                            "--non-interactive"], capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        # заодно лечим следы старого «chmod -R o+rX»: все ключи обратно 0600
+        _cert_tree_perms()
         _cert_status()
         _reload_cert_runtime()
         return dict(_CERT_STATE)
@@ -12285,7 +13588,7 @@ def _limits_loop():
                     try:
                         _awg_sync(st)
                         _wg_sync(st)
-                        _write_xray(st); _restart_xray()
+                        _apply_state(st)
                     except Exception as e:
                         print("[limits] " + str(e), flush=True)
                     print("[limits] автоблок: " +
@@ -12520,7 +13823,7 @@ def _autobk_loop():
             s = _autobk_settings()
             if s["enabled"] and time.time() - s["last"] >= s["every_h"] * 3600:
                 CFG_CACHE["auto_backup"] = dict(CFG_CACHE.get("auto_backup") or {}, last=int(time.time()))
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 fname, raw = _autobk_make()
                 ids = CFG_CACHE.get("bot_chat_ids") or []
                 if s["send_tg"] and ids:
@@ -12800,6 +14103,11 @@ def _mv_plan(dest_host, ssh_user, ssh_port):
         pass
     if own and dest_host == own:
         blockers.append("это адрес текущего хоста — переехать «в себя» нельзя")
+    elif dest_host and not _dial_addr_ok(dest_host):
+        # «в себя» бывает и через 127.0.0.1, и через адрес метаданных облака:
+        # панель ушла бы SSH-подключением на саму себя и начала бы установку на свой конфиг
+        blockers.append("адрес нового хоста — loopback или метаданные облачной сети; "
+                        "переехать «в себя» нельзя и по внутреннему адресу")
     ports = _mv_ports_plan()
     note = ("На новом хосте будут заняты те же порты, что и здесь: " + ", ".join(ports) +
             ". Панель подключится по SSH, поставит Veil (нужны исходящие к github.com "
@@ -13409,7 +14717,7 @@ def _mv_apply_main():
 
     def unit_active(svc):
         try:
-            return subprocess.run(["systemctl", "is-active", "--quiet", svc]).returncode == 0
+            return _unit_active(svc)
         except Exception:
             return False
 
@@ -13559,9 +14867,555 @@ def _bot_backup_cb(chat_id, data, B):
         BOT_BK_PENDING.pop(chat_id, None)
         _bot_send_message(chat_id, B["bk_cancel"], "HTML", _main_menu_keyboard(B))
 
+# ================= SSH-ТЕРМИНАЛ (браузерный PTY через WebSocket) =================
+# Владелец-единственный, по умолчанию ВЫКЛЮЧЕН (CFG_CACHE["ssh_terminal"]). Включение —
+# только явной командой владельца в Настройках; каждый сеанс пишется в аудит (term_open /
+# term_close) с ip и длительностью. Это root-шелл в браузере — поэтому тумблер выключен,
+# пока владелец сам его не поднимет.
+import pty as _ptymod
+import fcntl as _fcntlmod
+import termios as _termiosmod
+
+_TERM_SALT = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_TERM_MAX_SESS = 4          # потолок одновременных сеансов (owner-only)
+_TERM_IDLE = 1800           # нет ввода 30 мин → закрыть
+_TERM_HARD = 3 * 3600       # жёсткий лимит сеанса 3 ч
+_term_active = 0
+_term_lock = threading.Lock()
+
+
+def _term_ws_accept(key):
+    d = hashlib.sha1((key.strip() + _TERM_SALT).encode()).digest()
+    return base64.b64encode(d).decode()
+
+
+def _term_send_frame(wfile, payload, opcode, wlock):
+    """Сервер→клиент: без маски. opcode 1=text 2=binary 8=close."""
+    b = payload if isinstance(payload, bytes) else payload.encode("utf-8")
+    h = bytes([0x80 | opcode])
+    n = len(b)
+    if n < 126:
+        h += bytes([n])
+    elif n < 65536:
+        h += bytes([126]) + struct.pack(">H", n)
+    else:
+        h += bytes([127]) + struct.pack(">Q", n)
+    with wlock:
+        wfile.write(h + b)
+        wfile.flush()
+
+
+def _term_recv_exact(sock, n):
+    buf = bytearray()
+    while len(buf) < n:
+        c = sock.recv(n - len(buf))
+        if not c:
+            raise ConnectionResetError("closed")
+        buf += c
+    return bytes(buf)
+
+
+def _term_recv_frame(sock):
+    """Читает один кадр клиента (всегда замаскирован). → (opcode, payload) или (None,None)."""
+    b0, b1 = _term_recv_exact(sock, 2)
+    fin = b0 & 0x80
+    opcode = b0 & 0x0F
+    masked = b1 & 0x80
+    ln = b1 & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", _term_recv_exact(sock, 2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", _term_recv_exact(sock, 8))[0]
+    if ln > 1 << 20:                       # >1 MiB кадр — обрыв (защита)
+        raise ConnectionResetError("oversize")
+    key = _term_recv_exact(sock, 4) if masked else b"\x00\x00\x00\x00"
+    data = _term_recv_exact(sock, ln) if ln else b""
+    if masked:
+        data = bytes(x ^ key[i % 4] for i, x in enumerate(data))
+    return opcode, data, fin
+
+
+def _term_winsize(master, cols, rows):
+    try:
+        cols = max(10, min(500, int(cols)))
+        rows = max(4, min(200, int(rows)))
+        fcntl = _fcntlmod
+        fcntl.ioctl(master, _termiosmod.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except Exception:
+        pass
+
+
+def _term_session(sock, wfile, master, pid, peer, t_start):
+    """Мультиплекс: поток читает кадры сокета → stdin pty; этот поток читает pty → кадры клиенту."""
+    stop = threading.Event()
+    wlock = threading.Lock()
+    idle_at = [time.time()]
+
+    def reader():
+        # stdin: бинарные кадры → pty; текстовые JSON {type:resize} → ioctl
+        try:
+            while not stop.is_set():
+                op, data, fin = _term_recv_frame(sock)
+                idle_at[0] = time.time()
+                if op == 0x8:                       # close
+                    break
+                if op == 0x9:                       # ping → pong
+                    _term_send_frame(wfile, data, 0xA, wlock)
+                    continue
+                if op in (0x1, 0x2) and data:
+                    if op == 0x1:
+                        try:
+                            j = json.loads(data.decode("utf-8", "replace"))
+                            if j.get("type") == "resize":
+                                _term_winsize(master, j.get("cols", 80), j.get("rows", 24))
+                                continue
+                        except Exception:
+                            pass
+                    os.write(master, data)
+                # continuation/прочее игнорируем
+        except Exception:
+            pass
+        finally:
+            stop.set()
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    try:
+        while not stop.is_set():
+            r, _, _ = select.select([master], [], [], 1.0)
+            if not r:
+                now = time.time()
+                if now - idle_at[0] > _TERM_IDLE or now - t_start > _TERM_HARD:
+                    _term_send_frame(wfile, b"\r\n[veil] \xd0\xa1\xd0\xb5\xd0\xb0\xd0\xbd\xd1\x81 \xd0\xb7\xd0\xb0\xd0\xb2\xd0\xb5\xd1\x80\xd1\x88\xd0\xb5\xd0\xbd \xd0\xbf\xd0\xbe \xd1\x82\xd0\xb0\xd0\xb9\xd0\xbc\xd0\xb5\xd1\x80\xd1\x83.\r\n", 0x1, wlock)
+                    break
+                continue
+            try:
+                chunk = os.read(master, 16384)
+            except OSError:
+                break
+            if not chunk:
+                break
+            _term_send_frame(wfile, chunk, 0x2, wlock)
+    except Exception:
+        pass
+    finally:
+        stop.set()
+        try:
+            os.close(master)
+        except Exception:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, _fcntl_signal.SIGHUP)
+        except Exception:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except Exception:
+            pass
+
+
+import signal as _fcntl_signal
+
+
+def _term_run(self, u):
+    """Обработка upgrade-запроса на /api/term. Возвращает True, если соединение угнано под WS."""
+    global _term_active
+    peer = self.client_address[0] if getattr(self, "client_address", None) else "?"
+    def deny(code, why):
+        # 1006 в браузере безликий: без этой строчки в журнале владелец не узнает,
+        # почему «терминал недоступен», когда тумблер явно включён.
+        _audit("term_denied", reason=why, code=code, peer=peer, user=u.get("login"))
+        return self._send(code, {"error": why})
+    if not CFG_CACHE.get("ssh_terminal"):
+        return deny(403, "терминал выключен")
+    key = self.headers.get("Sec-WebSocket-Key")
+    up = (self.headers.get("Upgrade") or "").lower()
+    if not key or up != "websocket":
+        return deny(400, "not a websocket upgrade")
+    with _term_lock:
+        if _term_active >= _TERM_MAX_SESS:
+            return deny(429, "слишком много сеансов")
+        _term_active += 1
+    accept = _term_ws_accept(key)
+    try:
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.wfile.flush()
+    except Exception:
+        with _term_lock:
+            _term_active -= 1
+        return True
+    self.close_connection = True
+    try:
+        self.connection.settimeout(_TERM_HARD + 60)
+    except Exception:
+        pass
+    shell = "/bin/bash"
+    env = {"TERM": "xterm-256color", "LANG": os.environ.get("LANG", "C.UTF-8"),
+           "PATH": os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin"),
+           "HOME": "/root", "USER": "root"}
+    t_start = time.time()
+    _audit("term_open", user=u.get("login"), peer=peer)
+    master = pid = None
+    try:
+        pid, master = _ptymod.fork()
+    except Exception as e:
+        _audit("term_error", user=u.get("login"), peer=peer, err=str(e))
+        try:
+            _term_send_frame(self.wfile, b"\r\n[veil] pty unavailable: " + str(e).encode() + b"\r\n", 0x1, threading.Lock())
+        except Exception:
+            pass
+        pid, master = None, None
+    if pid is not None and pid == 0:
+        # дочерний процесс: становимся root-шеллом
+        try:
+            try:
+                os.chdir("/root")
+            except Exception:
+                pass
+            os.execve(shell, [shell, "-i"], env)
+        except Exception:
+            try:
+                os._exit(127)
+            except Exception:
+                pass
+    if pid and master is not None:
+        try:
+            _term_session(self.connection, self.wfile, master, pid, peer, t_start)
+        finally:
+            _audit("term_close", user=u.get("login"), peer=peer,
+                   dur=int(time.time() - t_start))
+    with _term_lock:
+        _term_active -= 1
+    return True
+
+
+# ================= AI-АССИСТЕНТ (только чтение; whitelist инструментов) =================
+# LLM-ассистент на OpenAI-совместимом эндпоинте. Модели доступны ТОЛЬКО read-only
+# инструменты из _AI_TOOLS (никаких мутаций — панель физически не передаёт ей ни одного
+# write-хука). Ключ/API задаёт владелец; по умолчанию ассистент выключен и без ключа не
+# работает. Каждый обмен пишется в аудит (ai_chat: вопрос + какие инструменты дёргались).
+_AI_SYS = (
+    "Ты — встроенный ассистент панели Veil (VPN-сервер на Xray). Отвечай на языке вопроса "
+    "(по-русски по умолчанию), кратко и по делу. У тебя есть только ИНСТРУМЕНТЫ ЧТЕНИЯ о "
+    "состоянии панели: сводка, подписчики, ноды, самодиагностика, журнал аудита, системные "
+    "метрики. Ты НИЧЕГО не можешь изменить — если просят что-то включить/отключить/удалить, "
+    "объясни, где это делается руками во вкладках панели, и не выдумывай. Не раскрывай "
+    "секреты/ключи/токены подписчиков. Оперируй данными инструментов, не додумывай цифры.")
+
+_AI_TOOLS = [
+    {"type": "function", "function": {
+        "name": "overview", "description": "Общая сводка: версия, активен ли Xray, число подписчиков, активные протоколы и порты.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "list_clients", "description": "Список подписчиков: имя, протоколы, трафик, лимит, срок, статус (блок/активен).",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "фильтр по имени (необязательно)"},
+            "limit": {"type": "integer", "description": "максимум записей, по умолчанию 25"}}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "system_stats", "description": "Системные метрики: диск, память, время работы Xray/telemt.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "selftest", "description": "Результат самодиагностики протоколов (доступность портов/TLS).",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "list_nodes", "description": "Федеративные ноды: имя, тип, онлайн/офлайн.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "recent_audit", "description": "Последние события журнала безопасности (кто/что/когда), уже без секретов.",
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer", "description": "сколько событий, по умолчанию 20, максимум 50"}}, "required": []}}},
+]
+
+
+def _ai_enabled():
+    return bool(CFG_CACHE.get("ai_enabled")) and bool((CFG_CACHE.get("ai_key") or "").strip())
+
+
+def _ai_clients(args):
+    st = _load(STATE) or {}
+    subs = _subs_summary(st, for_display=True)
+    q = (args.get("query") or "").strip().lower()
+    try:
+        lim = int(args.get("limit") or 25)
+    except Exception:
+        lim = 25
+    lim = max(1, min(60, lim))
+    out = []
+    for u in subs:
+        if q and q not in (u.get("name") or "").lower():
+            continue
+        mb = lambda x: round(x / 1048576.0, 1)
+        out.append({
+            "name": u.get("name") or "",
+            "protos": u.get("protos") or [],
+            "traffic_mb": {"up": mb(int(u.get("up") or 0)), "down": mb(int(u.get("down") or 0))},
+            "limit_gb": u.get("limit_gb") or 0,
+            "expiry": (datetime.datetime.fromtimestamp(int(u["expiry"])).strftime("%Y-%m-%d")
+                       if u.get("expiry") else "бессрочно"),
+            "status": ("заблокирован:" + (u.get("blocked_reason") or "")) if u.get("blocked") else "активен",
+        })
+        if len(out) >= lim:
+            break
+    return {"count_total": len(subs), "returned": len(out), "clients": out}
+
+
+def _ai_overview(args):
+    st = _load(STATE) or {}
+    active = list((st.get("inbounds") or {}).keys())
+    ports = []
+    for proto, inb in (st.get("inbounds") or {}).items():
+        if inb.get("port"):
+            ports.append({"proto": proto, "port": inb.get("port"), "disabled": bool(inb.get("disabled"))})
+    return {
+        "version": VERSION,
+        "xray_running": bool(_service_active_since("xray")),
+        "uptime_xray": _service_active_since("xray") or None,
+        "clients_total": _client_count(st),
+        "protocols_active": [p for p in active],
+        "ports": ports,
+        "panel_domain": CFG_CACHE.get("panel_domain") or "",
+    }
+
+
+def _ai_stats(args):
+    return _stats()
+
+
+def _ai_selftest(args):
+    try:
+        r = run_protocol_self_test()
+    except Exception as e:
+        return {"error": str(e)}
+    # ужимаем до понятного минимума
+    def trim(x, d=0):
+        if d > 3:
+            return "…"
+        if isinstance(x, dict):
+            return {k: trim(v, d + 1) for k, v in list(x.items())[:24]}
+        if isinstance(x, list):
+            return [trim(v, d + 1) for v in x[:24]]
+        if isinstance(x, str) and len(x) > 240:
+            return x[:240] + "…"
+        return x
+    return trim(r)
+
+
+def _ai_nodes(args):
+    try:
+        nodes = _nodes_public()
+    except Exception as e:
+        return {"error": str(e)}
+    lst = nodes.get("nodes") if isinstance(nodes, dict) else nodes
+    out = []
+    for n in (lst or [])[:40]:
+        out.append({"name": n.get("name") or n.get("label"), "type": n.get("type"),
+                    "online": bool(n.get("online")), "host": (n.get("host") or "")})
+    return {"count": len(out), "nodes": out}
+
+
+def _ai_audit(args):
+    try:
+        lim = int(args.get("limit") or 20)
+    except Exception:
+        lim = 20
+    lim = max(1, min(50, lim))
+    ev = [{"ts": e.get("ts"), "ev": e.get("ev"),
+           **{k: v for k, v in list(e.items())[2:8] if k not in ("ts", "ev")}} for e in AUDIT[-lim:][::-1]]
+    return {"events": ev}
+
+
+_AI_DISPATCH = {
+    "overview": _ai_overview, "list_clients": _ai_clients, "system_stats": _ai_stats,
+    "selftest": _ai_selftest, "list_nodes": _ai_nodes, "recent_audit": _ai_audit,
+}
+
+
+def _ai_run_tool(name, args):
+    fn = _AI_DISPATCH.get(name)
+    if not fn:
+        return {"error": "неизвестный инструмент"}
+    try:
+        return fn(args if isinstance(args, dict) else {})
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# Откуда взять API-ключ: проверенные OpenAI-совместимые сервисы. Панель ходит в
+# chat/completions, поэтому годится любой из них. Поля — только текст для человека:
+# панель никуда сама не водит и ключи не покупает.
+AI_PROVIDERS = [
+    {"id": "openai", "name": "OpenAI (ChatGPT)",
+     "base": "https://api.openai.com/v1", "model": "gpt-4o-mini",
+     "keypage": "https://platform.openai.com/api-keys",
+     "price": "бесплатного тарифа нет — нужна привязанная карта и пополненный баланс",
+     "how": ["Зарегистрируйся на platform.openai.com (войти можно через аккаунт Google).",
+             "Слева выбери API Keys → Create new secret key.",
+             "Скопируй sk-… сразу: показывается один раз.",
+             "Заполни Billing и положи хотя бы 5 $ — иначе ответы будут кончаться на лимите."]},
+    {"id": "openrouter", "name": "OpenRouter (сотни моделей одним ключом)",
+     "base": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat",
+     "keypage": "https://openrouter.ai/settings/keys",
+     "price": "есть помеченные :free модели без оплаты; с балансом — все остальные",
+     "how": ["Зарегистрируйся на openrouter.ai (кнопка Sign Up, можно Google).",
+             "Профиль → Settings → API Keys → Create Key.",
+             "Скопируй sk-or-v1-… ",
+             "Модель выбирается именем вида deepseek/deepseek-chat — в поле «Модель» ниже."]},
+    {"id": "groq", "name": "Groq (быстрые открытые модели, есть даром)",
+     "base": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile",
+     "keypage": "https://console.groq.com/keys",
+     "price": "бесплатный тариф с суточным лимитом запросов, карта не нужна",
+     "how": ["Зарегистрируйся на console.groq.com.",
+             "Меню → API Keys → Create API Key.",
+             "Скопируй gsk_… — это и есть ключ.",
+             "Модель llama-3.3-70b-versatile отвечает быстро и бесплатно."]},
+    {"id": "gemini", "name": "Google Gemini (AI Studio, есть даром)",
+     "base": "https://generativelanguage.googleapis.com/v1beta/openai",
+     "model": "gemini-2.0-flash",
+     "keypage": "https://aistudio.google.com/apikey",
+     "price": "бесплатный лимит запросов, карта не обязательна",
+     "how": ["Открой aistudio.google.com под своим Google-аккаунтом.",
+             "Get API key → Create API key.",
+             "Скопируй AIza… ",
+             "URL ниже уже вписан в OpenAI-совместимом виде — не меняй его."]},
+    {"id": "custom", "name": "Свой или локальный эндпоинт (Ollama, VPS-провайдер)",
+     "base": "http://127.0.0.1:11434/v1", "model": "llama3.1",
+     "keypage": "",
+     "price": "как договоришься; локальная модель вообще без ключа",
+     "how": ["Подойдёт любой сервис с ручкой POST /v1/chat/completions.",
+             "Для Ollama на этом же сервере: поставь модель и укажи base http://127.0.0.1:11434/v1.",
+             "Ключ можно не вписывать — локальный Ollama его не спрашивает.",
+             "За локальные модели вопросы не уходят в интернет."]},
+]
+
+
+def _ai_key_check(ov=None):
+    """Один короткий тестовый запрос текущим (или переданным) ключом/эндпоинтом/моделью.
+    Возвращает вердикт человеческими словами и НИКОГДА не отдаёт ключ в ответ."""
+    ov = ov or {}
+    base = ((ov.get("base") if "base" in ov else CFG_CACHE.get("ai_base"))
+            or "https://api.openai.com/v1").strip()
+    key = ((ov.get("key") if "key" in ov else CFG_CACHE.get("ai_key")) or "").strip()
+    model = ((ov.get("model") if "model" in ov else CFG_CACHE.get("ai_model"))
+             or "gpt-4o-mini").strip()
+    if not re.match(r"^https?://", base):
+        return {"ok": False, "code": "badscheme",
+                "msg": "URL эндпоинта должен начинаться с https:// (или http:// для локальной модели)"}
+    if not key:
+        return {"ok": False, "code": "nokey",
+                "msg": "Ключа нет вообще — вставь его в поле «API-ключ» и сохрани. "
+                       "Локальной модели (Ollama на 127.0.0.1) ключ не нужен."}
+    body = {"model": model, "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 3, "temperature": 0}
+    req = urllib.request.Request(base.rstrip("/") + "/chat/completions",
+                                 data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": "Bearer " + key})
+    ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
+            j = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        ch = ((j.get("choices") or [{}])[0]).get("message") or {}
+        _audit("ai_key_check", ok=True, model=model, base=base[:80])
+        echo = str(ch.get("content") or "").strip()[:40]
+        return {"ok": True,
+                "msg": "Ключ работает: %s ответил%s." %
+                (model, (" «" + echo + "»") if echo else "")}
+    except urllib.error.HTTPError as e:
+        try:
+            det = (e.read().decode("utf-8", "replace") or "")[:300]
+        except Exception:
+            det = ""
+        code = e.code
+        hints = {400: "эндпоинт не понял запрос — чаще всего это неверный ключ или модель не от этого сервиса",
+                 401: "ключ не принят — скорее всего скопирован не целиком, устарел или от другого сервиса",
+                 403: "ключ принят, но прав на эту модель/эндпоинт нет",
+                 404: "нет такой модели или неверный URL эндпоинта (проверь, что в конце путь /v1, а не /chat/completions)",
+                 429: "ключ живой, но упёрся в лимит или баланс пуст",
+                 500: "модельный сервис сам моргает — попробуй позже",
+                 503: "эндпоинт временно недоступен"}
+        msg = hints.get(code, "эндпоинт ответил HTTP %d" % code)
+        low = det.lower()
+        if ("api key not valid" in low or "invalid_api_key" in low
+                or "invalid api key" in low or "incorrect api key" in low):
+            msg = "сервис прямо говорит: API-ключ неверный"
+        elif "no available" in low or "balance" in low or "quota" in low:
+            msg = "кончился баланс или квота — пополни счёт у провайдера"
+        elif ("model" in low and ("not found" in low or "does not exist" in low
+                                  or "unknown" in low)):
+            msg = "модель с таким именем у этого провайдера не найдена"
+        _audit("ai_key_check", ok=False, http=code, base=base[:80])
+        return {"ok": False, "code": "http%d" % code, "msg": msg, "detail": det}
+    except Exception as e:
+        _audit("ai_key_check", ok=False, err=str(e)[:120], base=base[:80])
+        return {"ok": False, "code": "net",
+                "msg": "до эндпоинта не достучались: " + str(e)[:160]}
+
+
+def _ai_llm(base, key, model, messages, tools):
+    url = (base or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    body = {"model": model or "gpt-4o-mini", "messages": messages,
+            "temperature": 0.2, "tools": tools}
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/json", "Authorization": "Bearer " + key})
+    ctx = ssl.create_default_context()
+    with urllib.request.urlopen(req, timeout=45, context=ctx) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _ai_answer(user_msgs, user_login):
+    """Прогон диалога через LLM с петлёй инструментов (только чтение). Возвращает текст ответа."""
+    base = CFG_CACHE.get("ai_base") or "https://api.openai.com/v1"
+    key = (CFG_CACHE.get("ai_key") or "").strip()
+    model = CFG_CACHE.get("ai_model") or "gpt-4o-mini"
+    msgs = [{"role": "system", "content": _AI_SYS}] + [
+        {"role": m.get("role"), "content": m.get("content")}
+        for m in user_msgs if m.get("role") in ("user", "assistant")][-12:]
+    used = []
+    for _ in range(4):
+        j = _ai_llm(base, key, model, msgs, _AI_TOOLS)
+        ch = ((j.get("choices") or [{}])[0]).get("message") or {}
+        tcs = ch.get("tool_calls") or []
+        if not tcs:
+            content = ch.get("content") or ""
+            try:
+                _audit("ai_chat", user=user_login, tools=used or None,
+                       q=(user_msgs[-1].get("content") or "")[:200] if user_msgs else None)
+            except Exception:
+                pass
+            return {"answer": content, "tools": used}
+        msgs.append({"role": "assistant", "content": ch.get("content"), "tool_calls": tcs})
+        for tc in tcs:
+            fn = (tc.get("function") or {})
+            name = fn.get("name")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            if name in _AI_DISPATCH:
+                used.append(name)
+                res = _ai_run_tool(name, args)
+            else:
+                res = {"error": "инструмент недоступен"}
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id"),
+                         "content": json.dumps(res, ensure_ascii=False)[:8000]})
+    try:
+        _audit("ai_chat", user=user_login, tools=used, too_long=True)
+    except Exception:
+        pass
+    return {"answer": "Слишком длинная цепочка запросов — переформулируй короче.", "tools": used}
+
+
 class H(http.server.BaseHTTPRequestHandler):
     # HTTP/1.1 = keep-alive: без него каждый <script>/<img>/fetch открывает
-    # новое TCP+TLS соединение (3-4 RTT). На мобильной сети панель из-за этого
     # грузилась секундами. timeout освобождает зависшие потоки через 30 с.
     protocol_version = "HTTP/1.1"
     timeout = 30
@@ -13619,7 +15473,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 v = v.strip() if isinstance(v, str) else ""
                 if v:
                     CFG_CACHE[key] = v[:256]
-            _save(CFG, CFG_CACHE)
+            _cfg_save()
             _audit("pay_settings", provider=prov, enabled=bool(b.get("enabled")))
             return self._send(200, _pay_summary())
         if p == "/api/pay/plans":
@@ -13669,7 +15523,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "invoice": inv, "summary": _pay_summary()})
         if p == "/api/pay/confirm":
             iid = str(b.get("invoice_id") or "")
-            if not re.fullmatch(r"V\d{6}", iid):
+            if not _PAY_IID_RE.fullmatch(iid):
                 return self._send(400, {"error": "неверный id счёта"})
             inv = _pay_mark_paid(iid, "panel")
             if not inv:
@@ -13679,7 +15533,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                     "summary": _pay_summary()})
         if p == "/api/pay/check":
             iid = str(b.get("invoice_id") or "")
-            if re.fullmatch(r"V\d{6}", iid):
+            if _PAY_IID_RE.fullmatch(iid):
                 _pay_check_ext(iid)
             else:
                 for v in list(_pay_load()["invoices"].values()):
@@ -13688,11 +15542,22 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, _pay_summary())
         return self._send(404, {"error": "not found"})
 
-    def _body(self, maxb=8 * 1024 * 1024):
-        n = int(self.headers.get("Content-Length") or 0)
+    def _raw_body(self, maxb=8 * 1024 * 1024):
+        """Отдать тело запроса байтом. Заголовок Content-Length присылает клиент,
+        а браузеры его не шлют вообще ни при каких обстоятельствах: «abc», «-5» и
+        «99999999999999» превращали int() в ValueError, и на GET-ветке (do_GET без
+        общего try) это рвало соединение без ответа и с трейсбеком в журнале."""
+        raw_hdr = self.headers.get("Content-Length")
+        try:
+            n = int((raw_hdr or "0").strip() or "0")
+        except ValueError:
+            n = 0
         if n < 0 or n > maxb:
             raise ValueError("тело запроса слишком большое")
-        return json.loads(self.rfile.read(n) or b"{}")
+        return self.rfile.read(n) if n else b""
+
+    def _body(self, maxb=8 * 1024 * 1024):
+        return json.loads(self._raw_body(maxb) or b"{}")
 
     def _is_cur_pw(self, cur):
         return _pw_match(CFG_CACHE.get("salt", ""), cur, CFG_CACHE.get("pass_hash"))
@@ -13721,7 +15586,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         for proto, inb in inbs.items()]
             return self._send(200, {
                 "version": VERSION, "uptime": uptime,
-                "xray": subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0,
+                "xray": _unit_active("xray"),
                 "clients": len(uuids), "online": online,
                 "traffic_today": int(_TRAFFIC_DAYS.get(today_k) or 0),
                 "caps": EXT_CAPS,
@@ -13789,8 +15654,7 @@ class H(http.server.BaseHTTPRequestHandler):
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
             _awg_sync(st); _wg_sync(st)
-            _write_xray(st); _save(STATE, st)
-            _restart_xray()
+            _apply_state(st)
             link = ""
             try:
                 link = _link(inb, host, c, proto)
@@ -13830,8 +15694,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception: return self._send(400, {"error": "max_devices не число"})
                 for c in group: c["max_devices"] = md
             _awg_sync(st); _wg_sync(st)
-            _write_xray(st); _save(STATE, st)
-            _restart_xray()
+            _apply_state(st)
             _audit("ext_client_update", uuid=u, token=t.get("label"))
             return self._send(200, {"ok": True})
         if p == "/api/ext/clients/delete":
@@ -13846,8 +15709,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if st.get("active") not in st.get("inbounds", {}):
                 st["active"] = _proto_of(st)
             _awg_sync(st); _wg_sync(st)
-            _write_xray(st); _save(STATE, st)
-            _restart_xray()
+            _apply_state(st)
             _audit("ext_client_delete", uuid=u, token=t.get("label"))
             return self._send(200, {"ok": True})
         if p == "/api/ext/restart":
@@ -13857,11 +15719,92 @@ class H(http.server.BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     # ---- GET ----
+    def _cors_origin(self):
+        """Тот же хост, что и в Host — иначе CORS превращается в дыру.
+        Пустая строка, если Origin не совпал."""
+        o = (self.headers.get("Origin") or "").strip()
+        if not o:
+            return ""
+        try:
+            oh = (urllib.parse.urlparse(o).hostname or "").lower()
+        except Exception:
+            return ""
+        rh = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        return o if oh and oh == rh else ""
+
+    def do_OPTIONS(self):
+        """Preflight браузерного запроса с заголовком X-Sid. Без этого обработчика
+        BaseHTTPRequestHandler честно отвечает 501 «Unsupported method», и любой
+        api()-вызов в браузере оборачивается в «HTTP 501» — именно так и выглядела
+        жалоба на браузерный терминал. Авторизации тут нет намеренно: preflight
+        браузер шлёт без cookie, а данных он не отдаёт вообще."""
+        o = self._cors_origin()
+        if not o:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self._sec_headers()
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", o)
+        self.send_header("Access-Control-Allow-Credentials", "true")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Sid")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
+        self._sec_headers()
+        self.end_headers()
+
+    def do_HEAD(self):
+        """HEAD тоже должен отвечать: иначе браузер/прокси видит 501."""
+        p = urllib.parse.urlparse(self.path).path
+        g = _perm_gate(self, p, "GET")
+        code = g[0] if g else 200
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8"
+                         if code == 200 else "application/json")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self._sec_headers()
+        o = self._cors_origin()
+        if o:
+            self.send_header("Access-Control-Allow-Origin", o)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
+        self.end_headers()
+
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
         g = _perm_gate(self, p, "GET")
         if g:
             return self._send(*g)
+        if p == "/api/term":
+            u = _auth_user(self)
+            up = (self.headers.get("Upgrade") or "").lower()
+            want_ws = (up == "websocket")
+            if not u or not u["owner"]:
+                # Браузер при upgrade покажет только «сокет закрылся» — причина живёт
+                # здесь, в журнале, иначе владелец гадает, кто же виноват.
+                _audit("term_denied", reason=("не владелец" if u else "нет сессии"),
+                       ws=want_ws, peer=(self.client_address[0] if getattr(self, "client_address", None) else "?"),
+                       login=(u or {}).get("login"))
+                return self._send(403, {"error": "только владелец"})
+            if want_ws:
+                return _term_run(self, u)
+            return self._send(200, {"enabled": bool(CFG_CACHE.get("ssh_terminal")),
+                                     "active": _term_active, "shell": "/bin/bash"})
+        if p == "/api/ai":
+            u = _auth_user(self)
+            if not u or not u["owner"]:
+                return self._send(403, {"error": "только владелец"})
+            key = (CFG_CACHE.get("ai_key") or "").strip()
+            return self._send(200, {"enabled": bool(CFG_CACHE.get("ai_enabled")),
+                                    "has_key": bool(key), "key_hint": (key[-4:] if key else ""),
+                                    "base": CFG_CACHE.get("ai_base") or "https://api.openai.com/v1",
+                                    "model": CFG_CACHE.get("ai_model") or "gpt-4o-mini",
+                                    "tools": [t["function"]["name"] for t in _AI_TOOLS],
+                                    "providers": AI_PROVIDERS})
         if p == "/api/me":
             u = _auth_user(self)
             if not u:
@@ -13883,6 +15826,16 @@ class H(http.server.BaseHTTPRequestHandler):
             # Универсальная подписка (/sub) или личная подписка клиента (/sub/<subId>).
             # Как в 3x-ui: возвращается base64-список ссылок на ВСЕ протоколы, где есть клиент,
             # плюс заголовок subscription-userinfo (upload/download/total/expire) для v2rayNG и др.
+            if not (p[len("/sub"):].strip("/")):
+                # Без токена это «все ссылки всех подписчиков» — наружу так отдавать
+                # нельзя: любой, кто знает адрес панели, забирал бы чужие uuid,
+                # ключи Reality и готовый рабочий доступ. Соседние ручки (/p/, /sb/)
+                # это давно требуют токен; здесь — хотя бы сеанс владельца/оператора.
+                u = _auth_user(self)
+                if not u:
+                    return self._send(401, {"error": "нужен токен подписки"})
+                if not u["owner"] and not (u["perms"] or {}).get("clients"):
+                    return self._send(403, {"error": "нужен токен подписки"})
             try:
                 import base64
                 sub_path = p[5:].strip("/") if p.startswith("/sub/") else ""
@@ -13895,7 +15848,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 seen_uuids = set()
                 tg_links = []
                 found_client = False
-                state_changed = False
                 up = down = total = 0
                 expiry = 0
                 sub_name = ""
@@ -13906,12 +15858,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 inc_links = {}
                 sb_objs = {}
                 node_links = {}
+                _ensure_identities(st)
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
-                        if not c.get("sub_token"):
-                            c["sub_token"] = secrets.token_urlsafe(16)
-                            state_changed = True
-                        match = (not sub_path) or (c.get("sub_token") == sub_path) or (c["uuid"] == sub_path)
+                        match = (not sub_path) or (c.get("sub_token") == sub_path) or \
+                                (c.get("uuid") and c["uuid"] == sub_path)
                         if not match:
                             continue
                         found_client = True
@@ -13935,12 +15886,19 @@ class H(http.server.BaseHTTPRequestHandler):
                                 pass
                         if not inb.get("disabled"):
                             try:
-                                if proto not in inb_links:
-                                    inb_links[proto] = _link(inb, host, c, proto)
-                                if proto not in inc_links:
-                                    inc_links[proto] = _incy_link(proto, inb, c, host)
-                                if proto not in sb_objs:
-                                    sb_objs[proto] = _singbox_outbound(proto, inb, c, host)
+                                # Ключ — протокол: у клиента на каждый протокол одна ссылка.
+                                # Но /sub БЕЗ токена обещает «ссылки всех подписчиков», и
+                                # тогда на один протокол их несколько — без uuid в ключе
+                                # все, кроме первого, молча терялись.
+                                lkey = proto if sub_path else proto + "|" + str(c.get("uuid"))
+                                if lkey not in inb_links:
+                                    inb_links[lkey] = _link(inb, host, c, proto)
+                                if lkey not in inc_links:
+                                    inc_links[lkey] = _incy_link(proto, inb, c, host)
+                                if lkey not in sb_objs:
+                                    _ob = _singbox_outbound(proto, inb, c, host)
+                                    if _ob:
+                                        sb_objs[lkey] = _ob
                             except Exception:
                                 continue
                         for h, e in (c.get("nodes") or {}).items():
@@ -13948,8 +15906,20 @@ class H(http.server.BaseHTTPRequestHandler):
                             if lk:
                                 node_links[h] = lk
 
-                if state_changed:
-                    _save(STATE, st)
+                if sub_path and found_client:
+                    # семья: расход — совокупный по хозяйину, лимит/срок — живые его значения
+                    rec0 = next((c for inb in (st.get("inbounds") or {}).values()
+                                 for c in inb.get("clients", [])
+                                 if c.get("sub_token") == sub_path or c["uuid"] == sub_path), None)
+                    if rec0 is not None:
+                        parent, members = _fam(st, rec0["uuid"])
+                        if parent != rec0["uuid"] or members:
+                            _, up, down = _fam_ud(st, rec0["uuid"])
+                            prec = _fam_parent_record(st, parent)
+                            if prec is not None:
+                                lim = float(prec.get("limit_gb") or 0)
+                                total = int(lim * 1024 ** 3) if lim > 0 else 0
+                                expiry = int(prec.get("expiry") or 0)
 
                 if sub_path and not found_client:
                     return self._send(404, {"error": "клиент не найден"})
@@ -14020,7 +15990,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     # (тот же формат, что для INCY): Shadowrocket, Happ, NekoBox
                     # импортируют их из подписки. Многострочные [Interface]-блоки
                     # клиенты не разбирают и теряли эти протоколы молча.
-                    links = [(inc_links.get(p) or l) if p in ("wireguard", "amneziawg") else l
+                    links = [(inc_links.get(p) or l)
+                             if p.split("|")[0] in ("wireguard", "amneziawg") else l
                              for p, l in inb_links.items()]
                     # ссылки нод, куда клиент размещён мастером — в общий base64-список
                     links = links + list(node_links.values()) + tg_links
@@ -14080,7 +16051,9 @@ class H(http.server.BaseHTTPRequestHandler):
             qt = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else \
                     (qt.get("token") or [""])[0]
-            if not secrets.compare_digest(given or "\x00", tok):
+            # compare_digest по строкам падает TypeError на любом не-ASCII символе
+            # (владелец вставил кириллицу в токен) — сравниваем байты.
+            if not secrets.compare_digest((given or "\x00").encode("utf-8"), tok.encode("utf-8")):
                 return self._send(401, {"error": "unauthorized"})
             try:
                 body = _metrics_text().encode("utf-8")
@@ -14209,6 +16182,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if p.startswith("/api/wgconf/") or p.startswith("/api/awgconf/"):
             only_proto = "wireguard" if p.startswith("/api/wgconf/") else "amneziawg"
             tok = p[len("/api/wgconf/"):].strip("/") or p[len("/api/awgconf/"):].strip("/")
+            if not tok:
+                return self._send(404, {"error": "конфиг не найден"})
             st = _load(STATE, {}) or {}
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
@@ -14218,7 +16193,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if proto != only_proto:
                     continue
                 for c in inb.get("clients", []):
-                    if c.get("sub_token") == tok or c["uuid"] == tok:
+                    if c.get("sub_token") == tok or (c.get("uuid") and c["uuid"] == tok):
                         conf = _link(inb, host, c, proto)
                         name = c.get("name") or "client"
                         break
@@ -14323,22 +16298,6 @@ class H(http.server.BaseHTTPRequestHandler):
                  "created": t.get("created"), "last_used": t.get("last_used")}
                 for t in _node_tokens()]})
 
-        if p == "/test_links.txt":
-            # отладочный артефакт: файл остаётся на диске, но наружу — только авторизованной сессии
-            if not _authed(self):
-                return self._send(404, {"error": "not found"})
-            try:
-                with open(f"{BASE}/test_links.txt", "rb") as f:
-                    content = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(content)))
-                self.end_headers()
-                self.wfile.write(content)
-            except Exception:
-                self.send_error(404)
-            return None
-
         if p in ("/", "/index.html"):
             with open(HTML, "rb") as f:
                 content = f.read()
@@ -14379,7 +16338,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if just_born:
                 _onboard_notify()
             st = _load(STATE)
-            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
+            running = _unit_active("xray")
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
                    "configured": _client_count(st) > 0,
                    "proto": _proto_of(st),
@@ -14414,17 +16373,19 @@ class H(http.server.BaseHTTPRequestHandler):
             panel_port = CFG_CACHE.get("panel_port", 8444)
             ipv6 = _my_ipv6()
             out = []
-            state_changed = False
+            _ensure_identities(st)
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
-                    if not c.get("sub_token"):
-                        c["sub_token"] = secrets.token_urlsafe(16)
-                        state_changed = True
-                    sub_token = c["sub_token"]
+                    sub_token = c.get("sub_token") or ""
                     sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
                     cu = int(c.get("up") or 0); cdn = int(c.get("down") or 0)
-                    item = {"uuid": c["uuid"], "name": c["name"],
-                            "link": _link(inb, host, c, proto),
+                    try:
+                        link = _link(inb, host, c, proto)
+                    except Exception as e:
+                        link = ""
+                        _audit("client_link_error", proto=proto, detail=str(e)[:200])
+                    item = {"uuid": c.get("uuid") or "", "name": c.get("name") or "",
+                            "link": link,
                             "sub_token": sub_token,
                             "sub_url": sub_url,
                             "sb_url": f"{_pb(host, panel_port)}/sb/{sub_token}",
@@ -14436,9 +16397,11 @@ class H(http.server.BaseHTTPRequestHandler):
                             "tg_user": c.get("tg_user") or "",
                             "cycle": c.get("cycle") or "lifetime",
                             "max_devices": int(c.get("max_devices") or 0),
+                            "family_of": c.get("family_of") or "",
+                            "fam_name": c.get("fam_name") or "",
                             "used_gb": round((cu + cdn) / (1024**3), 3),
                             "ipv6": ipv6,
-                            "proto": proto, "port": inb["port"],
+                            "proto": proto, "port": inb.get("port") or 0,
                             "proto_label": _proto_meta(proto)["label"],
                             "created": c.get("created", 0)}
                     if c.get("nodes"):
@@ -14458,10 +16421,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         item["link6"] = ""
                         item["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{sub_token}"
                     if len(out) < 16:
-                        item["online"] = _online_count(c["uuid"])
+                        item["online"] = _online_count(c.get("uuid") or "")
                     out.append(item)
-            if state_changed:
-                _save(STATE, st)
             return self._send(200, {"clients": out,
                                     "configured": bool(out),
                                     "active": _proto_of(st),
@@ -14536,7 +16497,13 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/port/check":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            port = int((qs.get("port") or ["0"])[0] or "0")
+            raw = (qs.get("port") or ["0"])[0]
+            try:
+                port = int(str(raw).strip() or "0")
+            except ValueError:
+                return self._send(400, {"error": "порт должен быть числом"})
+            if not 1 <= port <= 65535:
+                return self._send(400, {"error": "порт вне диапазона 1–65535"})
             st = _load(STATE, {}) or {}
             taken_by = None
             for pr, inb in (st.get("inbounds") or {}).items():
@@ -14576,7 +16543,7 @@ class H(http.server.BaseHTTPRequestHandler):
             try:
                 return self._send(200, _rot_status())
             except Exception as e:
-                return self._send(200, {"error": str(e)[:200]})
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/dynv6/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             conf = _dynv6_conf()
@@ -14790,8 +16757,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         online += 1
                 except Exception:
                     pass
-            running = subprocess.run(["systemctl", "is-active", "--quiet", "xray"]).returncode == 0
-            tg_running = subprocess.run(["systemctl", "is-active", "--quiet", "telemt"]).returncode == 0
+            running = _unit_active("xray")
+            tg_running = _unit_active("telemt")
             protos = []
             _grp_lbl = {"reality": "VLESS + Reality", "vless": "VLESS", "vmess": "VMess",
                         "trojan": "Trojan", "ss": "Shadowsocks", "hy2": "Hysteria2",
@@ -14882,13 +16849,13 @@ class H(http.server.BaseHTTPRequestHandler):
             try:
                 return self._send(200, _front_status())
             except Exception as e:
-                return self._send(200, {"error": str(e)[:200]})
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/tg/dcs":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
                 return self._send(200, _tg_dcs())
             except Exception as e:
-                return self._send(200, {"error": str(e)[:200], "dcs": []})
+                return self._send(502, {"error": str(e)[:200], "dcs": []})
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
@@ -14963,13 +16930,20 @@ class H(http.server.BaseHTTPRequestHandler):
             except FileNotFoundError:
                 return self._send(404, {"error": "файл не найден"})
         if p == "/api/2fa/status":
-            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            # Секрет + otpauth:// наружу — это сам второй фактор. Отдать его
+            # залогинившемуся сотрудку значит обнулить 2FA: кто подберёт/украдёт
+            # пароль владельца, получит и готовый код из этого же ответа.
+            u = _auth_user(self)
+            if not u or not u["owner"]:
+                _audit("2fa_status_denied", login=(u or {}).get("login"),
+                       peer=(self.client_address[0] if getattr(self, "client_address", None) else "?"))
+                return self._send(403, {"error": "только владелец"})
             enabled = bool(CFG_CACHE.get("totp_enabled"))
             secret = CFG_CACHE.get("totp_secret", "")
             if not secret:
                 secret = _totp_generate_secret()
                 CFG_CACHE["totp_pending_secret"] = secret
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
             elif not enabled:
                 secret = CFG_CACHE.get("totp_pending_secret") or secret
             return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
@@ -15003,17 +16977,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 return
             except FileNotFoundError:
                 return self._send(404, {"error": "not found"}, "application/json")
-        if p == "/api/2fa/status":
-            if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            enabled = bool(CFG_CACHE.get("totp_enabled"))
-            secret = CFG_CACHE.get("totp_secret", "")
-            if not secret:
-                secret = _totp_generate_secret()
-                CFG_CACHE["totp_pending_secret"] = secret
-                _save(CFG, CFG_CACHE)
-            elif not enabled:
-                secret = CFG_CACHE.get("totp_pending_secret") or secret
-            return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
         return self._send(404, {"error": "not found"})
 
     # ---- POST ----
@@ -15075,11 +17038,87 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(st, js)
             if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
                     and not p.startswith("/api/ext/") and not p.startswith("/pay/")
-                    and not (p.startswith("/p/") and (p.endswith("/forget") or p.endswith("/avatar")))):
+                    and not (p.startswith("/p/") and (
+                        p.endswith("/forget") or p.endswith("/avatar")
+                        # зеркало условия самого обработчика (17255): «семейным» считается
+                        # любой /p/.../family/<act>, поэтому и пускать без сеанса надо по
+                        # тому же признаку. Иначе опечатка в имени действия уходила бы в
+                        # 401 «unauthorized» вместо честного 404, а список ручек жил бы
+                        # в двух местах и разъезжался при каждом новом действии.
+                        or "/family/" in p))):
                 return self._send(401, {"error": "unauthorized"})
             g = _perm_gate(self, p, "POST")
             if g:
                 return self._send(*g)
+            if p == "/api/term/toggle":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                want = bool(b.get("enabled"))
+                CFG_CACHE["ssh_terminal"] = want
+                _cfg_save()
+                _audit("term_toggle", user=u.get("login"), enabled=want)
+                return self._send(200, {"enabled": want})
+            if p == "/api/ai/config":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                if "base" in b:
+                    nb = (b.get("base") or "").strip()
+                    if nb and not re.match(r"^https?://", nb):
+                        return self._send(400, {"error": "URL должен быть http(s)://"})
+                    CFG_CACHE["ai_base"] = nb or "https://api.openai.com/v1"
+                if "model" in b:
+                    CFG_CACHE["ai_model"] = (b.get("model") or "gpt-4o-mini").strip()[:120]
+                if "enabled" in b:
+                    CFG_CACHE["ai_enabled"] = bool(b.get("enabled"))
+                if (b.get("key") or "").strip():           # пустая строка — не затираем ключ
+                    CFG_CACHE["ai_key"] = b["key"].strip()[:400]
+                _cfg_save()
+                _audit("ai_config", user=u.get("login"), enabled=bool(CFG_CACHE.get("ai_enabled")),
+                       model=CFG_CACHE.get("ai_model"), has_key=bool(CFG_CACHE.get("ai_key")))
+                return self._send(200, {"ok": True})
+            if p == "/api/ai/test":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                ov = {k: b[k] for k in ("base", "model", "key") if k in b}
+                try:
+                    r = _ai_key_check(ov)
+                except Exception as e:
+                    r = {"ok": False, "code": "err", "msg": str(e)[:180]}
+                r["ok"] = bool(r.get("ok"))
+                return self._send(200, r)
+            if p == "/api/ai/chat":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                if not _ai_enabled():
+                    return self._send(400, {"error": "ассистент выключен или не задан API-ключ (Настройки → AI)"})
+                b = self._body() or {}
+                msgs = b.get("messages")
+                if not isinstance(msgs, list) or not msgs:
+                    return self._send(400, {"error": "пустой диалог"})
+                msgs = [{"role": m.get("role"), "content": str(m.get("content") or "")[:4000]}
+                        for m in msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+                if not msgs or msgs[-1].get("role") != "user":
+                    return self._send(400, {"error": "последнее сообщение должен быть вопрос"})
+                try:
+                    res = _ai_answer(msgs, u.get("login"))
+                except urllib.error.HTTPError as e:
+                    try:
+                        det = e.read().decode("utf-8", "replace")[:400]
+                    except Exception:
+                        det = ""
+                    _audit("ai_error", user=u.get("login"), err=str(e))
+                    return self._send(502, {"error": "LLM API: " + str(e.code) + (" " + det if det else "")})
+                except Exception as e:
+                    _audit("ai_error", user=u.get("login"), err=str(e))
+                    return self._send(502, {"error": "ошибка ассистента: " + str(e)[:200]})
+                return self._send(200, res)
             if p == "/api/passkey/register/begin":
                 b = self._body() or {}
                 uid = _pk_uid(self)
@@ -15114,14 +17153,15 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body() or {}
                 kid = str(b.get("id") or "")
-                db = _pk_load()
-                lst = db.get(uid) or []
-                left = [k for k in lst if k.get("id") != kid]
-                if len(left) == len(lst):
-                    return self._send(404, {"error": "ключ не найден"})
-                removed = next(k for k in lst if k.get("id") == kid)
-                db[uid] = left
-                _save(PASSKEYS_FILE, db)
+                with _PK_DB_LOCK:   # чтение-правка-запись файла одним куском
+                                    db = _pk_load()
+                                    lst = db.get(uid) or []
+                                    left = [k for k in lst if k.get("id") != kid]
+                                    if len(left) == len(lst):
+                                        return self._send(404, {"error": "ключ не найден"})
+                                    removed = next(k for k in lst if k.get("id") == kid)
+                                    db[uid] = left
+                                    _save(PASSKEYS_FILE, db)
                 _audit("passkey_del", id=kid, name=removed.get("name"))
                 return self._send(200, {"ok": True})
             if p.startswith("/api/users/"):
@@ -15146,7 +17186,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                   "perms": _clean_perms(b.get("perms")),
                                   "disabled": False, "created": _now_iso()})
                     CFG_CACHE["users"] = users
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                     _audit("user_add", login=lg)
                     return self._send(200, {"ok": True})
                 tgt = next((x for x in users if x.get("login") == lg), None)
@@ -15172,7 +17212,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 else:
                     return self._send(404, {"error": "not found"})
                 CFG_CACHE["users"] = users
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 _audit("user_update", login=lg, action=p.rsplit("/", 1)[-1])
                 return self._send(200, {"ok": True})
             if p.startswith("/pay/"):
@@ -15223,6 +17263,53 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "нужен ip"})
                 _subdev_remove(tok, ip)
                 return self._send(200, {"ok": True, "devices": _subdev_list(tok)})
+            if p.startswith("/p/") and "/family/" in p:
+                # Семья прямо со страницы подписки: токен хозяина = право доступа.
+                head, _, act = p.rpartition("/family/")
+                tok = head[3:].strip("/")
+                st = _load(STATE) or {}
+                if _migrate_state(st): _save(STATE, st)
+                parent = _fam_resolve_parent(st, tok)
+                if parent is None:
+                    return self._send(404, {"error": "семейным тарифом управляет хозяин основной подписки"})
+                b = self._body() or {}
+                if act == "add":
+                    ok, res = _fam_add(st, parent["uuid"], b.get("name"), b.get("max_devices") or 0)
+                    if not ok:
+                        return self._send(400, {"error": res})
+                    try: _awg_sync(st)
+                    except Exception: pass
+                    try: _wg_sync(st)
+                    except Exception: pass
+                    try: _apply_state(st)
+                    except Exception: pass
+                    res.update(_fam_urls(res["sub_token"]))
+                    _audit("family_add", uuid=res["uuid"], name=res["name"], via="p")
+                    return self._send(200, {"ok": True, "member": res})
+                mu = (b.get("member_uuid") or "").strip()
+                mrec = next((c for inb in (st.get("inbounds") or {}).values()
+                             for c in inb.get("clients", [])
+                             if c["uuid"] == mu or c.get("sub_token") == mu), None)
+                if mrec is None or mrec.get("family_of") != parent["uuid"]:
+                    return self._send(404, {"error": "участник не найден"})
+                if act == "del":
+                    ok, res = _fam_del(st, mrec["uuid"])
+                    if not ok:
+                        return self._send(400, {"error": res})
+                    _awg_sync(st); _wg_sync(st)
+                    try: _apply_state(st)
+                    except Exception: pass
+                    _audit("family_del", uuid=res["uuid"], name=res["name"], via="p")
+                    return self._send(200, {"ok": True})
+                if act == "devlimit":
+                    ok, res = _fam_devlimit(st, mrec["uuid"], b.get("max_devices") or 0)
+                    if not ok:
+                        return self._send(400, {"error": res})
+                    _save(STATE, st)
+                    _audit("family_devlimit", uuid=mrec["uuid"],
+                           max_devices=res["max_devices"], via="p")
+                    return self._send(200, {"ok": True})
+                return self._send(404, {"error": "неизвестное действие семьи"})
             if p == "/api/inbound/settings":
                 b = self._body()
                 proto = (b.get("proto") or "").strip()
@@ -15297,7 +17384,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 secret = CFG_CACHE.get("bot_webhook_secret") or ""
                 if secret:
                     got = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
-                    if not hmac.compare_digest(got, secret):
+                    # заголовок приходит в latin-1, поэтому в got бывают не-ASCII
+                    # байты; compare_digest по строкам на них падает TypeError.
+                    if not hmac.compare_digest(got.encode("utf-8"), secret.encode("utf-8")):
                         return self._send(403, {"error": "bad secret token"})
                 try:
                     b = self._body()
@@ -15306,7 +17395,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     _process_bot_update(b)
                     return self._send(200, {"ok": True})
                 except Exception as e:
-                    return self._send(400, {"error": str(e)})
+                    # ручка без аутентификации (зовёт Telegram); при незакрытом секрете
+                    # сюда может постить кто угодно — текст исключения наружу не отдаём,
+                    # он оседает в журнале/аудите для отладки
+                    print("[bot] webhook: " + repr(e)[:200], flush=True)
+                    _audit("bot_webhook_error", detail=str(e)[:200])
+                    return self._send(400, {"error": "bad update"})
             if p == "/api/logout":
                 t = _cookie(self)
                 if t is None:
@@ -15413,8 +17507,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 added_links.append(_link(inb, host, c, proto))
                     
                 st["active"] = proto
-                _write_xray(st); _save(STATE, st)
-                _restart_xray()
+                _apply_state(st)
                 
                 sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
                 first_link = added_links[0] if added_links else ""
@@ -15471,7 +17564,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 is_agent = (node.get("type") or "agent") == "agent"
                 pinned = bool((node.get("pin") or "").strip())
                 _node_poll_one(node)
-                save_nodes(nodes)
+                _nodes_merge_observed({host: {k: node[k] for k in _NODE_OBSERVED if k in node}})
                 if not node.get("online"):
                     return self._send(200, {"online": False, "error": node.get("err")})
                 status = {"version": node.get("remote_version"),
@@ -15497,7 +17590,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "нода не найдена"})
                 err = _node_restart(node)
                 _node_poll_one(node)
-                save_nodes(nodes)
+                _nodes_merge_observed({host: {k: node[k] for k in _NODE_OBSERVED if k in node}})
                 if err:
                     _audit("node_restart", host=host, ok=False, err=str(err)[:120])
                     return self._send(502, {"error": err})
@@ -15509,7 +17602,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 b = self._body()
                 name = (b.get("name") or "").strip() or "Нода"
                 host = (b.get("host") or "").strip()
-                port = int((b.get("port") or 0) or 0)
+                try:
+                    port = int(str(b.get("port") or 0).strip() or "0")
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "порт должен быть числом"})
                 token = (b.get("token") or "").strip()
                 ntype = (b.get("type") or "agent").strip().lower()
                 if ntype not in ("agent", "veil"):
@@ -15518,15 +17614,21 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "укажи адрес ноды"})
                 if host in ("0.0.0.0", "::", "localhost"):
                     return self._send(400, {"error": "этот адрес — не внешняя нода"})
+                if not _dial_addr_ok(host):
+                    return self._send(400, {"error": "этот адрес — не внешняя нода "
+                                                     "(запрещены loopback и адрес метаданных облачной сети)"})
                 if not (1 <= port <= 65535):
                     return self._send(400, {"error": "порт должен быть от 1 до 65535"})
-                nodes = get_nodes()
-                for n in nodes:
-                    if (n.get("host") or "").strip().lower() == host.lower():
-                        return self._send(400, {"error": "такая нода уже добавлена"})
-                nodes.append({"name": name, "host": host, "port": port, "type": ntype,
-                              "token": token, "online": False, "added": int(time.time())})
-                save_nodes(nodes)
+                with _NODES_LOCK:
+                    # без блокировки два добавления одного хоста успевали оба
+                    # пройти проверку «такой ноды нет» и записать список по очереди
+                    nodes = get_nodes()
+                    for n in nodes:
+                        if (n.get("host") or "").strip().lower() == host.lower():
+                            return self._send(400, {"error": "такая нода уже добавлена"})
+                    nodes.append({"name": name, "host": host, "port": port, "type": ntype,
+                                  "token": token, "online": False, "added": int(time.time())})
+                    save_nodes(nodes)
                 return self._send(200, {"ok": True, "nodes": _nodes_public()})
             if p == "/api/nodes/delete":
                 if not _authed(self):
@@ -15544,7 +17646,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 if node and b.get("purge", True):
                     pok, pmsg = _node_agent_purge(node)
                     purge_note = pmsg if pok is not None else None
-                save_nodes(out)
+                with _NODES_LOCK:
+                    # purge ходил по сети секунды: удаляем из того списка, который
+                    # на диске сейчас, иначе нода, добавленная в эти секунды,
+                    # пропала бы вместе с нашим снимком
+                    cur = get_nodes()
+                    save_nodes([n for n in cur
+                                if (n.get("host") or "").strip().lower() != host.lower()])
                 return self._send(200, {"ok": True, "nodes": _nodes_public(),
                                         "purge": purge_note})
             if p == "/api/nodes/bootstrap":
@@ -15566,6 +17674,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "SSH-логин или адрес содержат недопустимые символы (разрешены буквы, цифры, . _ - :)"})
                 if host in ("0.0.0.0", "::", "localhost"):
                     return self._send(400, {"error": "этот адрес — не внешняя нода"})
+                if not _dial_addr_ok(host):
+                    return self._send(400, {"error": "этот адрес — не внешняя нода "
+                                                     "(запрещены loopback и адрес метаданных облачной сети)"})
                 if not (1 <= sport <= 65535):
                     return self._send(400, {"error": "SSH-порт должен быть от 1 до 65535"})
                 with BOOT_LOCK:
@@ -15621,7 +17732,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(401, {"error": "unauthorized"})
                 if CFG_CACHE.get("onboarded") and CFG_CACHE.get("onboarded") != "clients":
                     CFG_CACHE["onboarded"] = "seen"
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                 return self._send(200, {"ok": True})
             if p == "/api/extimport/preview":
                 if not _authed(self):
@@ -15776,10 +17887,28 @@ class H(http.server.BaseHTTPRequestHandler):
                         if not first_link:
                             first_link = lnk
 
+                # 👨‍👩‍👧 семейная подписка: участники создаются сразу в этой же
+                # транзакции — одна перезагрузка xray, а не по разу на участника
+                fam_res, fam_err = [], []
+                try:
+                    _fn = int(b.get("family_members") or 0)
+                except Exception:
+                    _fn = 0
+                _fnames = [str(x).strip() for x in (b.get("family_names") or [])
+                           if str(x).strip()][:_FAMILY_MAX]
+                _fn = max(0, min(_FAMILY_MAX, max(_fn, len(_fnames))))
+                for _i in range(_fn):
+                    _nm = (_fnames[_i] if _i < len(_fnames) else f"Участник {_i+1}")[:40]
+                    okm, mres = _fam_add(st, client_uuid, _nm)
+                    if okm:
+                        mres.update(_fam_urls(mres["sub_token"]))
+                        fam_res.append(mres)
+                    else:
+                        fam_err.append(f"{_nm}: {mres}")
+
                 _awg_sync(st)
                 _wg_sync(st)
-                _write_xray(st); _save(STATE, st)
-                _restart_xray()
+                _apply_state(st)
 
                 nodes_res = None
                 if b.get("to_nodes"):
@@ -15800,7 +17929,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     "sub_token": sub_token, "sub_url": sub_url,
                     "link": first_link, "links": added_links,
                     "tg_user": tg_user, "tg_links": tg_preview},
-                    "nodes": nodes_res})
+                    "nodes": nodes_res,
+                    "family": fam_res, "family_errors": fam_err})
 
             if p == "/api/clients/deploy":
                 b = self._body()
@@ -15859,28 +17989,83 @@ class H(http.server.BaseHTTPRequestHandler):
                             have.add(proto)
                 if not src: return self._send(404, {"error": "клиент не найден"})
                 added = []
-                for proto, inb in (st.get("inbounds") or {}).items():
-                    if proto in have: continue
-                    c = _new_client(src.get("name") or "Клиент", proto, inb,
-                                    limit_gb=src.get("limit_gb"), expiry=src.get("expiry") or 0,
-                                    reset_cycle=src.get("reset_cycle"), max_devices=src.get("max_devices"))
-                    c["uuid"] = u
-                    if src.get("sub_token"): c["sub_token"] = src["sub_token"]
-                    for k in ("tg_proxy", "tg_user"):
-                        if src.get(k): c[k] = src[k]
-                    inb.setdefault("clients", []).append(c)
-                    added.append(proto)
+                # семья растёт вместе с хозяином: недостающие протоколы заводим и членам
+                targets = [(u, src.get("name") or "Клиент", src)]
+                for mu in _fam_member_uuids(st, u):
+                    mg = _fam_group(st, mu)
+                    if mg: targets.append((mu, mg[0].get("fam_name") or mg[0].get("name"), mg[0]))
+                for tu, tname, tsrc in targets:
+                    thave = {pr for pr, inb in (st.get("inbounds") or {}).items()
+                             for c in (inb.get("clients") or []) if c.get("uuid") == tu}
+                    for proto, inb in (st.get("inbounds") or {}).items():
+                        if proto in thave: continue
+                        c = _new_client(tname or "Клиент", proto, inb,
+                                        limit_gb=tsrc.get("limit_gb"), expiry=tsrc.get("expiry") or 0,
+                                        reset_cycle=tsrc.get("reset_cycle"), max_devices=tsrc.get("max_devices"))
+                        c["uuid"] = tu
+                        if tsrc.get("sub_token"): c["sub_token"] = tsrc["sub_token"]
+                        for k in ("tg_proxy", "tg_user"):
+                            if tsrc.get(k): c[k] = tsrc[k]
+                        if tu != u:
+                            c["family_of"] = u
+                            c["fam_name"] = tname or "Клиент"
+                            c["tg_proxy"] = ""; c["tg_user"] = ""
+                            if tsrc.get("blocked"):
+                                c["blocked"] = tsrc["blocked"]
+                                c["blocked_reason"] = tsrc.get("blocked_reason") or ""
+                        inb.setdefault("clients", []).append(c)
+                        if proto not in added: added.append(proto)
                 if not added:
                     return self._send(200, {"added": [], "note": "уже во всех протоколах"})
                 try: _awg_sync(st)
                 except Exception: pass
                 try: _wg_sync(st)
                 except Exception: pass
-                _write_xray(st); _save(STATE, st)
-                try: _restart_xray()
+                try: _apply_state(st)
                 except Exception: pass
                 _audit("client_expand", uuid=u, protos=",".join(added))
                 return self._send(200, {"added": added})
+
+            if p == "/api/clients/family/add":
+                b = self._body() or {}
+                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_add(st, key, b.get("name"), b.get("max_devices") or 0)
+                if not ok: return self._send(400, {"error": res})
+                try: _awg_sync(st)
+                except Exception: pass
+                try: _wg_sync(st)
+                except Exception: pass
+                try: _apply_state(st)
+                except Exception: pass
+                res.update(_fam_urls(res["sub_token"]))
+                _audit("family_add", uuid=res["uuid"], name=res["name"])
+                return self._send(200, {"ok": True, "member": res})
+
+            if p == "/api/clients/family/del":
+                b = self._body() or {}
+                key = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_del(st, key)
+                if not ok: return self._send(400, {"error": res})
+                _awg_sync(st); _wg_sync(st)
+                try: _apply_state(st)
+                except Exception: pass
+                _audit("family_del", uuid=res["uuid"], name=res["name"])
+                return self._send(200, {"ok": True})
+
+            if p == "/api/clients/family/devlimit":
+                b = self._body() or {}
+                key = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_devlimit(st, key, b.get("max_devices") or 0)
+                if not ok: return self._send(400, {"error": res})
+                _save(STATE, st)
+                _audit("family_devlimit", uuid=key, max_devices=res["max_devices"])
+                return self._send(200, {"ok": True})
 
             if p == "/api/clients/delete":
                 b = self._body()
@@ -15888,41 +18073,63 @@ class H(http.server.BaseHTTPRequestHandler):
                 st = _load(STATE)
                 if not st or _client_count(st) == 0:
                     return self._send(400, {"error": "нет клиентов"})
-                if _client_count(st) <= 1:
-                    return self._send(400, {"error": "нельзя удалить последнего клиента"})
-
-                try:
-                    _undeploy_client_from_nodes(st, u)
-                except Exception:
-                    pass
 
                 target_sub_token = None
+                rec0 = None
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
                         if c["uuid"] == u or c.get("sub_token") == u:
                             target_sub_token = c.get("sub_token")
+                            rec0 = c
                             break
                     if target_sub_token: break
-                    
+                # семья уходит в отставку вместе с хозяином; член удаляется как обычный клиент
+                del_uuids = {rec0["uuid"]} if rec0 else {u}
+                if rec0 is not None and not rec0.get("family_of"):
+                    del_uuids |= set(_fam_member_uuids(st, rec0["uuid"]))
+                if target_sub_token:
+                    for proto, inb in (st.get("inbounds") or {}).items():
+                        for c in inb.get("clients", []):
+                            if c.get("sub_token") == target_sub_token:
+                                del_uuids.add(c["uuid"])
+                def _dying(c):
+                    return c["uuid"] in del_uuids or (
+                        target_sub_token and c.get("sub_token") == target_sub_token)
+                survivors = {c["uuid"] for proto, inb in (st.get("inbounds") or {}).items()
+                             for c in inb.get("clients", []) if not _dying(c) and not c.get("family_of")}
+                if not survivors:
+                    return self._send(400, {"error": "нельзя удалить последнего клиента"})
+
+                for uu in del_uuids:
+                    try:
+                        _undeploy_client_from_nodes(st, uu)
+                    except Exception:
+                        pass
+
                 removed = False
                 for proto, inb in list((st.get("inbounds") or {}).items()):
                     orig_len = len(inb.get("clients", []))
-                    inb["clients"] = [c for c in inb["clients"] if c["uuid"] != u and c.get("sub_token") != (target_sub_token or u)]
+                    inb["clients"] = [c for c in inb["clients"] if not _dying(c)]
                     if len(inb["clients"]) < orig_len:
                         removed = True
                     if not inb["clients"] and proto != "amneziawg":
                         del st["inbounds"][proto]
-                        
+
                 if not removed:
                     return self._send(404, {"error": "клиент не найден"})
-                    
+
                 if st.get("active") not in st.get("inbounds", {}):
                     st["active"] = _proto_of(st)
-                    
+
                 _awg_sync(st)
                 _wg_sync(st)
-                _write_xray(st); _save(STATE, st)
-                _restart_xray()
+                _apply_state(st)
+                try:
+                    _subdev_prune({c.get("sub_token")
+                                   for inb in (st.get("inbounds") or {}).values()
+                                   for c in inb.get("clients", []) if c.get("sub_token")})
+                except Exception:
+                    pass
                 return self._send(200, {"ok": True})
 
             if p == "/api/clients/unblock":
@@ -15930,26 +18137,122 @@ class H(http.server.BaseHTTPRequestHandler):
                 u = b.get("uuid")
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
-                group = [c for proto, inb in (st.get("inbounds") or {}).items()
-                         for c in inb.get("clients", []) if c["uuid"] == u]
+                group = _fam_group(st, u)
                 if not group: return self._send(404, {"error": "клиент не найден"})
                 was = any(c.get("blocked") for c in group)
-                by_limit = any(c.get("blocked") and c.get("blocked_reason") == "limit" for c in group)
-                for c in group:
-                    c.pop("blocked", None); c.pop("blocked_reason", None)
-                    if by_limit:
-                        # без обнуления счётчика автоблок вернулся бы через минуту
-                        c["up"] = 0; c["down"] = 0
-                        c["warned_80"] = False
+                if not was:
+                    parent, members = _fam(st, u)
+                    was = any(c.get("blocked") for mu in [parent] + members
+                              for c in _fam_group(st, mu))
                 if was:
+                    # снимает blocked со всей семьи; при limit обнуляет суммарный
+                    # расход и обнуляет его с новой базы (иначе автоблок вернётся за 60с)
+                    _fam_release(st, u)
                     _save(STATE, st)
                     try:
                         _awg_sync(st); _wg_sync(st)
-                        _write_xray(st); _restart_xray()
+                        _apply_state(st)
                     except Exception as e:
                         return self._send(500, {"error": str(e)})
                 _audit("client_unblock", uuid=u, name=group[0].get("name"))
                 return self._send(200, {"ok": True})
+
+            if p in ("/api/clients/disable", "/api/clients/enable"):
+                # Ручной тумблер «⏸ выключить / ▶ включить». Выключенный подписчик
+                # реально теряет связь: blocked-записи не попадают ни в конфиг Xray,
+                # ни в peers WireGuard/AmneziaWG (включается — возвращаются). Счётчики
+                # трафика сохраняются. У хозяина тумблер действует на всю семью,
+                # у участника — только на него. Причины limit/expired не трогает:
+                # их снимает только оплата или «разблокировать».
+                b = self._body()
+                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                if not key:
+                    return self._send(400, {"error": "нужен uuid или sub_token"})
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                rec = None
+                for inb in (st.get("inbounds") or {}).values():
+                    rec = next((c for c in inb.get("clients", [])
+                                if c["uuid"] == key or c.get("sub_token") == key), None)
+                    if rec: break
+                if not rec: return self._send(404, {"error": "клиент не найден"})
+                u = rec["uuid"]
+                targets = [u]
+                if not rec.get("family_of"):
+                    _pu, targets = _fam(st, u)   # хозяин: клеймим и участников
+                    targets = [u] + list(targets)
+                now = int(time.time())
+                changed = 0
+                if p.endswith("disable"):
+                    for tu in targets:
+                        for c in _fam_group(st, tu):
+                            if not c.get("blocked"):
+                                c["blocked"] = now
+                                c["blocked_reason"] = "manual"
+                                changed += 1
+                else:
+                    for tu in targets:
+                        for c in _fam_group(st, tu):
+                            if c.get("blocked") and (c.get("blocked_reason") or "") == "manual":
+                                c.pop("blocked", None); c.pop("blocked_reason", None)
+                                changed += 1
+                if changed:
+                    _awg_sync(st); _wg_sync(st)
+                    _apply_state(st)
+                _audit("client_" + ("disable" if p.endswith("disable") else "enable"),
+                       uuid=u, name=rec.get("name"), changed=changed)
+                return self._send(200, {"ok": True,
+                                        "blocked": bool(rec.get("blocked")),
+                                        "changed": changed})
+
+            if p == "/api/clients/rotate":
+                # Ротация ключей: uuid и все протокольные секреты (пароль trojan,
+                # auth hy2, ключевая пара WG) меняются, а ССЫЛКА ПОДПИСКИ остаётся
+                # прежней — приложения сами подтянут новое при обновлении подписки.
+                # Зачем: ссылку увидели лишние глаза / «утёкший» клиент — без перевыпуска
+                # доступа подписчик становится невидим для старых ключей.
+                b = self._body()
+                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                if not key:
+                    return self._send(400, {"error": "нужен uuid или sub_token"})
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                rec = None
+                for inb in (st.get("inbounds") or {}).values():
+                    rec = next((c for c in inb.get("clients", [])
+                                if c["uuid"] == key or c.get("sub_token") == key), None)
+                    if rec: break
+                if not rec: return self._send(404, {"error": "клиент не найден"})
+                group = _fam_group(st, rec["uuid"])
+                old_uuid = rec["uuid"]
+                new_uuid = str(uuidlib.uuid4())
+                had_nodes = any((c.get("nodes") or {}) for c in group)
+                for c in group:
+                    proto = next((pr for pr, ib2 in (st.get("inbounds") or {}).items()
+                                  if c in ib2.get("clients", [])), "")
+                    c["uuid"] = new_uuid
+                    if proto.startswith("trojan"):
+                        c["password"] = secrets.token_urlsafe(12)
+                    if proto == "hysteria2":
+                        c["auth"] = secrets.token_hex(16)
+                    if proto in ("wireguard", "amneziawg"):
+                        priv, pub = _gen_keys()
+                        c["client_private_key"] = _wg_key_std(priv)
+                        c["client_public_key"] = _wg_key_std(pub)
+                        # адрес оставляем: он уже выдан из next_address и зашит вAllowedIPs
+                _awg_sync(st); _wg_sync(st)
+                _apply_state(st)
+                nodes_res = None
+                if had_nodes:
+                    try:
+                        dep, skip = _deploy_client_to_nodes(st, new_uuid)
+                        nodes_res = {"deployed": dep, "skipped": skip}
+                    except Exception as e:
+                        nodes_res = {"error": str(e)[:120]}
+                _audit("client_rotate", old=old_uuid, new=new_uuid, name=rec.get("name"))
+                return self._send(200, {"ok": True, "uuid": new_uuid,
+                                        "sub_token": rec.get("sub_token") or "",
+                                        "nodes": nodes_res})
 
             if p == "/api/clients/rename":
                 b = self._body()
@@ -15959,6 +18262,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 proto, inb, c = _find_client(st, u)
                 if not inb: return self._send(404, {"error": "клиент не найден"})
                 c["name"] = name
+                for g in _fam_group(st, u):
+                    g["name"] = name
+                    if g.get("family_of"):
+                        g["fam_name"] = name  # подпись в семейном блоке на /p
                 _save(STATE, st)
                 return self._send(200, {"ok": True})
 
@@ -16002,9 +18309,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         c["tg_proxy"] = tm
                         if tm == "personal" and not c.get("tg_user"):
                             c["tg_user"] = _tg_slug(c.get("name"), "client") + "-" + (c.get("sub_token") or "x")[:6]
+                if "limit_gb" in b or "expiry_days" in b or "reset_cycle" in b:
+                    # зеркало тарифа на записи членов + сброс их флагов предупреждений
+                    _fam_mirror(st, u)
+                    _, _mems = _fam(st, u)
+                    for mu in _mems:
+                        for g in _fam_group(st, mu):
+                            g["warned_80"] = False; g["warned_days"] = []
                 if b.get("unblock"):
-                    for c in group:
-                        c.pop("blocked", None); c.pop("blocked_reason", None)
+                    _fam_release(st, u)
                 _save(STATE, st)
                 try:
                     _repropagate_client_to_nodes(st, u)
@@ -16013,7 +18326,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if b.get("unblock"):
                     try:
                         _awg_sync(st); _wg_sync(st)
-                        _write_xray(st); _restart_xray()
+                        _apply_state(st)
                     except Exception as e:
                         return self._send(500, {"error": str(e)})
                 return self._send(200, {"ok": True})
@@ -16084,7 +18397,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "некорректный host"})
                     CFG_CACHE["dynv6_host"] = host
                     CFG_CACHE["dynv6_token"] = token
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                     try:
                         return self._send(200, _dynv6_update())
                     except Exception as e:
@@ -16166,7 +18479,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         if x not in rec:
                             rec.append(x)
                     CFG_CACHE["cf_records"] = rec
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 _audit("rotate_settings", enabled=bool(CFG_CACHE.get("rot_enabled")),
                        provider=CFG_CACHE.get("rot_provider"),
                        threshold=CFG_CACHE.get("rot_threshold"),
@@ -16188,7 +18501,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "провайдер смены не выбран"})
                     rep = _rot_apply(ip)
                     CFG_CACHE["rot_last_ip"] = ip
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                     with _ROT_LOCK:
                         _ROT["last_swap"] = time.time()
                         _ROT["ip"] = ip
@@ -16417,7 +18730,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         CFG_CACHE.pop("cert_email", None)
                     if "auto" in b:
                         CFG_CACHE["cert_auto"] = bool(b.get("auto"))
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                     return self._send(200, _cert_status())
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
@@ -16431,13 +18744,17 @@ class H(http.server.BaseHTTPRequestHandler):
 
             # ---- 2fa ----
             if p == "/api/2fa/status":
-                if not _authed(self): return self._send(401, {"error": "unauthorized"})
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    _audit("2fa_status_denied", login=(u or {}).get("login"), method="POST",
+                           peer=(self.client_address[0] if getattr(self, "client_address", None) else "?"))
+                    return self._send(403, {"error": "только владелец"})
                 enabled = bool(CFG_CACHE.get("totp_enabled"))
                 secret = CFG_CACHE.get("totp_secret", "")
                 if not secret:
                     secret = _totp_generate_secret()
                     CFG_CACHE["totp_pending_secret"] = secret
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                 elif not enabled:
                     secret = CFG_CACHE.get("totp_pending_secret") or secret
                 return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
@@ -16454,7 +18771,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 CFG_CACHE["totp_secret"] = secret
                 CFG_CACHE["totp_enabled"] = True
                 CFG_CACHE.pop("totp_pending_secret", None)
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 return self._send(200, {"ok": True})
 
             if p == "/api/2fa/disable":
@@ -16466,7 +18783,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "неверный код 2FA"})
                 CFG_CACHE["totp_enabled"] = False
                 CFG_CACHE.pop("totp_secret", None)
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 return self._send(200, {"ok": True})
 
             # ---- telegram bot ----
@@ -16490,7 +18807,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if token:
                         CFG_CACHE["bot_token"] = token
                     CFG_CACHE["bot_chat_ids"] = chat_ids
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                     return self._send(200, {"ok": True})
 
             if p == "/api/bot/test":
@@ -16525,7 +18842,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         data = json.load(resp)
                     if data.get("ok"):
                         CFG_CACHE["bot_webhook_url"] = url
-                        _save(CFG, CFG_CACHE)
+                        _cfg_save()
                         return self._send(200, {"ok": True, "url": url})
                     return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
@@ -16542,7 +18859,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         data = json.load(resp)
                     if data.get("ok"):
                         CFG_CACHE.pop("bot_webhook_url", None)
-                        _save(CFG, CFG_CACHE)
+                        _cfg_save()
                         return self._send(200, {"ok": True})
                     return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
@@ -16565,7 +18882,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     CFG_CACHE["pass_hash"] = _hash2(CFG_CACHE["salt"], np_)
                     changed = True
                 if not changed: return self._send(400, {"error": "нечего менять"})
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 SESSIONS.clear(); _save_sessions()
                 self._cookies = ["sid=; Path=/; Max-Age=0"]
                 return self._send(200, {"ok": True, "relogin": True})
@@ -16586,7 +18903,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _port_free(port):
                     return self._send(400, {"error": f"Порт {port} занят"})
                 CFG_CACHE["panel_port"] = port
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 subprocess.Popen(["bash", "-c", "sleep 1 && systemctl restart vpnpanel"],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
@@ -16656,17 +18973,16 @@ class H(http.server.BaseHTTPRequestHandler):
                         inb["port"] = port
                         changed = True
                 if changed:
-                    _save(STATE, st)
-                    try: _write_xray(st)
-                    except Exception as e: return self._send(500, {"error": f"xray: {e}"})
-                    try: _restart_xray()
-                    except Exception as e: return self._send(500, {"error": f"рестарт: {e}"})
+                    try:
+                        _apply_state(st)
+                    except Exception as e:
+                        return self._send(500, {"error": "xray: " + str(e)})
                 if "domain" in body:
                     if domain:
                         CFG_CACHE["panel_domain"] = domain
                     else:
                         CFG_CACHE.pop("panel_domain", None)
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                 if "fp" in body:
                     fp = (str(body["fp"] or "")).strip().lower()
                     if fp:
@@ -16675,7 +18991,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         CFG_CACHE["fp"] = fp
                     else:
                         CFG_CACHE.pop("fp", None)
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                 out = {"ok": True, "sni": sni or "", "proto": proto or "", "domain": domain,
                        "fp": _fp(),
                        "port": (inb.get("port") if inb else None) if port is not None else None}
@@ -16836,12 +19152,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     CFG_CACHE["ui_style"] = uv
                     f2b_changed = True
                 if xray_changed or panel_changed or f2b_changed:
-                    _save(CFG, CFG_CACHE)
+                    _cfg_save()
                 if xray_changed and not panel_changed:
                     try:
-                        st = _load(STATE)
-                        _write_xray(st)
-                        _restart_xray()
+                        _apply_state(_load(STATE))
                         return self._send(200, {"ok": True, "restarting": False, "xray_restarted": True})
                     except Exception as e:
                         return self._send(500, {"error": "Xray: " + str(e)})
@@ -16951,7 +19265,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     CFG_CACHE["sub_support_url"] = su[:250]
                 if "brand" in b:
                     CFG_CACHE["sub_brand"] = (b.get("brand") or "").strip()[:25]
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 _audit("sub_settings", **_sub_settings())
                 return self._send(200, {"ok": True, **_sub_settings()})
             if p == "/api/sub/format":
@@ -17016,9 +19330,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     for srv in ("nginx", "apache2", "apache", "httpd"):
-                        subprocess.run(["systemctl", "stop", srv], capture_output=True)
-                        subprocess.run(["systemctl", "disable", srv], capture_output=True)
-                    subprocess.run(["fuser", "-k", "80/tcp"], capture_output=True)
+                        subprocess.run(["systemctl", "stop", srv], capture_output=True, timeout=40)
+                        subprocess.run(["systemctl", "disable", srv], capture_output=True, timeout=20)
+                    subprocess.run(["fuser", "-k", "80/tcp"], capture_output=True, timeout=20)
                     return self._send(200, {"ok": True, "message": "Порт 80 освобожден"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
@@ -17026,9 +19340,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     for srv in ("apache2", "apache", "httpd"):
-                        subprocess.run(["systemctl", "stop", srv], capture_output=True)
-                        subprocess.run(["systemctl", "disable", srv], capture_output=True)
-                    subprocess.run(["fuser", "-k", "443/tcp"], capture_output=True)
+                        subprocess.run(["systemctl", "stop", srv], capture_output=True, timeout=40)
+                        subprocess.run(["systemctl", "disable", srv], capture_output=True, timeout=40)
+                    subprocess.run(["fuser", "-k", "443/tcp"], capture_output=True, timeout=20)
                     return self._send(200, {"ok": True, "message": "Порт 443 освобожден"})
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
@@ -17061,7 +19375,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 CFG_CACHE["auto_backup"] = {"enabled": bool(b.get("enabled")), "every_h": every_h,
                                             "keep": keep, "send_tg": bool(b.get("send_tg")),
                                             "last": int(cur.get("last") or 0)}
-                _save(CFG, CFG_CACHE)
+                _cfg_save()
                 _audit("auto_backup_config", enabled=CFG_CACHE["auto_backup"]["enabled"],
                        every_h=every_h, keep=keep, send_tg=CFG_CACHE["auto_backup"]["send_tg"])
                 return self._send(200, {"settings": _autobk_settings()})
@@ -17101,16 +19415,32 @@ class H(http.server.BaseHTTPRequestHandler):
 
             return self._send(404, {"error": "not found"})
         except Exception as e:
-            return self._send(500, {"error": str(e)})
+            # 500 = непредвиденный сбой; текст исключения (пути, значения) наружу не
+            # отдаём — он бывает на неаутентицированных ветках (login, публичные /pay).
+            # Настоящая причина — в stderr и в аудите.
+            import traceback
+            traceback.print_exc()
+            _audit("post_error", path=urllib.parse.urlparse(self.path).path,
+                   detail=type(e).__name__ + ": " + str(e)[:200])
+            return self._send(500, {"error": "внутренняя ошибка панели"})
 
 class S(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    # Стандартный сокетсервер держит очередь accept всего 5 → любой всплеск
+    # (рестарт xray и массовый реконнект подписчиков, сканеры порта) переполняет
+    # её, ядро включает SYN-cookies и веб-морда «висит», хотя сервер жив.
+    request_queue_size = 256
 
     def get_request(self):
         sock, addr = super().get_request()
         if _WEB_CTX is not None:
-            sock.settimeout(5)
+            # MSG_PEEK выполняется в НИТЬЮ ПРИЁМА, а не в рабочем потоке: молчаливое
+            # соединение (сканер, half-open, медленный телефон в метро) блокирует accept
+            # на всё время таймаута, и морда висит у всех сразу. Поэтому ждём первый байт
+            # недолго — клиенту TLS хватает одного RTT, — а длинный таймаут чтения
+            # (30 с) выставит сам обработчик, когда соединение уже принято.
+            sock.settimeout(2)
             try:
                 first = sock.recv(1, socket.MSG_PEEK)
             except Exception:
@@ -17130,13 +19460,75 @@ class S(socketserver.ThreadingTCPServer):
                 port = CFG_CACHE.get("panel_port", 8443)
                 try:
                     sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
-                                   "Content-Length: 0\r\n"
-                                   "Connection: close\r\n\r\n" % (host, int(port))).encode())
+                                  "Location: https://%s:%s/\r\n"
+                                  "Content-Length: 0\r\n"
+                                  "Connection: close\r\n\r\n"
+                                  % (host, int(port))).encode())
                 except Exception: pass
                 try: sock.close()
                 except Exception: pass
                 raise ConnectionRefusedError("plain http -> https")
         return sock, addr
+
+    # Потолки на «висящую морду»: потоков на соединение у ThreadingTCPServer нет,
+    # поэтому всплеск сканеров или дождливых подписчиков за минуту превращается в
+    # сотни живых потоков. Сверх порога соединению честно отказываем, а не ждём,
+    # пока сдохнет весь сервер. Счётчик — в модульных _veil_busy/_veil_max_workers;
+    # в перегрузке панель отвечает 503 + Retry-After, а её текущее значение видно
+    # в /api/selftest (ключ «_panel») — рядом с портами, на вкладке Диагностика.
+
+    def _veil_slot(self, take):
+        global _veil_busy
+        with _WEB_ACCEPT_LOCK:
+            if take:
+                if _veil_busy >= _veil_max_workers:
+                    return False
+                _veil_busy += 1
+                return True
+            _veil_busy = max(0, _veil_busy - 1)
+            return True
+
+    def process_request_thread(self, request, client_address):
+        if not self._veil_slot(True):
+            _veil_overload(client_address)
+            self._veil_reject(request, client_address)
+            self.close_request(request)
+            return
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._veil_slot(False)
+
+    def _veil_reject(self, request, client_address):
+        # Ответ — обычный HTTP-текст: на TLS он уйдёт внутрь уже готового handshake,
+        # и отказ выглядит честным 503, а не «сервер сбросил соединение».
+        try:
+            # Linux на close() с НЕПРОЧИТАННЫМИ данными от клиента шлёт RST — браузер
+            # увидел бы «reset by peer» вместо 503. Сначала вычитаем то, что клиент
+            # уже успел прислать (несколько читок, не больше: под перегрузкой не мы
+            # должны ждать, а клиент).
+            try:
+                request.settimeout(0.2)
+                for _ in range(4):
+                    if not request.recv(8192):
+                        break
+            except Exception:
+                pass
+            request.settimeout(2)
+            request.settimeout(2)
+            request.sendall(b"HTTP/1.1 503 Overloaded\r\nRetry-After: 3\r\n"
+                            b"Connection: close\r\nContent-Length: 0\r\n\r\n")
+        except Exception:
+            pass
+
+    def handle_error(self, request, client_address):
+        # сканеры и plain-HTTP проббы — штатная жизнь публичного порта;
+        # traceback на каждый из них только забивает журнал
+        import sys as _sys
+        et = _sys.exc_info()[0]
+        if et and issubclass(et, (ConnectionError, TimeoutError, ssl.SSLError)):
+            return
+        super().handle_error(request, client_address)
 
 if __name__ == "__main__":
     import sys
@@ -17177,6 +19569,7 @@ if __name__ == "__main__":
         # WireGuard: kernel-интерфейс veilwg и AmneziaWG: системный awg0 —
         # импорт/синхронизация после возможного рестарта ОС.
         _ensure_wg_net()
+        before = json.dumps(st, sort_keys=True)
         try:
             _awg_sync(st)
         except Exception as e:
@@ -17185,6 +19578,27 @@ if __name__ == "__main__":
             _wg_sync(st)
         except Exception as e:
             print("wg sync init: " + str(e), flush=True)
+        # Синхронизация выше могла создать вход и выдать ключи; что она при этом
+        # возвращает — про успех перезапуска, а не про изменения, поэтому разницу
+        # смотрим прямо по состоянию. Иначе новые ключи живут до первого
+        # случайного сохранения, а veilwg после рестарта ОС поднимается с ДРУГИМИ.
+        chg = (json.dumps(st, sort_keys=True) != before) or chg
+        # Смена схемы учёта трафика: раньше опрос счётчиков сам их и обнулял, так
+        # что last_* хранили «значение за интервал». Чтение перестало сбрасывать —
+        # значит первый тик увидел бы «всё с запуска xray минус последний
+        # интервал» и вылил бы весь наработанный трафик в текущий цикл. Ставим
+        # базу на теперешний снимок: теряем максимум минуту, а не гигабайты.
+        try:
+            _tr = _statsquery()
+            for _inb in (st.get("inbounds") or {}).values():
+                for _c in (_inb.get("clients") or []):
+                    _t = _tr.get(_c.get("uuid")) or {}
+                    _lu = int(_t.get("uplink", 0) or 0); _ld = int(_t.get("downlink", 0) or 0)
+                    if (int(_c.get("last_up") or 0) != _lu) or (int(_c.get("last_down") or 0) != _ld):
+                        _c["last_up"] = _lu; _c["last_down"] = _ld
+                        chg = True
+        except Exception as e:
+            print("stats baseline init: " + str(e), flush=True)
         if chg:
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
