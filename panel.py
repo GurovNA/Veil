@@ -5,9 +5,12 @@ import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime, gzip
 import select
+import queue
 import ipaddress
 import html as _html
 import zipfile
+import zoneinfo
+import calendar
 
 BASE = "/opt/vpnpanel"
 CFG = f"{BASE}/config.json"
@@ -22,7 +25,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.5"
+VERSION = "2.16.10"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -348,6 +351,23 @@ def run_protocol_self_test():
                          "status": f"{_veil_busy}/{_veil_max_workers}",
                          "busy": _veil_busy, "max": _veil_max_workers,
                          "refused": _veil_rejects}
+    # Фоновый тик ждёт замок. Секунды — норма, десятки секунд — чужая ручка
+    # держит его сквозь сеть, и подписчик в это время не может ни добавить
+    # клиента, ни получить предупреждение о трафике.
+    results["_tick"] = {"label": "Тик: ожидание замка (макс)",
+                        "status": "%.1f с (%.1f с), держал %.1f с" % (
+                            _TICK["wait"], _TICK["wait_max"], _TICK["hold"]),
+                        "wait": _TICK["wait"], "wait_max": _TICK["wait_max"],
+                        "hold": _TICK["hold"], "hold_max": _TICK["hold_max"],
+                        "ts": _TICK["ts"]}
+    # Молчаливый Telegram больше не вешает панель (письма уходят в очередь), но
+    # из-за этого может переполниться сама очередь. Потерянное предупреждение —
+    # это подписчик, который не узнал, что остался без лимита: цифра должна быть
+    # на экране диагностики, а не зарыта в audit.json.
+    results["_notify"] = {"label": "Очередь уведомлений: ждёт / потеряно",
+                          "status": "%d / %d" % (_notify_q.qsize(), _notify_lost),
+                          "queued": _notify_q.qsize(), "dropped": _notify_lost,
+                          "max": _NOTIFY_QUEUE_MAX}
     return results
 
 # ==================================================
@@ -452,12 +472,255 @@ def _load_sessions():
 AUDIT = []
 AUDIT_FILE = f"{BASE}/audit.json"
 AUDIT_LIMIT = 2000
+# «кто угодно без пароля может это вызвать» — писать на каждый такой случай
+# нельзя: см. `_audit_throttled`
+_AUDIT_THROTTLE = {}
+_AUDIT_THROTTLE_LK = threading.Lock()
 _LOGIN_HIST = []
 LOGIN_HIST_FILE = f"{BASE}/login_history.json"
 LOGIN_HIST_LIMIT = 500
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+# ---------- часовой пояс ----------
+# Касается только того, что читает человек. Храним по-прежнему UTC: `expiry`, `ts`
+# в журнале и ключи суточной статистики — это данные, и у них нет пояса. Иначе
+# подписчик, переехавший из UTC+3 в UTC+7, потерял бы сутки срока, а журнал
+# перестал бы сходиться с прогонами харнессов. Границы циклов сброса трафика
+# (`_cycle_key`) тоже остаются в UTC — смена пояса не должна бесплатно обнулять
+# или дважды считать накатанный трафик.
+_TZC = {"name": None, "zone": None, "names": None}
+
+def _tz_zone(name=None):
+    """ZoneInfo по имени из config.json (`tz`); None = «живём как раньше», то есть
+    системный localtime. Имя берётся из конфига при каждом вызове (cheap dict),
+    чтобы смена пояса не требовала рестарта. Несуществующее имя кэшируется как
+    «нет зоны»: конфиг правят руками и с чужой панели, и падать из-за опечатки
+    отображение дат не имеет права."""
+    if name is None:
+        name = str(CFG_CACHE.get("tz") or "").strip()
+    if not name:
+        return None
+    if _TZC["name"] == name:
+        return _TZC["zone"]
+    z = None
+    try:
+        z = zoneinfo.ZoneInfo(name)
+    except Exception:
+        z = None
+    _TZC["name"] = name
+    _TZC["zone"] = z
+    return z
+
+def _tz_names():
+    """Зоны, которые реально есть в tzdata этой машины. Полный список снимаем
+    один раз: морда не имеет права предлагать пояс, который панель потом честно
+    проигнорирует, а оператор, выбравший «Аделаиду» на машине со slim-tzdata,
+    увидел бы только молчаливо сдвинувшиеся обратно даты."""
+    if _TZC["names"] is None:
+        try:
+            _TZC["names"] = zoneinfo.available_timezones()
+        except Exception:
+            _TZC["names"] = set()
+    return _TZC["names"]
+
+def _tz_ok(name):
+    """-> (ok, ZoneInfo|текст ошибки) для проверки ввода оператора."""
+    name = (name or "").strip()
+    if not name:
+        return True, None
+    if not re.fullmatch(r"[A-Za-z0-9._+-/]{1,64}", name):
+        return False, "часовой пояс: только буквы, цифры и «._-/» (например Europe/Moscow)"
+    names = _tz_names()
+    if names and name not in names:
+        return False, "такого часового пояса нет в базе системы (пример: Europe/Moscow)"
+    try:
+        return True, zoneinfo.ZoneInfo(name)
+    except Exception:
+        return False, "такого часового пояса нет в базе системы (пример: Europe/Moscow)"
+
+def _tssane(ts):
+    """Метка в границах, которые ещё переводят `gmtime` и `strftime` (год 1..9999),
+    целым числом. `expiry` приходит из state.json — той же границы доверия, из-за
+    которой `_migrate_state` чинит там «порт строкой»: один побитый срок не имеет
+    права ронять страницу или фоновый цикл. Дробную часть убираем намеренно:
+    `gmtime` её всё равно отбрасывает, а разница из-за этого давала минус секунду
+    в смещении."""
+    try:
+        ts = int(float(ts))
+    except (TypeError, ValueError, OverflowError):
+        return int(time.time())
+    return max(-62135596800, min(253402300799, ts))
+
+def _ltime(ts=None):
+    """struct_time в поясе оператора. Без пояса — ровно `time.localtime`, как было."""
+    z = _tz_zone()
+    ts = _tssane(time.time() if ts is None else ts)
+    if z is None:
+        return time.localtime(ts)
+    try:
+        off = int(datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+                  .astimezone(z).utcoffset().total_seconds())
+    except (OverflowError, OSError, ValueError):
+        return time.gmtime(ts)
+    return time.gmtime(ts + off)
+
+def _ldate(fmt, ts=None):
+    return time.strftime(fmt, _ltime(ts))
+
+def _tz_off(ts=None):
+    """Смещение того пояса, которым панель сейчас форматирует даты, в секундах
+    к востоку от UTC. Считается из самого `_ltime`, а не из ZoneInfo напрямую:
+    иначе «без пояса = системный localtime» пришлось бы описывать второй веткой.
+    Считаем по целым секундам: `gmtime` дробную часть отбрасывает, и на разнице
+    это давало бы минус секунду — Москва показывала бы «UTC+2:59», а смещение
+    суток в половине случаев уезжало бы на предыдущий день."""
+    ts = _tssane(time.time() if ts is None else ts)
+    return int(calendar.timegm(_ltime(ts)) - ts)
+
+def _tz_label():
+    """'Europe/Moscow · UTC+3' — для морды и самодиагностики. Смещение берём из
+    `_tz_off()`, то есть из того же места, которым реально форматируются даты:
+    посчитанное отдельно от системы оно врало бы «UTC+0» на машине с UTC и
+    выбранной зоной Москва. Без заданного пояса честно говорим, что живём
+    системным: ничего при старте в конфиг не пишем, иначе обновление молча
+    переписало бы настройку, которую оператор не трогал."""
+    tot = _tz_off()
+    sign = "+" if tot >= 0 else "-"
+    tot = abs(tot)
+    suffix = "UTC%s%d:%02d" % (sign, tot // 3600, (tot % 3600) // 60)
+    name = str(CFG_CACHE.get("tz") or "").strip()
+    if name:
+        if _tz_zone(name) is None:
+            return name + " · не найден в системе, показываю системный " + suffix
+        return name + " · " + suffix
+    try:
+        lnk = os.path.realpath("/etc/localtime")
+        if "/zoneinfo/" in lnk:
+            name = lnk.split("/zoneinfo/", 1)[1]
+    except Exception:
+        name = ""
+    return ("системный " + (name + " · " if name else "") + suffix)
+
+_DATE_ISO_RX = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", re.ASCII)
+_DATE_RU_RX = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$", re.ASCII)
+
+def _mkexpire(y, mo, d, hh=23, mi=59, ss=59):
+    """Метка конца выбранного дня в поясе оператора -> int (UTC).
+
+    Оператор мыслит датами своего календаря: «до 15 октября» значит до последней
+    минуты его 15 октября, а не его 14-го. Без пояса считаем по системному
+    localtime — ровно так, как `_ltime` показывает даты. Обратное превращение
+    (`_ldate`) и это должны быть две стороны одной функции, иначе строка,
+    введённая сегодня, завтра показалась бы другой."""
+    z = _tz_zone()
+    if z is None:
+        try:
+            return int(time.mktime((y, mo, d, hh, mi, ss, 0, 0, -1)))
+        except (OverflowError, ValueError):
+            return 0
+    try:
+        return int(datetime.datetime(y, mo, d, hh, mi, ss, tzinfo=z).timestamp())
+    except (OverflowError, ValueError):
+        return 0
+
+def _parse_expiry_date(raw):
+    """«2026-10-15» / «15.10.2026» -> (True, метка конца дня в поясе оператора).
+    Пустая строка -> (True, 0) = бессрочно. Дату в прошлом принимать осознанно:
+    этим же полем помечают уже истёкшие подписки, а отказывал бы — оператор не
+    мог бы продлить подписку «задним числом» и не мог бы её, наоборот, оборвать.
+
+    Принимается только строка. `null`/число/словарь — ошибка, а не бессрочно:
+    «снять срок» должно быть осознанным действием формы (пустое текстовое поле),
+    а не следствием того, что какой-нибудь fetch прислал отсутствующее поле.
+    Молча сделать подписку вечной — тот же исход, что и обнулить лимит."""
+    if not isinstance(raw, str):
+        return False, "срок: ожидалась строка «ГГГГ-ММ-ДД» или пусто"
+    s = raw.strip()
+    if not s:
+        return True, 0
+    m = _DATE_ISO_RX.match(s) or _DATE_RU_RX.match(s)
+    if not m:
+        return False, "срок в формате ГГГГ-ММ-ДД (или ДД.ММ.ГГГГ)"
+    if _DATE_ISO_RX.match(s):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1 <= mo <= 12) or not (1 <= d <= 31) or not (1970 <= y <= 9999):
+        return False, "такой даты нет: " + s
+    try:
+        datetime.date(y, mo, d)
+    except ValueError:
+        return False, "такой даты нет: " + s
+    ts = _mkexpire(y, mo, d)
+    if ts <= 0:
+        return False, "дата слишком далека"
+    return True, ts
+
+
+# Распространённые зоны для выпадающего списка: их просят чаще всего, а полный
+# список системы (590 строк) в селекте бесполезен. Рядом есть поле «своё имя» —
+# проверка на сервере принимает любой реальный IANA-идентификатор.
+_TZ_PRESET = [
+    ("", "системный (как правило UTC)"),
+    ("Europe/Kaliningrad", "Калининград UTC+2"),
+    ("Europe/Moscow", "Москва UTC+3"),
+    ("Europe/Kyiv", "Киев UTC+3"),
+    ("Europe/Istanbul", "Стамбул UTC+3"),
+    ("Europe/London", "Лондон"),
+    ("Europe/Berlin", "Берлин"),
+    ("Europe/Paris", "Париж"),
+    ("Europe/Riga", "Рига"),
+    ("Europe/Vilnius", "Вильнюс"),
+    ("Europe/Tallinn", "Таллин"),
+    ("Europe/Minsk", "Минск"),
+    ("Europe/Chisinau", "Кишинёв"),
+    ("Europe/Tiraspol", "Тирасполь"),
+    ("Europe/Belgrade", "Белград"),
+    ("Europe/Prague", "Прага"),
+    ("Europe/Madrid", "Мадрид"),
+    ("Europe/Rome", "Рим"),
+    ("Asia/Dubai", "Дубай UTC+4"),
+    ("Europe/Samara", "Самара UTC+4"),
+    ("Asia/Baku", "Баку"),
+    ("Asia/Yerevan", "Ереван"),
+    ("Asia/Tbilisi", "Тбилиси"),
+    ("Asia/Aqtau", "Актау UTC+5"),
+    ("Asia/Almaty", "Алматы UTC+6"),
+    ("Asia/Bishkek", "Бишкек UTC+6"),
+    ("Asia/Dhaka", "Дакка UTC+6"),
+    ("Asia/Bangkok", "Бангкок UTC+7"),
+    ("Asia/Ho_Chi_Minh", "Хошимин UTC+7"),
+    ("Asia/Jakarta", "Джакарта UTC+7"),
+    ("Asia/Novosibirsk", "Новосибирск UTC+7"),
+    ("Asia/Krasnoyarsk", "Красноярск UTC+7"),
+    ("Asia/Irkutsk", "Иркутск UTC+8"),
+    ("Asia/Shanghai", "Шанхай UTC+8"),
+    ("Asia/Singapore", "Сингапур UTC+8"),
+    ("Australia/Perth", "Перт UTC+8"),
+    ("Asia/Yakutsk", "Якутск UTC+9"),
+    ("Asia/Tokyo", "Токио UTC+9"),
+    ("Asia/Seoul", "Сеул UTC+9"),
+    ("Asia/Vladivostok", "Владивосток UTC+10"),
+    ("Australia/Sydney", "Сидней"),
+    ("Asia/Magadan", "Магадан UTC+11"),
+    ("Asia/Kamchatka", "Камчатка UTC+12"),
+    ("Pacific/Auckland", "Окленд"),
+    ("America/Noronha", "Фернанду-ди-Норонья UTC-2"),
+    ("America/Sao_Paulo", "Сан-Паулу UTC-3"),
+    ("America/Argentina/Buenos_Aires", "Буэнос-Айрес UTC-3"),
+    ("Atlantic/Reykjavik", "Рейкьявик UTC+0"),
+    ("America/New_York", "Нью-Йорк"),
+    ("America/Toronto", "Торонто"),
+    ("America/Mexico_City", "Мехико"),
+    ("America/Chicago", "Чикаго"),
+    ("America/Denver", "Денвер"),
+    ("America/Los_Angeles", "Лос-Анджелес"),
+    ("America/Anchorage", "Анкоридж"),
+    ("Pacific/Honolulu", "Гонолулу"),
+    ("Etc/UTC", "UTC"),
+]
 
 def _load_audit():
     global AUDIT
@@ -522,6 +785,24 @@ def _audit(ev, **kw):
         _save_audit()
     except Exception:
         pass
+
+def _audit_throttled(ev, gap=300, **kw):
+    """Журнал событий, которые может вызвать кто угодно и без пароля (вебхук
+    Telegram, чужие токены). Писать на каждое — значит дать незнакомцу стирать
+    журнал целиком: у него потолок 2000 записей, а мусорных POSTов бесконечно
+    много. Пишем не чаще одной записи в `gap` секунд на событие, но то, сколько
+    их накопилось, показываем в той же строке."""
+    now = time.time()
+    with _AUDIT_THROTTLE_LK:
+        last, n = _AUDIT_THROTTLE.get(ev) or (0.0, 0)
+        if now - last < gap:
+            _AUDIT_THROTTLE[ev] = (last, n + 1)
+            return False
+        _AUDIT_THROTTLE[ev] = (now, 0)
+        if n:
+            kw["suppressed"] = n
+    _audit(ev, **kw)
+    return True
 
 def _login_history(ev, ip=None, ua=None, user=None, ok=True, err=None):
     entry = {"ts": _now_iso(), "ev": ev, "ip": ip, "ua": (ua or "")[:256],
@@ -832,6 +1113,21 @@ def _save(p, o, mode=0o600):
         except Exception: pass
 
 _CFG_SNAP_LK = threading.Lock()
+
+# Журналы поднимаются из файлов СРАЗУ, как только появились чем их читать. До этого
+# `_load_audit()` была написана и никем не вызывалась: после рестарта память
+# пустая, и первая же запись перезаписывала audit.json одним элементом. На живой
+# машине это выглядит как «журнал начинается сегодняшним утром», а хуже всего то,
+# что самообновление панели — это как раз рестарт: запись о том, кто и когда
+# поставил новую сборку (и кто до этого логинился) стиралась тем же обновлением,
+# которое должно было от неё остаться. login_history страдал тем же.
+try:
+    _load_audit()
+    _LOGIN_HIST.extend(x for x in (_load(LOGIN_HIST_FILE, []) or []) if isinstance(x, dict))
+    if len(_LOGIN_HIST) > LOGIN_HIST_LIMIT:
+        del _LOGIN_HIST[: len(_LOGIN_HIST) - LOGIN_HIST_LIMIT]
+except Exception as e:
+    print("журналы не поднялись: " + str(e), flush=True)
 
 def _cfg_save():
     """CFG_CACHE -> config.json.
@@ -1569,6 +1865,27 @@ def _migrate_state(st):
     inbs = st.get("inbounds") or {}
     if isinstance(inbs, dict):
         for proto, inb in inbs.items():
+            # Записи здесь — граница доверия (импорт из чужой панели, ручная правка,
+            # бэкап). Строка вместо словаря раньше ПРОПУСКАЛАСЬ («пусть тронет
+            # оператор») — и оставалась в файле навсегда: её не вычищает ни одна
+            # ручка, а 129 циклов по клиентам ждут словарь. На боевой машине это
+            # означало падение страницы подписчиков (`_do_GET`: AttributeError:
+            # 'str' object has no attribute 'get') и молчаливый отказ всего старта
+            # — `_awg_sync`, `_wg_sync` и база трафика обрываются на той же строке,
+            # а catching except превращает это в «автоблокировка не считает байты».
+            # Мусор чинится здесь, а не перекладывается на тик: healing here стоит
+            # ровно столько, сколько стоит чтение, и не просвечивает в ответах.
+            if not isinstance(inb, dict):
+                continue
+            cl = inb.get("clients")
+            if isinstance(cl, list):
+                keep = [c for c in cl if isinstance(c, dict)]
+                if len(keep) != len(cl):
+                    junk = [c for c in cl if not isinstance(c, dict)]
+                    inb["clients"] = keep
+                    changed = True
+                    _audit("state_junk_dropped", proto=proto, n=len(junk),
+                           sample=str(junk[0])[:60])
             if proto in ("reality", "vless-xhttp-reality"):
                 for k in ("private_key", "public_key"):
                     if inb.get(k):
@@ -1576,6 +1893,26 @@ def _migrate_state(st):
                         if fixed != inb[k]:
                             inb[k] = fixed
                             changed = True
+            # Числа обязаны быть числами. Тот же резон, из-за которого ниже чинится
+            # «порт строкой»: state.json приносят из чужих панелей, правят руками и
+            # восстанавливают из бэкапа. Разница в цене: строка вместо числа в
+            # лимите не путает порт, а роняет фоновый тик — и автоблокировка с
+            # предупреждениями выключаются у ВСЕХ, молча, до конца жизни панели.
+            for c in (inb.get("clients") or []):
+                if not isinstance(c, dict):
+                    continue
+                for k, cast in (("limit_gb", _gb_of), ("expiry", _ts_of),
+                                ("up", _bytes_of), ("down", _bytes_of),
+                                ("last_up", _bytes_of), ("last_down", _bytes_of),
+                                ("max_devices", _cnt_of), ("created", _ts_of)):
+                    if k not in c:
+                        continue
+                    fixed = cast(c[k])
+                    if fixed != c[k]:
+                        c[k] = fixed
+                        changed = True
+        if _reconcile_shared(inbs):
+            changed = True
         for k in ("clients", "uuid", "proto", "port", "private_key",
                   "public_key", "sid", "sni", "dest", "password"):
             if st.pop(k, None) is not None:
@@ -1669,6 +2006,186 @@ def _alloc_inbound(st, proto):
     if inb["port"] in used:
         inb["port"] = _find_free_port(_PORTS.get(proto), used)
     return inb
+
+# Поля подписчика, общие для ВСЕХ его записей (в state их по одной на inbound).
+# Вне списка — секрет конкретного транспорта: пароль trojan, auth hysteria2,
+# ключи и адрес wireguard. Их новая запись получает свою, а не скопированную:
+# ровно так подписчик устроен сегодня, когда ему заводят подписку сразу по всем
+# протоколам (clients/add вызывает _new_client отдельно на каждый inbound).
+_CLIENT_SHARED = ("name", "sub_token", "limit_gb", "expiry", "reset_cycle", "cycle",
+                  "up", "down", "last_up", "last_down", "max_devices", "warned_80",
+                  "warned_days", "blocked", "blocked_reason", "tg_proxy", "tg_user",
+                  "created", "family_of", "fam_name", "solo_limit_gb", "solo_expiry",
+                  "solo_reset_cycle")
+
+# Что из общих полей сводится к одному значению и как. Числа лимита берут
+# максимум: 0 — это «без лимита», и разброс 0/100 означает устаревшую запись, а
+# не два разных намерения. created — минимум: подписка начинается тогда, когда
+# она началась, а не когда ей дописали транспорт. Счётчики трафика (up/down,
+# last_up/last_down) не трогаем: их ведёт тик по каждому uuid, и своя копия там
+# честнее любой агрегатной.
+_RECON_NUM = {"limit_gb": max, "expiry": max, "max_devices": max, "created": min,
+              "warned_days": max, "solo_limit_gb": max, "solo_expiry": max}
+_RECON_ANY = ("blocked", "warned_80")
+_RECON_STR = ("name", "sub_token", "reset_cycle", "cycle", "family_of", "fam_name",
+              "tg_proxy", "tg_user", "solo_reset_cycle")
+
+def _reconcile_shared(inbs):
+    """Подогнать общие поля под одно значение во всех записях одного подписчика.
+    -> True, если что-то поменяли.
+
+    Один подписчик — это ~17 записей, по одной на транспорт, и они разъезжаются:
+    запись заводили в разное время, транспорт включали позже (backfill берёт
+    первое встретившееся значение), состояние приносили из бэкапа. А морда,
+    автоблокировка и предупреждения читают ПЕРВУЮ запись — порядок словаря такой,
+    что первой идёт amneziawg. На живой машине это значило: в 16 транспортах
+    лимит 100 ГБ, в одном 0 — и подписчица с оплаченным лимитом жила без
+    автоблокировки вообще, молча, пока оператор видел в интерфейсе 100 ГБ."""
+    groups = {}
+    for _proto, inb in (inbs or {}).items():
+        if not isinstance(inb, dict):
+            continue
+        for c in inb.get("clients") or []:
+            if isinstance(c, dict) and c.get("uuid"):
+                groups.setdefault(c["uuid"], []).append(c)
+    changed = False
+    for uu, recs in groups.items():
+        if len(recs) < 2:
+            continue
+        want = {}
+        for k, pick in _RECON_NUM.items():
+            vals = [c[k] for c in recs if isinstance(c.get(k), (int, float))]
+            if vals:
+                want[k] = pick(vals)
+        for k in _RECON_ANY:
+            if any(bool(c.get(k)) for c in recs):
+                want[k] = True
+        for k in _RECON_STR:
+            for c in recs:
+                v = c.get(k)
+                if isinstance(v, str) and v:
+                    want[k] = v
+                    break
+        for c in recs:
+            for k, v in want.items():
+                if k in c:
+                    if c[k] != v:
+                        c[k] = v
+                        changed = True
+                elif k in _RECON_ANY and v:
+                    # absent == False; «заблокирован» обязан дойти до всех записей,
+                    # иначе запись без флага читается мордой как разблокированная
+                    c[k] = v
+                    changed = True
+    return changed
+
+def _restore_disabled(inb, was):
+    """Вернуть входу прежний флаг тумблера — отказ не имеет права менять то,
+    что человек не просил."""
+    if was:
+        inb["disabled"] = True
+    else:
+        inb.pop("disabled", None)
+
+def _proto_backfill(st, proto, inb):
+    """Разложить по транспорту всех подписчиков, которых в нём ещё нет.
+    -> число добавленных записей. Существующие не трогаются: у человека уже
+    подключённое приложение, и новый ключ на старый транспорт выгнал бы его.
+
+    Записи одного человека по протоколам неровные: старые могли не дождаться
+    части полей — их заводили до того, как поле появилось. Поэтому по каждому
+    uuid сливаются ВСЕ его записи (первое встретившееся значение поля важнее),
+    а не одна: иначе новый транспорт молча получает подписчика без лимита,
+    без срока и без признака блокировки, а панель читает его по первому входу
+    и увидит другое.
+    Записи без uuid пропускаются: state.json их допускает, а подписной строки
+    для транспорта всё равно не из чего собрать."""
+    refs = {}
+    for p2, ib in (st.get("inbounds") or {}).items():
+        if p2 == proto:
+            continue
+        for c in ib.get("clients") or []:
+            uu = c.get("uuid")
+            if not uu:
+                continue
+            r = refs.get(uu)
+            if r is None:
+                refs[uu] = r = {}
+            for k in _CLIENT_SHARED:
+                if k in c and k not in r:
+                    r[k] = c[k]
+    lst = inb.setdefault("clients", [])
+    have = {c.get("uuid") for c in lst}
+    n = 0
+    for uu, ref in refs.items():
+        if not uu or uu in have:
+            continue
+        c = _new_client((ref.get("name") or "Клиент"), proto, inb)
+        for k in _CLIENT_SHARED:
+            if k in ref:
+                c[k] = ref[k]
+        c["uuid"] = uu
+        lst.append(c)
+        n += 1
+    return n
+
+def _enable_proto(st, proto):
+    """Включить транспорт, входа под который ещё нет: создать inbound, разложить
+    по нему подписчиков и применить конфиг. Морда до этой функции показывала
+    такой транспорт как «не задействован» и включить его позволяла только руками
+    через state.json — а правка state.json на живом сервере не проверяется ничем.
+
+    Отказ не портит того, что работало: `_validate_and_apply` проверяет
+    кандидат через `xray run -test` и пишет на диск только удачную версию, а при
+    неудачном рестарте откатывает и конфиг, и состояние. -> (ok, dict|текст)."""
+    if not st:
+        return False, "нет состояния"
+    if proto not in _VALID_PROTOCOLS:
+        return False, "неизвестный протокол"
+    inbounds = st.setdefault("inbounds", {})
+    fresh = proto not in inbounds
+    if fresh:
+        try:
+            inb = _alloc_inbound(st, proto)
+        except Exception as e:
+            return False, "не удалось создать inbound: " + str(e)[:160]
+        inbounds[proto] = inb
+    else:
+        inb = inbounds[proto]
+    was_disabled = bool(inb.get("disabled"))
+    inb.pop("disabled", None)
+    try:
+        added = _proto_backfill(st, proto, inb)
+    except Exception as e:
+        if fresh:
+            inbounds.pop(proto, None)
+        else:
+            _restore_disabled(inb, was_disabled)
+        return False, "не удалось добавить подписчиков: " + str(e)[:160]
+    if not (inb.get("clients") or []):
+        # Пустой вход xray не собирает: `_build_xray_cfg` пропускает inbound без
+        # клиентов. Оставаться он стал бы «включённым» транспортом, по которому
+        # никто не коннектится, — ровно та путаница, из-за которой кнопку и делают.
+        if fresh:
+            inbounds.pop(proto, None)
+        else:
+            _restore_disabled(inb, was_disabled)
+        return False, "подписчиков нет — транспорт некому обслуживать"
+    if not fresh and not was_disabled and not added:
+        # Второй нажим той же кнопки. Вход уже работает, подписчики в нём уже
+        # лежат, добавлять нечего — а `_validate_and_apply` всегда перезапускает
+        # xray, то есть есть двойной клик ронял бы VPN у всех на пару секунд.
+        # Починить расхождение конфига с состоянием можно и явно: /api/restart.
+        return True, {"proto": proto, "port": inb.get("port"), "added": 0,
+                      "created": False, "was_disabled": False, "noop": True,
+                      "clients": len(inb.get("clients") or [])}
+    _awg_sync(st); _wg_sync(st)
+    ok, err = _validate_and_apply(st)
+    if not ok:
+        return False, err or "конфиг не прошёл проверку"
+    return True, {"proto": proto, "port": inb.get("port"), "added": added,
+                  "created": fresh, "was_disabled": was_disabled,
+                  "clients": len(inb.get("clients") or [])}
 
 HY2_CERT = "/usr/local/etc/xray/hy2_cert.pem"
 HY2_KEY = "/usr/local/etc/xray/hy2_key.pem"
@@ -1853,6 +2370,47 @@ def _inbound_public(proto, inb):
 
 _STATS_PORT = 10088
 
+
+def _gb_of(v):
+    """Гигабайты лимита так, как они лежат в state.json.
+
+    state.json — граница доверия: его приносят из чужих панелей, правят руками и
+    восстанавливают из бэкапов (тот же резон, из-за которого _migrate_state чинит
+    там «порт строкой»). Битое значение = «без лимита», а не падение тика: один
+    побитый клиент не имеет права выключать автоблокировку и предупреждения
+    всем остальным, а падение тика молчаливое — его видно только в журнале."""
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if f != f or f < 0 or f == float("inf"):
+        return 0.0
+    return f
+
+def _int_of(v):
+    """Целое из state.json; битое или отрицательное = 0. Тот же резон, что у _gb_of.
+
+    Три имени ниже — не три правила, а три способа назвать одно: «сколько»
+    (расход), «когда» (срок) и «сколько штук» (устройства). Смысл по умолчанию у
+    всех один: 0 = «не задано», а не «сбой панели»."""
+    try:
+        i = int(float(v or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return i if i > 0 else 0
+
+def _ts_of(v):
+    """Метка времени срока из state.json; битое = 0 (бессрочно). См. _int_of."""
+    return _int_of(v)
+
+def _bytes_of(v):
+    """Накопленный расход из state.json; битое = 0. См. _int_of."""
+    return _int_of(v)
+
+def _cnt_of(v):
+    """Счётчик (устройства, подписчики) из state.json; битое = 0. См. _int_of."""
+    return _int_of(v)
+
 def _autoblock_limits(st, force=False):
     """Автоблокировка: лимит ГБ или истёк срок -> клиент убирается из конфига.
     Расход считаем СОВОКУПНО по семье (хозяин + члены, поле family_of); решение
@@ -1880,10 +2438,10 @@ def _autoblock_limits(st, force=False):
             members = parents.get(u, [])
             used = sum(_user_traffic(groups[x][0]) for x in ([u] + members))
             why = None
-            lim = float(c.get("limit_gb") or 0)
+            lim = _gb_of(c.get("limit_gb"))
             if lim > 0 and used >= lim * 1024 ** 3 * 0.95:
                 why = "limit"
-            ex = int(c.get("expiry") or 0)
+            ex = _ts_of(c.get("expiry"))
             if ex and now > ex:
                 why = why or "expired"
             if not why: continue
@@ -2123,14 +2681,14 @@ def _traffic_tick(st):
             continue
         t = tr.get(key) or {}
         cu = int(t.get("uplink", 0) or 0); cd = int(t.get("downlink", 0) or 0)
-        lu = int(c0.get("last_up") or 0); ld = int(c0.get("last_down") or 0)
+        lu = _bytes_of(c0.get("last_up")); ld = _bytes_of(c0.get("last_down"))
         du = cu - lu; dd = cd - ld
         if du < 0: du = cu   # Xray перезапустился — считаем текущее значение с нуля
         if dd < 0: dd = cd
         if du or dd:
             for c in cs:
-                c["up"] = int(c.get("up") or 0) + du
-                c["down"] = int(c.get("down") or 0) + dd
+                c["up"] = _bytes_of(c.get("up")) + du
+                c["down"] = _bytes_of(c.get("down")) + dd
             _traffic_days_add(du + dd)
             changed = True
         if lu != cu or ld != cd:
@@ -2156,7 +2714,7 @@ def _traffic_days_add(nb):
 _GB = 1024 ** 3
 
 def _user_traffic(c):
-    return int(c.get("up") or 0) + int(c.get("down") or 0)
+    return _bytes_of(c.get("up")) + _bytes_of(c.get("down"))
 
 # ---------- СЕМЕЙНЫЙ РЕЖИМ ----------
 # Член семьи = обычная запись клиента со своим uuid + sub_token, но с полем
@@ -2206,12 +2764,12 @@ def _fam_ud(st, uuid_):
     считается ОДИН РАЗ (up/down зеркалятся во все инбаунды одной группы)."""
     parent, members = _fam(st, uuid_)
     pg = _fam_group(st, parent)
-    up = int(pg[0].get("up") or 0) if pg else 0
-    dn = int(pg[0].get("down") or 0) if pg else 0
+    up = _bytes_of(pg[0].get("up")) if pg else 0
+    dn = _bytes_of(pg[0].get("down")) if pg else 0
     for mu in members:
         mg = _fam_group(st, mu)
         if mg:
-            up += int(mg[0].get("up") or 0); dn += int(mg[0].get("down") or 0)
+            up += _bytes_of(mg[0].get("up")); dn += _bytes_of(mg[0].get("down"))
     return parent, up, dn
 
 def _fam_member_uuids(st, parent_uuid):
@@ -2358,15 +2916,209 @@ def _fam_devlimit(st, member_key, max_devices):
                 c["max_devices"] = md
     return True, {"uuids": sorted(uuids), "max_devices": md}
 
+def _fam_adopt(st, parent_key, member_key, max_devices=None):
+    """Посадить СУЩЕСТВУЮЩУЮ обычную подписку в семью к хозяину.
+
+    Семью обычно заводит бот или кнопка «добавить участника» — тогда участник
+    рождается с хозяйским тарифом. Но подписчик уже мог купить себе отдельную
+    подписку месяц назад, а позже попросить присоединить её к семье. Удалять его
+    и создавать заново — значит выдать ему новый ключ и новый URL: приложение на
+    телефоне он перенастраивал бы сам. Поэтому uuid, sub_token, ключи и
+    настроенные устройства сохраняются, меняется только семья и тариф.
+
+    Тариф участника перед принятием прячется в `solo_*` — с тем, чтобы вывод
+    (`_fam_orphan`) вернул человеку его собственные ГБ и срок, а не хозяйские,
+    которые он жил до этого по зеркалу. -> (ok, dict | текст ошибки)."""
+    if not st:
+        return False, "нет состояния"
+    parent = _fam_resolve_parent(st, (parent_key or "").strip())
+    if parent is None:
+        return False, "подписка-хозяин не найдена (или это сам участник)"
+    pu = parent["uuid"]
+    mkey = (member_key or "").strip()
+    if not mkey:
+        return False, "участник не указан"
+    grp = [c for inb in (st.get("inbounds") or {}).values()
+           for c in inb.get("clients", [])
+           if c["uuid"] == mkey or c.get("sub_token") == mkey]
+    if not grp:
+        return False, "подписка не найдена"
+    mu = grp[0]["uuid"]
+    if mu == pu:
+        return False, "нельзя добавить подписку в её собственную семью"
+    if any(c.get("family_of") for c in grp):
+        was = grp[0].get("family_of")
+        return False, ("эта подписка уже в семье " + str(was)[:8] + " — сначала выведите её")
+    if any(c.get("family_of") == mu for inb in (st.get("inbounds") or {}).values()
+           for c in inb.get("clients", [])):
+        return False, "у этой подписки самой есть семья — сначала выведите её участников"
+    if len(_fam_member_uuids(st, pu)) >= _FAMILY_MAX:
+        return False, f"не больше {_FAMILY_MAX} участников"
+    if max_devices is None:
+        md = None                      # свой лимит устройств оставляем как был
+    else:
+        try:
+            md = max(0, min(10, int(max_devices)))
+        except (TypeError, ValueError):
+            return False, "max_devices не число"
+    # state.json — граница доверия: берём значения теми же читателями, что и
+    # автоблокировка, чтобы битая строка в чужом лимите не роняла ручку в 500
+    solo = {"solo_limit_gb": _gb_of(grp[0].get("limit_gb")),
+            "solo_expiry": _ts_of(grp[0].get("expiry")),
+            "solo_reset_cycle": grp[0].get("reset_cycle") or ""}
+    for c in grp:
+        c["family_of"] = pu
+        c["fam_name"] = (c.get("name") or "").strip()[:40]
+        c.update(solo)
+        if md is not None:
+            c["max_devices"] = md
+    _fam_mirror(st, pu)
+    return True, {"uuid": mu, "name": (grp[0].get("fam_name") or grp[0].get("name") or "")[:40],
+                  "parent": pu,
+                  "parent_name": parent.get("name") or "",
+                  "max_devices": (grp[0].get("max_devices") or 0),
+                  "solo": solo}
+
+def _fam_orphan(st, member_key):
+    """Вывести участника из семьи обратно в обычные подписки.
+
+    Подписка при этом не пересоздаётся: человек сохраняет свой uuid, свой URL и
+    свои подключённые устройства. Тариф возвращается тот, что был до посадки
+    (`solo_*`), а если семья жила дольше, чем хранится запись, — остаётся
+    хозяйский, и оператор поправит его правкой подписки. Блокировку не снимаем:
+    за лимит семьи отвечал не один этот человек."""
+    grp = [c for inb in (st.get("inbounds") or {}).values()
+           for c in inb.get("clients", [])
+           if c["uuid"] == (member_key or "").strip() or c.get("sub_token") == (member_key or "").strip()]
+    if not grp:
+        return False, "подписка не найдена"
+    if not grp[0].get("family_of"):
+        return False, "это и так обычная подписка"
+    mu = grp[0]["uuid"]
+    pu = grp[0].get("family_of")
+    back = {}
+    if "solo_limit_gb" in grp[0] or "solo_expiry" in grp[0]:
+        back = {"limit_gb": _gb_of(grp[0].get("solo_limit_gb")),
+                "expiry": _ts_of(grp[0].get("solo_expiry")),
+                "reset_cycle": grp[0].get("solo_reset_cycle") or ""}
+    name = (grp[0].get("fam_name") or grp[0].get("name") or "")[:40]
+    for c in grp:
+        c.pop("family_of", None)
+        c.pop("fam_name", None)
+        for k in ("solo_limit_gb", "solo_expiry", "solo_reset_cycle"):
+            c.pop(k, None)
+        c.update(back)
+    return True, {"uuid": mu, "name": name, "was_parent": pu, "tariff": back or None}
+
 def _fam_urls(tok):
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     bp = _pb(host, CFG_CACHE.get("panel_port", 8444))
     return {"sub_url": f"{bp}/sub/{tok}", "page_url": f"{bp}/p/{tok}"}
 
+# Отложенная отправка Telegram-уведомлений. Фоновый тик и обработка апдейтов бота
+# держат _STATE_LOCK, пока правят состояние, — а письмо наружу это чужой сервис с
+# urlopen(timeout=10). Отправлять его под замком значит заморозить всю пишущую
+# морду ровно на (число писем × 10 с), когда Telegram молчит (находка #14: при 408
+# истекающих подписчиках обычное «создать» ждало 220 с и умерло по таймауту).
+# Контекст ниже собирает письма в очередь потока, а отдаёт их уже после того, как
+# замок отпущен. Дальше письма принимает один рабочий поток: иначе 408 писем —
+# это 408 × 10 с, прожитых тем самым тиком, который должен следить за лимитами.
+# _bot_send_message при этом не знает ни о каком из вызывающих — правила не
+# расползаются по сотне мест, где кто-то что-то отправляет.
+_NOTIFY_QUEUE_MAX = 512      # писем, ждущих отправки
+_NOTIFY_PENDING_MAX = 2000   # писем, которые может собрать одна секция под замком
+_notify_defer = threading.local()
+_notify_q = queue.Queue(maxsize=_NOTIFY_QUEUE_MAX)
+_notify_lost = 0
+_notify_lost_at = 0.0
+_notify_lost_lk = threading.Lock()
+
+def _notify_count_lost():
+    """Считать выброшенное письмо и раз в 5 минут сказать об этом вслух.
+
+    Очередь полна = Telegram не читает. Терять уведомления хуже, чем задержать,
+    но держать из-за этого всю пишущую морду — намного хуже."""
+    global _notify_lost, _notify_lost_at
+    report = None
+    with _notify_lost_lk:
+        _notify_lost += 1
+        now = time.time()
+        if _notify_lost == 1 or now - _notify_lost_at > 300:
+            _notify_lost_at = now
+            report = _notify_lost
+    if report:
+        try:
+            _audit("notify_backlog", dropped=report, queued=_notify_q.qsize())
+        except Exception as e:
+            print("[bot] аудит очереди: " + str(e), flush=True)
+
+def _notify_out(job):
+    """Поставить задание в общую исходящую очередь. Никогда не ждёт и не бросает."""
+    try:
+        _notify_q.put_nowait(job)
+    except queue.Full:
+        _notify_count_lost()
+
+def _notify_capture(job):
+    """True — задание принято в отложенную корзину этого потока (мы внутри
+    _notify_queued()/do_POST и ещё держим замок), отправлять сейчас не надо.
+    False — отложенного окна нет, звени в Telegram напрямую."""
+    q = getattr(_notify_defer, "q", None)
+    if q is None:
+        return False
+    # Потолок — чтобы молчаливый Telegram не раздувал память того самого потока,
+    # который под замком считает лимиты.
+    if len(q) < _NOTIFY_PENDING_MAX:
+        q.append(job)
+    else:
+        _notify_count_lost()
+    return True
+
+def _notify_worker():
+    while True:
+        try:
+            fn, args = _notify_q.get()
+            fn(*args)
+        except Exception as e:
+            print("[bot] очередь уведомлений: " + str(e), flush=True)
+
+def _notify_begin():
+    """Копить письма наружу, а не отправлять их сейчас."""
+    _notify_defer.q = []
+
+def _notify_flush():
+    """Передать накопленное рабочей очереди. Вызывать УЖЕ после того, как
+    _STATE_LOCK отпущен: сама передача не блокируется и писем не ждёт."""
+    q = getattr(_notify_defer, "q", None)
+    _notify_defer.q = None
+    for job in (q or []):
+        _notify_out(job)
+
+
+@contextlib.contextmanager
+def _notify_queued():
+    """Собрать все уведомления внутри в корзину и передать их ПОСЛЕ выхода из
+    блока (то есть уже без замка). Исключение не роняет ни тик, ни письма:
+    отправка всё равно состоится."""
+    prev = getattr(_notify_defer, "q", None)
+    _notify_begin()
+    try:
+        yield _notify_defer.q
+    finally:
+        q = _notify_defer.q
+        _notify_defer.q = prev
+        for job in (q or []):
+            _notify_out(job)
+
+
 def _maybe_traffic_alerts(st):
     """TG-предупреждения: 80% лимита, скорая блокировка (3/1 день), сброс цикла.
-    Возвращает True, если выставили новые флаги (state надо сохранять)."""
+    Возвращает True, если выставили новые флаги (state надо сохранять).
+
+    Письма наружу не уходят, пока вызывающий держит _STATE_LOCK: и фоновый тик, и
+    POST-обработчик оборачивают свою секцию в `_notify_queued()`/`_notify_flush()`
+    (см. выше)."""
     ids = CFG_CACHE.get("bot_chat_ids") or []
     if not ids:
         return False
@@ -2386,7 +3138,7 @@ def _maybe_traffic_alerts(st):
             msgs = []
             tgc = str(c.get("tg_chat") or "")
             sub_msgs = []
-            lim = float(c.get("limit_gb") or 0)
+            lim = _gb_of(c.get("limit_gb"))
             _, fam_up, fam_down = _fam_ud(st, c["uuid"])
             fam_used = fam_up + fam_down
             if lim > 0 and not c.get("warned_80"):
@@ -2399,7 +3151,7 @@ def _maybe_traffic_alerts(st):
                                          f"{fam_used / _GB:.2f}", f"{lim:g}"))
                     for g in group: g["warned_80"] = True
                     changed = True
-            ex = int(c.get("expiry") or 0)
+            ex = _ts_of(c.get("expiry"))
             if ex > now:
                 days_left = int((ex - now) / 86400) + 1
                 warned = list(c.get("warned_days") or [])
@@ -2562,20 +3314,24 @@ def _subs_summary(st, for_display=False):
     _ensure_identities(st)
     for proto, inb in (st.get("inbounds") or {}).items():
         for c in inb.get("clients", []):
+            # см. `_do_GET`: окно до починки состояния не должно стоить всей вкладки
+            if not isinstance(c, dict):
+                continue
             key = c.get("sub_token") or c.get("uuid")
             if not key: continue
             u = users.get(key)
             if u is None:
                 u = {"uuid": c.get("uuid") or "", "name": c.get("name") or "", "sub_token": key,
                      "created": c.get("created", 0),
-                     "limit_gb": float(c.get("limit_gb") or 0),
-                     "expiry": int(c.get("expiry") or 0),
+                     "limit_gb": _gb_of(c.get("limit_gb")),
+                     "expiry": _ts_of(c.get("expiry")),
                      "reset_cycle": c.get("reset_cycle") or "",
                      "cycle": c.get("cycle") or "lifetime",
-                     "max_devices": int(c.get("max_devices") or 0),
+                     "max_devices": _cnt_of(c.get("max_devices")),
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
                      "tg_chat": str(c.get("tg_chat") or ""),
+                     "tg_proxy": c.get("tg_proxy") or "",
                      "family_of": c.get("family_of") or "",
                      "fam_name": c.get("fam_name") or "",
                      "links": {}, "protos": [], "up": 0, "down": 0}
@@ -2596,8 +3352,8 @@ def _subs_summary(st, for_display=False):
                                         "port": inb.get("port", 0)})
             if not u.get("_tr_taken"):
                 u["_tr_taken"] = True
-                u["up"] = int(c.get("up") or 0)
-                u["down"] = int(c.get("down") or 0)
+                u["up"] = _bytes_of(c.get("up"))
+                u["down"] = _bytes_of(c.get("down"))
     # Семья: у членов лимит/срок — живые значения хозяина, расход — общий на семью
     by_uuid = {u["uuid"]: u for u in users.values()}
     fam_members = {}
@@ -2608,8 +3364,8 @@ def _subs_summary(st, for_display=False):
             u["parent_name"] = by_uuid[fo].get("name") or ""
             prec = _fam_parent_record(st, fo)
             if prec is not None:
-                u["limit_gb"] = float(prec.get("limit_gb") or 0)
-                u["expiry"] = int(prec.get("expiry") or 0)
+                u["limit_gb"] = _gb_of(prec.get("limit_gb"))
+                u["expiry"] = _ts_of(prec.get("expiry"))
                 u["reset_cycle"] = prec.get("reset_cycle") or ""
     fam_used = {}
     for pu in fam_members:
@@ -2661,6 +3417,28 @@ _XRAY_APPLY_LOCK = f"{BASE}/.xray-apply.lock"
 # держат этот замок на время всего POST, фоновые тики — вокруг своих секций.
 # RLock: обработчик вправе вызвать хелпер, который берёт его же.
 _STATE_LOCK = threading.RLock()
+# Фоновый тик обязан занимать доли секунды. Если он ждал замок минуты — тормозит
+# не тик, а чужая ручка, которая держит замок через сеть. Без этих чисел
+# «панель висит» и «тик долгий» выглядят одинаково.
+_TICK = {"ts": None, "wait": 0.0, "wait_max": 0.0, "hold": 0.0, "hold_max": 0.0}
+
+@contextlib.contextmanager
+def _tick_hold():
+    """Замок тика с замером ожидания и держания."""
+    t0 = time.time()
+    _STATE_LOCK.acquire()
+    try:
+        _TICK["wait"] = round(time.time() - t0, 1)
+        _TICK["wait_max"] = max(_TICK["wait_max"], _TICK["wait"])
+        t1 = time.time()
+        try:
+            yield
+        finally:
+            _TICK["hold"] = round(time.time() - t1, 1)
+            _TICK["hold_max"] = max(_TICK["hold_max"], _TICK["hold"])
+    finally:
+        _STATE_LOCK.release()
+        _TICK["ts"] = int(time.time())
 
 @contextlib.contextmanager
 def _xray_apply_gate(seconds=180):
@@ -2939,15 +3717,15 @@ def _subs_export_json(st):
             s = subs.get(tok)
             if s is None:
                 s = {"name": c.get("name") or "Клиент", "sub_token": tok,
-                     "limit_gb": float(c.get("limit_gb") or 0),
-                     "expiry": int(c.get("expiry") or 0),
+                     "limit_gb": _gb_of(c.get("limit_gb")),
+                     "expiry": _ts_of(c.get("expiry")),
                      "reset_cycle": c.get("reset_cycle") or "",
-                     "max_devices": int(c.get("max_devices") or 0),
+                     "max_devices": _cnt_of(c.get("max_devices")),
                      "tg_proxy": c.get("tg_proxy") or "",
                      "tg_user": c.get("tg_user") or "",
                      "blocked": bool(c.get("blocked")),
                      "blocked_reason": c.get("blocked_reason", "") or "",
-                     "created": int(c.get("created") or 0),
+                     "created": _ts_of(c.get("created")),
                      "clients": []}
                 subs[tok] = s
             cc = {"proto": proto}
@@ -2965,7 +3743,7 @@ def _subs_export_links(st):
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
     panel_port = CFG_CACHE.get("panel_port", 8444)
-    out = ["# Veil — экспорт подписчиков " + time.strftime("%Y-%m-%d %H:%M"), ""]
+    out = ["# Veil — экспорт подписчиков " + _ldate("%Y-%m-%d %H:%M"), ""]
     for u in _subs_summary(st):
         protos = [x["proto"] for x in u.get("protos", [])]
         labels = ", ".join(_proto_meta(pr).get("label", pr) for pr in protos)
@@ -4368,7 +5146,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     now = time.time()
     ex = int(u.get("expiry") or 0)
     if ex:
-        exp_txt = time.strftime(L["datefmt"], time.localtime(ex))
+        exp_txt = _ldate(L["datefmt"], ex)
         dl = int(ex - now)
         if dl < 0:
             exp_sub = L["exp_over"]
@@ -4460,7 +5238,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
         _ach = int(CFG_CACHE.get("addr_changed") or 0)
         if _ach and now - _ach < 7 * 86400:
             addr_html = ("<div class='sec'><div class='rt' style='border-left:3px solid var(--warn,#f59e0b)'>"
-                         + (L["addr_nt"] % time.strftime(L["datefmt"], time.localtime(_ach)))
+                         + (L["addr_nt"] % _ldate(L["datefmt"], _ach))
                          + "</div></div>")
     except Exception:
         addr_html = ""
@@ -5187,25 +5965,49 @@ def _gh_headers():
     except Exception: pass
     return h
 
-def _gh_latest():
-    url = f"https://api.github.com/repos/{REPO}/releases?per_page=1"
+def _gh_releases(per_page=15):
+    """Релизы репозитория панели списком. Раньше бралась ПЕРВАЯ строка выдачи с
+    per_page=1 — а первым там лежит и черновик (draft), и пре-релиз: «v2.17.0-rc1»
+    показывался бы оператору как «есть обновление» и одним кликом уезжал бы на
+    боевую машину."""
+    url = f"https://api.github.com/repos/{REPO}/releases?per_page={per_page}"
     print("[update] GET " + url, flush=True)
     req = urllib.request.Request(url, headers=_gh_headers())
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.load(r)
         print("[update] OK type=" + type(data).__name__, flush=True)
-        if isinstance(data, list):
-            if not data: raise RuntimeError("нет релизов")
-            print("[update] tags=" + str([x.get("tag_name") for x in data]), flush=True)
-            return data[0]
-        return data
     except urllib.error.HTTPError as e:
         body = ""
         try: body = e.read().decode(errors="replace")[:500]
         except Exception: pass
         print("[update] HTTP " + str(e.code) + " " + body, flush=True)
         raise
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise RuntimeError("непонятный ответ GitHub")
+    return [x for x in data if isinstance(x, dict)]
+
+def _gh_latest():
+    """Самый свежий ВЫПУЩЕННЫЙ релиз: без черновиков и пре-релизов, и по номеру
+    версии, а не по порядку в выдаче."""
+    out = [r for r in _gh_releases() if not r.get("draft") and not r.get("prerelease")]
+    if not out:
+        raise RuntimeError("нет релизов")
+    out.sort(key=lambda r: _ver_tuple(str(r.get("tag_name") or "").lstrip("v")), reverse=True)
+    return out[0]
+
+def _gh_asset(rel, name):
+    """Ссылка на участник релиза по имени. Берём api.github.com (`url`), а не
+    github.com (`browser_download_url`): панель и так живёт на api.github.com, а
+    второй хост в РФ без VPN часто недоступен — тот же резон, по которому геофайлы
+    зеркалятся на сервер, а не отдаются телефону. Ответ может прийти без поля
+    `url` (чужие зеркала), поэтому fallback обязателен."""
+    for a in (rel.get("assets") or []):
+        if isinstance(a, dict) and a.get("name") == name:
+            return a.get("url") or a.get("browser_download_url")
+    return None
 
 def _dl(url, dest):
     h = _gh_headers()
@@ -5223,60 +6025,338 @@ def _sha256_file(p):
             h.update(chunk)
     return h.hexdigest()
 
+def _sha_expect(text):
+    """Ожиданный sha256 из файла суммы. Upstream-и пишут его по-разному: Xray —
+    `.dgst` со строчками вида «SHA2-256= <hex>», telemt и старые релизы Xray —
+    «<hex>  имя_файла». Ключ нормализуем («SHA-256», «SHA256», «SHA_256» — одно и
+    то же), иначе законный релиз с самым ходким написванием был бы отвергнут как
+    «непонятный формат». Пустой ответ = формата не распознали."""
+    for ln in str(text or "").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        if "=" in ln:
+            k, v = ln.split("=", 1)
+            if re.fullmatch(r"(?i)sha2?256", re.sub(r"[-_ ]", "", k.strip())):
+                return v.strip().split()[0].lower() if v.strip() else ""
+            continue
+        t = ln.split()[0].lower()
+        if re.fullmatch(r"[0-9a-f]{64}", t):
+            return t
+    return ""
+
+def _verify_sha256(sum_url, path, what):
+    """Сверяет скачанный файл с контрольной суммой с той же выдачи. Панель уже
+    проверяла sha256 архива панели и зеркал правил, а ядро VPN и Telegram-прокси
+    ставила непроверенными: «то, что выложили» держалось только на TLS. Нет сумки
+    или не сошлось — отказ словами, а не молчаливая установка."""
+    if not sum_url:
+        raise RuntimeError(f"{what}: на выдаче нет контрольной суммы — не ставим непроверенный файл")
+    sp = path + ".sum"
+    try:
+        _dl(sum_url, sp)
+    except Exception as e:
+        raise RuntimeError(f"{what}: не удалось взять контрольную сумму ({type(e).__name__}) — не ставим")
+    try:
+        with open(sp, encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+    except Exception:
+        txt = ""
+    exp = _sha_expect(txt)
+    if not exp:
+        raise RuntimeError(f"{what}: файл суммы непонятного формата — не ставим")
+    got = _sha256_file(path)
+    if got.lower() != exp.lower():
+        raise RuntimeError(f"{what}: sha256 не совпал ({got[:12]}… вместо {exp[:12]}…) — файл отклонён")
+    return exp[:16]
+
+def _free_bytes(path):
+    st = None
+    try:
+        st = os.statvfs(path)
+    except Exception:
+        return -1
+    try:
+        return int(st.f_bavail) * int(st.f_frsize)
+    except Exception:
+        return -1
+
+def _need_room(dst, need, what):
+    """Свободное место ДО записи. Запись на полном диске падает на середине, а
+    середина здесь — боевой файл, с которого панель запускается. Проверка стоит
+    микросекунду, откопать панель после неё приходится с консоли."""
+    free = _free_bytes(os.path.dirname(dst) or ".")
+    if free >= 0 and free < need:
+        raise RuntimeError(f"{what}: свободно {free // 1024} КБ, нужно не меньше "
+                           f"{need // 1024} КБ — не пишем")
+
+def _write_atomic(src, dst, mode=None):
+    """Файл → файл через временный файл в той же директории и os.replace.
+    rename атомарен: на боевом пути лежит либо целиком старый файл, либо целиком
+    новый. Обычный copy2 на половине записи оставляет обрезанный panel.py, а
+    systemd не поднимет панель с SyntaxError — то есть единственный способ
+    «вернуться после сбоя» сам всё и ломает."""
+    d = os.path.dirname(dst) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(dst) + ".new.")
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as f:
+            shutil.copyfileobj(f, out)
+            out.flush()
+            os.fsync(out.fileno())
+        if mode is None:
+            try:
+                mode = os.stat(src).st_mode & 0o777
+            except Exception:
+                mode = 0o755
+        os.chmod(tmp, mode)
+        os.replace(tmp, dst)
+        tmp = None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+    try:
+        dfd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except Exception:
+        pass
+
+def _src_version(path):
+    """VERSION из исходника panel.py, не запуская его. Нужна, чтобы «обновились
+    до v2.17.0» означало то, что лежит в архиве: несоответствие тега и сборки
+    иначе всплывает только через неделю, когда «обновление» предлагается снова."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            m = re.search(r'^VERSION\s*=\s*"([^"]+)"', f.read(), re.M)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+# ---------- jobs: долгое обновление вне «корзины» состояния ----------
+# `_dl` качает с timeout=90, и раньше это происходило внутри do_POST под
+# `_STATE_LOCK`. Замерено на живой машине (gp/x1_lock_hold_test.py): висячая
+# загрузка xray держала замок 90 с, параллельная «создать подписчика» ждала
+# 87.5 с вместо 0.32 с, а фоновый тик — автоблокировка и предупреждения — в это
+# время вообще не мог взять замок. Сеть к состоянию панели отношения не имеет,
+# поэтому такие ручки уехали в отдельную нить с живым журналом шагов (тот же
+# урок, что v2.15.1 выучил на выпуске сертификатов: долгий POST браузер рвёт и
+# пишет «не вышло» ровно тогда, когда сервер доделывает работу).
+
+_UP_JOBS = {}
+_UP_LOCK = threading.Lock()
+_UP_STEPS = {
+    "panel": ["Релиз", "Скачивание", "Проверка", "Точка отката", "Установка"],
+    "xray": ["Скачивание", "Проверка", "Тест конфига", "Точка отката", "Перезапуск"],
+    # «Тест бинаря» — отдельный шаг: `telemt --version` проверяется ДО того, как
+    # прежний бинарь скопирован в точку отката. Без этой строки в журнале все
+    # последующие шаги сдвигались на чужие имена, а «Перезапуск» не закрывался
+    # никогда (индекс 4 за пределами списка молча игнорируется `_up_step`).
+    "telemt": ["Скачивание", "Проверка", "Тест бинаря", "Точка отката", "Перезапуск"],
+    "restore": ["Проверка копии", "Точка отката", "Установка"],
+    # Гео-базы xray (задание «обновить сейчас»): те же индексы, что передаёт
+    # `_xray_geo_update` в свой `step`.
+    "geo": ["Релиз", "Скачивание", "Проверка", "Замена"],
+}
+
+def _up_new(kind, params):
+    jid = uuidlib.uuid4().hex[:12]
+    now = int(time.time())
+    with _UP_LOCK:
+        for k in [x for x, v in _UP_JOBS.items()
+                  if v.get("done") and now - int(v.get("created") or 0) > 3600]:
+            _UP_JOBS.pop(k, None)
+        while len(_UP_JOBS) > 20:
+            oldest = min(_UP_JOBS, key=lambda x: int(_UP_JOBS[x].get("created") or 0))
+            _UP_JOBS.pop(oldest, None)
+        _UP_JOBS[jid] = {"id": jid, "kind": kind, "done": False, "ok": False,
+                         "error": None, "result": None, "created": now,
+                         "params": dict(params or {}),
+                         "steps": [{"name": s, "state": "pending", "detail": ""}
+                                   for s in _UP_STEPS.get(kind, [])]}
+    return jid
+
+def _up_busy():
+    with _UP_LOCK:
+        return [j for j in _UP_JOBS.values() if not j.get("done")]
+
+def _up_step(jid, idx, state, detail=""):
+    with _UP_LOCK:
+        j = _UP_JOBS.get(jid)
+        if j and 0 <= idx < len(j["steps"]):
+            j["steps"][idx]["state"] = state
+            if detail:
+                j["steps"][idx]["detail"] = str(detail)[:200]
+
+def _up_finish(jid, ok, result=None, error=None):
+    with _UP_LOCK:
+        j = _UP_JOBS.get(jid)
+        if j:
+            j["done"] = True
+            j["ok"] = bool(ok)
+            j["result"] = result
+            j["error"] = (str(error)[:300] if error else None)
+            # Шаг, на котором всё оборвалось, остался бы «в процессе» навсегда:
+            # морда показывала бы «▶ Скачивание» под уже мёртвой задачей.
+            if not ok:
+                for s in j["steps"]:
+                    if s["state"] == "running":
+                        s["state"] = "failed"
+                        if not s["detail"]:
+                            s["detail"] = (str(error) or "")[:120]
+
+def _up_view(jid):
+    with _UP_LOCK:
+        j = _UP_JOBS.get(jid)
+        if not j:
+            return None
+        return {"id": j["id"], "kind": j["kind"], "done": j["done"], "ok": j["ok"],
+                "error": j["error"], "result": j["result"], "created": j["created"],
+                "steps": [dict(s) for s in j["steps"]]}
+
+def _up_list():
+    with _UP_LOCK:
+        ids = sorted(_UP_JOBS, key=lambda x: -int(_UP_JOBS[x].get("created") or 0))
+        out = []
+        for i in ids[:10]:
+            j = _UP_JOBS[i]
+            out.append({"id": j["id"], "kind": j["kind"], "done": j["done"], "ok": j["ok"],
+                        "error": j["error"], "created": j["created"],
+                        "steps": [dict(s) for s in j["steps"]]})
+        return out
+
+def _up_start(kind, fn, params=None):
+    if _up_busy():
+        raise RuntimeError("панель уже ставит одно обновление — дождись его")
+    jid = _up_new(kind, params)
+    def run():
+        try:
+            res = fn(jid)
+            _up_finish(jid, True, res)
+        except Exception as e:
+            _up_finish(jid, False, error=e)
+            # Журнал задачи живёт в памяти час, а «кто и почему не поставил»
+            # должно пережить перезапуск панели.
+            _audit("update_job_failed", kind=kind,
+                   version=(params or {}).get("version") or None,
+                   reason=type(e).__name__ + ": " + str(e)[:200])
+            print(f"[update:{kind}] {type(e).__name__}: {str(e)[:200]}", flush=True)
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "job": jid, "kind": kind}
+
 def _check_update():
     rel = _gh_latest()
-    tag = rel.get("tag_name", "").lstrip("v")
-    newer = False
-    if tag and tag != VERSION:
-        newer = _ver_tuple(tag) > _ver_tuple(VERSION)
+    tag = str(rel.get("tag_name", "")).lstrip("v")
+    newer = bool(tag) and _ver_tuple(tag) > _ver_tuple(VERSION)
     return {"current": VERSION, "latest": tag,
             "url": rel.get("html_url", ""),
-            "update_available": newer}
+            "update_available": newer,
+            # «новее релиза» — не то же самое, что «обновлений нет»: на этой
+            # машине может стоять сборка, которую ещё не выложили. Сказанное
+            # вслух спасает от «почему кнопка неактивна, если я новее».
+            "ahead": bool(tag) and _ver_tuple(VERSION) > _ver_tuple(tag)}
 
-def _install_update():
+def _install_update(confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: обновление заменяет panel.py и index.html и перезапускает панель")
     rel = _gh_latest()
-    tag = rel.get("tag_name", "").lstrip("v")
-    if not tag: raise RuntimeError("в релизе нет tag_name")
+    tag = str(rel.get("tag_name", "")).lstrip("v")
+    step(0, "done", "v" + (tag or "?"))
+    if not tag:
+        raise RuntimeError("в релизе нет tag_name")
     if not (_ver_tuple(tag) > _ver_tuple(VERSION)):
-        raise RuntimeError("нет обновлений (текущая " + VERSION + ")")
-    assets = {a["name"]: a["url"] for a in rel.get("assets", [])}
+        raise RuntimeError("нет обновлений (текущая " + VERSION + ", в релизе " + (tag or "?") + ")")
+    arch_url = _gh_asset(rel, "veil.tar.gz")
+    sum_url = _gh_asset(rel, "veil.tar.gz.sha256")
     for need in ("veil.tar.gz", "veil.tar.gz.sha256"):
-        if need not in assets: raise RuntimeError("в релизе нет " + need)
+        if not _gh_asset(rel, need):
+            raise RuntimeError("в релизе нет " + need)
     with tempfile.TemporaryDirectory(prefix="veil-up-") as tmp:
         arch = os.path.join(tmp, "veil.tar.gz"); shaf = os.path.join(tmp, "sha256")
-        _dl(assets["veil.tar.gz"], arch); _dl(assets["veil.tar.gz.sha256"], shaf)
-        with open(shaf) as f: expected = f.read().strip().split()[0]
+        step(1, "running")
+        _dl(arch_url, arch); _dl(sum_url, shaf)
+        step(1, "done")
+        with open(shaf, encoding="utf-8", errors="replace") as f:
+            expected = _sha_expect(f.read())
         actual = _sha256_file(arch)
+        step(2, "running")
+        if not expected:
+            # Файл суммы есть, но прочесть его мы не умеем — это не «совпало
+            # молча»: без сверки ставится то, что кто-то выложил под этим тегом.
+            _audit("panel_update_denied", to=tag, reason="sha256-format")
+            step(2, "failed", "формат файла суммы")
+            raise RuntimeError("файл суммы релиза непонятного формата — обновление отклонено")
         if actual.lower() != expected.lower():
+            _audit("panel_update_denied", to=tag, reason="sha256", sha=actual[:16])
+            step(2, "failed", "sha256")
             raise RuntimeError("sha256 не совпал — обновление отклонено")
         exdir = os.path.join(tmp, "x"); os.makedirs(exdir, exist_ok=True)
         with tarfile.open(arch, "r:gz") as tar:
             for m in tar.getmembers():
                 base = os.path.basename(m.name)
                 if base not in ("panel.py", "index.html"): continue
+                if not m.isreg():
+                    # симлинк или каталог с именем panel.py: extract бы его создал,
+                    # а copy2 прочитал бы то, на что он указывает, — чужой файл
+                    # уехал бы в боевой путь
+                    continue
                 m.name = base
-                tar.extract(m, exdir)
+                try:
+                    tar.extract(m, exdir, filter="data")
+                except TypeError:
+                    tar.extract(m, exdir)
         for fn in ("panel.py", "index.html"):
             if not os.path.exists(os.path.join(exdir, fn)):
                 raise RuntimeError("в архиве нет " + fn)
+        newpy = os.path.join(exdir, "panel.py")
         # sha256 архива сходится — значит файл тот. Но «тот» не значит «рабочий»:
         # если релиз содержит панель, которая не стартует, мы сами себя похороним
-        # (копия-то есть, а поднять её через морду уже нельзя). Проверка на диске
-        # ПЕРЕД заменой боевого файла.
-        sane, err = _py_sane(os.path.join(exdir, "panel.py"))
+        # (копия-то есть, а поднять её через морду уже нельзя).
+        sane, err = _py_sane(newpy)
         if not sane:
+            _audit("panel_update_denied", to=tag, reason="compile", detail=err[:160])
+            step(2, "failed", "compile")
             raise RuntimeError("panel.py из релиза не компилируется: " + err)
+        inner = _src_version(newpy)
+        if inner and inner != tag:
+            _audit("panel_update_denied", to=tag, reason="version", found=inner)
+            step(2, "failed", "VERSION=" + inner)
+            raise RuntimeError(f"в архиве панель v{inner}, а релиз v{tag} — обновление отклонено")
+        step(2, "done", "sha256 " + actual[:12] + "…")
+        need = 2 * (os.path.getsize(newpy) + os.path.getsize(os.path.join(exdir, "index.html"))) + 4 * 1024 * 1024
+        _need_room(os.path.join(BASE, "panel.py"), need, "обновление панели")
+        step(3, "running")
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
         bdir = f"{BASE}/backup-v{VERSION}-{ts}"
         os.makedirs(bdir, exist_ok=True)
         for fn in ("panel.py", "index.html"):
             src = os.path.join(BASE, fn)
             if os.path.exists(src): shutil.copy2(src, os.path.join(bdir, fn))
-        for fn in ("panel.py", "index.html"):
-            shutil.copy2(os.path.join(exdir, fn), os.path.join(BASE, fn))
-        os.chmod(os.path.join(BASE, "panel.py"), 0o755)
+        step(3, "done", os.path.basename(bdir))
+        step(4, "running")
+        boot_before = int(time.time())
+        # Страж заводится ДО замены файлов: если страховка не поднялась, панель
+        # перезаписывать нечем («обновление, после которого панель не стартует»
+        # лечится только консолью), а порядок спавна до записи значит, что
+        # оборвавшаяся на середине замена всё равно будет кем откатана.
+        if not _update_guard_spawn(bdir, tag, boot_before):
+            _audit("panel_update_denied", to=tag, reason="guard")
+            step(4, "failed", "страхование не запустилось")
+            raise RuntimeError("страж отката не запустился — панель не перезаписываем")
+        for fn, mode in (("panel.py", 0o755), ("index.html", 0o644)):
+            _write_atomic(os.path.join(exdir, fn), os.path.join(BASE, fn), mode)
+        _audit("panel_update", to=tag, sha=actual[:16], backup=os.path.basename(bdir))
+        step(4, "done", "v" + tag)
     _panel_restart_soon()
-    return {"ok": True, "from": VERSION, "to": tag, "restarting": True}
+    return {"ok": True, "from": VERSION, "to": tag, "restarting": True,
+            "backup": os.path.basename(bdir)}
 
 # ---------- Telegram Bot Processing ----------
 
@@ -5285,12 +6365,16 @@ def _is_admin(chat_id):
     return str(chat_id) in [str(x) for x in admin_ids]
 
 BOT_LANGS = f"{BASE}/bot_langs.json"
+# Потолок тела вебхука: Telegram отдаёт update не больше 128 КБ, а общий лимит
+# панели — 8 МБ. Без своего потолка неаутентифицированный клиент заставлял бы
+# панель читать и разбирать 8-мегабайтные мусорные bodies на каждое соединение.
+_BOT_WEBHOOK_MAXB = 512 * 1024
 _BOT_RU = {
     "m_status": "📊 Статус", "m_clients": "👥 Клиенты",
     "m_addsub": "➕ Добавить подписку", "m_restart": "🔄 Перезапустить Xray",
     "m_2fa": "🔐 2FA", "m_help": "❓ Помощь", "m_lang": "🌐 Язык",
     "start": "🤖 <b>Veil Panel Bot</b>\nВаш Chat ID: <code>%s</code>\n\nВыберите действие:",
-    "norights": "⛔ Нет прав доступа. Ваш ID: %s. Админ ID: %s",
+    "norights": "⛔ Нет прав доступа. Ваш ID: %s",
     "norights_short": "⛔ Нет прав доступа",
     "nocallback": "Ошибка: нет сообщения",
     "add_step1": "➕ <b>Новая подписка</b>\nШаг 1 из 3. Отправь <b>имя</b> клиента (например: <b>Мама</b>).\nОтмена: /cancel",
@@ -5398,7 +6482,7 @@ _BOT_TXT = {
     "m_addsub": "➕ Add subscription", "m_restart": "🔄 Restart Xray",
     "m_2fa": "🔐 2FA", "m_help": "❓ Help", "m_lang": "🌐 Language",
     "start": "🤖 <b>Veil Panel Bot</b>\nYour Chat ID: <code>%s</code>\n\nChoose an action:",
-    "norights": "⛔ Access denied. Your ID: %s. Admin IDs: %s",
+    "norights": "⛔ Access denied. Your ID: %s",
     "norights_short": "⛔ Access denied",
     "nocallback": "Error: no message",
     "add_step1": "➕ <b>New subscription</b>\nStep 1 of 3. Send the client <b>name</b> (e.g. <b>Mom</b>).\nCancel: /cancel",
@@ -5503,7 +6587,7 @@ _BOT_TXT = {
     "m_addsub": "➕ افزودن اشتراک", "m_restart": "🔄 ریستارت Xray",
     "m_2fa": "🔐 2FA", "m_help": "❓ راهنما", "m_lang": "🌐 زبان",
     "start": "🤖 <b>ربات Veil Panel</b>\nشناسه گفتگوی شما: <code>%s</code>\n\nیک عملیات انتخاب کنید:",
-    "norights": "⛔ دسترسی ندارید. شناسه شما: %s. شناسه مدیر: %s",
+    "norights": "⛔ دسترسی ندارید. شناسه شما: %s",
     "norights_short": "⛔ دسترسی ندارید",
     "nocallback": "خطا: پیامی وجود ندارد",
     "add_step1": "➕ <b>اشتراک جدید</b>\nمرحله ۱ از ۳. <b>نام</b> کاربر را بفرستید (مثلاً <b>مامان</b>).\nلغو: /cancel",
@@ -5605,7 +6689,7 @@ _BOT_TXT = {
     "m_addsub": "➕ 添加订阅", "m_restart": "🔄 重启 Xray",
     "m_2fa": "🔐 两步验证", "m_help": "❓ 帮助", "m_lang": "🌐 语言",
     "start": "🤖 <b>Veil 面板机器人</b>\n您的 Chat ID：<code>%s</code>\n\n请选择操作：",
-    "norights": "⛔ 无权限。您的 ID：%s。管理员 ID：%s",
+    "norights": "⛔ 无权限。您的 ID：%s",
     "norights_short": "⛔ 无权限",
     "nocallback": "错误：没有消息",
     "add_step1": "➕ <b>新建订阅</b>\n第 1/3 步：发送客户<b>名字</b>（例如<b>妈妈</b>）。\n取消：/cancel",
@@ -5823,7 +6907,7 @@ def _bot_sub_status_msg(u, B):
     now = time.time()
     ex = int(u.get("expiry") or 0)
     if ex:
-        exp_txt = time.strftime(L["datefmt"], time.localtime(ex))
+        exp_txt = _ldate(L["datefmt"], ex)
         dl = int(ex - now)
         if dl < 0:
             exp_txt += " · " + L["exp_over"]
@@ -5903,8 +6987,7 @@ def _bot_sub_cb(chat_id, data, B):
             for u in subs[:3]:
                 ex = int(u.get("expiry") or 0)
                 try:
-                    exp_txt = (time.strftime("%d.%m.%Y", time.localtime(ex))
-                               if ex else B["noexp"])
+                    exp_txt = (_ldate("%d.%m.%Y", ex) if ex else B["noexp"])
                 except Exception:
                     exp_txt = B["noexp"]
                 rows = []
@@ -5935,7 +7018,7 @@ def _bot_sub_cb(chat_id, data, B):
         lines = []
         for u in subs[:5]:
             ex = int(u.get("expiry") or 0)
-            exp_txt = (time.strftime("%d.%m.%Y", time.localtime(ex) if ex else time.localtime()))
+            exp_txt = _ldate("%d.%m.%Y", ex if ex else None)
             lines.append("• %s — %s" % (u.get("name") or "?",
                                         exp_txt if ex else B["noexp"]))
         msg = B["sub_renew_admin"] % (_html.escape(", ".join(
@@ -5996,13 +7079,13 @@ def _gp_maybe_alert(entry):
         B = _bot_B(ids[0])
         if pct <= 50.0 and not _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = True
-            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+            ts = _ldate("%d.%m %H:%M")
             _bot_send_message(ids[0],
                 B["gp_low"] % (ok, total, f"{pct:.0f}", ts, B["m_status"]),
                 "HTML")
         elif pct > 50.0 and _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = False
-            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+            ts = _ldate("%d.%m %H:%M")
             _bot_send_message(ids[0],
                 B["gp_recover"] % (ok, total, f"{pct:.0f}", ts),
                 "HTML")
@@ -6288,6 +7371,14 @@ def _shop_try_bind(username, chat_id, B):
                         hit += 1
             if hit:
                 _save(STATE, st)
+            else:
+                # Подписчика с тем же токеном больше нет (его удалили после
+                # оплаты). Раньше счёт всё равно помечался привязанным и
+                # покупателю уходило письмо со ссылкой на несуществующую
+                # подписку: ни у счёта, ни у человека ничего нет, а в журнале —
+                # «доставлено». Теперь привязка либо настоящая, либо её нет.
+                _audit("shop_tg_bind_lost", inv=inv["id"], chat=str(chat_id))
+                continue
             with PAY_LOCK:
                 d = _pay_load()
                 v = d["invoices"].get(inv["id"])
@@ -6327,7 +7418,7 @@ def _pay_extend(inv):
     _, _mems = _fam(st, uid)
     for c in grp:
         if days > 0:
-            ex = int(c.get("expiry") or 0)
+            ex = _ts_of(c.get("expiry"))
             c["expiry"] = (max(now, ex) if ex else now) + days * 86400
             c["warned_days"] = []
     if days > 0:
@@ -6755,6 +7846,7 @@ def _pay_handle_public(self, p):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self._sec_headers()
         self.end_headers()
         self.wfile.write(b)
         return True
@@ -6766,6 +7858,7 @@ def _pay_handle_public(self, p):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self._sec_headers()
         self.end_headers()
         self.wfile.write(b)
         return True
@@ -6983,9 +8076,30 @@ def _onboard_notify():
     except Exception as e:
         print("onboard bot: " + str(e), flush=True)
 
+def _bot_fp(tok):
+    """Отпечаток токена, а не сам токен: задание лежит в очереди, а очередь может
+    попасть в дамп или traceback — живую секретную строку туда класть не зачем."""
+    return hashlib.sha256((tok or "").encode("utf-8")).hexdigest()[:16]
+
 def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
     token = CFG_CACHE.get("bot_token", "")
     if not token:
+        return
+    fp = _bot_fp(token)
+    job = (_bot_send_now, (fp, chat_id, text, parse_mode, reply_markup))
+    if _notify_capture(job):
+        return   # уйдёт сам, когда вызывающий отпустит _STATE_LOCK
+    # Корзины нет — значит мы не в запросе и не в тике: это фоновый поток
+    # (предупреждение о блокировке, бэкап, продление адреса). Ждать чужого
+    # Telegram здесь всё равно что занять его собой: 10 с на письмо, и поток,
+    # который должен следить за лимитами, сам перестаёт за ними следить.
+    _notify_out(job)
+
+def _bot_send_now(want_fp, chat_id, text, parse_mode=None, reply_markup=None):
+    token = CFG_CACHE.get("bot_token", "")
+    if not token or _bot_fp(token) != want_fp:
+        # письмо копилось в очереди, а за это время бота заменили или выключили:
+        # отдать старое письмо новому боту — значит написать не туда
         return
     if len(text) > 4000:
         text = text[:4000] + "\n… (обрезано)"
@@ -7010,10 +8124,24 @@ def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
     except Exception as e:
         print("[bot] sendMessage error: " + str(e), flush=True)
 
+
 def _bot_answer_callback(callback_query_id, text=None, show_alert=False):
     token = CFG_CACHE.get("bot_token", "")
     if not token:
         return
+    # Ответ на нажатие — тоже чужой сервис с urlopen(timeout=10). Вызывается из
+    # _process_bot_update, который держит _STATE_LOCK: без отсрочки одно молчаливое
+    # нажатие стоило бы панели 10 секунд простоя всей пишущей морды (находка #14).
+    fp = _bot_fp(token)
+    job = (_bot_answer_now, (fp, callback_query_id, text, show_alert))
+    if _notify_capture(job):
+        return
+    _notify_out(job)
+
+def _bot_answer_now(want_fp, callback_query_id, text=None, show_alert=False):
+    token = CFG_CACHE.get("bot_token", "")
+    if not token or _bot_fp(token) != want_fp:
+        return   # бота за это время сменили — старому нажатию отвечать нечему
     try:
         url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
         data = {"callback_query_id": callback_query_id}
@@ -7037,7 +8165,39 @@ def _lang_keyboard():
         {"text": "中文", "callback_data": "lang_zh"},
     ]]}
 
+_BOT_SEEN = {}
+_BOT_SEEN_LK = threading.Lock()
+_BOT_SEEN_MAX = 4096
+
+
+def _bot_uid(update):
+    try:
+        return int(update.get("update_id"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _process_bot_update(update):
+    """Исполнить update ровно один раз. Telegram отдаёт вебхум «не меньше одного
+    раза» и повторяет поставку, если ответ не дошёл или запоздал, — а второй
+    /addsub это два подписчика, второй /restart — второй обрыв на 48 живых
+    клиентах. Запоминаем только УСПЕШНУЮ обработку: если внутри исключение,
+    повтор обязан иметь шанс доделать."""
+    uid = _bot_uid(update)
+    if uid is not None:
+        with _BOT_SEEN_LK:
+            if uid in _BOT_SEEN:
+                return
+    _bot_update_apply(update)
+    if uid is not None:
+        with _BOT_SEEN_LK:
+            _BOT_SEEN[uid] = int(time.time())
+            if len(_BOT_SEEN) > _BOT_SEEN_MAX:
+                for k in sorted(_BOT_SEEN, key=lambda x: _BOT_SEEN[x])[:len(_BOT_SEEN) - _BOT_SEEN_MAX]:
+                    _BOT_SEEN.pop(k, None)
+
+
+def _bot_update_apply(update):
     message = update.get("message") or update.get("edited_message")
     callback_query = update.get("callback_query")
     
@@ -7080,7 +8240,11 @@ def _process_bot_update(update):
             _bot_answer_callback(callback_query_id)
             return _bot_sub_cb(chat_id, data, B)
         if not _is_admin(from_id):
-            _bot_send_message(chat_id, B["norights"] % (from_id, CFG_CACHE.get('bot_chat_ids', [])))
+            # чужие chat_id наружу не отдаём: «нет прав» — это не подсказка, кому
+            # и кого подставлять, чтобы права появились
+            print("[bot] norights: chat=%s from=%s admins=%s" %
+                  (chat_id, from_id, CFG_CACHE.get('bot_chat_ids', [])), flush=True)
+            _bot_send_message(chat_id, B["norights"] % from_id)
             _bot_answer_callback(callback_query_id, B["norights_short"], show_alert=True)
             return
         # Answer callback query first (required by Telegram)
@@ -7747,6 +8911,12 @@ def _perm_for(p, m):
         return ["hop"]
     if p.startswith("/api/migrate"):
         return ["owner"]
+    if p in ("/api/tg/switch", "/api/tg/restore"):
+        # Подмена бинаря и перезапуск systemd-службы — это не «переключить прокси»,
+        # а замена софта на машине: право settings, а не proxy. Иначе сотрудник с
+        # единственной галкой «прокси» получает возможность залить любой телемет
+        # руткит и поднять его той же кнопкой.
+        return ["settings"]
     if (p.startswith("/api/tg/") or p.startswith("/api/webproxy")
             or p.startswith("/api/webmux") or p.startswith("/api/front/")):
         return ["proxy"]
@@ -8481,7 +9651,7 @@ echo "${{ok:-не активно}}"
         finish(False, f"сбой на шаге «{cur}» (см. logs/panel.err)")
 
 def _node_expiry_days(c):
-    ex = int(c.get("expiry") or 0)
+    ex = _ts_of(c.get("expiry"))
     if ex <= 0:
         return 0
     return max(0, -(-(ex - int(time.time())) // 86400))
@@ -8573,14 +9743,14 @@ def _deploy_client_to_veil(n, host, recs, by_proto, u):
         return deployed, [{"host": host, "reason": "нет общего поддерживаемого протокола с нодой"}]
     c0 = by_proto[proto_local][2]
     body = {"name": c0.get("name") or "Клиент", "proto": proto_local,
-            "limit_gb": float(c0.get("limit_gb") or 0)}
+            "limit_gb": _gb_of(c0.get("limit_gb"))}
     ed = _node_expiry_days(c0)
     if ed:
         body["expiry_days"] = ed
     if c0.get("reset_cycle"):
         body["reset_cycle"] = c0["reset_cycle"]
-    if int(c0.get("max_devices") or 0) > 0:
-        body["max_devices"] = int(c0["max_devices"])
+    if _cnt_of(c0.get("max_devices")) > 0:
+        body["max_devices"] = _cnt_of(c0["max_devices"])
     data, err, _ = _node_call(n, "/api/ext/clients", body)
     nc = (data or {}).get("client") or {}
     if data is None or not nc.get("uuid"):
@@ -8604,7 +9774,7 @@ def _deploy_client_to_agent(n, host, recs, rec, u):
         elif not ap.get("public_key"):
             return deployed, [{"host": host, "reason": herr or "нода не вернула параметры"}]
     body = {"action": "add", "uuid": u, "name": c0.get("name") or "Клиент",
-            "limit_gb": float(c0.get("limit_gb") or 0)}
+            "limit_gb": _gb_of(c0.get("limit_gb"))}
     ed = _node_expiry_days(c0)
     if ed:
         body["expiry_days"] = ed
@@ -8691,12 +9861,12 @@ def _repropagate_client_to_nodes(st, u):
         if (n.get("type") or "agent") == "agent":
             _node_call(n, "/agent/apply", {
                 "action": "set_limits", "uuid": e["uuid"],
-                "limit_gb": float(c0.get("limit_gb") or 0),
+                "limit_gb": _gb_of(c0.get("limit_gb")),
                 "expiry_days": _node_expiry_days(c0),
                 "reset_cycle": c0.get("reset_cycle") or ""}, timeout=6)
         else:
             _node_call(n, "/api/ext/clients/update", {
-                "uuid": e["uuid"], "limit_gb": float(c0.get("limit_gb") or 0),
+                "uuid": e["uuid"], "limit_gb": _gb_of(c0.get("limit_gb")),
                 "expiry_days": _node_expiry_days(c0)}, timeout=6)
 
 
@@ -11839,7 +13009,7 @@ def _device_tick(st):
                 tok_of[c["uuid"]] = c["sub_token"]
             if proto in ("wireguard", "amneziawg"):
                 continue
-            md = int(c.get("max_devices") or 0)
+            md = _cnt_of(c.get("max_devices"))
             if md > 0:
                 limits[c["uuid"]] = max(limits.get(c["uuid"], 0), md)
     now = time.time()
@@ -11946,14 +13116,23 @@ def _gh_release_latest(repo):
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
 
-def _geo_dat_trim(buf, keep):
-    """Обрезка xray-дайджеста .dat до нужных кодов, чтобы мобильный клиент
-    успевал скачать базу: зеркало runetfreedom весит 18/73 МБ, а Happ/INCY
-    обрывают загрузку геофайлов дольше ~3 минут. Формат — GeoData: поток
-    записей 0x0a <varint len> <GeoField>, имя кода — string-поле 1 (у
-    зеркал оно ВЕРХНЕГО регистра; поиск xray регистронезависим). Возвращает
-    new bytes или None (тогда пишем полный файл). Если хоть одного кода из
-    keep нет — тоже None: лучше медленная полная база, чем битая."""
+def _varint_enc(k):
+    out = bytearray()
+    while True:
+        c = k & 0x7F; k >>= 7
+        out.append(c | (0x80 if k else 0))
+        if not k:
+            return bytes(out)
+
+def _geo_dat_walk(buf):
+    """Разобрать xray-дайджест гео-базы (.dat = GeoData) на записи.
+    -> [(КОД, payload)]; код — верхний регистр. ValueError, если дайджест читается
+    не до конца: молча вернуть половину базы нельзя, её примут за рабочую.
+
+    Имя кода — string-поле 1 (fn==1) внутри GeoField; в дайджестах оно ВЕРХНЕГО
+    регистра, поиск xray регистронезависим. Разбор один на двух потребителей —
+    обрезку клиентской базы и проверку серверной: второй разбор, написанный
+    отдельно, разошёлся бы с первым при первой же правке."""
     n = len(buf)
     def rdv(b, o):
         v = 0; sh = 0
@@ -11964,13 +13143,6 @@ def _geo_dat_trim(buf, keep):
                 return v, o
             sh += 7
         raise ValueError("varint")
-    def varint_enc(k):
-        out = bytearray()
-        while True:
-            c = k & 0x7F; k >>= 7
-            out.append(c | (0x80 if k else 0))
-            if not k:
-                return bytes(out)
     def gtype(payload):
         o = 0
         while o < len(payload):
@@ -11988,25 +13160,39 @@ def _geo_dat_trim(buf, keep):
             elif wt == 1:
                 o += 8
             else:
-                return None
-        return None
-    out = bytearray(); found = set(); off = 0
+                raise ValueError("wire type " + str(wt))
+        raise ValueError("нет имени кода")
+    recs = []
+    off = 0
     while off < n:
         if buf[off] != 0x0A:
-            return None
+            raise ValueError("не запись 0x0a")
         off += 1
         ln, off = rdv(buf, off)
         end = off + ln
         if end > n:
-            return None
+            raise ValueError("длина за концом буфера")
         payload = buf[off:end]; off = end
-        t = gtype(payload)
-        if t is None:
-            return None
-        if t.upper() in keep:
-            found.add(t.upper())
-            out += b"\x0a" + varint_enc(ln) + payload
-    if found != {k.upper() for k in keep}:
+        recs.append((gtype(payload).upper(), payload))
+    return recs
+
+def _geo_dat_trim(buf, keep):
+    """Обрезка xray-дайджеста .dat до нужных кодов, чтобы мобильный клиент
+    успевал скачать базу: зеркало runetfreedom весит 18/73 МБ, а Happ/INCY
+    обрывают загрузку геофайлов дольше ~3 минут. Возвращает new bytes или None
+    (тогда пишем полный файл). Если хоть одного кода из keep нет — тоже None:
+    лучше медленная полная база, чем битая."""
+    try:
+        recs = _geo_dat_walk(buf)
+    except Exception:
+        return None
+    want = {k.upper() for k in keep}
+    out = bytearray(); found = set()
+    for t, payload in recs:
+        if t in want:
+            found.add(t)
+            out += b"\x0a" + _varint_enc(len(payload)) + payload
+    if found != want:
         return None
     return bytes(out)
 
@@ -12097,6 +13283,178 @@ def _rulesets_update():
           else "[rulesets] " + _RULESET_STATE["error"], flush=True)
     return not errs
 
+# ---------- гео-базы самого xray ----------
+# `ru_bypass` решает маршрут по кодам `geoip:ru` и `geosite:category-ru`, а xray
+# берёт их из СВОИХ баз в /usr/local/share/xray. Их кладёт установщик — и больше
+# никто не трогает: панель зеркалила свежее зеркало для клиентов (rulesets/), а
+# сервер продолжал маршрутизировать по сетям годовалой давности. Разница видна
+# только клиентам: новый РФ-оператор, не попавший в старую базу, уезжает за
+# границу вместо прямого хода. Проверить это глазами нельзя, поэтому возраст баз
+# показан в настройках, а не только в логе.
+
+XRAY_GEO_DIR = "/usr/local/share/xray"
+GEO_BASE_REPO = "Loyalsoldier/v2ray-rules-dat"
+# Что обязано быть в скачанной базе, иначе обход РФ-трафика перестанет различать
+# своё. Менять эти имена без правки `_build_xray_cfg` нельзя.
+GEO_BASE_WANT = {"geoip.dat": ("ru", "private"), "geosite.dat": ("category-ru",)}
+# Меньше — это не база, а страница-заглушка GitHub или обрезанный ответ прокси.
+GEO_BASE_MIN = 300000
+_XRAY_GEO = {"updated": 0, "error": "", "tag": "", "files": {}, "replaced": []}
+_GEO_LK = threading.Lock()
+
+def _xray_start_ts():
+    """Время (Epoch) запуска процесса xray — чтобы честно сказать, перечитал ли он
+    базы. xray читает .dat один раз при старте, поэтому свежий файл на диске ещё не
+    значит свежая маршрутизация. Monotonic-часы ядра и /proc/uptime берутся вместе:
+    у systemd-ной отметки нет часового пояса, и на сервере с MSK она врёт на 3 ч,
+    чего хватает, чтобы перепутать «перечитано» с «ждёт перезапуска»."""
+    try:
+        r = subprocess.run(["systemctl", "show", "xray",
+                            "-p", "ExecMainStartTimestampMonotonic", "--value"],
+                           capture_output=True, text=True, timeout=10)
+        mono = int((r.stdout or "0").strip()) / 1e6
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        if mono <= 0:
+            return 0.0
+        return time.time() - (up - mono)
+    except Exception:
+        return 0.0
+
+def _xray_geo_state_view():
+    """Что показать оператору: возраст каждой базы с диска, версия релиза, ошибка
+    последней попытки и перечитал ли её xray. Молча устаревшая база хуже молча
+    неудачного обновления — отсюда возраст в настройках, а не только в логе."""
+    with _GEO_LK:
+        out = dict(_XRAY_GEO)
+        out["files"] = dict(_XRAY_GEO["files"])
+    now = time.time()
+    for name in GEO_BASE_WANT:
+        info = dict(out["files"].get(name) or {})
+        try:
+            stt = os.stat(os.path.join(XRAY_GEO_DIR, name))
+            info["size"] = stt.st_size
+            info["mtime"] = int(stt.st_mtime)
+            info["age_days"] = int((now - stt.st_mtime) // 86400)
+        except OSError:
+            info.update({"size": 0, "mtime": 0, "age_days": None})
+        out["files"][name] = info
+    start = _xray_start_ts()
+    newest = max([v.get("mtime") or 0 for v in out["files"].values()] or [0])
+    out["reloaded"] = bool(start and newest and start >= newest)
+    out["autoupdate"] = bool(CFG_CACHE.get("geo_autoupdate", True))
+    return out
+
+def _xray_geo_update(step=None):
+    """Обновить geoip.dat/geosite.dat, из которых xray читает `geoip:ru` и
+    `geosite:category-ru`. -> dict с тем, что заменили. Бросает RuntimeError с
+    причиной — её видно и в логе, и в настройках.
+
+    Файл подменяется только после трёх проверок: сумма из релиза, вменяемый
+    размер и наличие нужных кодов в самом дайджесте. Положить базу, в которой нет
+    `ru`, — значит выключить обход РФ-трафика молча и до ближайшего перезапуска;
+    оставить прежнюю, хоть и старую, честнее. Замена — os.replace в том же
+    каталоге: работающий xray держит старый inode, полусфайла он увидеть не может,
+    а при неудачной записи прежняя база остаётся на месте."""
+    step = step or (lambda i, s, d="": None)
+    if not os.path.isdir(XRAY_GEO_DIR):
+        raise RuntimeError("нет каталога баз " + XRAY_GEO_DIR)
+    step(0, "running")
+    try:
+        rel = _gh_release_latest(GEO_BASE_REPO)
+    except Exception as e:
+        with _GEO_LK:
+            _XRAY_GEO["error"] = "релиз: " + str(e)[:160]
+        raise RuntimeError("релиз " + GEO_BASE_REPO + ": " + str(e)[:160])
+    tag = str(rel.get("tag_name") or "")
+    assets = {}
+    for a in (rel.get("assets") or []):
+        if a.get("name") and a.get("browser_download_url"):
+            assets[a["name"]] = a["browser_download_url"]
+    step(0, "done", tag or "?")
+    replaced, kept, errs = [], [], []
+    with tempfile.TemporaryDirectory(prefix="geo-") as tmp:
+        for name, want in GEO_BASE_WANT.items():
+            dst = os.path.join(XRAY_GEO_DIR, name)
+            part = dst + ".part"
+            try:
+                step(1, "running", name)
+                if name not in assets or (name + ".sha256sum") not in assets:
+                    raise RuntimeError("в релизе нет этого файла")
+                p = os.path.join(tmp, name)
+                _dl(assets[name], p)
+                shf = os.path.join(tmp, name + ".sha")
+                _dl(assets[name + ".sha256sum"], shf)
+                with open(shf, encoding="utf-8", errors="replace") as f:
+                    expected = _sha_expect(f.read())
+                if not expected:
+                    raise RuntimeError("не понял файл суммы")
+                got = _sha256_file(p).lower()
+                if got != expected.lower():
+                    raise RuntimeError("sha256 не совпал")
+                step(2, "running", name)
+                size = os.path.getsize(p)
+                if size < GEO_BASE_MIN:
+                    raise RuntimeError("подозрительно малый файл — " + str(size) + " Б")
+                with open(p, "rb") as f:
+                    codes = {t for t, _ in _geo_dat_walk(f.read())}
+                miss = [c for c in want if c.upper() not in codes]
+                if miss:
+                    raise RuntimeError("в новой базе нет кода " + ", ".join(miss))
+                if os.path.exists(dst) and _sha256_file(dst).lower() == got:
+                    kept.append(name)
+                    with _GEO_LK:
+                        _XRAY_GEO["files"][name] = {"size": size, "sha": got[:12],
+                                                    "codes": len(codes)}
+                    continue
+                free = shutil.disk_usage(XRAY_GEO_DIR).free
+                if free < size * 2 + 5 * 1024 * 1024:
+                    raise RuntimeError("на диске не хватает места (" +
+                                       str(free // 1048576) + " МБ свободно)")
+                step(3, "running", name)
+                shutil.copyfile(p, part)
+                with open(part, "r+b") as f:
+                    os.fsync(f.fileno())
+                os.chmod(part, 0o644)
+                os.replace(part, dst)
+                replaced.append(name)
+                with _GEO_LK:
+                    _XRAY_GEO["files"][name] = {"size": size, "sha": got[:12],
+                                                "codes": len(codes)}
+            except Exception as e:
+                errs.append(name + ": " + str(e)[:160])
+                try:
+                    if os.path.exists(part):
+                        os.remove(part)
+                except OSError:
+                    pass
+        step(1, "done"); step(2, "done")
+        step(3, "done" if replaced else "skipped", "без изменений" if not replaced else "")
+    with _GEO_LK:
+        _XRAY_GEO["tag"] = tag
+        _XRAY_GEO["error"] = "; ".join(errs)
+        _XRAY_GEO["replaced"] = replaced
+        if replaced or not errs:
+            _XRAY_GEO["updated"] = int(time.time())
+    if errs and not replaced and not kept:
+        raise RuntimeError("; ".join(errs)[:300])
+    print(("[geo] базы xray: заменил " + ", ".join(replaced) if replaced
+           else "[geo] базы xray уже актуальны (" + tag + ")"), flush=True)
+    if errs:
+        print("[geo] " + _XRAY_GEO["error"], flush=True)
+    return {"tag": tag, "replaced": replaced, "kept": kept, "errors": errs}
+
+def _xray_geo_job(job):
+    def step(i, s, d=""):
+        _up_step(job, i, s, d)
+    res = _xray_geo_update(step=step)
+    # Одна база легла, вторая — нет. Для оператора это не «готово»: зелёная
+    # галочка спрятала бы устаревшую geosite до следующей ручной проверки, а
+    # суточный цикл свои ошибки и так пишет в журнал и в настройки.
+    if res.get("errors"):
+        raise RuntimeError("; ".join(res["errors"])[:300])
+    return res
+
 def _rulesets_loop():
     time.sleep(20)  # не тормозим старт панели
     while True:
@@ -12105,6 +13463,18 @@ def _rulesets_loop():
         except Exception as e:
             _RULESET_STATE["error"] = str(e)
             print("[rulesets] " + str(e), flush=True)
+        # Серверные базы — то же беспокойство, что и клиентские, но их молчание
+        # заметнее: устаревший `geoip:ru` на сервере портит маршрут каждому.
+        # Отказ не снимает настройку и не убивает цикл: суточная попытка есть и завтра.
+        if CFG_CACHE.get("geo_autoupdate", True):
+            try:
+                _xray_geo_update()
+            except Exception as e:
+                with _GEO_LK:
+                    _XRAY_GEO["error"] = str(e)[:300]
+                print("[geo] " + str(e)[:300], flush=True)
+        else:
+            print("[geo] автообновление баз выключено в настройках", flush=True)
         time.sleep(86400)
 
 _OWN_IP_CACHE = {"cidrs": [], "ts": 0.0}
@@ -12314,9 +13684,9 @@ def _metrics_text():
         lab = (f'email="{_ms_label(c.get("name") or str(uid)[:8])}",'
                f'uuid="{_ms_label(str(uid)[:8])}"')
         m("veil_client_used_bytes", _user_traffic(c), lab, "Traffic in current cycle")
-        lim = float(c.get("limit_gb") or 0)
+        lim = _gb_of(c.get("limit_gb"))
         m("veil_client_limit_bytes", int(lim * _GB), lab, "Traffic limit (0=unlimited)")
-        m("veil_client_expiry_timestamp", int(c.get("expiry") or 0), lab, "Expiry unix ts")
+        m("veil_client_expiry_timestamp", _ts_of(c.get("expiry")), lab, "Expiry unix ts")
         m("veil_client_blocked", 1 if c.get("blocked") else 0, lab, "Blocked by limits")
         m("veil_client_devices", len(_DEVTRACK.get(uid) or {}), lab, "Active devices (15m)")
     m("veil_login_fail_ips", sum(1 for v in _LOGIN_FAILS.values() if v),
@@ -12350,6 +13720,15 @@ def _metrics_text():
         pass
     m("veil_rulesets_updated_timestamp", _RULESET_STATE.get("updated") or 0,
       help_text="Last successful RU/IR ruleset mirror")
+    gv = {}
+    try:
+        for gn in GEO_BASE_WANT:
+            gv[gn] = int(os.stat(os.path.join(XRAY_GEO_DIR, gn)).st_mtime)
+    except OSError:
+        gv = {}
+    for gn, gm in gv.items():
+        m("veil_xray_geo_mtime_timestamp", gm, {"base": gn.replace(".dat", "")},
+          help_text="On-disk xray geo base mtime (0 = база не найдена)")
     m("veil_inbounds_total", len(st.get("inbounds") or {}))
     return "\n".join(L) + "\n"
 
@@ -12448,7 +13827,62 @@ def _xray_min_req():
         return (24, 9, 0)
     return (1, 8, 0)
 
-def _xray_switch(version):
+def _gh_release_by_tag(repo, tag):
+    url = f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+    req = urllib.request.Request(url, headers=_gh_headers())
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = json.load(r)
+    if not isinstance(d, dict):
+        raise RuntimeError("непонятный ответ GitHub")
+    return d
+
+def _zip_bin(zpath, name, dest):
+    """Достать один бинарь из архива, не позволяя ни имени участника, ни тому, на
+    что он ссылается, полезть наружу. `extract` в zipfile умеет создавать симлинки
+    (флаг в external_attr), а `isfile` по симлинку смотрит на цель: «бинарь»,
+    указывающий на ../../../../etc/passwd, прошёл бы проверку, и панель поставила
+    бы содержимое чужого файла на путь xray. Сумма с той же выдачи этому не помеха
+    — её считает тот, кто выложил архив."""
+    with zipfile.ZipFile(zpath) as arc:
+        if name not in arc.namelist():
+            raise RuntimeError("в архиве нет " + name)
+        zi = arc.getinfo(name)
+        if ((zi.external_attr >> 16) & 0o170000) == 0o120000:
+            raise RuntimeError("в архиве нет " + name + " (это ссылка, а не файл)")
+        arc.extract(name, dest)
+    p = os.path.join(dest, name)
+    if os.path.islink(p) or not os.path.isfile(p):
+        raise RuntimeError("в архиве нет " + name)
+    return p
+
+def _tar_bin(zpath, name, dest):
+    """Достать один бинарь из tar.gz, приняв только обычный файл. На свежих Python
+    от ссылок бережёт `filter="data"`, но у старой ветки этого фильтра нет (ради неё
+    здесь и `except TypeError`), а `os.path.exists`/`chmod` по симлинку смотрят на
+    цель: архив с участником «telemt -> /etc/passwd» поставил бы содержимое чужого
+    файла в /usr/bin. Сумма с той же выдачи от этого не защищает — её считает тот,
+    кто выложил архив."""
+    with tarfile.open(zpath, "r:gz") as arc:
+        if name not in arc.getnames():
+            raise RuntimeError("в архиве нет " + name)
+        m = arc.getmember(name)
+        if not m.isreg():
+            raise RuntimeError("в архиве нет " + name + " (это ссылка или каталог, а не файл)")
+        try:
+            arc.extract(m, dest, filter="data")
+        except TypeError:
+            arc.extract(m, dest)
+    p = os.path.join(dest, name)
+    if os.path.islink(p) or not os.path.isfile(p):
+        raise RuntimeError("в архиве нет " + name)
+    return p
+
+def _xray_switch(version, confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: ядро VPN будет заменено, xray перезапущен")
     version = version.strip().lstrip("v")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise RuntimeError("неверный формат версии")
@@ -12460,27 +13894,67 @@ def _xray_switch(version):
         need = "v24.9" if mreq[0] == 24 else "v1.8"
         raise RuntimeError("слишком старая версия — конфиг требует xray >= " + need)
     with tempfile.TemporaryDirectory(prefix="xray-sw-") as tmp:
-        z = os.path.join(tmp, "x.zip")
-        url = "https://github.com/XTLS/Xray-core/releases/download/v" + version + "/Xray-linux-64.zip"
-        _dl(url, z)
-        with zipfile.ZipFile(z) as arc:
-            arc.extract("xray", tmp)
-        newbin = os.path.join(tmp, "xray")
-        if not os.path.exists(newbin):
-            raise RuntimeError("в архиве нет бинаря xray")
+        step(0, "running", "v" + version)
+        # Участник берётся с api.github.com по имени, а не по url на github.com:
+        # второй хост в РФ без VPN часто недоступен, а панель с api.github.com уже
+        # работает (именно поэтому геофайлы зеркалятся на сервер, а не отдаются
+        # телефону). Заодно вместе с архивом виден и файл суммы.
+        try:
+            rel = _gh_release_by_tag("XTLS/Xray-core", "v" + version)
+        except Exception as e:
+            raise RuntimeError(f"релиз xray v{version} не найден ({type(e).__name__})")
+        zp = os.path.join(tmp, "x.zip")
+        zurl = _gh_asset(rel, "Xray-linux-64.zip")
+        if not zurl:
+            raise RuntimeError(f"в релизе xray v{version} нет Xray-linux-64.zip")
+        _dl(zurl, zp)
+        step(0, "done")
+        step(1, "running")
+        try:
+            sha = _verify_sha256(_gh_asset(rel, "Xray-linux-64.zip.dgst")
+                                 or _gh_asset(rel, "Xray-linux-64.zip.sha256txt"),
+                                 zp, f"xray v{version}")
+        except Exception as e:
+            step(1, "failed", str(e)[:120])
+            _audit("xray_switch_denied", to=version, reason=str(e)[:200])
+            raise
+        newbin = _zip_bin(zp, "xray", tmp)
         os.chmod(newbin, 0o755)
+        step(1, "done", "sha256 " + sha[:12] + "…")
+        step(2, "running")
         t = subprocess.run([newbin, "run", "-test", "-config", XRAY],
                            capture_output=True, text=True, timeout=90)
         if t.returncode:
+            step(2, "failed", "run -test")
+            _audit("xray_switch_denied", to=version, reason="run -test",
+                   detail=((t.stderr or t.stdout) or "")[-200:])
             raise RuntimeError("новая версия не прошла проверку конфига: " + (t.stderr or t.stdout)[-300:])
+        step(2, "done")
+        step(3, "running")
+        _need_room(XRAY_BIN, os.path.getsize(newbin) + 8 * 1024 * 1024, "замена xray")
         bdir = os.path.join(BASE, "backups", "xray", cur)
         os.makedirs(bdir, exist_ok=True)
         shutil.copy2(XRAY_BIN, os.path.join(bdir, "xray"))
-        tmpbin = XRAY_BIN + ".new"
-        shutil.copy2(newbin, tmpbin)
-        os.chmod(tmpbin, 0o755)
-        os.replace(tmpbin, XRAY_BIN)
-        _xray_restart()
+        step(3, "done", "прежняя v" + cur)
+        step(4, "running")
+        with _xray_apply_gate():
+            _write_atomic(newbin, XRAY_BIN, 0o755)
+            try:
+                _xray_restart()
+            except Exception as e:
+                # Ядро не поднялось — возвращаем прежний бинарь сразу: VPN лежит у
+                # всех подписчиков, а «разберись в backups/xray» от оператора
+                # требуется только потому, что панель сама решила попробовать.
+                try:
+                    _write_atomic(os.path.join(bdir, "xray"), XRAY_BIN, 0o755)
+                    _xray_restart()
+                except Exception:
+                    pass
+                step(4, "failed", str(e)[:120])
+                _audit("xray_switch_denied", to=version, reason="restart", detail=str(e)[:200])
+                raise RuntimeError(f"новая версия не поднялась, откатили на v{cur}: {str(e)[:200]}")
+        step(4, "done")
+    _audit("xray_switch", to=version, frm=cur, sha=sha[:16])
     return {"ok": True, "from": cur, "to": version}
 
 def _panel_backups():
@@ -12548,6 +14022,104 @@ def _panel_restart_soon(delay=1):
                      start_new_session=True)
 
 
+PANEL_BOOT = f"{BASE}/.panel-boot.json"
+GUARD_LOG = f"{BASE}/logs/update-guard.log"
+
+# Текст стража. Он НЕ берётся из panel.py — ни старого, ни нового: страж обязан
+# работать даже тогда, когда единственный подозрительный файл на машине это и
+# есть panel.py. Поэтому крошечный автономный скрипт, который кладётся рядом с
+# копией и запускается от системного python3.
+_GUARD_SRC = '''"""Veil update guard: верни панель назад, если новая не поднялась."""
+import json, os, subprocess, sys, time
+
+bdir, expect, not_before, boot, panel, index, window = sys.argv[1:8]
+window = int(window); not_before = int(not_before)
+deadline = time.time() + window
+
+
+def stamp():
+    try:
+        with open(boot, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def put(src, dst, mode):
+    d = os.path.dirname(dst)
+    tmp = os.path.join(d, "." + os.path.basename(dst) + ".guard")
+    with open(src, "rb") as a, open(tmp, "wb") as b:
+        b.write(a.read()); b.flush(); os.fsync(b.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, dst)
+
+
+while time.time() < deadline:
+    s = stamp()
+    if s and int(s.get("ts") or 0) >= not_before:
+        if str(s.get("version") or "") == expect:
+            print("guard: панель v%s поднялась (pid %s), откат не нужен" % (expect, s.get("pid")), flush=True)
+            sys.exit(0)
+        print("guard: поднялась v%s, а ждали v%s — не трогаем" % (s.get("version"), expect), flush=True)
+        sys.exit(0)
+    time.sleep(3)
+
+print("guard: v%s так не поднялась за %d с, возвращаю прежнюю из %s" % (expect, window, bdir), flush=True)
+try:
+    put(os.path.join(bdir, "panel.py"), panel, 0o755)
+    if os.path.exists(os.path.join(bdir, "index.html")):
+        put(os.path.join(bdir, "index.html"), index, 0o644)
+except Exception as e:
+    print("guard: восстановить не вышло: " + str(e), flush=True)
+    sys.exit(1)
+try:
+    subprocess.run(["systemctl", "reset-failed", "vpnpanel"], capture_output=True, timeout=15)
+    subprocess.run(["systemctl", "restart", "vpnpanel"], capture_output=True, timeout=60)
+    print("guard: прежняя панель перезапущена", flush=True)
+except Exception as e:
+    print("guard: перезапустить не вышло: " + str(e), flush=True)
+'''
+
+
+def _panel_boot_write():
+    """Значка «панель поднялась»: версия, время, pid. По ней страж обновления
+    понимает, что новая сборка жива, — без доступа к морде и без её паролей."""
+    try:
+        _save(PANEL_BOOT, {"version": VERSION, "ts": int(time.time()), "pid": os.getpid()})
+    except Exception:
+        pass
+
+
+def _update_guard_spawn(bdir, expect_ver, not_before, window=120):
+    """Страж обновления отдельным процессом: переживает перезапуск панели и
+    возвращает прежний файл, если новый не поднялся.
+
+    `_py_sane` бережёт от SyntaxError, а от «компилируется и умирает на старте»
+    (нет бинаря, занят порт, кривой конфиг) — нет. Без стража исход один: панель
+    лежит, морды нет, «откатить» нажать негде, остаётся консоль. Предшественник
+    этой страховки — процесс-fuse WARP (v2.14.0), который тоже живёт отдельно от
+    панели именно потому, что панели может не быть."""
+    import sys
+    try:
+        os.makedirs(os.path.dirname(GUARD_LOG), exist_ok=True)
+        gpath = os.path.join(bdir, "guard.py")
+        with open(gpath, "w", encoding="utf-8") as f:
+            f.write(_GUARD_SRC)
+        os.chmod(gpath, 0o700)
+        args = [sys.executable or "/usr/bin/python3", gpath, bdir, str(expect_ver),
+                str(int(not_before)), PANEL_BOOT, os.path.join(BASE, "panel.py"),
+                os.path.join(BASE, "index.html"), str(int(window))]
+        with open(GUARD_LOG, "a") as f:
+            f.write("--- guard запущен для v%s из %s\n" % (expect_ver, os.path.basename(bdir)))
+            f.flush()
+            subprocess.Popen(args, stdout=f, stderr=f, start_new_session=True)
+        return True
+    except Exception as e:
+        print("update-guard: " + str(e), flush=True)
+        return False
+
+
 def _panel_backup_now():
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     bdir = os.path.join(BASE, "backup-v%s-%s" % (VERSION, ts))
@@ -12564,11 +14136,17 @@ def _panel_backup_now():
     _audit("panel_backup", version=VERSION)
     return {"ok": True, "version": VERSION, "dir": os.path.basename(bdir)}
 
-def _panel_restore(version):
+def _panel_restore(version, confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: панель вернётся к старой сборке и перезапустится")
     for b in _panel_backups():
         if b["version"] == version:
             dd = os.path.join(BASE, b["dir"])
             cand = os.path.join(dd, "panel.py")
+            step(0, "running")
             # Проверка ДО замены рабочего файла: обрезанная или пустая копия
             # (диск кончился в момент copy2) подняла бы панель, которая не
             # стартует, — и вернуться назад через морду уже нельзя.
@@ -12577,24 +14155,47 @@ def _panel_restore(version):
             sane, err = _py_sane(cand)
             if not sane:
                 raise RuntimeError("копия панели не компилируется: " + err)
+            step(0, "done", os.path.basename(dd))
+            _need_room(os.path.join(BASE, "panel.py"),
+                       2 * os.path.getsize(cand) + 4 * 1024 * 1024, "откат панели")
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-            keep = os.path.join(BASE, "backup-pre-restore-" + ts)
+            # Имя по маске backup-v<версия>-…: иначе `_panel_backups()` таких
+            # директорий не видит и прунинг [7:] их никогда не срезает — каждый
+            # откат оседал на диске навсегда.
+            keep = os.path.join(BASE, "backup-v%s-pre-restore-%s" % (VERSION, ts))
+            step(1, "running")
             os.makedirs(keep, exist_ok=True)
             for fn in ("panel.py", "index.html"):
                 if os.path.exists(os.path.join(BASE, fn)):
                     shutil.copy2(os.path.join(BASE, fn), os.path.join(keep, fn))
-            shutil.copy2(cand, os.path.join(BASE, "panel.py"))
-            os.chmod(os.path.join(BASE, "panel.py"), 0o755)
+            step(1, "done", os.path.basename(keep))
+            step(2, "running")
+            boot_before = int(time.time())
+            # Страж — до переключения: без него откат «той сборки, которая не
+            # поднялась» было бы нечем сделать, а сам факт, что он не поднялся,
+            # обязан остановить откат, а не остаться в stdout.
+            if not _update_guard_spawn(keep, version, boot_before):
+                _audit("panel_update_denied", version=version, reason="guard")
+                step(2, "failed", "страхование не запустилось")
+                raise RuntimeError("страж отката не запустился — панель не перезаписываем")
+            _write_atomic(cand, os.path.join(BASE, "panel.py"), 0o755)
             if os.path.exists(os.path.join(dd, "index.html")):
-                shutil.copy2(os.path.join(dd, "index.html"), os.path.join(BASE, "index.html"))
+                _write_atomic(os.path.join(dd, "index.html"), os.path.join(BASE, "index.html"), 0o644)
+            step(2, "done", "v" + version)
             _panel_restart_soon()
             _audit("panel_restored", version=version, from_dir=b["dir"], safety=os.path.basename(keep))
             return {"ok": True, "type": "panel", "version": version, "safety": os.path.basename(keep)}
     raise RuntimeError("бэкап панели v" + version + " не найден")
 
-def _xray_restore(version):
+def _xray_restore(version, confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: ядро VPN будет заменено, xray перезапущен")
     if not re.fullmatch(r"[0-9][0-9.]*", str(version or "")):
         raise RuntimeError("недопустимое имя версии")
+    step(0, "running")
     src = os.path.join(BASE, "backups", "xray", version, "xray")
     if not os.path.isfile(src):
         raise RuntimeError("бэкап xray v" + version + " не найден")
@@ -12605,17 +14206,43 @@ def _xray_restore(version):
                        capture_output=True, text=True, timeout=90)
     if t.returncode:
         raise RuntimeError("бэкап не прошёл проверку конфига: " + (t.stderr or t.stdout)[-300:])
+    step(0, "done", "run -test")
+    _need_room(XRAY_BIN, 2 * os.path.getsize(src) + 8 * 1024 * 1024, "откат xray")
     bdir = os.path.join(BASE, "backups", "xray", cur)
     os.makedirs(bdir, exist_ok=True)
+    step(1, "running")
     shutil.copy2(XRAY_BIN, os.path.join(bdir, "xray"))
-    tmpbin = XRAY_BIN + ".new"
-    shutil.copy2(src, tmpbin)
-    os.chmod(tmpbin, 0o755)
-    os.replace(tmpbin, XRAY_BIN)
-    _xray_restart()
+    step(1, "done", "прежняя v" + cur)
+    with _xray_apply_gate():
+        step(2, "running")
+        _write_atomic(src, XRAY_BIN, 0o755)
+        try:
+            _xray_restart()
+            step(2, "done", "v" + version)
+        except Exception as e:
+            step(2, "failed", str(e)[:120])
+            try:
+                _write_atomic(os.path.join(bdir, "xray"), XRAY_BIN, 0o755)
+                _xray_restart()
+            except Exception:
+                pass
+            _audit("xray_switch_denied", to=version, reason="restore restart", detail=str(e)[:200])
+            raise RuntimeError(f"ядро v{version} не поднялось, вернули v{cur}: {str(e)[:200]}")
+    _audit("xray_restored", version=version, frm=cur)
     return {"ok": True, "type": "xray", "version": version}
 
 # ---------- telemt version / update / rollback ----------
+
+def _tg_up():
+    """Жив ли юнит telemt. Возвращённый нулём `systemctl restart` значит только
+    «команду приняли»: бинарь, который падает на первых строках, успевает умереть
+    через полсекунды после старта, и без проверки мы записали бы успех над
+    мёртвым прокси. Даём три секунды."""
+    for _ in range(6):
+        if _unit_active("telemt"):
+            return True
+        time.sleep(0.5)
+    return False
 
 def _tg_current_version():
     try:
@@ -12644,37 +14271,77 @@ def _tg_versions():
                 pre.append(tag)
     return {"versions": vers, "pre": pre}
 
-def _tg_switch(version):
+def _tg_switch(version, confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: telemt будет заменён и служба перезапущена")
     version = version.strip().lstrip("v")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise RuntimeError("неверный формат версии")
     cur = _tg_current_version()
     if cur == version:
         raise RuntimeError("эта версия уже установлена (" + cur + ")")
-    if (_tg_versions()["versions"] and version not in _tg_versions()["versions"]):
-        raise RuntimeError("версия v" + version + " не найдена в релизах telemt")
     with tempfile.TemporaryDirectory(prefix="telemt-sw-") as tmp:
+        step(0, "running", "v" + version)
+        try:
+            rel = _gh_release_by_tag("telemt/telemt", version)
+        except Exception as e:
+            raise RuntimeError(f"релиз telemt v{version} не найден ({type(e).__name__})")
+        aname = "telemt-x86_64-linux-gnu.tar.gz"
         z = os.path.join(tmp, "t.tar.gz")
-        url = ("https://github.com/telemt/telemt/releases/download/" + version +
-               "/telemt-x86_64-linux-gnu.tar.gz")
-        _dl(url, z)
-        with tarfile.open(z, "r:gz") as arc:
-            arc.extract("telemt", tmp)
-        newbin = os.path.join(tmp, "telemt")
-        if not os.path.exists(newbin):
-            raise RuntimeError("в архиве нет бинаря telemt")
+        zurl = _gh_asset(rel, aname)
+        if not zurl:
+            raise RuntimeError(f"в релизе telemt v{version} нет {aname}")
+        _dl(zurl, z)
+        step(0, "done")
+        step(1, "running")
+        try:
+            sha = _verify_sha256(_gh_asset(rel, aname + ".sha256"), z, f"telemt v{version}")
+        except Exception as e:
+            step(1, "failed", str(e)[:120])
+            _audit("telemt_switch_denied", to=version, reason=str(e)[:200])
+            raise
+        newbin = _tar_bin(z, "telemt", tmp)
         os.chmod(newbin, 0o755)
+        step(1, "done", "sha256 " + sha[:12] + "…")
+        step(2, "running")
         t = subprocess.run([newbin, "--version"], capture_output=True, text=True, timeout=20)
         if t.returncode:
+            step(2, "failed", "--version")
+            _audit("telemt_switch_denied", to=version, reason="--version",
+                   detail=((t.stderr or t.stdout) or "")[-200:])
             raise RuntimeError("бинар не запускается: " + (t.stderr or t.stdout)[-300:])
+        step(2, "done")
+        step(3, "running")
+        _need_room("/usr/bin/telemt", os.path.getsize(newbin) + 8 * 1024 * 1024, "замена telemt")
         bdir = os.path.join(BASE, "backups", "telemt", cur)
         os.makedirs(bdir, exist_ok=True)
         shutil.copy2("/usr/bin/telemt", os.path.join(bdir, "telemt"))
-        tmpbin = "/usr/bin/telemt.new"
-        shutil.copy2(newbin, tmpbin)
-        os.chmod(tmpbin, 0o755)
-        os.replace(tmpbin, "/usr/bin/telemt")
-        subprocess.run(["systemctl", "restart", "telemt"], check=True, capture_output=True, timeout=60)
+        step(3, "done", "прежняя v" + cur)
+        step(4, "running")
+        _write_atomic(newbin, "/usr/bin/telemt", 0o755)
+        r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
+                           text=True, timeout=120)
+        # returncode 0 у `systemctl restart` значит лишь «команду приняли»: юнит
+        # с Accept-секретом падает уже после, и без is-active мы бы записали
+        # успех над мёртвым прокси.
+        if r.returncode or not _tg_up():
+            # Не поднялось — возвращаем прежний бинарь сразу, а не оставляем
+            # машину с мёртвым прокси и записью «проверьте журнал».
+            try:
+                _write_atomic(os.path.join(bdir, "telemt"), "/usr/bin/telemt", 0o755)
+                subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+            except Exception:
+                pass
+            step(4, "failed", ((r.stderr or r.stdout) or "служба не active")[:120])
+            _audit("telemt_switch_denied", to=version, reason="restart",
+                   detail=((r.stderr or r.stdout) or "служба не active")[-200:])
+            raise RuntimeError(f"telemt v{version} не перезапущен, откатили на v{cur}: "
+                               + ((r.stderr or r.stdout) or "")[-200:])
+        step(4, "done")
+    _audit("telemt_switch", to=version, frm=cur, sha=sha[:16])
     return {"ok": True, "from": cur, "to": version}
 
 def _tg_backups():
@@ -12687,9 +14354,15 @@ def _tg_backups():
             res.append({"version": d})
     return res
 
-def _tg_restore(version):
+def _tg_restore(version, confirm=False, job=None):
+    def step(i, state, detail=""):
+        if job:
+            _up_step(job, i, state, detail)
+    if not confirm:
+        raise RuntimeError("нужно подтверждение: telemt будет заменён и служба перезапущена")
     if not re.fullmatch(r"[0-9][0-9.]*", str(version or "")):
         raise RuntimeError("недопустимое имя версии")
+    step(0, "running")
     src = os.path.join(BASE, "backups", "telemt", version, "telemt")
     if not os.path.isfile(src):
         raise RuntimeError("бэкап telemt v" + version + " не найден")
@@ -12699,14 +14372,30 @@ def _tg_restore(version):
     t = subprocess.run([src, "--version"], capture_output=True, text=True, timeout=20)
     if t.returncode:
         raise RuntimeError("бэкап не запускается: " + (t.stderr or t.stdout)[-300:])
+    step(0, "done", "--version")
+    step(1, "running")
+    _need_room("/usr/bin/telemt", 2 * os.path.getsize(src) + 8 * 1024 * 1024, "откат telemt")
     bdir = os.path.join(BASE, "backups", "telemt", cur)
     os.makedirs(bdir, exist_ok=True)
     shutil.copy2("/usr/bin/telemt", os.path.join(bdir, "telemt"))
-    tmpbin = "/usr/bin/telemt.new"
-    shutil.copy2(src, tmpbin)
-    os.chmod(tmpbin, 0o755)
-    os.replace(tmpbin, "/usr/bin/telemt")
-    subprocess.run(["systemctl", "restart", "telemt"], check=True, capture_output=True, timeout=60)
+    step(1, "done", "прежняя v" + cur)
+    step(2, "running")
+    _write_atomic(src, "/usr/bin/telemt", 0o755)
+    r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
+                       text=True, timeout=120)
+    if r.returncode or not _tg_up():
+        step(2, "failed", ((r.stderr or r.stdout) or "служба не active")[:120])
+        try:
+            _write_atomic(os.path.join(bdir, "telemt"), "/usr/bin/telemt", 0o755)
+            subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        except Exception:
+            pass
+        _audit("telemt_switch_denied", to=version, reason="restore restart",
+               detail=((r.stderr or r.stdout) or "служба не active")[-200:])
+        raise RuntimeError(f"telemt v{version} не перезапущен, вернули v{cur}: "
+                           + ((r.stderr or r.stdout) or "")[-200:])
+    step(2, "done", "v" + version)
+    _audit("telemt_restored", version=version, frm=cur)
     return {"ok": True, "type": "telemt", "version": version}
 
 _DDNS = {"configured": False, "host": "", "updated": None, "error": "", "response": "", "ipv4": None, "ipv6": None}
@@ -12964,7 +14653,7 @@ def _rot_conf():
 
 
 def _rot_event(text, kind="info"):
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d.%m %H:%M")
+    ts = _ldate("%d.%m %H:%M")
     with _ROT_LOCK:
         _ROT["events"] = (_ROT["events"] + [{"ts": ts, "text": text, "kind": kind}])[-40:]
 
@@ -13764,39 +15453,61 @@ def _limits_loop():
             # конце, и всё, что морда успела изменить между этими моментами,
             # тик перезаписывал своей копией (подписчик исчезал из state.json,
             # продолжая работать в xray до ближайшей пересборки).
-            with _STATE_LOCK:
-                st = _load(STATE)
-                if st:
-                    try:
-                        if _traffic_tick(st):
-                            _save(STATE, st)
-                    except Exception as e:
-                        print("[traffic] " + str(e), flush=True)
-                    try:
-                        if _maybe_traffic_alerts(st):
-                            _save(STATE, st)
-                    except Exception as e:
-                        print("[alert] " + str(e), flush=True)
-                    try:
-                        _device_tick(st)
-                    except Exception as e:
-                        print("[devices] " + str(e), flush=True)
-                    bl = _autoblock_limits(st)
-                    if bl:
-                        _save(STATE, st)
+            # _notify_queued снаружи замка: предупреждения об утечках и сроках
+            # уходят в Telegram уже после того, как запись состояния свободна
+            # (находка #14).
+            with _notify_queued():
+                with _tick_hold():
+                    st = _load(STATE)
+                    if st:
+                        # Приведение state.json к числам живёт здесь, а не в GET:
+                        # тик держит замок, и его запись не перепишет то, что морда
+                        # успела добавить между нашим чтением и сохранением
+                        # (находка #17).
                         try:
-                            _awg_sync(st)
-                            _wg_sync(st)
-                            _apply_state(st)
+                            if _migrate_state(st):
+                                _save(STATE, st)
                         except Exception as e:
-                            print("[limits] " + str(e), flush=True)
-                        print("[limits] автоблок: " +
-                              ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
+                            print("[migrate] " + str(e), flush=True)
+                        try:
+                            if _traffic_tick(st):
+                                _save(STATE, st)
+                        except Exception as e:
+                            print("[traffic] " + str(e), flush=True)
+                        try:
+                            if _maybe_traffic_alerts(st):
+                                _save(STATE, st)
+                        except Exception as e:
+                            print("[alert] " + str(e), flush=True)
+                        try:
+                            _device_tick(st)
+                        except Exception as e:
+                            print("[devices] " + str(e), flush=True)
+                        bl = _autoblock_limits(st)
+                        if bl:
+                            _save(STATE, st)
+                            try:
+                                _awg_sync(st)
+                                _wg_sync(st)
+                                _apply_state(st)
+                            except Exception as e:
+                                print("[limits] " + str(e), flush=True)
+                            print("[limits] автоблок: " +
+                                  ", ".join(f"{b['name']}({b['reason']})" for b in bl), flush=True)
             if bl:
                 _notify_blocked(bl)   # Telegram наружу — уже после того, как блокировка сохранена
         except Exception as e:
             print("[limits] " + str(e), flush=True)
         time.sleep(60)
+
+def _bot_webhook_mode():
+    """Зарегистрированный вебхум и опрос getUpdates несовместимы: пока у бота
+    стоит webhook, Telegram на getUpdates отвечает 409, и фоновый цикл только
+    печатает ошибку, ничего не прочитав. Ключ `bot_webhook_url` пишется строго
+    после подтверждения от Telegram (и снимается так же), поэтому его наличие —
+    честный признак того, что доставка идёт через вебхум."""
+    return bool(CFG_CACHE.get("bot_webhook_url"))
+
 
 def _bot_poll_loop():
     time.sleep(10)
@@ -13805,6 +15516,9 @@ def _bot_poll_loop():
         try:
             if _mv_load().get("pause_bot"):
                 time.sleep(30)
+                continue
+            if _bot_webhook_mode():
+                time.sleep(5)
                 continue
             token = CFG_CACHE.get("bot_token", "")
             if token:
@@ -13815,8 +15529,11 @@ def _bot_poll_loop():
                     for update in data.get("result", []):
                         last_update_id = max(last_update_id, update["update_id"])
                         try:
-                            with _STATE_LOCK:
-                                _process_bot_update(update)
+                            # тот же порядок, что в фоновом тике: состояние — под
+                            # замком, ответы пользователю — уже после (_notify_queued)
+                            with _notify_queued():
+                                with _STATE_LOCK:
+                                    _process_bot_update(update)
                         except Exception as e:
                             print("[bot] poll update error: " + str(e), flush=True)
                 elif data.get("description"):
@@ -13832,6 +15549,9 @@ def _bot_poll_loop():
 
 threading.Thread(target=_ddns_loop, daemon=True).start()
 threading.Thread(target=_rotate_loop, daemon=True).start()
+# Один поток на всю исходящую почту Telegram: ни тик, ни обработчик запроса не
+# тратит 10 секунд на письмо, которого может и не быть.
+threading.Thread(target=_notify_worker, daemon=True).start()
 threading.Thread(target=_limits_loop, daemon=True).start()
 threading.Thread(target=_bot_poll_loop, daemon=True).start()
 threading.Thread(target=_rulesets_loop, daemon=True).start()
@@ -15477,7 +17197,7 @@ def _ai_clients(args):
             "protos": u.get("protos") or [],
             "traffic_mb": {"up": mb(int(u.get("up") or 0)), "down": mb(int(u.get("down") or 0))},
             "limit_gb": u.get("limit_gb") or 0,
-            "expiry": (datetime.datetime.fromtimestamp(int(u["expiry"])).strftime("%Y-%m-%d")
+            "expiry": (_ldate("%Y-%m-%d", int(u["expiry"]))
                        if u.get("expiry") else "бессрочно"),
             "status": ("заблокирован:" + (u.get("blocked_reason") or "")) if u.get("blocked") else "активен",
         })
@@ -15746,6 +17466,31 @@ class _BodyError(ValueError):
         self.code = code
 
 
+# Гость, который повесил трубку посреди письма, — не сбой панели. Пока этого
+# различия не было, живой прогон шторма (V7) оставлял в аудите 16 записей
+# post_error, и ВСЕ шестнадцать — ConnectionReset/BrokenPipe от оборванных
+# соединений: настоящая внутренняя ошибка тонула в шуме ровно так же, как её
+# искал оператор. Наружу в таком запросе писать уже некуда, поэтому класс
+# отсекается до общего обработчика: без трейсбека в stderr и без post_error.
+# Отдельная запись `client_gone` остаётся, но не чаще раза в минуту — смысл её
+# «такое бывает», а не «сколько раз»: шторм из обрывов не должен раздувать аудит.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, TimeoutError, ssl.SSLError)
+_client_gone_at = [0.0]
+_client_gone_lk = threading.Lock()
+
+
+def _client_gone(path, e):
+    now = time.time()
+    with _client_gone_lk:
+        if now - _client_gone_at[0] < 60:
+            return
+        _client_gone_at[0] = now
+    try:
+        _audit("client_gone", path=path, detail=type(e).__name__)
+    except Exception:
+        pass
+
+
 class H(http.server.BaseHTTPRequestHandler):
     # HTTP/1.1 = keep-alive: без него каждый <script>/<img>/fetch открывает
     # грузилась секундами. timeout освобождает зависшие потоки через 30 с.
@@ -15769,6 +17514,11 @@ class H(http.server.BaseHTTPRequestHandler):
             return False
 
     def _sec_headers(self):
+        # Панель, витрина и страницы подписок не для индексов. До этой строки
+        # невидимость была случайной (у /shop нет ни robots.txt, ни sitemap, ни
+        # ссылки-источника — замер с чужих машин, группа P), а должна быть
+        # решением: кто дал ссылку, тот не обязан заодно давать её краулеру.
+        self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
@@ -16003,10 +17753,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     try: on = _online_count(c.get("uuid"))
                     except Exception: on = 0
                     out.append({"uuid": c.get("uuid"), "name": c.get("name"),
-                                "proto": proto, "up": int(c.get("up") or 0),
-                                "down": int(c.get("down") or 0),
-                                "limit_gb": float(c.get("limit_gb") or 0),
-                                "expiry": int(c.get("expiry") or 0),
+                                "proto": proto, "up": _bytes_of(c.get("up")),
+                                "down": _bytes_of(c.get("down")),
+                                "limit_gb": _gb_of(c.get("limit_gb")),
+                                "expiry": _ts_of(c.get("expiry")),
                                 "blocked": bool(c.get("blocked")), "online": on})
             if u and not out:
                 return self._send(404, {"error": "клиент не найден или не принадлежит токену"})
@@ -16176,15 +17926,60 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.end_headers()
 
+    def send_response(self, code, message=None):
+        # Ни строчки о том, чем написана панель: наружу уходило
+        # `Server: BaseHTTP/0.6 Python/3.14.4` — готовый отпечаток для сканеров
+        # (замер с чужих машин, P/#48). Дата остаётся: без неё кривой HTTP.
+        self.log_request(code)
+        self.send_response_only(code, message)
+        self.send_header("Date", self.date_time_string())
+
+    def send_response_only(self, code, message=None):
+        # Первая строка статуса — единственный честный признак «ответ пошёл».
+        # Цепляем именно send_response_only, а не send_response: через него проходит
+        # и служебный send_error, так что флаг не врёт ни на одной ветке.
+        # Нужен обработчику сбоя в do_GET: дописать 500 в уже открытый поток
+        # (скачиваемый конфиг, страница, терминальный websocket после 101) — это
+        # склейка двух ответов на keep-alive, ровно тот класс дефекта, от
+        # которого защищают _drain_body и ka-тесты.
+        self._resp_started = True
+        super().send_response_only(code, message)
+
     def do_GET(self):
         # GET с телом юридически возможен (и его шлют сканеры и некоторые
         # прокси). Обработчик его не читает, поэтому тело доедаем здесь —
         # иначе keep-alive склеит хвост с следующим запросом.
         self._body_read = 0
+        self._resp_started = False
         if self._reject_chunked():
             return
         try:
             self._do_GET()
+        except _BodyError as e:
+            # GET-ручки, которые всё-таки читают тело (поиск подписчика, витрина):
+            # кривое тело — вина отправителя, честный 400/413 без трейсбека.
+            if not self._resp_started:
+                self._send(e.code, {"error": str(e)[:200]})
+        except _CLIENT_GONE as e:
+            # Гость повесил трубку (обрыв на чтении тела, сброс, таймаут,
+            # развалившийся TLS) — ответить некому, и это не ошибка панели.
+            self.close_connection = True
+            _client_gone(urllib.parse.urlparse(self.path).path, e)
+        except Exception as e:
+            # Сбой обработчика обязан стать ответом, а не обрывом. На выпуске 2.16.5
+            # у do_POST такой контракт был, а у do_GET — нет: побитое число в
+            # state.json роняло сборщик ответа, и клиент получал закрытое соединение
+            # без единого статуса («подписка не обновляется», и в журнале ничего).
+            # Текст исключения наружу не отдаём — путь бывает неаутентицированным.
+            import traceback
+            traceback.print_exc()
+            _audit("get_error", path=urllib.parse.urlparse(self.path).path,
+                   detail=type(e).__name__ + ": " + str(e)[:200])
+            if not self._resp_started:
+                try:
+                    self._send(500, {"error": "внутренняя ошибка панели"})
+                except Exception:
+                    pass
         finally:
             self._drain_body()
 
@@ -16284,12 +18079,12 @@ class H(http.server.BaseHTTPRequestHandler):
                         key = c["uuid"]
                         if key not in seen_uuids:
                             seen_uuids.add(key)
-                            up += int(c.get("up") or 0)
-                            down += int(c.get("down") or 0)
-                            lim = float(c.get("limit_gb") or 0)
+                            up += _bytes_of(c.get("up"))
+                            down += _bytes_of(c.get("down"))
+                            lim = _gb_of(c.get("limit_gb"))
                             if lim > 0:
                                 total = max(total, int(lim * 1024 ** 3))
-                            ex = int(c.get("expiry") or 0)
+                            ex = _ts_of(c.get("expiry"))
                             if ex:
                                 expiry = max(expiry, ex)
                             try:
@@ -16331,9 +18126,9 @@ class H(http.server.BaseHTTPRequestHandler):
                             _, up, down = _fam_ud(st, rec0["uuid"])
                             prec = _fam_parent_record(st, parent)
                             if prec is not None:
-                                lim = float(prec.get("limit_gb") or 0)
+                                lim = _gb_of(prec.get("limit_gb"))
                                 total = int(lim * 1024 ** 3) if lim > 0 else 0
-                                expiry = int(prec.get("expiry") or 0)
+                                expiry = _ts_of(prec.get("expiry"))
 
                 if sub_path and not found_client:
                     return self._send(404, {"error": "клиент не найден"})
@@ -16519,6 +18314,16 @@ class H(http.server.BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
             return None
 
+        if p == "/robots.txt":
+            b = b"User-agent: *\nDisallow: /\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self._sec_headers()
+            self.end_headers()
+            self.wfile.write(b)
+            return None
+
         if p.startswith("/pay/") or p == "/shop":
             return _pay_handle_public(self, p)
 
@@ -16528,8 +18333,12 @@ class H(http.server.BaseHTTPRequestHandler):
             # гарантированно не кэшировался; здесь — public, max-age=1 день.
             tok = p[3:-len("/avatar")].strip("/")
             st = _load(STATE) or {}
-            if _migrate_state(st):
-                _save(STATE, st)
+            # Читающая ветка state.json НЕ пишет: её приведением занимается
+            # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
+            # единственный способ потерять чужую запись: GET читает без замка,
+            # а публика страницы подписки (она вообще без авторизации) успевала
+            # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
+            # новый клиент исчезал из файла, живя в xray дальше.
             if not any(x["sub_token"] == tok or x["uuid"] == tok
                        for x in _subs_summary(st)):
                 return self._send(404, {"error": "подписка не найдена"})
@@ -16549,8 +18358,12 @@ class H(http.server.BaseHTTPRequestHandler):
             # в клиентах). Показывает имя, статус, срок, трафик и способы подключения.
             tok = p[3:].strip("/")
             st = _load(STATE) or {}
-            if _migrate_state(st):
-                _save(STATE, st)
+            # Читающая ветка state.json НЕ пишет: её приведением занимается
+            # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
+            # единственный способ потерять чужую запись: GET читает без замка,
+            # а публика страницы подписки (она вообще без авторизации) успевала
+            # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
+            # новый клиент исчезал из файла, живя в xray дальше.
             u = next((x for x in _subs_summary(st)
                       if x["sub_token"] == tok or x["uuid"] == tok), None)
             if not u:
@@ -16786,7 +18599,12 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
             if not st: return self._send(200, {"clients": [], "configured": False})
-            if _migrate_state(st): _save(STATE, st)
+            # Читающая ветка state.json НЕ пишет: её приведением занимается
+            # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
+            # единственный способ потерять чужую запись: GET читает без замка,
+            # а публика страницы подписки (она вообще без авторизации) успевала
+            # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
+            # новый клиент исчезал из файла, живя в xray дальше.
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
@@ -16795,9 +18613,14 @@ class H(http.server.BaseHTTPRequestHandler):
             _ensure_identities(st)
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
+                    # Мусорную запись вычищает приведение состояния, но читающая
+                    # ветка не ждёт тика: окно между чужим сохранением файла и
+                    # починкой не должно стоить страницы подписчиков целиком.
+                    if not isinstance(c, dict):
+                        continue
                     sub_token = c.get("sub_token") or ""
                     sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
-                    cu = int(c.get("up") or 0); cdn = int(c.get("down") or 0)
+                    cu = _bytes_of(c.get("up")); cdn = _bytes_of(c.get("down"))
                     try:
                         link = _link(inb, host, c, proto)
                     except Exception as e:
@@ -16809,13 +18632,13 @@ class H(http.server.BaseHTTPRequestHandler):
                             "sub_url": sub_url,
                             "sb_url": f"{_pb(host, panel_port)}/sb/{sub_token}",
                             "up": cu, "down": cdn,
-                            "limit_gb": float(c.get("limit_gb") or 0),
-                            "expiry": int(c.get("expiry") or 0),
+                            "limit_gb": _gb_of(c.get("limit_gb")),
+                            "expiry": _ts_of(c.get("expiry")),
                             "reset_cycle": c.get("reset_cycle") or "",
                             "tg_proxy": c.get("tg_proxy") or "",
                             "tg_user": c.get("tg_user") or "",
                             "cycle": c.get("cycle") or "lifetime",
-                            "max_devices": int(c.get("max_devices") or 0),
+                            "max_devices": _cnt_of(c.get("max_devices")),
                             "family_of": c.get("family_of") or "",
                             "fam_name": c.get("fam_name") or "",
                             "used_gb": round((cu + cdn) / (1024**3), 3),
@@ -16851,7 +18674,12 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
             if not st: return self._send(200, {"subs": [], "configured": False})
-            if _migrate_state(st): _save(STATE, st)
+            # Читающая ветка state.json НЕ пишет: её приведением занимается
+            # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
+            # единственный способ потерять чужую запись: GET читает без замка,
+            # а публика страницы подписки (она вообще без авторизации) успевала
+            # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
+            # новый клиент исчезал из файла, живя в xray дальше.
             subs = _subs_summary(st)
             try:
                 _subdev_prune({(u.get("sub_token") or "") for u in subs})
@@ -16880,7 +18708,12 @@ class H(http.server.BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             fmt = ((qs.get("format") or ["json"])[0]).strip().lower()
             st = _load(STATE) or {}
-            if _migrate_state(st): _save(STATE, st)
+            # Читающая ветка state.json НЕ пишет: её приведением занимается
+            # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
+            # единственный способ потерять чужую запись: GET читает без замка,
+            # а публика страницы подписки (она вообще без авторизации) успевала
+            # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
+            # новый клиент исчезал из файла, живя в xray дальше.
             stamp = time.strftime("%Y%m%d-%H%M")
             if fmt == "links":
                 b = _subs_export_links(st).encode("utf-8")
@@ -16904,6 +18737,23 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
             except Exception as e:
                 return self._send(502, {"error": str(e)})
+        if p == "/api/update/job":
+            # Опрос фоновой установки. Дешёвый и без замка состояния: журнал живёт
+            # в своей памяти, и чтение его не должно ждать чужую замену бинаря.
+            jid = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                   .get("id") or [""])[0]
+            jid = re.fullmatch(r"[0-9a-f]{6,32}", jid or "").group(0) if re.fullmatch(
+                r"[0-9a-f]{6,32}", jid or "") else ""
+            if not jid:
+                return self._send(400, {"error": "нужен id задачи"})
+            j = _up_view(jid)
+            if not j:
+                return self._send(404, {"error": "задача не найдена (журнал живёт час)"})
+            return self._send(200, j)
+        if p == "/api/update/jobs":
+            return self._send(200, {"jobs": _up_list(),
+                                    "steps": _UP_STEPS,
+                                    "busy": bool(_up_busy())})
         if p == "/api/theme":
             b = json.dumps(_load(THEME, {})).encode()
             self.send_response(200)
@@ -17092,6 +18942,19 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/pay":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _pay_summary())
+        if p == "/api/settings/timezone":
+            # READ ONLY. Список зон отдаёт сама панель, а не морда: оператор может
+            # вписать и своё имя, и «примется или нет» он должен узнавать здесь,
+            # а не постфактум по сдвинувшимся датам.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            name = str(CFG_CACHE.get("tz") or "").strip()
+            return self._send(200, {
+                "tz": name, "label": _tz_label(),
+                "ok": bool(name) and _tz_zone(name) is not None,
+                "offset": _tz_off(),
+                "server_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                "local_now": _ldate("%Y-%m-%d %H:%M:%S"),
+                "zones": [{"id": z, "label": lab} for z, lab in _TZ_PRESET]})
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
@@ -17143,6 +19006,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "split_tunnel": CFG_CACHE.get("split_tunnel", "off"),
                 "ui_style": (CFG_CACHE.get("ui_style") or "new").strip().lower(),
                 "rulesets": dict(_RULESET_STATE),
+                "xray_geo": _xray_geo_state_view(),
             })
         if p == "/api/dashboard":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -17405,6 +19269,7 @@ class H(http.server.BaseHTTPRequestHandler):
         # счётчик прочитанного обнуляем на каждый запрос, иначе второе тело
         # «доедалось» бы по остаткам первого
         self._body_read = 0
+        self._resp_started = False
         try:
             if self._reject_chunked():
                 return
@@ -17476,6 +19341,81 @@ class H(http.server.BaseHTTPRequestHandler):
             g = _perm_gate(self, p, "POST")
             if g:
                 return self._send(*g)
+            # Гео-базы xray — то же долгое качаемое (28 МБ, до 90 с на файл) и
+            # тоже state.json не читают: под замком они держали бы тик панели.
+            # Базы меняются на лету и xray их перечитывает сам при ближайшем
+            # своём перезапуске, поэтому здесь нет ни confirm, ни рестарта.
+            if p == "/api/network/geo/update":
+                try:
+                    res = _up_start("geo", _xray_geo_job, {"route": p})
+                except RuntimeError as e:
+                    return self._send(400, {"error": str(e)})
+                _audit("geo_update", job=res.get("job"),
+                       by=(_auth_user(self) or {}).get("login") or "owner")
+                res["steps"] = _UP_STEPS["geo"]
+                res["poll"] = "/api/update/job?id=" + res["job"]
+                return self._send(202, res)
+            # ---- долгое качаемое: вне «корзины» состояния и вне одного POST ----
+            # `_dl` качает до 90 с, а эти ручки state.json не читают вообще. Под
+            # замком это означало одно: тик (автоблокировка, предупреждения) и
+            # любое операторское изменение ждут чужой сети. Замерено: 87.5 с
+            # против 0.32 с (gp/x1_lock_hold_test.py). Плюс урок v2.15.1: долгий
+            # POST браузер рвёт и пишет «не вышло» ровно тогда, когда сервер
+            # доделал работу. Поэтому — фоновая задача с живым журналом шагов.
+            if p in ("/api/update/install", "/api/xray/switch", "/api/tg/switch",
+                     "/api/versions/restore"):
+                b = self._body() or {}
+                u = _auth_user(self) or {}
+                tgt = str(b.get("version") or "").strip()[:40]
+                # Подтверждение спрашивается здесь, а не в нити задачи: отказ
+                # «не подтверждено» — это ответ на клик, а не результат работы, и
+                # заводить из-за него фоновую задачу (с записью в аудит как про
+                # «пытались ставить») значит позже не отличить случайный тап от
+                # настоящей неудачной установки.
+                if not b.get("confirm"):
+                    _audit("update_job_denied", route=p, reason="нет подтверждения",
+                           to=tgt or None, by=u.get("login") or "owner")
+                    return self._send(400, {"error": "нужно подтверждение: " + {
+                        "/api/update/install":
+                            "обновление заменяет panel.py и index.html и перезапускает панель",
+                        "/api/xray/switch":
+                            "ядро VPN будет заменено, xray перезапущен",
+                        "/api/tg/switch":
+                            "telemt будет заменён и служба перезапущена",
+                        "/api/versions/restore":
+                            "файлы вернутся к старой сборке",
+                    }[p]})
+                try:
+                    if p == "/api/update/install":
+                        jk = "panel"
+                        fn = lambda jid: _install_update(True, job=jid)
+                    elif p == "/api/xray/switch":
+                        jk = "xray"
+                        fn = lambda jid: _xray_switch(tgt, True, job=jid)
+                    elif p == "/api/tg/switch":
+                        jk = "telemt"
+                        fn = lambda jid: _tg_switch(tgt, True, job=jid)
+                    else:
+                        typ = (b.get("type") or "").strip()
+                        jk = "restore"
+                        if typ == "panel":
+                            fn = lambda jid: _panel_restore(tgt, True, job=jid)
+                        elif typ == "xray":
+                            fn = lambda jid: _xray_restore(tgt, True, job=jid)
+                        elif typ == "telemt":
+                            fn = lambda jid: _tg_restore(tgt, True, job=jid)
+                        else:
+                            return self._send(400, {"error": "неизвестный тип"})
+                    _audit("update_job", route=p, kind=jk, to=tgt or None,
+                           by=u.get("login") or "owner", confirm=bool(b.get("confirm")))
+                    res = _up_start(jk, fn, {"route": p, "version": tgt})
+                    res["steps"] = _UP_STEPS[jk]
+                    res["poll"] = "/api/update/job?id=" + res["job"]
+                    return self._send(202, res)
+                except RuntimeError as e:
+                    return self._send(400, {"error": str(e)})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:200]})
             # Ниже — только изменённые ручки, и все они читают состояние целиком.
             # Ждём до 240 с (длинное применение конфига/сертификата), но не вечно:
             # отказ наружу честнее зависшего соединения.
@@ -17483,6 +19423,11 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _lk:
                 return self._send(503, {"error": "панель применяет другое изменение, попробуй через 15 секунд",
                                         "retry_after": 15})
+            # С этого момента любые Telegram-письма, которые родит обработчик,
+            # копятся и уходят в рабочую очередь уже после отпускания замка:
+            # молчаливый Telegram не имеет права держать состояние whole панели
+            # (находка #14 — тот же дефект, что в фоновом тике).
+            _notify_begin()
             if p == "/api/term/toggle":
                 u = _auth_user(self)
                 if not u or not u["owner"]:
@@ -17810,29 +19755,66 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": err or "конфиг не принят"})
                 _audit("proto_toggle", proto=proto, disabled=want)
                 return self._send(200, {"ok": True, "proto": proto, "disabled": want})
+            if p == "/api/inbound/enable":
+                # «Не задействован» в морде — это не заевший тумблер, а транспорт,
+                # входа под который у панели нет вовсе. Раньше его доставали только
+                # руками в state.json — в обход `xray run -test` и без отката.
+                b = self._body() or {}
+                proto = (b.get("proto") or "").strip()
+                if proto not in _VALID_PROTOCOLS:
+                    return self._send(400, {"error": "неизвестный протокол"})
+                st = _load(STATE) or {}
+                ok, res = _enable_proto(st, proto)
+                if not ok:
+                    return self._send(400, {"error": res})
+                _audit("proto_enable", proto=proto, port=res["port"],
+                       created=bool(res["created"]), added_clients=int(res["added"]),
+                       noop=bool(res.get("noop")), clients=int(res["clients"]))
+                return self._send(200, {"ok": True, "inbound": res})
             if p == "/api/bot/webhook":
                 # Telegram webhook endpoint (no auth needed - called by Telegram)
                 if self.command != "POST":
                     return self._send(405, {"error": "Method not allowed"})
                 secret = CFG_CACHE.get("bot_webhook_secret") or ""
-                if secret:
-                    got = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
-                    # заголовок приходит в latin-1, поэтому в got бывают не-ASCII
-                    # байты; compare_digest по строкам на них падает TypeError.
-                    if not hmac.compare_digest(got.encode("utf-8"), secret.encode("utf-8")):
-                        return self._send(403, {"error": "bad secret token"})
+                got = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
+                # заголовок приходит в latin-1, поэтому в got бывают не-ASCII
+                # байты; compare_digest по строкам на них падает TypeError.
+                # Раньше было `if secret:` вокруг всей проверки, то есть «секрет
+                # не настроен» значило «ручка открыта для всех»: поддельный
+                # callback исполнял админские команды и правил файлы панели.
+                # Теперь наоборот — без секрета принимать нечего. Ответ один и
+                # тот же, чтобы по нему нельзя было отличить «не настроен» от
+                # «не угадали».
+                if not secret:
+                    _audit_throttled("bot_webhook_unconfigured")
+                if not secret or not hmac.compare_digest(got.encode("utf-8"), secret.encode("utf-8")):
+                    return self._send(403, {"error": "bad secret token"})
                 try:
-                    b = self._body()
+                    b = self._body(_BOT_WEBHOOK_MAXB)
                     if not b:
                         return self._send(400, {"error": "empty body"})
-                    _process_bot_update(b)
+                    # Ровно та же дисциплина, что в опросе getUpdates: состояние —
+                    # под замком, ответы пользователю — после. Без этого webhook
+                    # (а его зовёт чужой сервис, и он вообще без аутентификации)
+                    # правил state.json незащищённо: наложение на фоновый тик или
+                    # на второй апдейт теряло записи подписчиков.
+                    with _notify_queued():
+                        with _STATE_LOCK:
+                            _process_bot_update(b)
                     return self._send(200, {"ok": True})
+                except _BodyError as e:
+                    # кап тела и мусорный JSON — разные отказные коды: `do_POST`
+                    # вообще-то отвечает 413 на «слишком большое», а локальный
+                    # `except Exception` ровнял его с 400. Текст наружу не идёт.
+                    print("[bot] webhook: " + repr(e)[:200], flush=True)
+                    _audit_throttled("bot_webhook_error", detail=str(e)[:200])
+                    return self._send(getattr(e, "code", 400), {"error": "bad update"})
                 except Exception as e:
                     # ручка без аутентификации (зовёт Telegram); при незакрытом секрете
                     # сюда может постить кто угодно — текст исключения наружу не отдаём,
                     # он оседает в журнале/аудите для отладки
                     print("[bot] webhook: " + repr(e)[:200], flush=True)
-                    _audit("bot_webhook_error", detail=str(e)[:200])
+                    _audit_throttled("bot_webhook_error", detail=str(e)[:200])
                     return self._send(400, {"error": "bad update"})
             if p == "/api/logout":
                 t = _cookie(self)
@@ -18359,6 +20341,16 @@ class H(http.server.BaseHTTPRequestHandler):
                 _awg_sync(st)
                 _wg_sync(st)
                 _apply_state(st)
+                # Создание и удаление подписки — единственные действия, которые
+                # заводят человеку ключ и доступ к сети, и в журнале их не было
+                # вовсе: `_audit("client_add")` не вызывался нигде. «Кто выдал
+                # подписку и кому» восстанавливалось только по времени файла.
+                # sub_token не пишем: это право доступа, а не метаданные.
+                _audit("client_add", uuid=client_uuid, name=name[:40],
+                       proto=want_proto or "все", limit_gb=_lg, days=_edays,
+                       cycle=reset_cycle or "нет", devices=max_devices,
+                       family=len(fam_res), tg_proxy=tg_mode or "off",
+                       ip=self.client_address[0])
 
                 nodes_res = None
                 if b.get("to_nodes"):
@@ -18541,6 +20533,38 @@ class H(http.server.BaseHTTPRequestHandler):
                 _audit("family_devlimit", uuid=key, max_devices=res["max_devices"])
                 return self._send(200, {"ok": True})
 
+            if p == "/api/clients/family/adopt":
+                # Посадить уже существующую подписку в семью — то же самое, что
+                # «добавить участника», только человека не заставляют покупать
+                # заново и не выдают ему новый ключ. Свой URL он сохраняет.
+                b = self._body() or {}
+                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                mkey = (b.get("member_uuid") or b.get("member_token") or "").strip()
+                if not mkey:
+                    return self._send(400, {"error": "member_uuid не указан"})
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_adopt(st, key, mkey, b.get("max_devices"))
+                if not ok: return self._send(400, {"error": res})
+                _save(STATE, st)
+                _audit("family_adopt", uuid=res["uuid"], name=res["name"],
+                       parent=res["parent"], parent_name=res["parent_name"])
+                return self._send(200, {"ok": True, "member": res})
+
+            if p == "/api/clients/family/orphan":
+                b = self._body() or {}
+                mkey = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                if not mkey:
+                    return self._send(400, {"error": "member_uuid не указан"})
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_orphan(st, mkey)
+                if not ok: return self._send(400, {"error": res})
+                _save(STATE, st)
+                _audit("family_orphan", uuid=res["uuid"], name=res["name"],
+                       was_parent=res["was_parent"])
+                return self._send(200, {"ok": True, "member": res})
+
             if p == "/api/clients/delete":
                 b = self._body()
                 u = b.get("uuid")
@@ -18581,8 +20605,13 @@ class H(http.server.BaseHTTPRequestHandler):
                         pass
 
                 removed = False
+                gone = {}
                 for proto, inb in list((st.get("inbounds") or {}).items()):
                     orig_len = len(inb.get("clients", []))
+                    for c in inb["clients"]:
+                        if _dying(c) and c.get("uuid") not in gone:
+                            gone[c["uuid"]] = (str(c.get("name") or "")[:40],
+                                               _bytes_of(c.get("up")) + _bytes_of(c.get("down")))
                     inb["clients"] = [c for c in inb["clients"] if not _dying(c)]
                     if len(inb["clients"]) < orig_len:
                         removed = True
@@ -18598,6 +20627,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 _awg_sync(st)
                 _wg_sync(st)
                 _apply_state(st)
+                # Тот же резон, что и у client_add: удаление — самое необратимое
+                # действие с подпиской, и в журнале его не было.
+                _audit("client_delete", uuid=(rec0 or {}).get("uuid") or u,
+                       name=((rec0 or {}).get("name") or "")[:40],
+                       took=len(gone),
+                       names=",".join(sorted({g[0] for g in gone.values()}))[:120],
+                       gb=round(sum(g[1] for g in gone.values()) / 1024 ** 3, 3),
+                       ip=self.client_address[0])
                 try:
                     _subdev_prune({c.get("sub_token")
                                    for inb in (st.get("inbounds") or {}).values()
@@ -18765,7 +20802,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/rename":
                 b = self._body()
-                u = b.get("uuid"); name = (b.get("name") or "").strip()
+                u = b.get("uuid"); name = (b.get("name") or "").strip()[:40]
                 if not name: return self._send(400, {"error": "имя пустое"})
                 st = _load(STATE)
                 proto, inb, c = _find_client(st, u)
@@ -18798,6 +20835,27 @@ class H(http.server.BaseHTTPRequestHandler):
                     for c in group: c["limit_gb"] = group[0]["limit_gb"]
                     if float(group[0]["limit_gb"]) > 0:
                         for c in group: c["warned_80"] = False
+                if "name" in b:
+                    # Переименовать подписку можно и из морды: раньше имя
+                    # ставили только при создании, и опечатка («анна» вместо
+                    # «Анна») оставалась с человеком навсегда — она видна ему
+                    # самому в подписке, в боте и в списке у оператора.
+                    nm = str(b.get("name") or "").strip()[:40]
+                    if not nm:
+                        return self._send(400, {"error": "имя пустое"})
+                    for c in group:
+                        c["name"] = nm
+                        if c.get("fam_name"):
+                            c["fam_name"] = nm
+                if "expiry_days" in b and "expiry_date" in b:
+                    return self._send(400, {"error": "срок: либо expiry_days, либо expiry_date"})
+                if "expiry_date" in b:
+                    okd, res = _parse_expiry_date(b.get("expiry_date"))
+                    if not okd:
+                        return self._send(400, {"error": res})
+                    group[0]["expiry"] = res
+                    for c in group:
+                        c["expiry"] = res; c["warned_days"] = []
                 if "expiry_days" in b:
                     try: d = int(float(b.get("expiry_days") or 0))
                     except (TypeError, ValueError, OverflowError):
@@ -18828,7 +20886,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         c["tg_proxy"] = tm
                         if tm == "personal" and not c.get("tg_user"):
                             c["tg_user"] = _tg_slug(c.get("name"), "client") + "-" + (c.get("sub_token") or "x")[:6]
-                if "limit_gb" in b or "expiry_days" in b or "reset_cycle" in b:
+                if ("limit_gb" in b or "expiry_days" in b or "expiry_date" in b
+                        or "reset_cycle" in b):
                     # зеркало тарифа на записи членов + сброс их флагов предупреждений
                     _fam_mirror(st, u)
                     _, _mems = _fam(st, u)
@@ -18848,7 +20907,18 @@ class H(http.server.BaseHTTPRequestHandler):
                         _apply_state(st)
                     except Exception as e:
                         return self._send(500, {"error": str(e)})
-                return self._send(200, {"ok": True})
+                exp_now = int(group[0].get("expiry") or 0)
+                _audit("client_update", uuid=u, name=group[0].get("name"),
+                       what=",".join(k for k in ("name", "limit_gb", "expiry_days",
+                                                 "expiry_date", "reset_cycle",
+                                                 "max_devices", "tg_proxy", "unblock")
+                                    if k in b),
+                       expiry=exp_now,
+                       expiry_local=_ldate("%d.%m.%Y", exp_now) if exp_now else "бессрочно")
+                return self._send(200, {"ok": True, "name": group[0].get("name"),
+                                        "expiry": exp_now,
+                                        "expiry_local": (_ldate("%d.%m.%Y", exp_now)
+                                                          if exp_now else "бессрочно")})
 
             if p == "/api/bans/unban":
                 b = self._body()
@@ -18872,38 +20942,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 _save(STATE, st)
                 return self._send(200, {"ok": True, "favorites": list(fav)})
 
-            if p == "/api/xray/switch":
-                try:
-                    b = self._body()
-                    return self._send(200, _xray_switch((b.get("version") or "").strip()))
-                except urllib.error.HTTPError as e:
-                    return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
-                except Exception as e:
-                    return self._send(400, {"error": str(e)})
-            if p == "/api/tg/switch":
-                try:
-                    b = self._body()
-                    return self._send(200, _tg_switch((b.get("version") or "").strip()))
-                except urllib.error.HTTPError as e:
-                    return self._send(502, {"error": f"скачивание: HTTP {e.code}"})
-                except Exception as e:
-                    return self._send(400, {"error": str(e)})
             if p == "/api/versions/backup":
                 return self._send(200, _panel_backup_now())
-            if p == "/api/versions/restore":
-                try:
-                    b = self._body()
-                    typ = (b.get("type") or "").strip()
-                    ver = (b.get("version") or "").strip()
-                    if typ == "panel":
-                        return self._send(200, _panel_restore(ver))
-                    if typ == "xray":
-                        return self._send(200, _xray_restore(ver))
-                    if typ == "telemt":
-                        return self._send(200, _tg_restore(ver))
-                    return self._send(400, {"error": "неизвестный тип"})
-                except Exception as e:
-                    return self._send(400, {"error": str(e)})
             if p == "/api/dynv6/save":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
@@ -19208,7 +21248,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                            "(шаг «проверка связности»)")
                     _mv_setp(scheduled_ts=ts, auto_retire=bool(b.get("auto_retire")),
                              scheduled_provider=b.get("provider") or "auto")
-                    _mv_note("расписание: " + (time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+                    _mv_note("расписание: " + (_ldate("%Y-%m-%d %H:%M", ts)
                                                if ts else "снято") +
                              (", авто-пенсия" if b.get("auto_retire") else ""))
                     return self._send(200, {"scheduled_ts": ts})
@@ -19353,6 +21393,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 url = b.get("url") or (f"https://{CFG_CACHE.get('panel_domain', '').strip()}:{CFG_CACHE.get('panel_port', 8444)}/api/bot/webhook")
                 secret = CFG_CACHE.get("bot_webhook_secret") or secrets.token_urlsafe(24)
                 CFG_CACHE["bot_webhook_secret"] = secret
+                # Секрет — локальная половина двусторонней сделки: его кладём на
+                # диск ДО звонка в Telegram. Иначе вызов, который дошёл до
+                # Telegram, но не вернулся обратно (обрыв, таймаут), оставлял бы
+                # панель с секретом только в памяти: после ближайшего рестарта
+                # вебхум начинал отвечать 403 на настоящие update'ы Telegram, и
+                # бот молча глох.
+                _cfg_save()
                 try:
                     q = urllib.parse.urlencode({"url": url, "secret_token": secret,
                                                 "drop_pending_updates": "false"})
@@ -19362,9 +21409,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     if data.get("ok"):
                         CFG_CACHE["bot_webhook_url"] = url
                         _cfg_save()
+                        _audit("bot_webhook_set", url=url)
                         return self._send(200, {"ok": True, "url": url})
+                    _audit("bot_webhook_set_failed", url=url,
+                           detail=str(data.get("description") or "")[:200])
                     return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
+                    _audit("bot_webhook_set_failed", url=url, detail=str(e)[:200])
                     return self._send(400, {"error": str(e)})
 
             if p == "/api/bot/delete_webhook":
@@ -19427,6 +21478,25 @@ class H(http.server.BaseHTTPRequestHandler):
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
                 return self._send(200, {"ok": True, "port": port, "restarting": True})
+
+            if p == "/api/settings/timezone":
+                b = self._body() or {}
+                if "tz" not in b:
+                    return self._send(400, {"error": "нет поля tz"})
+                name = str(b.get("tz") or "").strip()
+                ok, err = _tz_ok(name)
+                if not ok:
+                    return self._send(400, {"error": err})
+                was = str(CFG_CACHE.get("tz") or "")
+                CFG_CACHE["tz"] = name
+                _cfg_save()
+                # Пояс меняет только запись дат, а не сами сроки; сравниваем
+                # «до/после» словами, чтобы в журнале было видно, что сдвинулось.
+                _audit("timezone_set", tz=name or "системный",
+                       was=(was or "системный"), now=_ldate("%Y-%m-%d %H:%M"),
+                       offset=_tz_off())
+                return self._send(200, {"ok": True, "tz": name, "label": _tz_label(),
+                                        "local_now": _ldate("%Y-%m-%d %H:%M:%S")})
 
             # ---- update ----
             if p == "/api/settings":
@@ -19582,9 +21652,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception: body = {}
                 xray_changed = False
                 panel_changed = False
+                geo_changed = False
                 if "ru_bypass" in body:
                     CFG_CACHE["ru_bypass"] = bool(body["ru_bypass"])
                     xray_changed = True
+                if "geo_autoupdate" in body:
+                    CFG_CACHE["geo_autoupdate"] = bool(body["geo_autoupdate"])
+                    geo_changed = True
                 if "bind" in body:
                     bind = (body["bind"] or "").strip()
                     if bind:
@@ -19649,7 +21723,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "ui_style: new|classic"})
                     CFG_CACHE["ui_style"] = uv
                     f2b_changed = True
-                if xray_changed or panel_changed or f2b_changed:
+                if xray_changed or panel_changed or f2b_changed or geo_changed:
                     _cfg_save()
                 if xray_changed and not panel_changed:
                     try:
@@ -19681,13 +21755,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     _restart_xray()
                     return self._send(200, {"ok": True})
-                except Exception as e:
-                    return self._send(500, {"error": str(e)})
-            if p == "/api/update/install":
-                try:
-                    return self._send(200, _install_update())
-                except urllib.error.HTTPError as e:
-                    return self._send(502, {"error": f"GitHub API: HTTP {e.code}"})
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
             # ---- veil-zapret2 fix ----
@@ -19922,6 +21989,12 @@ class H(http.server.BaseHTTPRequestHandler):
             # Кривое тело — это вина отправителя, а не панели: честный 400/413
             # вместо 500, без трейсбека в stderr и без записи в аудит сбоев.
             return self._send(e.code, {"error": str(e)[:200]})
+        except _CLIENT_GONE as e:
+            # Гость повесил трубку на чтении тела — ответить некому, и это не
+            # сбой панели. Без этой ветки каждый обрыв давал traceback в stderr
+            # и запись post_error, то есть настоящая жалоба тонула в шуме.
+            self.close_connection = True
+            _client_gone(urllib.parse.urlparse(self.path).path, e)
         except Exception as e:
             # 500 = непредвиденный сбой; текст исключения (пути, значения) наружу не
             # отдаём — он бывает на неаутентицированных ветках (login, публичные /pay).
@@ -19930,7 +22003,9 @@ class H(http.server.BaseHTTPRequestHandler):
             traceback.print_exc()
             _audit("post_error", path=urllib.parse.urlparse(self.path).path,
                    detail=type(e).__name__ + ": " + str(e)[:200])
-            return self._send(500, {"error": "внутренняя ошибка панели"})
+            # 500 только если ответ ещё не начался (см. send_response_only выше).
+            if not self._resp_started:
+                self._send(500, {"error": "внутренняя ошибка панели"})
         finally:
             # Тело обязано быть съедено до последнего байта, каким бы ответом ни
             # закончился путь (401 до чтения, 429 во время, 500 в исключении).
@@ -19940,6 +22015,8 @@ class H(http.server.BaseHTTPRequestHandler):
             self._drain_body()
             if _lk:
                 _STATE_LOCK.release()
+                # письма наружу — строго после замка; сама передача не ждёт
+                _notify_flush()
 
 class S(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
@@ -20121,6 +22198,13 @@ if __name__ == "__main__":
     try:
         st = _load(STATE)
         xc = _load(XRAY)
+        # Привести состояние ДО всего остального: ниже идут `_awg_sync`, `_wg_sync`
+        # и база трафика, и каждый из них ждёт от записи словарь. Одна строка в
+        # `clients` (импорт из чужой панели, бэкап, ручная правка) обрывала их все
+        # тремя `except`-ами подряд — панель стартует «успешно», автоблокировка
+        # не считает байты и молчит до следующего рестарта.
+        if _migrate_state(st):
+            _save(STATE, st)
         chg = _ensure_wg_std(st)
         chg = _ensure_xray_keys_urlsafe(st) or chg
         # chg = _ensure_all_protos(st) or chg
@@ -20171,6 +22255,11 @@ if __name__ == "__main__":
     except Exception as e:
         print("migrate error: " + str(e), flush=True)
     _web_tls_ctx()
+    # Значка старта — до первого ответа: страж обновления (v2.16.7) смотрит именно
+    # на неё и иначе вечно ждал бы «панель поднялась», пока оператор сам лезет
+    # в консоль. Ставится перед serve_forever, потому что после него панель может
+    # и не дойти до приёма запросов.
+    _panel_boot_write()
     threading.Thread(target=_nodes_poll_loop, daemon=True).start()
     with S((bind, port), H) as srv:
         srv.serve_forever()
