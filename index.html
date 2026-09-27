@@ -136,6 +136,9 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .pbadge{flex:none;font-size:12px;font-weight:800;color:var(--mut2);border:1px solid var(--br);border-radius:999px;padding:2px 10px;min-width:26px;text-align:center}
 .pcheck{position:relative;width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:color-mix(in srgb,var(--gc,var(--g-vless)) 16%,transparent);color:var(--mut2);border:1px solid color-mix(in srgb,var(--gc,var(--g-vless)) 50%,transparent);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:color .18s,background .18s,border-color .18s}
 .pcheck:hover{color:var(--acc);background:color-mix(in srgb,var(--acc) 15%,transparent);border-color:var(--acc)}
+.penable{position:relative;width:34px;height:34px;flex:none;border-radius:10px;font-size:18px;line-height:1;padding:0;background:transparent;color:var(--mut2);border:1px dashed color-mix(in srgb,var(--gc,var(--g-vless)) 55%,transparent);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:color .18s,background .18s,border-color .18s}
+.penable:hover{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:var(--ok);border-style:solid}
+.penable[disabled]{opacity:.5;cursor:progress}
 .pcard.off{opacity:.55}
 .pcard.off .pname::after{content:' · выключен';font-size:12px;font-weight:400;color:var(--mut2)}
 .psw{flex:none;display:inline-flex;align-items:center;cursor:pointer;margin:0 2px}
@@ -801,10 +804,19 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div class=dcard>
       <div class=row><b>Настройки клиента</b><button class=tiny onclick=hideEdit()>Отмена</button></div>
       <div id=editWho class=muted></div>
+      <label for="editName">Имя подписки</label>
+      <input id=editName maxlength=40 placeholder="как подписчик видит себя сам">
       <label for="editLimit">Лимит, ГБ (0=безлимит)</label>
       <input id=editLimit type=number min=0 step=0.5>
-      <label for="editExpiry">Срок с сейчас, дней (0=бессрочно)</label>
-      <input id=editExpiry type=number min=0 step=1>
+      <label for="editExpMode">Срок действия <span id=editExpNow class=muted></span></label>
+      <select id=editExpMode onchange=editExpShown()>
+        <option value="keep">не менять</option>
+        <option value="date">до даты (последние сутки этого дня)</option>
+        <option value="days">дней с сейчас</option>
+        <option value="none">снять срок (бессрочно)</option>
+      </select>
+      <input id=editExpDate type=date hidden min=1970-01-01 max=9999-12-31>
+      <input id=editExpDays type=number min=1 max=36500 step=1 value=30 hidden>
       <label for="editCycle">Сброс трафика</label>
       <select id=editCycle>
         <option value="">без сброса (за всё время)</option>
@@ -821,6 +833,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <option value="personal">персональная ссылка прокси</option>
         <option value="off">не добавлять</option>
       </select>
+      <div id=editFam class="muted" style="margin-top:9px"></div>
       <button onclick=doEdit()>Сохранить</button>
       <div class=msg id=editMsg></div>
       </div>
@@ -1240,7 +1253,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class="card set-block" id=setMain>
     <h2>Настройки</h2>
     <p class=mut>Текущий логин: <b id=curLogin>—</b></p>
-    <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
+    <p class=mut>Текущая версия: <b id=curVer>—</b> <button class="tiny sec" id=chkUpdBtn onclick=checkUpdate() style=vertical-align:middle>Проверить обновления</button></p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
       <p><b>Что здесь?</b> Это системные настройки самой панели — не VPN-ссылок, а «пульта». Тут меняют порт входа в панель, ставят автообновление, настраивают защиту от подбора пароля (fail2ban), режим split-tunnel и покупаются резервные копии.</p>
       <p><b>Новичку:</b> почти всё можно не трогать — панель работает из коробки по умолчанию. Полезное на первое время: «Проверить обновления» (кнопка выше — ставит свежие исправления в один клик) и раздел «Резервное копирование» ниже (включи авто-копии, чтобы не потерять клиентов при поломке сервера).</p>
@@ -1250,6 +1263,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class=msg id=setMsg></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
       <button class="tiny sec" onclick="setJump('setPort')">🔌 Порт</button>
+      <button class="tiny sec" onclick="setJump('setTz')">🕒 Часовой пояс</button>
       <button class="tiny sec" onclick="setJump('setNet')">🌐 Сеть и защита</button>
       <button class="tiny sec" onclick="setJump('setIps')">📋 IP сервера</button>
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
@@ -1273,6 +1287,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div></details>
     <div class=msg id=pnlPortMsg></div>
     </div>
+    <div class="card set-block" id=setTz>
+    <h3 style="margin:0 0 8px">Часовой пояс</h3>
+    <p class=mut style="margin:0 0 10px">Сейчас панель показывает даты как <b id=tzNow>—</b>.<br><span id=tzLabelCur></span></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id=tzSel style="min-width:220px"></select>
+      <input id=tzOwn type=text maxlength=64 placeholder="своё имя: Europe/Bucharest" style="width:230px">
+      <button class=sec onclick=saveTz() id=tzBtn>Применить</button>
+    </div>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что это?</b> Сервер почти всегда живёт по UTC — так устроены датацентры. А срок подписки, дата в письме бота и «до какого числа» человек видит на своей странице панель рисует по поясу сервера, то есть для Москвы — на три часа раньше, чем надо.</p>
+        <p><b>Что меняется, а что нет.</b> Пояс меняет только то, что ты читаешь глазами. В файлах и в лимитах по-прежнему лежит UTC, поэтому подписчик из другого города не получит лишних суток, а счётчик трафика не обнулится в неположенное время. Границы циклов сброса («день», «неделя», «месяц») тоже остаются по UTC — иначе смена пояса бесплатно подарила бы или отняла сутки трафика у всех сразу.</p>
+        <p><b>Куда тыкать:</b> выбери пояс из списка — или впиши своё имя (полный список называется «IANA», например Asia/Tashkent). Применишь — и все даты в панели, на страницах подписчиков и в письмах бота пересчитаются. Не нужно ни перезапуска, ни переноса сроков.</p>
+      </div></details>
+    <div class=msg id=tzMsg></div>
+    </div>
     <div class="card set-block" id=setNet>
     <h3 style="margin:0 0 8px">Сетевые настройки</h3>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -1295,6 +1324,15 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <p class=mut style="margin:4px 0 0;font-size:12px">Введите полный путь, начинающийся с «/». Если файл существует — будет подхвачен автоматически.</p>
     </div>
     <div style="margin:12px 0">
+      <label><input type=checkbox id=ruBypass> Обход РФ-трафика на сервере — российские сайты и сети идут напрямую, мимо VPN</label>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что делает.</b> Это правило внутри Xray на сервере: трафик к российским сетям и доменам (<code>geoip:ru</code>, <code>geosite:category-ru</code>) отправляется напрямую, а не через туннель. Работает для всех протоколов сразу — и для тех, что не умеют split-tunnel на телефоне.</p>
+        <p><b>Чем отличается от split-tunnel ниже.</b> Split-tunnel — это правило в конфиге клиента (телефон сам решает, куда что пускать). Эта галка решает то же самое на сервере, и клиенту ничего не нужно настраивать.</p>
+        <p><b>Чем плох старый справочник.</b> Xray берёт список сетей и доменов из файлов <code>geoip.dat</code> / <code>geosite.dat</code> на сервере. Если они устарели, новый пул российского адреса уедет за границу. Автообновление баз — настройкой ниже.</p>
+        <p><b>После включения</b> Xray перезапускается — соединения прервутся на секунду.</p>
+      </div></details>
+    </div>
+    <div style="margin:12px 0">
       <label for=splitTunnel>Split-tunnel: полные конфиги sing-box (<code>/sb/&lt;токен&gt;</code>) и подписка для INCY</label>
       <select id=splitTunnel style="width:100%;margin-top:4px">
         <option value="off">выключен — весь трафик через VPN</option>
@@ -1308,6 +1346,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div></details>
       <p class=mut style="margin:4px 0 0;font-size:12px">Rule-set'ы зеркалируются с upstream раз в сутки и раздаются панелью из <code>/rulesets/</code>.</p>
       <p class=mut id=rsState style="margin:4px 0 0;font-size:12px">—</p>
+    </div>
+    <div style="margin:12px 0">
+      <label><input type=checkbox id=geoAuto> Автообновление гео-баз Xray — раз в сутки</label>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что это.</b> Когда включён обход РФ-трафика, Xray сам решает, что пускать напрямую, а что гнать через VPN. Решение он берёт из двух справочников на сервере — <code>geoip.dat</code> (сети) и <code>geosite.dat</code> (домены). Их кладёт установщик, и сами они не меняются никогда.</p>
+        <p><b>Чем плох старый справочник.</b> Новый пул адресов российского оператора, не попавший в базу, уезжает за границу: сайт открывается, но тормозит и вместо прямого хода показывает тебе зарубежный IP. Заметить это глазами нельзя — поэтому возраст баз показан здесь же.</p>
+        <p><b>Не путать с split-tunnel выше.</b> Тот справочник панель раздаёт клиентам (он и так свежий). Этот — копия на самом сервере, ей и занимается эта настройка.</p>
+        <p><b>Что безопаснее.</b> Панель не подменяет базу, пока не сверит контрольную сумму релиза, размер и наличие нужных кодов (ru, private, category-ru) внутри файла. Не прошло проверку — осталась прежняя, хоть и старая. Xray перечитывает базы при ближайшем перезапуске; сама панель из-за этого Connections рвёт только тот, кто явно нажмёт «перезапустить Xray».</p>
+      </div></details>
+      <div style="margin-top:8px">
+        <button class="tiny sec" id=geoBtn onclick=geoUpdateNow()>Обновить базы сейчас</button>
+        <span class=mut style="font-size:12px">~28 МБ, 1–2 минуты</span>
+      </div>
+      <p class=mut id=geoState style="margin:4px 0 0;font-size:12px">—</p>
+      <p class=msg id=geoMsg style="margin:4px 0 0;font-size:12px"></p>
     </div>
     <div style="margin:12px 0">
       <label><input type=checkbox id=f2bEnabled> fail2ban-lite — бан IP в nftables после серии неудачных входов в панель</label>
@@ -2293,6 +2346,20 @@ function escapeHtml(s){
 }
 
 function subCard(c){
+let USERS=[];
+function subSettings(uu){
+  const c=(USERS||[]).find(function(x){return x.uuid===uu;});
+  if(!c){ toast('Подписка не найдена — обновите список','err'); return; }
+  const p0=((c.protos||[])[0]||{}).proto||'';
+  showEdit(Object.assign({},c,{proto:p0}));
+}
+function famOrphan(muuid,nmv){
+  if(!confirm('Вывести «'+nmv+'» из семьи?\n\nСсылка, ключ и подключённые устройства останутся у человека — он просто снова платит сам за себя. Тариф вернётся его собственный, тот, что был до посадки в семью.'))return;
+  api('/api/clients/family/orphan',{method:'POST',body:JSON.stringify({member_uuid:muuid})})
+    .then(function(r){ loadSub(); const t=r&&r.member&&r.member.tariff;
+      toast(t?'Выведено из семьи — вернулся его собственный тариф':'Выведено из семьи (своего прежнего тарифа не было — задайте лимит и срок в настройках)','ok'); })
+    .catch(function(e){toast(e.message,'err');});
+}
   const _su = c.sub_url || (location.origin + '/sub/' + c.sub_token);
   const _pu = _su.replace('/sub/', '/p/');
   const tok = escapeHtml(c.sub_token||'');
@@ -2311,7 +2378,7 @@ function subCard(c){
     else status='<span class="uc-chip ok">✓ активно</span>';
   } else status='<span class="uc-chip ok">✓ активно</span>';
   const expChip = c.expiry
-    ? '<span class="uc-chip">📅 '+new Date(c.expiry*1000).toLocaleDateString()+'</span>'
+    ? '<span class="uc-chip" title="срок действия">📅 '+escapeHtml(fmtLocal(c.expiry))+'</span>'
     : '<span class="uc-chip">∞ срок</span>';
   // --- протоколы ---
   const protos=c.protos||[];
@@ -2378,6 +2445,7 @@ function subCard(c){
         + '<button class="uc-i" title="Скопировать ссылку подписки участника" onclick="copyText(\''+msub+'\',\'Ссылка участника скопирована\')">📋</button>'
         + '<button class="uc-i" title="Страница участника" onclick="window.open(\''+mpage+'\',\'_blank\')">👤</button>'
         + '<button class="uc-i del" title="Удалить участника" onclick="famDelMember(\''+mtok+'\',\''+fmn+'\')">✕</button>'
+        + '<button class="uc-i" title="Вывести из семьи: человек останется со своей ссылкой, но платит сам за себя" onclick="famOrphan(\''+mtok+'\',\''+fmn+'\')">⤒</button>'
         + '</div>';
     }).join('');
     famDet = '<details class="uc-det"><summary title="Участники пользуются одной оплаченной подпиской: у каждого своя ссылка и свой лимит устройств, но трафик и срок считаются на всю семью. Предупреждения и блокировка — по общему расходу.">👨‍👩‍👧 Семья · '+fam.length+(fam.length>=5?' · максимум':'')+'</summary>'
@@ -2410,6 +2478,7 @@ function subCard(c){
         + '<button class="uc-i" title="'+(c.blocked?'Включить подписчика (вернётся в конфиг — связь восстановится)':'Выключить подписчика (ссылки перестанут работать; трафик и настройки сохранятся)')+'" onclick="subToggle(\''+tok+'\',\''+escapeHtml(c.uuid||'')+'\','+(c.blocked?'true':'false')+',\''+escapeHtml(c.blocked_reason||'')+'\')">'+(c.blocked?'▶':'⏸')+'</button>'
         + '<button class="uc-i" title="Обновить ключи (uuid, пароли, WG-ключи). Ссылка подписки НЕ меняется — приложения сами подтянут новое. Полезна, если ссылка «утекла»" onclick="subRotate(\''+tok+'\',\''+nm+'\')">🔁</button>'
         + '<button class="uc-i del" title="Удалить подписчика" onclick="doSubDelete(\''+tok+'\')">🗑</button>'
+        + '<button class="uc-i" title="Настройки подписки: имя, срок (в том числе до конкретной даты), лимит, семья" onclick="subSettings(\''+escapeHtml(c.uuid||'')+'\')">⚙</button>'
       + '</span>'
     + '</div>'
     + '<div class="uc-chips">'+famChip+status+expChip+cliChip+'</div>'
@@ -2525,6 +2594,7 @@ async function loadSub(){
       } else {
         userListEl.className = 'uc-grid';
         userListEl.innerHTML = list.map(c => subCard(c)).join('');
+        USERS = list;
       }
     }catch(e){
       userListEl.className = '';
@@ -3675,7 +3745,7 @@ function renderProtoCards(){
         '<div class=prow>'+
         '<button class=pacc title="Раскрыть клиентов">+</button>'+
         '<div class=ptitle><div class=pname></div><span class=pbadge>0</span></div>'+
-        (p.has_inbound?'<label class=psw title="Переключатель: выключенный протокол убирается из конфига Xray и из всех подписок — клиенты по нему перестают работать, остальные не трогаются"><input type=checkbox '+(p.disabled?'':'checked')+' onchange="protoToggle(\''+p.id+'\',!this.checked,this)"><i></i></label>':'')+
+        (p.has_inbound?'<label class=psw title="Переключатель: выключенный протокол убирается из конфига Xray и из всех подписок — клиенты по нему перестают работать, остальные не трогаются"><input type=checkbox '+(p.disabled?'':'checked')+' onchange="protoToggle(\''+p.id+'\',!this.checked,this)"><i></i></label>':'<button class=penable title="Транспорт не задействован: входа под него в Xray нет. Кнопка создаст вход, положит в него всех текущих подписчиков и перезапустит Xray — на секунду соединения прервутся">＋</button>')+
         '<button class=pstar '+(isFav?'style="color:var(--warn)"':'')+' title="'+(isFav?'Убрать из избранного':'Добавить в избранное')+'">★</button>'+
         '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
         '</div>'+
@@ -3690,6 +3760,8 @@ function renderProtoCards(){
         card.classList.toggle('collapsed');
         acc.textContent=card.classList.contains('collapsed')?'+':'−';
       };
+      const en=card.querySelector('.penable');
+      if(en)en.onclick=(e)=>{e.stopPropagation();protoEnable(p.id,en);};
       const star=card.querySelector('.pstar');
       star.onclick=async(e)=>{
         e.stopPropagation();
@@ -3975,6 +4047,21 @@ async function protoToggle(id,disabled,el){
   await loadProtocols();
 }
 
+async function protoEnable(id,el){
+  const p=(protoList||[]).find(x=>x.id===id);
+  if(!confirm('Включить «'+((p&&p.label)||id)+'»?\n\nПанель создаст для этого транспорта вход Xray и положит в него всех текущих подписчиков — по одному ключу на транспорт, как при заведении подписки заново; старые ключи не меняются.\n\nXray перезапустится: примерно на секунду соединения прервутся и восстановятся сами.'))return;
+  if(el)el.disabled=true;
+  try{
+    const r=await api('/api/inbound/enable',{method:'POST',body:JSON.stringify({proto:id})});
+    if(r&&r.ok){
+      const ib=r.inbound||{};
+      toast('Включено · порт '+(ib.port||'?')+' · подписчиков '+(ib.clients||0),'ok');
+    } else toast((r&&r.error)||'ошибка','err');
+  }catch(e){toast(String((e&&e.message)||e),'err');}
+  if(el)el.disabled=false;
+  await loadProtocols();
+}
+
 async function loadProtocols(){
   try{
     const d=await api('/api/vpn/protocols');
@@ -4134,6 +4221,56 @@ async function savePanelPort(){
     else{setMsg('pnlPortMsg','Порт уже '+p,'ok');$('pnlPortCur').textContent=': '+p;}
   }catch(e){setMsg('pnlPortMsg',e.message,'err');}
 }
+// Даты в морде — в поясе, которое задал оператор (карточка «Часовой пояс»).
+// Без пояса `timeZone` не передаём и браузер показывает своё — ровно как было
+// до функции; с поясом таблица operator'а и страница подписки перестают спорить.
+function fmtLocal(ts,dhm){
+  if(!ts) return '—';
+  const st=window._tzState||{};
+  const z=(st.tz&&st.ok!==false)?st.tz:undefined;
+  try{
+    const o={timeZone:z,day:'2-digit',month:'2-digit',year:'numeric'};
+    if(dhm){o.hour='2-digit';o.minute='2-digit';}
+    return new Date(ts*1000).toLocaleString(undefined,o);
+  }catch(e){
+    try{ return new Date(ts*1000).toLocaleString(); }catch(e2){ return '—'; }
+  }
+}
+
+async function loadTz(){
+  try{
+    const d=await api('/api/settings/timezone');
+    window._tzState=d;
+    const sel=$('tzSel');
+    if(sel&&!sel.options.length){
+      (d.zones||[]).forEach(z=>{const o=document.createElement('option');o.value=z.id;o.textContent=z.label||z.id;sel.appendChild(o);});
+    }
+    if(sel){
+      const have=(d.zones||[]).some(z=>z.id===(d.tz||''));
+      if(have||!d.tz)sel.value=d.tz||'';
+      else{const o=sel.options[0];if(o){o.value='';o.textContent='своё: '+(d.tz||'')+' (нет в списке)';sel.value='';}}
+    }
+    const own=$('tzOwn'); if(own&&d.tz&&!(d.zones||[]).some(z=>z.id===d.tz))own.value=d.tz;
+    const n=$('tzNow'); if(n)n.textContent=d.local_now+' · '+(d.label||'');
+    const lc=$('tzLabelCur');
+    if(lc)lc.textContent=d.ok===false?('⚠ '+d.label):(d.tz?'Это '+d.label+'.':'Пояс не задан — даты идут по поясу сервера.');
+  }catch(e){}
+}
+async function saveTz(){
+  const own=($('tzOwn')&&$('tzOwn').value||'').trim();
+  const tz=own||(($('tzSel')&&$('tzSel').value)||'');
+  const b=$('tzBtn'); if(b)b.disabled=true;
+  setMsg('tzMsg','Применяю...','');
+  try{
+    const r=await api('/api/settings/timezone',{method:'POST',body:JSON.stringify({tz})});
+    if(b)b.disabled=false;
+    await loadTz();
+    setMsg('tzMsg','Пояс применён: '+(r.label||'системный')+'. Сейчас здесь '+r.local_now,'ok');
+    // строки со сроками рисует сервер — перечитываем вкладку подписок и дашборд,
+    // иначе оператор будет смотреть на даты старого пояса до первой перезагрузки
+    try{loadSub();loadClients();}catch(e){}
+  }catch(e){if(b)b.disabled=false;setMsg('tzMsg',e.message,'err');}
+}
 function addRotIp(ip){
   const ta=$('rotPool'); if(!ta||!ip)return;
   const cur=ta.value.split(/\s+/).filter(Boolean);
@@ -4264,7 +4401,7 @@ async function refresh(){
     await Promise.allSettled([
       loadProtocols(), loadClients(), loadSub(), loadTg(), loadFix(),
       loadTgVerInfo(), loadStats(), loadSettings(), loadDynv6(), loadCert(),
-      loadXrayInfo(), loadAutoBk(), loadVersions(), loadTheme(),
+      loadXrayInfo(), loadAutoBk(), loadVersions(), loadTheme(), loadTz(),
     ]);
     if(!window._veilTabRestored){window._veilTabRestored=true;restoreTab();}
     if(document.body.classList.contains('ui-new'))loadDashboard();
@@ -4338,17 +4475,85 @@ async function doAdd(){
   }
 }
 
-let editUuid=null;
+let editUuid=null, editToken='', editFamOf='', editName0='';
 function showEdit(c){
-  editUuid=c.uuid;
+  editUuid=c.uuid; editToken=c.sub_token||''; editFamOf=c.family_of||''; editName0=c.name||'';
   $('editWho').textContent=(c.name||'')+' · '+(protoLabels[c.proto]||c.proto||'');
+  $('editName').value=c.name||'';
   $('editLimit').value=c.limit_gb||0;
-  $('editExpiry').value=0;
   $('editCycle').value=c.reset_cycle||'';
   $('editDevs').value=c.max_devices||0;
-  const _et=$('editTg');if(_et)_et.value=c.tg_proxy||'';
-  $('editMsg').textContent='';
+  const _et=$('editTg'); if(_et)_et.value=c.tg_proxy||'';
+  const _m=$('editExpMode'); if(_m)_m.value='keep';
+  const _d=$('editExpDate'); if(_d)_d.value='';
+  const _n=$('editExpDays'); if(_n)_n.value=30;
+  const now=$('editExpNow');
+  if(now){
+    if(!c.expiry) now.textContent='— сейчас бессрочно';
+    else{
+      const left=Math.ceil((c.expiry*1000-Date.now())/86400000);
+      now.textContent='— сейчас '+(fmtLocal(c.expiry))+(left>0?(' (осталось '+left+' дн.)'):(' (истёк '+(-left)+' дн. назад)'));
+    }
+  }
+  editExpShown();
+  const fam=$('editFam');
+  if(fam){
+    if(editFamOf){
+      fam.innerHTML='<div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">'
+        +'<span>эта подписка в чужой семье — тариф общий с хозяином</span>'
+        +'<button class="tiny" onclick=editOrphan()>⤒ Вывести из семьи</button></div>';
+    } else {
+      fam.innerHTML='<div style="margin-top:4px"><label for="editAdoptSel" '
+        +'title="Присоединить уже купленную подписку к этой семье: человек сохраняет свою ссылку, '
+        +'ключ и подключённые устройства, а тариф становится общим">В эту семью из обычных подписок</label>'
+        +'<select id=editAdoptSel><option value="">загружаю…</option></select>'
+        +'<div class="row" style="gap:6px;margin-top:5px"><button class="tiny" id=editAdoptBtn '
+        +'onclick=editAdopt()>⤓ Посадить в семью</button>'
+        +'<span class="muted">свою ссылку и устройства подписчик сохранит</span></div></div>';
+      editAdoptFill();
+    }
+  }
+  $('editMsg').textContent='';$('editMsg').className='msg';
   showModal('editBox');
+}
+function editExpShown(){
+  const m=$('editExpMode'); if(!m)return;
+  const d=$('editExpDate'), n=$('editExpDays');
+  if(d)d.hidden=(m.value!=='date');
+  if(n)n.hidden=(m.value!=='days');
+}
+async function editAdoptFill(){
+  const sel=$('editAdoptSel'); if(!sel)return;
+  try{
+    const d=await api('/api/subs');
+    const solo=(d.subs||[]).filter(x=>!x.family_of&&x.uuid!==editUuid);
+    sel.innerHTML='<option value="">— '+(solo.length?'выберите подписку':'нет отдельных подписок')+' —</option>'
+      +solo.map(x=>'<option value="'+escapeHtml(x.uuid)+'">'+escapeHtml(x.name||'без имени')
+        +(x.expiry?(' · до '+escapeHtml(fmtLocal(x.expiry))):' · бессрочно')+'</option>').join('');
+    const b=$('editAdoptBtn'); if(b)b.disabled=!solo.length;
+  }catch(e){ sel.innerHTML='<option value="">список не прочитан</option>'; }
+}
+async function editAdopt(){
+  const sel=$('editAdoptSel'); if(!sel||!editUuid)return;
+  const mu=sel.value;
+  if(!mu){ toast('Сначала выберите подписку','err'); return; }
+  const nm=(sel.options[sel.selectedIndex]||{}).text||'её';
+  if(!confirm('Присоединить «'+nm+'» к семье этой подписки?\n\nТариф станет общим с семьёй (расход и срок складываются), ссылка человека и подключённые им устройства останутся его собственными. Его прежний тариф сохранён — при выводе из семьи вернётся он.'))return;
+  try{
+    await api('/api/clients/family/adopt',{method:'POST',body:JSON.stringify({uuid:editUuid,member_uuid:mu})});
+    toast('Подписка присоединена к семье','ok');
+    await loadSub(); editAdoptFill();
+  }catch(e){ toast(e.message,'err'); }
+}
+async function editOrphan(){
+  if(!editUuid)return;
+  if(!confirm('Вывести эту подписку из семьи?\n\nСсылка, ключ и устройства останутся у человека. Тариф вернётся его собственный — тот, что был до посадки в семью.'))return;
+  try{
+    const r=await api('/api/clients/family/orphan',{method:'POST',body:JSON.stringify({member_uuid:editUuid})});
+    const back=r&&r.member&&r.member.tariff;
+    toast(back?'Подписка выведена из семьи — вернулся её собственный тариф':'Подписка выведена из семьи (своего прежнего тарифа у неё не было — задайте лимит и срок правкой)','ok');
+    hideEdit(); await loadSub();
+  }catch(e){ toast(e.message,'err'); }
 }
 function hideEdit(){editUuid=null;hideModal();}
 async function doEdit(){
@@ -4359,15 +4564,24 @@ async function doEdit(){
       limit_gb:parseFloat($('editLimit').value)||0,
       reset_cycle:$('editCycle').value||'',
       max_devices:parseInt($('editDevs').value,10)||0};
-    const _tg=$('editTg').value;
-    if(_tg)body.tg_proxy=_tg;
-    const _d=parseInt($('editExpiry').value,10);
-    if(_d>0)body.expiry_days=_d;
-    else if(_d===0&&confirm('Срок: снять ограничение (0=бессрочно)?'))body.expiry_days=0;
-    await api('/api/clients/update',{method:'POST',body:JSON.stringify(body)});
+    const _tg=$('editTg'); if(_tg&&_tg.value)body.tg_proxy=_tg.value;
+    const nm=($('editName').value||'').trim();
+    if(nm && nm!==editName0) body.name=nm;
+    if(!nm && editName0){ $('editMsg').textContent='Имя не может быть пустым';$('editMsg').className='msg err';return; }
+    const m=($('editExpMode')||{}).value||'keep';
+    if(m==='date'){
+      const v=($('editExpDate').value||'').trim();
+      if(!v){ $('editMsg').textContent='Выберите дату срока';$('editMsg').className='msg err';return; }
+      body.expiry_date=v;
+    } else if(m==='days'){
+      const d=parseInt($('editExpDays').value,10);
+      if(!(d>0)){ $('editMsg').textContent='Дней должно быть больше нуля (снять срок — другой режим)';$('editMsg').className='msg err';return; }
+      body.expiry_days=d;
+    } else if(m==='none'){ body.expiry_days=0; }
+    const r=await api('/api/clients/update',{method:'POST',body:JSON.stringify(body)});
     hideEdit();
     await refresh();
-    toast('Настройки сохранены','ok');
+    toast('Настройки сохранены'+(r&&r.expiry_local?(' · срок до '+r.expiry_local):''),'ok');
   }catch(e){
     $('editMsg').textContent=e.message;$('editMsg').className='msg err';
   }
@@ -4646,8 +4860,10 @@ function copyText(text,okMsg){
 }
 
 async function checkUpdate(){
+  const b=$('chkUpdBtn');
   $('setMsg').textContent='Проверяю GitHub...';$('setMsg').className='msg';
   $('installBtn').classList.add('hidden');
+  if(b)b.disabled=true;
   try{
     const u=await api('/api/update');
     if(u.update_available){
@@ -4655,13 +4871,19 @@ async function checkUpdate(){
       $('setMsg').className='msg';
       $('installBtn').textContent='Установить v'+u.latest;
       $('installBtn').classList.remove('hidden');
+    }else if(u.ahead){
+      // Это не «последняя»: на сервере сборка новее релиза. Сказать правду,
+      // иначе кнопка «Установить» честно отказывается и выглядит сломанной.
+      $('setMsg').textContent='У тебя v'+u.current+', в релизе v'+u.latest+
+        ' — установленная сборка новее релиза, ставить нечего';
+      $('setMsg').className='msg ok';
     }else{
       $('setMsg').textContent='У тебя последняя версия (v'+u.current+')';
       $('setMsg').className='msg ok';
     }
   }catch(e){
     $('setMsg').textContent=e.message;$('setMsg').className='msg err';
-  }finally{b.disabled=false;}
+  }finally{if(b)b.disabled=false;}
 }
 
 
@@ -4799,17 +5021,47 @@ async function loadXrayInfo(){
     $('xvMsg').textContent='';$('xvMsg').className='msg';
   }catch(e){setMsg('xvMsg',e.message,'err');}
 }
+// Обновление ставится фоновой задачей на сервере: POST отвечает сразу номером,
+// а не висит до того момента, как браузер оборвёт соединение и напишет «не
+// вышло» ровно тогда, когда сервер доделал работу (урок v2.15.1). Здесь —
+// живой журнал шагов и правдивый ответ.
+async function upJob(url,body,msgId,btn){
+  const m=$(msgId);
+  const say=(t,c)=>{if(m){m.textContent=t;m.className='msg '+(c||'');}};
+  if(btn)btn.disabled=true;
+  try{
+    let r;
+    try{ r=await api(url,{method:'POST',body:JSON.stringify(body)}); }
+    catch(e){ say(e.message,'err'); return null; }
+    if(!r.job){ say('Готово','ok'); return r; }
+    for(let i=0;i<600;i++){
+      await new Promise(x=>setTimeout(x,1000));
+      let j;
+      try{ j=await api('/api/update/job?id='+r.job); }
+      catch(e){ say('Ждём, панель отвечает не на все запросы…',''); continue; }
+      const line=j.steps.map(s=>{
+        const ic=s.state==='done'?'✓':s.state==='failed'?'✗':s.state==='running'?'▶':'·';
+        return ic+' '+s.name+(s.detail?' — '+s.detail:'');
+      }).join('  ');
+      const done=j.steps.filter(s=>s.state==='done'||s.state==='failed').length;
+      say((j.done?'':'('+done+'/'+j.steps.length+') ')+line,'');
+      if(j.done){
+        if(!j.ok){ say(j.error||'не вышло','err'); return null; }
+        return j.result;
+      }
+    }
+    say('Задача не завершилась за 10 минут — посмотри аудит','err');
+    return null;
+  }finally{ if(btn)btn.disabled=false; }
+}
 async function switchXray(){
   const vers=$('xvSel').value;
   if(!vers){setMsg('xvMsg','выбери версию','err');return;}
   if(!confirm('Сменить ядро Xray на v'+vers+'?'))return;
-  const s=$('xvMsg');s.textContent='Скачиваю и проверяю v'+vers+'... Может занять пару минут.';s.className='msg';
+  const s=$('xvMsg');s.textContent='Скачиваю и проверяю v'+vers+'…';s.className='msg';
   $('xvBtn').disabled=true;
-  try{
-    const r=await api('/api/xray/switch',{method:'POST',body:JSON.stringify({version:vers})});
-    setMsg('xvMsg','Готово: '+r.from+' → '+r.to,'ok');
-    loadXrayInfo();loadVersions();
-  }catch(e){setMsg('xvMsg',e.message,'err');}finally{$('xvBtn').disabled=false;}
+  const r=await upJob('/api/xray/switch',{version:vers,confirm:true},'xvMsg',$('xvBtn'));
+  if(r){setMsg('xvMsg','Готово: '+r.from+' → '+r.to,'ok');loadXrayInfo();loadVersions();}
 }
 async function loadVersions(){
   try{
@@ -4848,25 +5100,21 @@ async function createPanelBackup(){
 }
 async function restoreVer(type,version){
   if(!confirm('Откатить '+(type==='panel'?'панель':'ядро Xray')+' к v'+version+'?'))return;
-  setMsg('verMsg','Откатываю...','');
-  try{
-    const r=await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type,version})});
-    if(type==='panel'){setMsg('verMsg','Бэкап применён, панель перезапускается...','ok');setTimeout(()=>{location.reload();},1500);}
-    else{setMsg('verMsg','Готово: ядро v'+r.version,'ok');loadVersions();loadXrayInfo();}
-  }catch(e){setMsg('verMsg',e.message,'err');}
+  setMsg('verMsg','Откатываю…','');
+  const r=await upJob('/api/versions/restore',{type,version,confirm:true},'verMsg',null);
+  if(!r)return;
+  if(type==='panel'){setMsg('verMsg','Бэкап применён, панель перезапускается...','ok');setTimeout(()=>{location.reload();},1500);}
+  else{setMsg('verMsg','Готово: ядро v'+r.version,'ok');loadVersions();loadXrayInfo();}
 }
 async function installUpdate(){
-  const b=$('installBtn');b.disabled=true;
+  const b=$('installBtn');
+  if(!confirm('Ставить обновление? Панель заменит свои файлы и перезапустится; текущая сборка уйдёт в точку отката.'))return;
   $('setMsg').textContent='Скачиваю, проверяю sha256, ставлю...';$('setMsg').className='msg';
-  try{
-    const r=await api('/api/update/install',{method:'POST'});
-    $('setMsg').textContent='Обновлено до v'+r.to+'. Перезагрузка через 3 секунды...';
-    $('setMsg').className='msg ok';
-    setTimeout(()=>location.reload(),3500);
-  }catch(e){
-    $('setMsg').textContent=e.message;$('setMsg').className='msg err';
-    b.disabled=false;
-  }
+  const r=await upJob('/api/update/install',{confirm:true},'setMsg',b);
+  if(!r)return;
+  $('setMsg').textContent='Обновлено до v'+r.to+'. Перезагрузка через 5 секунд...';
+  $('setMsg').className='msg ok';
+  setTimeout(()=>location.reload(),5000);
 }
 
 async function doSaveSecurity(){
@@ -5602,22 +5850,17 @@ async function switchTgVer(){
   if(!confirm('Сменить telemt на v'+version+'? Текущий бинарь сохранится для отката.'))return;
   $('tvBtn').disabled=true;
   setMsg('tvMsg','Скачиваю и ставлю v'+version+'…','');
-  try{
-    const r=await api('/api/tg/switch',{method:'POST',body:JSON.stringify({version})});
-    setMsg('tvMsg','Готово: '+r.from+' → '+r.to,'ok');
-    loadTgVerInfo(); loadTg();
-  }catch(e){setMsg('tvMsg',e.message,'err');}
-  finally{ $('tvBtn').disabled=false; loadTgVerInfo(); }
+  const r=await upJob('/api/tg/switch',{version,confirm:true},'tvMsg',$('tvBtn'));
+  if(r){setMsg('tvMsg','Готово: '+r.from+' → '+r.to,'ok');loadTgVerInfo();loadTg();}
+  else{loadTgVerInfo();}
 }
 
 async function restoreTgVer(version){
   if(!confirm('Откатить telemt к v'+version+'?'))return;
   setMsg('tvMsg','Откатываю на v'+version+'…','');
-  try{
-    await api('/api/versions/restore',{method:'POST',body:JSON.stringify({type:'telemt',version})});
-    setMsg('tvMsg','Готово, telemt v'+version+' восстановлен. Перезапускаю…','ok');
-    setTimeout(()=>{loadTgVerInfo();loadTg();},400);
-  }catch(e){setMsg('tvMsg',e.message,'err');}
+  const r=await upJob('/api/versions/restore',{type:'telemt',version,confirm:true},'tvMsg',null);
+  if(r){setMsg('tvMsg','Готово, telemt v'+version+' восстановлен. Перезапускаю…','ok');
+        setTimeout(()=>{loadTgVerInfo();loadTg();},400);}
 }
 
 function renderWeb(web){
@@ -6783,7 +7026,27 @@ async function loadNetworkSettings(){
     else _rs+='ещё не загружены (первая загрузка до ~1 мин после старта)';
     if(rs.error)_rs+=' · ошибка: '+rs.error;
     $('rsState').textContent=_rs;
+    const g=r.xray_geo||{};
+    const ga=$('geoAuto'); if(ga&&g.autoupdate!==undefined)ga.checked=!!g.autoupdate;
+    if($('geoState')){
+      const gf=g.files||{}; const age=[];
+      Object.keys(gf).forEach(k=>{const v=gf[k]||{};age.push(k.replace('.dat','')+': '+(v.age_days!=null?v.age_days+' дн.':'нет файла'));});
+      let _g='базы Xray — '+(age.join(' · ')||'?');
+      if(g.tag)_g+=' · свежий релиз '+g.tag;
+      if(g.updated)_g+=' · проверка '+new Date(g.updated*1000).toLocaleDateString('ru-RU');
+      if(g.reloaded===false)_g+=' · Xray их ещё не перечитал (нужен перезапуск)';
+      if(g.error)_g+=' · ошибка: '+g.error;
+      $('geoState').textContent=_g;
+    }
   }catch(e){}
+}
+async function geoUpdateNow(){
+  const r=await upJob('/api/network/geo/update',{},'geoMsg',$('geoBtn'));
+  if(r){
+    const n=(r.replaced||[]).length;
+    setMsg('geoMsg',n?('обновлено: '+r.replaced.join(', ')+' (релиз '+r.tag+')'):('уже актуальны · релиз '+r.tag), 'ok');
+  }
+  loadNetworkSettings();
 }
 async function loadBans(){
   const box=$('bansList'); box.textContent='Загружаю...';
@@ -6813,7 +7076,6 @@ async function saveNetworkSettings(){
   try{
     const rb=$('ruBypass');
     const body={
-      ru_bypass: rb ? rb.checked : false,
       bind: $('panelBind').value.trim(),
       cert_path: $('panelCertPath').value.trim(),
       key_path: $('panelKeyPath').value.trim(),
@@ -6823,8 +7085,12 @@ async function saveNetworkSettings(){
       f2b_window_min: parseInt($('f2bWindow').value,10)||10,
       f2b_ban_hours: parseInt($('f2bBanHrs').value,10)||24,
       synfix_enabled: $('synfixEnabled').checked,
-      metrics_token: $('metricsToken').value.trim()
+      metrics_token: $('metricsToken').value.trim(),
+      geo_autoupdate: $('geoAuto') ? $('geoAuto').checked : true
     };
+    // Не отправляй поле, если чекбокса на странице нет: false вместо «ничего»
+    // молча выключало обход РФ и перезапускало Xray после любого «Сохранить».
+    if(rb) body.ru_bypass = rb.checked;
     const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
     if(r.ok){
       if(r.restarting){
@@ -6847,22 +7113,6 @@ async function saveNetworkSettings(){
       $('netMsg').textContent=e.message; $('netMsg').className='msg err';
     }
   }finally{btn.disabled=false;}
-}
-async function applyRuBypass(){
-  const rb=$('ruBypass');
-  $('ruMsg').textContent='Применяю...'; $('ruMsg').className='msg';
-  try{
-    const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify({ru_bypass: rb ? rb.checked : false})});
-    if(r.xray_restarted){
-      $('ruMsg').textContent='Готово: Xray перезапущен'; $('ruMsg').className='msg ok';
-      toast('RU-обход применён','ok');
-      await refresh();
-    }else{
-      $('ruMsg').textContent=r.error||'Ошибка'; $('ruMsg').className='msg err';
-    }
-  }catch(e){
-    $('ruMsg').textContent=e.message; $('ruMsg').className='msg err';
-  }
 }
 async function searchCerts(){
   const box=$('certSearchList');
@@ -6953,19 +7203,21 @@ async function loadDiagnostics(){
     ]);
     if(mBox){
       const pw = (self && self._panel) || {};
+      const nw = (self && self._notify) || {};
       const pover = (pw.max && pw.busy >= pw.max);
       mBox.innerHTML = `
         <div style="margin-bottom:6px">🧠 Использование RAM: <b>${met.ram_percent || 0}%</b></div>
         <div style="margin-bottom:6px">💻 Загрузка CPU: <b>${met.cpu_percent || 0}%</b> (Load Avg: ${met.load1 || 0})</div>
         <div style="margin-bottom:6px">💽 Диск: <b>${met.disk_used_percent || 0}%</b> (Свободно: ${met.disk_free_gb || 0} GB)</div>
         <div style="margin-bottom:6px">🛡 Xray служба: <b style="color:${met.xray_running?'var(--ok)':'var(--err)'}">${met.xray_running?'АКТИВНА':'ОСТАНОВЛЕНА'}</b></div>
-        <div>🚦 Панель сейчас обслуживает: <b style="color:${pover?'var(--err)':'var(--ok)'}">${pw.busy ?? '?'} из ${pw.max ?? '?'}</b>${pover?' — всё занято, новым соединениям временно отказываем (503)':''}${pw.refused?` · с момента запуска отказано <b>${pw.refused}</b>`:''}</div>
+        <div style="margin-bottom:6px">🚦 Панель сейчас обслуживает: <b style="color:${pover?'var(--err)':'var(--ok)'}">${pw.busy ?? '?'} из ${pw.max ?? '?'}</b>${pover?' — всё занято, новым соединениям временно отказываем (503)':''}${pw.refused?` · с момента запуска отказано <b>${pw.refused}</b>`:''}</div>
+        <div>✉ Telegram-письма в очереди: <b>${nw.queued ?? 0}</b> из ${nw.max ?? '?'}, потеряно <b style="color:${nw.dropped?'var(--err)':'var(--ok)'}">${nw.dropped ?? 0}</b>${nw.dropped?' — Telegram не успевает их принимать, часть предупреждений никуда не ушла':''}</div>
       `;
     }
     if(pBox){
       let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:6px">';
       for(let [port, info] of Object.entries(self)){
-        if(port === 'ok' || port === '_panel') continue;
+        if(port === 'ok' || port === '_panel' || port === '_notify') continue;
         const status = typeof info === 'string' ? info : (info.status || '');
         const label = typeof info === 'object' && info.label ? info.label : '';
         const ok = status.includes('OK');
