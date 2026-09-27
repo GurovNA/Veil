@@ -25,7 +25,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.11"
+VERSION = "2.16.12"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1233,6 +1233,45 @@ def _port_free(port):
             s.close(); return False
         s.close()
     return True
+
+def _panel_port_taken(bind, port):
+    """Жив ли уже слушатель на порту панели. Возвращает текст отказа или None.
+
+    Второй запуск `python3 panel.py` — опечатка в имени флага, ручная проба, —
+    первому не мешал, а портил: миграция в `__main__` идёт ДО bind, а при
+    `has_wg` она вызывает `_write_xray` безусловно, то есть чужой процесс
+    переписывает рабочий конфиг ядра и `state.json` под ногами у живой панели.
+    Живьём: команда с выдуманным флагом переписала `/usr/local/etc/xray/config.json`,
+    пока панель обслуживала подписчиков, и упала только на bind.
+
+    Проверка ничего не меняет: пробуем тот же адрес и сразу отпускаем.
+    `allow_reuse_address` у сервера включён, поэтому TIME_WAIT после планового
+    рестарта отказом не считается — отказывает только LISTEN. Прочие отказы
+    (нет прав на порт, незнакомый адрес, мусор в конфиге) не считаем занятыми:
+    это не тот случай, ради которого всё затевалось, и выключать старт панели
+    ими нельзя — на них и так падает настоящий bind.
+    """
+    import errno
+    import socket
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        return None
+    if not (0 < p < 65536):
+        return None
+    bind = (bind or "0.0.0.0").strip()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        try:
+            s.bind((bind, p))
+        except OSError as e:
+            if e.errno == errno.EADDRINUSE:
+                return "порт %s:%d уже слушает другой процесс — панель на нём уже работает" % (bind, p)
+            return None
+        return None
+    finally:
+        s.close()
 
 def _sni_ok(host, timeout=5):
     import socket
@@ -22249,6 +22288,13 @@ if __name__ == "__main__":
             sys.exit(1)
     port = CFG_CACHE.get("panel_port", 8443)
     bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
+    # Замок на порт — ДО всего, что пишет диск. Ниже идут миграция состояния,
+    # `_write_xray` и `_ensure_xray_boot`: второй экземпляр панели, запущенный
+    # рукой, переписал бы живой конфиг ядра под носом у первого.
+    _taken = _panel_port_taken(bind, port)
+    if _taken:
+        print("VEILERR: запуск отменён: " + _taken, file=sys.stderr, flush=True)
+        sys.exit(1)
     print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
     _load_sessions()
     try:
