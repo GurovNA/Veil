@@ -25,7 +25,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.10"
+VERSION = "2.16.11"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -2589,6 +2589,72 @@ def _restart_xray():
     if t.returncode:
         raise RuntimeError("конфиг Xray невалиден: " + (t.stderr or t.stdout))
     _xray_restart()
+
+
+def _xray_enabled():
+    """Ставится ли ядро само при загрузке ОС. Строка состояния (`enabled`,
+    `disabled`, `static`…), а не буль: отказ нужно уметь показать словами."""
+    try:
+        r = subprocess.run(["systemctl", "is-enabled", "xray"], capture_output=True,
+                           text=True, timeout=15)
+        return (r.stdout or "").strip().splitlines()[0] if (r.stdout or "").strip() else ""
+    except Exception:
+        return ""
+
+
+def _ensure_xray_boot():
+    """Поднять VPN при старте панели, если ОС перезагружалась.
+
+    Юнит `xray.service` на этой машине `disabled` и без `WantedBy` — после
+    плановой перезагрузки (обновление ядра, работы хостинга) ядро не стартует
+    само. До этой функции панель трогала xray при запуске только по одному
+    поводу: миграция переписала конфиг, и файл на диске изменился. Обычная
+    загрузка ничего не переписывает — VPN оставался лежать до консоли руками.
+    Лежал молча: страница подписчика отвечает, автоблокировка считает нули,
+    а морда с метриками показывают «всё в порядке».
+
+    Порядок: сначала проверка конфига (битый файл поднимать нельзя — systemd
+    упрётся в лимит перезапусков и оставит юнит в `failed`), затем `enable`
+    (чинит причину, а не следствие), затем `start`, если ядро действительно
+    лежит. Живое ядро не перезапускается ни при каких условиях: рестарт — это
+    бросок тоннелей у всех подписчиков сразу.
+    """
+    if _xray_active():
+        # Ядро уже кто-то поднял — проверяем только автозапуск, чтобы следующий
+        # рестарт ОС не стал сюрпризом.
+        en = _xray_enabled()
+        if en == "enabled":
+            return None
+        r = subprocess.run(["systemctl", "enable", "xray"], capture_output=True,
+                           text=True, timeout=60)
+        if r.returncode == 0:
+            print(f"xray boot heal: автозапуск был {en or 'нет ответа'} — включил", flush=True)
+        else:
+            print("xray boot heal: не смог включить автозапуск: "
+                  + ((r.stderr or r.stdout).strip()[:200] or en), flush=True)
+        _audit("xray_boot_enable", ok=r.returncode == 0, was=en)
+        return None
+    t = subprocess.run(["xray", "run", "-test", "-config", XRAY],
+                       capture_output=True, text=True, timeout=30)
+    if t.returncode:
+        why = (t.stderr or t.stdout or "").strip()[:300]
+        _audit("xray_boot_down", reason="конфиг невалиден", detail=why)
+        return "VPN лежит, и панель его не подняла: конфиг Xray невалиден — " + why
+    en = _xray_enabled()
+    if en != "enabled":
+        subprocess.run(["systemctl", "enable", "xray"], capture_output=True, timeout=60)
+    _xray_forget_failures()
+    r = subprocess.run(["systemctl", "start", "xray"], capture_output=True,
+                       text=True, timeout=90)
+    if r.returncode == 0 and _xray_active():
+        _audit("xray_boot_heal", ok=True, was=en)
+        print("xray boot heal: ядро лежало — подняла панель"
+              + (f" (автозапуск был {en or 'нет ответа'})" if en != "enabled" else ""), flush=True)
+        return None
+    why = ((r.stderr or "") + (r.stdout or "")).strip()[:300] or "is-active по-прежнему не active"
+    _audit("xray_boot_down", reason="старт не поднял", detail=why)
+    return "VPN лежал после перезагрузки и не поднялся: " + why
+
 
 def _statsquery():
     try:
@@ -22254,6 +22320,14 @@ if __name__ == "__main__":
                 _restart_xray()
     except Exception as e:
         print("migrate error: " + str(e), flush=True)
+    try:
+        # После рестарта ОС юнит xray здесь `disabled` и сам не поднимается, а
+        # миграция выше его не трогает, если конфиг на диске не менялся.
+        _h = _ensure_xray_boot()
+        if _h:
+            print("xray boot heal: " + _h, flush=True)
+    except Exception as e:
+        print("xray boot heal error: " + str(e), flush=True)
     _web_tls_ctx()
     # Значка старта — до первого ответа: страж обновления (v2.16.7) смотрит именно
     # на неё и иначе вечно ждал бы «панель поднялась», пока оператор сам лезет
