@@ -1755,6 +1755,25 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
       <div class=msg id=botMsg style="margin-top:8px"></div>
     </div>
+
+    <div style="background:var(--bg2);border:1px solid var(--br);border-radius:10px;padding:12px;margin-bottom:16px">
+      <div class=row style="align-items:center;margin-bottom:8px">
+        <h4 style="margin:0;color:var(--fg)">📮 Как письма доходят до бота</h4>
+        <div class=uc-chips id=botDelChips></div>
+      </div>
+      <div id=botDelBody class=mut>Загружаю…</div>
+      <details class=expl style="margin-top:10px"><summary>Объяснить простым языком</summary><div>
+        <p><b>Два способа, третий лишний.</b> Либо панель сама каждые несколько секунд спрашивает у Telegram «есть новости?» (это <b>опрос</b>, работает без внешнего адреса), либо Telegram сам стучится к тебе на сервер, как только приходит команда (это <b>вебхум</b>, быстрее и без холостых запросов). Держать оба нельзя: пока включён вебхум, Telegram на вопросы отвечает отказом, и бот глохнет.</p>
+        <p><b>Зачем сравнивать с Telegram.</b> Панель помнит, что она включила, но у самого Telegram настроек не видно. После смены домена или протухшего сертификата вебхум остаётся висеть на старом адресе: команда улетает в никуда, и в журнале панели при этом пусто — бот просто перестаёт отвечать. Здесь это расхождение видно сразу.</p>
+        <p><b>Что нужно для вебхума.</b> У панели должен быть настоящий адрес с валидным сертификатом (сертификат выпускается сам, на странице сертификатов). Без этого Telegram вебхум не примет.</p>
+        <p><b>Очередь и потеряно.</b> Письма (лимиты, сроки, оплаты) уходят в фоновую очередь, чтобы молчаливый Telegram не вешал панель. Если Telegram недоступен, панель сама повторяет доставку несколько раз; «потеряно» — это то, что не доехало даже после повторов.</p>
+      </div></details>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="sec" onclick="loadBotDelivery(1)">🔄 Обновить</button>
+        <button class="sec" onclick="botSetWebhook()">🔗 Включить вебхум</button>
+        <button class="sec" onclick="botDelWebhook()">📡 Вернуться на опрос</button>
+      </div>
+    </div>
     
     <hr style="margin:20px 0;border-color:var(--br)">
     
@@ -2345,7 +2364,6 @@ function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-function subCard(c){
 let USERS=[];
 function subSettings(uu){
   const c=(USERS||[]).find(function(x){return x.uuid===uu;});
@@ -2360,6 +2378,8 @@ function famOrphan(muuid,nmv){
       toast(t?'Выведено из семьи — вернулся его собственный тариф':'Выведено из семьи (своего прежнего тарифа не было — задайте лимит и срок в настройках)','ok'); })
     .catch(function(e){toast(e.message,'err');});
 }
+
+function subCard(c){
   const _su = c.sub_url || (location.origin + '/sub/' + c.sub_token);
   const _pu = _su.replace('/sub/', '/p/');
   const tok = escapeHtml(c.sub_token||'');
@@ -4157,6 +4177,57 @@ async function testBotConnection(){
     setMsg('botMsg','✅ Бот отвечает: '+ (r.info?.first_name||'OK'),'ok');
     toast('Подключение к боту успешно','ok');
   }catch(e){ setMsg('botMsg','Ошибка: '+e.message,'err'); }
+}
+
+// Карточка доставки. Значения приходят с сервера — каждое через esc(): адрес
+// вебхума и текст ошибки Telegram это внешний ввод, а не наша разметка.
+function _dlRow(k,v){ return '<div style="display:flex;gap:8px;font-size:13px;margin-top:3px"><span class=mut style="min-width:190px">'+k+'</span><span style="word-break:break-all">'+v+'</span></div>'; }
+async function loadBotDelivery(force){
+  const box=$('botDelBody'), chips=$('botDelChips');
+  if(!box) return;
+  box.textContent='Загружаю…'; chips.innerHTML='';
+  let d;
+  try{ d=await api('/api/bot/delivery'+(force?'?fresh=1':'')); }
+  catch(e){ box.innerHTML='<span style="color:var(--err)">Не удалось прочитать доставку: '+esc(e.message)+'</span>'; return; }
+  if(!d.configured){
+    chips.innerHTML='<span class="uc-chip bad">бот не настроен</span>';
+    box.innerHTML=_dlRow('Токен','не задан — панель никуда не пишет');
+    return;
+  }
+  const r=d.remote||null, w=d.warnings||[];
+  chips.innerHTML=[
+    d.mode==='webhook'?'<span class="uc-chip ok">🔗 вебхум</span>':'<span class="uc-chip proto">📡 опрос</span>',
+    d.paused?'<span class="uc-chip bad">пауза обслуживания</span>':'<span class="uc-chip ok">работает</span>',
+    w.length?'<span class="uc-chip warn">⚠ проблем: '+w.length+'</span>':'<span class="uc-chip ok">расхождений нет</span>'
+  ].join(' ');
+  const rows=[];
+  rows.push(_dlRow('Бот','отпечаток токена '+esc(d.bot||'—')+', чатов админа: '+esc((d.chat_ids||[]).length)));
+  rows.push(_dlRow('Режим у панели', d.mode==='webhook'?esc(d.webhook_url||''):'опрос getUpdates'));
+  rows.push(_dlRow('Режим у Telegram', r?((r.url?esc(r.url):'вебхума нет')+' · ждёт обновлений: '+esc(r.pending_update_count)):'<span style="color:var(--warn)">не ответил'+(d.remote_error?' ('+esc(d.remote_error)+')':'')+'</span>'));
+  if(d.webhook_default) rows.push(_dlRow('Адрес по умолчанию', esc(d.webhook_default)));
+  rows.push(_dlRow('Секрет вебхума', d.secret_len?('задан ('+esc(d.secret_len)+' симв.)'):'<span style="color:var(--warn)">не задан — вебхум принимает только включение</span>'));
+  if(r&&r.last_error_message) rows.push(_dlRow('Последняя ошибка Telegram', esc(r.last_error_message)));
+  rows.push(_dlRow('Письма', 'в очереди '+esc(d.queued)+'/'+esc(d.queue_max)+', повторов ждёт '+esc(d.retry_pending)+', потеряно '+esc(d.dropped)+' (попыток на письмо: '+esc(d.retry_max)+')'));
+  if(d.tz) rows.push(_dlRow('Часы', esc(d.tz)));
+  box.innerHTML=rows.join('')+(w.length?('<div style="margin-top:8px">'+w.map(x=>'<div style="color:var(--warn);font-size:13px;margin-top:2px">⚠ '+esc(x)+'</div>').join('')+'</div>'):'');
+}
+async function botSetWebhook(){
+  if(!confirm('Включить вебхум? Панель перестанет опрашивать Telegram и будет ждать от него запросов на свой адрес. Нужно, чтобы у панели был валидный сертификат на этот адрес.')) return;
+  setMsg('botMsg','Регистрирую вебхум…','');
+  try{
+    const r=await api('/api/bot/set_webhook',{method:'POST',body:JSON.stringify({})});
+    setMsg('botMsg','✅ Вебхум включён: '+(r.url||''),'ok');
+    loadBotDelivery(1);
+  }catch(e){ setMsg('botMsg','Вебхум не включён: '+e.message,'err'); loadBotDelivery(1); }
+}
+async function botDelWebhook(){
+  if(!confirm('Удалить вебхум и вернуться к опросу? Команды начнут приходить медленнее (раз в несколько секунд), но адрес панели Telegram больше не понадобится.')) return;
+  setMsg('botMsg','Снимаю вебхум…','');
+  try{
+    await api('/api/bot/delete_webhook',{method:'POST',body:JSON.stringify({})});
+    setMsg('botMsg','✅ Вебхум снят, работаем опросом','ok');
+    loadBotDelivery(1);
+  }catch(e){ setMsg('botMsg','Не снялся: '+e.message,'err'); loadBotDelivery(1); }
 }
 
 async function toast(text, cls){

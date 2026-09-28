@@ -9,6 +9,8 @@ import queue
 import ipaddress
 import html as _html
 import zipfile
+import heapq
+import ast
 import zoneinfo
 import calendar
 
@@ -25,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.12"
+VERSION = "2.16.14"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -304,7 +306,7 @@ def get_system_metrics():
     try:
         st = _load(STATE, {}) or {}
         ps = {}
-        for proto, inb in (st.get("inbounds") or {}).items():
+        for proto, inb in _inb_entries(st):
             port = inb.get("port")
             if isinstance(port, int):
                 ps[str(port)] = not _port_free(port)
@@ -318,7 +320,7 @@ def run_protocol_self_test():
     checks = [(8443, "Панель (TCP)")]
     try:
         st = _load(STATE, {}) or {}
-        for proto, inb in (st.get("inbounds") or {}).items():
+        for proto, inb in _inb_entries(st):
             p = inb.get("port")
             if isinstance(p, int):
                 is_udp = proto in ("wireguard", "amneziawg", "hysteria2") or inb.get("net") == "udp"
@@ -1085,7 +1087,9 @@ def _load(p, d=None):
         print("LOAD CORRUPT " + p + ": " + str(e), flush=True)
         try:
             keep = p + ".corrupt-" + time.strftime("%Y%m%d-%H%M%S")
-            if not os.path.exists(keep): shutil.copy2(p, keep)
+            # копия читается только руками (имя не кончается на `.json`, поэтому
+            # стартующий ремонт её не видит) — право ставим здесь же
+            if not os.path.exists(keep): _copy_private(p, keep)
             print("LOAD CORRUPT: копию положил в " + keep, flush=True)
         except Exception: pass
         return d
@@ -1113,6 +1117,200 @@ def _save(p, o, mode=0o600):
         except Exception: pass
 
 _CFG_SNAP_LK = threading.Lock()
+
+
+def _mkdir_private(path):
+    """Каталог-снимок, закрытый с рождения: makedirs + 0700.
+
+    Панель создаёт снимки по `os.makedirs(..., exist_ok=True)`, а mode берётся из
+    umask процесса — на этой машине 022, то есть 0755. Внутрь `shutil.copy2`
+    кладёт копию конфига ядра с приватным ключом TLS и паролями подписчиков, а
+    `pre-move-` переносит вообще всю папку панели. Файлы внутри сохраняют свои
+    0600, но перечислить их и прочитать имя мог любой локальный процесс, а
+    `_harden_secret_files` подправляет это только при следующем старте — между
+    созданием и рестартом окно висит. Поэтому право ставится здесь же, где
+    каталог появился.
+    """
+    os.makedirs(path, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError as e:
+        print("права каталога: %s: %s" % (path, e), flush=True)
+    return path
+
+
+def _copy_private(src, dst):
+    """Снимок файла, закрытый с рождения: copy2 + 0600.
+
+    `shutil.copy2` переносит ПРАВА источника вместе с байтами, а источники снимков
+    — это живые файлы панели, у которых право не всегда 0600: боевой `panel.py` —
+    `0755` (его запускают), `index.html` — `0644` (его читают не только мы). Копия
+    боевого конфига ядра с приватным ключом получает `0644` ровно так же. Замерено
+    на этой машине: автобэкап создал снимок, а следующий старт панели принёс
+    `secret_files_perm_fixed n=2` на `index.html 0o644` и `panel.py 0o755` внутри
+    него — то есть ремонт каждый раз латает то, что создатель оставил открытым.
+    Внутри каталога `0700` эти файлы чужим не читаются и так, но шум в журнале
+    стоит того, чтобы право ставилось на месте: аудит ремонта должен значить
+    «было испорчено извне», а не «панель ссорится сама с собой».
+    """
+    shutil.copy2(src, dst)
+    try:
+        os.chmod(dst, 0o600)
+    except OSError as e:
+        print("права снимка: %s: %s" % (dst, e), flush=True)
+    return dst
+
+
+def _harden_secret_files(suffixes=(".json", ".bin")):
+    """Закрыть секреты панели, ядра и снимков, если кто-то открыл их шире.
+
+    Все свои файлы панель пишет через `_save(mode=0o600)`, но mode у `os.replace`
+    берётся от временного файла, а временный создаёт не только панель: восстановление
+    бэкапа, `cp`, ручной правкой и — как показала практика — собственные тесты,
+    которые писали временный файл по umask 022 и ставили его на место боевого. Так
+    `/opt/vpnpanel/config.json` провёл несколько часов с 644, то есть токен бота,
+    хэш и соль пароля админа читались любым локальным процессом. Один `chmod`
+    дешевеет до нуля, если он повторяется сам: при старте панель смотрит верхний
+    уровень своей папки и закрывает всё, что открыто группе/остальным.
+
+    Измерение показало, что этого мало: приватное кончается там, где кончается
+    BASE. Конфиг ядра (в нём приватный ключ TLS и пароли всех подписчиков), его
+    пробные копии и снимки восстановления/отката лежат вне списка или создаются по
+    umask — и на этой машине жили с 0644/0755, а hy2-ключ ещё и на чужом владельце.
+    Поэтому здесь пять проходов: свои файлы в BASE, секреты ядра по правилу
+    имени, весь каталог ядра, снимки восстановления/отката/переезда и `backups/auto`
+    — единственный каталог внутри `backups/`, который панель создаёт сама и где
+    лежит полный слепок своих секретов. Публичный сертификат не прячут (его читают
+    клиенты), `certs/`, `avatars/` и остальные `backups/` не обходятся — там свои правила
+    записи и другие владельцы. Возвращает список исправленного.
+    """
+    fixed = []
+
+    def _close(p, want_dir=False):
+        """Закрыть group/other биты и вернуть владение root'у. True — если меняли.
+
+        Одного `chmod 0600` мало: hy2-ключ лежит на `nobody:nogroup`, и после
+        закрытия прав его по-прежнему читает любой процесс с тем же uid. Владение
+        здесь нормализуется только для тех файлов, которые панель сама и создала
+        (свои секреты, конфиг ядра, снимки) — проходов по чужим каталогам нет.
+        """
+        try:
+            st = os.stat(p)
+            mode = st.st_mode & 0o777
+            bad_mode = bool(mode & 0o077)
+            bad_owner = st.st_uid != 0
+            if not bad_mode and not bad_owner:
+                return False
+            if bad_mode:
+                os.chmod(p, 0o700 if want_dir else (mode & 0o600))
+            if bad_owner:
+                # порядок важен: chown может сбросить setuid/setgid биты, mode у
+                # этих файлов их не имеет, а вот право остаётся как выставлено выше
+                os.chown(p, 0, 0)
+            what = oct(mode) + ("" if not bad_owner else " uid=%d" % st.st_uid)
+            fixed.append("%s%s %s" % (p, os.sep if want_dir else "", what))
+            return True
+        except OSError as e:
+            print("права файлов: %s: %s" % (p, e), flush=True)
+            return False
+
+    try:
+        names = sorted(os.listdir(BASE))
+    except OSError as e:
+        print("права файлов: каталог не прочитан: " + str(e), flush=True)
+        return fixed
+    for n in names:
+        if not n.endswith(suffixes):
+            continue
+        p = os.path.join(BASE, n)
+        try:
+            if not os.path.isfile(p):
+                continue
+        except OSError as e:
+            # один недоступный файл (чужой владелец, удалён гонкой) не должен
+            # снимать проверку с остальных
+            print("права файлов: %s: %s" % (n, e), flush=True)
+            continue
+        _close(p)
+    # Секреты ядра живут вне BASE и под прошлую проверку не попадали. Измерено на
+    # этой машине: `/usr/local/etc/xray/hy2_key.pem` — `0604 nobody:nogroup`, то
+    # есть приватный ключ TLS читается кем угодно, а `_ensure_hy2_cert` чинит права
+    # только при создании (`if os.path.exists(HY2_CERT): return`), так что живой
+    # файл не переставлялся с 19 сентября. Плюс боевой конфиг ядра писали с 0644
+    # (см. `_write_xray`), и `shutil.copy2` переносил это право в снимки.
+    for p in (XRAY, HY2_KEY):
+        if os.path.isfile(p):
+            _close(p)
+    # Осиротевшие пробники: процесс убит между записью и `finally` — и в каталоге
+    # ядра остаётся конфиг с приватными ключами. Их пишут две ручки
+    # (`_validate_and_apply` → `panel.validate.*`, `_xray_cfg_valid` →
+    # `panel.check.*`), и ловить их по префиксу — значит пропустить следующую,
+    # которая появится через месяц. Поэтому правило по содержимому имени: любой
+    # `.json` и любой файл с `key`/`priv` в имени. Публичный сертификат
+    # (`hy2_cert.pem`) под правило не попадает и остаётся 0644 нарочно: его и
+    # должны читать все, прятать его — сломать handshake.
+    try:
+        for n in sorted(os.listdir(os.path.dirname(XRAY))):
+            if "cert" in n.lower() or n.lower().endswith(".pub"):
+                continue
+            if not (n.lower().endswith(".json") or "key" in n.lower() or "priv" in n.lower()):
+                continue
+            p = os.path.join(os.path.dirname(XRAY), n)
+            if os.path.isfile(p) and not os.path.islink(p):
+                _close(p)
+    except OSError as e:
+        print("права файлов: каталог ядра не прочитан: " + str(e), flush=True)
+    # Снимки, которые панель делает под восстановление и откат: каталог создаётся
+    # по umask (`0755`), а внутрь `copy2` кладёт копию конфига ядра вместе с
+    # приватным ключом и паролями подписчиков. `pre-move-` — переезд: туда
+    # `shutil.move` складывает вообще всю папку панели, включая config.json.
+    # Новые снимки уже закрыты с рождения (`_mkdir_private`), этот проход лечит
+    # то, что создано прежним кодом, чужой рукой и вручную.
+    for n in sorted(os.listdir(BASE)):
+        if not (n.startswith("restore-backup-") or n.startswith("backup-v")
+                or n.startswith("pre-move-")):
+            continue
+        d = os.path.join(BASE, n)
+        try:
+            if not os.path.isdir(d):
+                continue
+        except OSError:
+            continue
+        _close(d, want_dir=True)
+        try:
+            subs = sorted(os.listdir(d))
+        except OSError as e:
+            print("права файлов: %s: %s" % (d, e), flush=True)
+            continue
+        for sub in subs:
+            _close(os.path.join(d, sub))
+    # Автобэкап: каталог, который панель создаёт сама и в который кладёт ПОЛНЫЙ
+    # слепок секретов (`_backup()` = конфиг панели с токеном бота, состояние,
+    # конфиг ядра с приватным ключом, темы, платежи). Сами файлы пишутся через
+    # `os.open(..., 0o600)`, а каталог — по umask, то есть 0755: перечислить его,
+    # узнать имена и время снимков мог любой локальный процесс. Обходим только
+    # этот один каталог внутри `backups/` — остальные (`xray/`, `telemt/`, снимки
+    # аудита) принадлежат не только панели, и там лежат бинарники и тексты.
+    adir = os.path.join(BASE, "backups", "auto")
+    if os.path.isdir(adir):
+        _close(adir, want_dir=True)
+        try:
+            for n in sorted(os.listdir(adir)):
+                p = os.path.join(adir, n)
+                if not (n.lower().endswith((".json", ".gz")) or "key" in n.lower()):
+                    continue
+                if os.path.isfile(p) and not os.path.islink(p):
+                    _close(p)
+        except OSError as e:
+            print("права файлов: каталог автобэкапа не прочитан: " + str(e), flush=True)
+    if fixed:
+        try:
+            _audit("secret_files_perm_fixed", n=len(fixed), files=",".join(fixed)[:400])
+            print("права файлов: закрыто до 0600: " + ", ".join(fixed), flush=True)
+        except Exception as e:
+            print("права файлов: аудит не записан: " + str(e), flush=True)
+    return fixed
+
 
 # Журналы поднимаются из файлов СРАЗУ, как только появились чем их читать. До этого
 # `_load_audit()` была написана и никем не вызывалась: после рестарта память
@@ -1886,101 +2084,320 @@ def _ver_tuple(v):
 
 # ---------- state / xray ----------
 
+def _inb_map(st):
+    """`inbounds` состояния как словарь; пустой, если записан не словарём (№63).
+
+    Отличие от `_state_view` ровно одно и оно принципиальное: `_state_view`
+    служит читающим ручкам и на испорченном контейнере отдаёт состояние как есть,
+    чтобы админ услышал 500, а не увидел «входов нет». Здесь же обходчики фонового
+    тика, счётчик подписчиков и решение «перезаписывать ли конфиг ядра» — тем
+    падение нельзя: молча выключенная автоблокировка и оборванный автобэкап
+    ничем не лучше, а `_client_count` на нуле ещё и удерживает старт от записи
+    конфига, то есть бережет живые тоннели.
+    """
+    ib = (st or {}).get("inbounds")
+    return ib if isinstance(ib, dict) else {}
+
+
+def _state_view(st):
+    """Форма состояния для ЧИТАЮЩИХ ручек.
+
+    Один вход в state.json, записанный не словарём (чужая правка файла,
+    неудачное восстановление из резервной копии, оборванная миграция), ронял
+    /api/dashboard, /api/clients, /api/state и — самое заметное для клиентов —
+    публичную /sub/<токен>: страница подписки без пароля отдавала 500, и так до
+    ближайшего тика, который чинит состояние (измеренное окно 35–48 с).
+    Терпимость к мусору добавляли по одному месту там, где её замечали, а
+    соседняя строка того же цикла обращалась к входу так, будто он словарь
+    всегда: `if not isinstance(c, dict)` стоит, `inb.get("clients")` — рядом
+    нет. Здесь мусор отсекается на входе, и обходчику не надо гадать.
+
+    Ничего не пишется и не лечится: только то, в каком виде состояние читают.
+    Записи клиентов остаются теми же объектами, поэтому `_ensure_identities`
+    по-прежнему видит настоящие словари и чинит их обычным порядком.
+    """
+    if not isinstance(st, dict):
+        return {}
+    inbs = st.get("inbounds")
+    if not isinstance(inbs, dict):
+        return st
+    view = {}
+    for name, inb in inbs.items():
+        if not isinstance(inb, dict):
+            continue
+        cl = inb.get("clients")
+        if isinstance(cl, list):
+            keep = [c for c in cl if isinstance(c, dict)]
+            if len(keep) != len(cl):
+                inb = dict(inb)
+                inb["clients"] = keep
+        elif cl is not None:
+            inb = dict(inb)
+            inb["clients"] = []
+        view[name] = inb
+    out = dict(st)
+    out["inbounds"] = view
+    return out
+
+
+def _state_unshapable(st):
+    """True — состояние пришло, но входов из него не прочитать (#64).
+
+    Различает два «пустых» случая, которые на слово выглядят одинаково, а цена у
+    них разная. `None` и `{}` — это новая машина: ей и положено слышать
+    `configured: false`, отказ здесь означал бы, что панель не даёт себе
+    настроиться. А `inbounds`, записанный НЕ словарём, — испорченное состояние:
+    подписчики в файле есть, и ответить по нему «ничего не настроено» значило бы
+    соврать ровно тем читателем, которому позже захотят создавать подписку
+    заново. Плоский старый формат (`clients` верхнего уровня) сюда не попадает:
+    его `_adopt_flat` переставляет в словари входов на первом же тике.
+    """
+    if st is None:
+        return False
+    if not isinstance(st, dict):
+        return True
+    raw = st.get("inbounds")
+    # Ложный отказ дороже честного. Пустое значение (`null`, `""`, `[]`) — это не
+    # испорченный файл, а «входов пока нет»: `_migrate_state` трактует его ровно
+    # так (`raw or {}`) и переносит плоские поля обычным порядком. Читающие ручки
+    # обязаны совпадать с миграцией, иначе свежая машина с `"inbounds": null`
+    # получила бы 500 вместо `configured: false` и не смогла бы пройти первичную
+    # настройку. Отказ — только на НЕПУСТОМ контейнере, который словари входов
+    # описывать не может: там подписчики в файле есть, а «входов нет» была бы
+    # ложью.
+    return bool(raw) and not isinstance(raw, dict)
+
+
+# Текст названного отказа читающих ручек. Один на всех (#64): ручек, обязанных
+# соврать «входов нет», сколько их ни найдётся в файле, — а не те три, до которых
+# дошла рука в первый вечер.
+_UNSHAPABLE_ERR = ("state.json испорчен: inbounds записан не словарём — панель "
+                   "ничего не переписывает и не притворяется пустой")
+# Тот же отказ для того, кто не вошёл: ссылка «не работает» должна звучать
+# отрицанием, а не описанием внутреннего файла панели.
+_UNSHAPABLE_ERR_PUB = "список подписки сейчас не выдаётся: состояние панели " \
+                      "записано непонятной формой"
+
+
+def _inb_entries(st):
+    """Входы состояния по одному фильтру — только те, что словарями записаны
+    (№61). Копий тут нет сознательно: обходчики пишут эти же словари обратно
+    (лимиты, блокировки, имена), поэтому подменять их формой `_state_view`
+    нельзя — иначе правка молча ушла бы в копию и пропала.
+
+    Чем `_state_view` не нужен: он прячет мусор от ЧТЕНИЯ и возвращает новый
+    словарь, а здесь нужен тот же объект, только не роняющий панель на соседе.
+    """
+    for proto, inb in _inb_map(st).items():
+        if isinstance(inb, dict):
+            yield proto, inb
+
+
 def _client_count(st):
     if not st: return 0
-    return sum(len(inb.get("clients", [])) for inb in (st.get("inbounds") or {}).values())
+    return sum(len(inb.get("clients") or []) for inb in _inb_map(st).values()
+               if isinstance(inb, dict))
 
 def _find_client(st, uuid_):
     if not st: return None, None, None
     for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            if c["uuid"] == uuid_:
+        # та же цена, что в `_client_count`: вход может быть записан не
+        # словарём (импорт из чужой панели, ручная правка, восстановление из
+        # бэкапа), а сюда приходят сырым снимком — `_state_view` эту ручку не
+        # защищает, потому что вызывающий потом пишет `st` обратно и терять
+        # вход в файле не вправе.
+        if not isinstance(inb, dict): continue
+        for c in (inb.get("clients") or []):
+            # `c["uuid"]` на записи без поля — KeyError; её чинит
+            # `_ensure_identities`, но до тика окно живёт, и страница
+            # подписчиков в нём падает уже другим исключением.
+            if not isinstance(c, dict): continue
+            if c.get("uuid") == uuid_ and uuid_:
                 return proto, inb, c
     return None, None, None
 
-def _migrate_state(st):
-    if st is None: return False
-    changed = False
-    inbs = st.get("inbounds") or {}
-    if isinstance(inbs, dict):
-        for proto, inb in inbs.items():
-            # Записи здесь — граница доверия (импорт из чужой панели, ручная правка,
-            # бэкап). Строка вместо словаря раньше ПРОПУСКАЛАСЬ («пусть тронет
-            # оператор») — и оставалась в файле навсегда: её не вычищает ни одна
-            # ручка, а 129 циклов по клиентам ждут словарь. На боевой машине это
-            # означало падение страницы подписчиков (`_do_GET`: AttributeError:
-            # 'str' object has no attribute 'get') и молчаливый отказ всего старта
-            # — `_awg_sync`, `_wg_sync` и база трафика обрываются на той же строке,
-            # а catching except превращает это в «автоблокировка не считает байты».
-            # Мусор чинится здесь, а не перекладывается на тик: healing here стоит
-            # ровно столько, сколько стоит чтение, и не просвечивает в ответах.
-            if not isinstance(inb, dict):
-                continue
-            cl = inb.get("clients")
-            if isinstance(cl, list):
-                keep = [c for c in cl if isinstance(c, dict)]
-                if len(keep) != len(cl):
-                    junk = [c for c in cl if not isinstance(c, dict)]
-                    inb["clients"] = keep
-                    changed = True
-                    _audit("state_junk_dropped", proto=proto, n=len(junk),
-                           sample=str(junk[0])[:60])
-            if proto in ("reality", "vless-xhttp-reality"):
-                for k in ("private_key", "public_key"):
-                    if inb.get(k):
-                        fixed = _reality_key_std(inb[k])
-                        if fixed != inb[k]:
-                            inb[k] = fixed
-                            changed = True
-            # Числа обязаны быть числами. Тот же резон, из-за которого ниже чинится
-            # «порт строкой»: state.json приносят из чужих панелей, правят руками и
-            # восстанавливают из бэкапа. Разница в цене: строка вместо числа в
-            # лимите не путает порт, а роняет фоновый тик — и автоблокировка с
-            # предупреждениями выключаются у ВСЕХ, молча, до конца жизни панели.
-            for c in (inb.get("clients") or []):
-                if not isinstance(c, dict):
-                    continue
-                for k, cast in (("limit_gb", _gb_of), ("expiry", _ts_of),
-                                ("up", _bytes_of), ("down", _bytes_of),
-                                ("last_up", _bytes_of), ("last_down", _bytes_of),
-                                ("max_devices", _cnt_of), ("created", _ts_of)):
-                    if k not in c:
-                        continue
-                    fixed = cast(c[k])
-                    if fixed != c[k]:
-                        c[k] = fixed
-                        changed = True
-        if _reconcile_shared(inbs):
-            changed = True
-        for k in ("clients", "uuid", "proto", "port", "private_key",
-                  "public_key", "sid", "sni", "dest", "password"):
-            if st.pop(k, None) is not None:
-                changed = True
-        return changed
-    clients = st.pop("clients", None) or []
-    old = st.pop("uuid", None)
-    if old and not any(c.get("uuid") == old for c in clients):
-        clients.insert(0, {"uuid": old, "name": "Основной", "created": 0})
-    proto = st.pop("proto", None) or "reality"
+def _adopt_flat(st):
+    """Переставить «плоское» состояние в `inbounds`, а не выбросить его.
+
+    Плоский формат — состояние до нескольких входов: подписчики лежат в верхнем
+    уровне (`clients`, единственный `uuid`), там же `proto`, `port` и ключи входа.
+    Ветка, которая умела их переносить, вызывалась только когда `inbounds` записан
+    НЕ словарём, то есть ровно никогда: у плоского файла этого ключа нет,
+    `st.get("inbounds") or {}` даёт пустой словарь, он проходит проверку типа — и на
+    выходе плоские поля молча выбрасывались. Замер на файле до правки: 2 подписчика
+    стало 0, `changed=True`, в аудите пусто. Цена: восстановление резервной копии
+    старого формата или импорт из другой панели обнуляло всех абонентов, а старт,
+    увидев `_client_count() == 0`, клал пустой набор входов на ядро — тоннели рвутся
+    у всех и без единой записи в журнале.
+    """
+    cl = st.get("clients")
+    flat = [c for c in cl if isinstance(c, dict)] if isinstance(cl, list) else []
+    old = st.get("uuid")
+    if old and not any(c.get("uuid") == old for c in flat):
+        flat.insert(0, {"uuid": old, "name": "Основной", "created": 0})
+    if not flat:
+        return False
+    proto = st.get("proto")
     if proto not in _VALID_PROTOCOLS: proto = "reality"
-    inb = {"port": _find_free_port(_PORTS.get(proto)), "clients": list(clients)}
-    for k in ("port", "private_key", "public_key", "sid", "sni", "dest", "password"):
-        v = st.pop(k, None)
-        if v is None: continue
-        if k == "port":
+    inbs = st.get("inbounds")
+    if not isinstance(inbs, dict):
+        inbs = {}
+        st["inbounds"] = inbs
+    have = set()
+    for i in inbs.values():
+        if not isinstance(i, dict): continue
+        for c in (i.get("clients") or []):
+            if isinstance(c, dict) and c.get("uuid"):
+                have.add(c["uuid"])
+    keep = [c for c in flat if not (c.get("uuid") and c["uuid"] in have)]
+    dst = inbs.get(proto) if isinstance(inbs.get(proto), dict) else None
+    if dst is None:
+        for v in inbs.values():
+            if isinstance(v, dict):
+                dst = v
+                break
+    if dst is None:
+        # входов нет вовсе — плоский блок и есть состояние, он становится входом
+        p = st.get("port")
+        try:
             # порт обязан быть числом: строка «2443» из чужого state не совпадёт с
             # настоящим 2443 в проверках занятости, и порт выдадут дважды
-            try: inb["port"] = int(v)
-            except (TypeError, ValueError): inb["port"] = v
-        else: inb[k] = v
-    st["inbounds"] = {proto: inb}
+            dst = {"port": int(p) if p is not None
+                   else _find_free_port(_PORTS.get(proto)), "clients": []}
+        except (TypeError, ValueError):
+            dst = {"port": p, "clients": []}
+        for k in ("private_key", "public_key", "sid", "sni", "dest", "password"):
+            if st.get(k) is not None:
+                dst[k] = st[k]
+        inbs[proto] = dst
+    if keep:
+        cur = dst.get("clients")
+        dst["clients"] = (cur if isinstance(cur, list) else []) + keep
+    for k in ("clients", "uuid", "proto", "port", "private_key", "public_key",
+              "sid", "sni", "dest", "password"):
+        st.pop(k, None)
+    _audit("state_flat_adopted", proto=proto, n=len(keep),
+           skipped=len(flat) - len(keep))
     return True
+
+def _migrate_state(st):
+    # №63: `inbounds` есть и он НЕ словарь — это не старый плоский формат, а
+    # испорченное состояние целиком. Прежняя «миграция» на таком заменяла весь
+    # контейнер одним пустым входом: замер — список из двух настоящих
+    # подписчиков превращался в пустой `reality`, `changed=True`, аудита нет, а
+    # следом старт выкладывал это пустое множество на ядро. Теперь файл не
+    # тронут вообще: форму, которая не может описывать тоннель, нельзя ни
+    # починить, ни выбрать за оператора, значит панель только говорит громко и
+    # ничего не пишет (тот же честный отказ, что у читающих ручек).
+    #
+    # №64: громко — не значит каждые шестьдесят секунд. Миграцию зовёт не
+    # только старт, но и фоновый тик `_limits_loop` (раз в минуту), и на
+    # боевой машине сломанный контейнер дал ровно по записи в минуту: 1440 в
+    # сутки при потолке журнала 2000 — то есть за полтора суток аудит стёр бы
+    # собственную историю, а это единственный свидетель того, кто и что менял
+    # в панели (тот же резон, из-за которого №62 закрывал утечку токена).
+    # `_audit_throttled` оставляет одну строку в час и пишет, сколько раз её
+    # подавили: по `suppressed` видно, как долго файл лежит испорченным. После
+    # рестарта счётка в памяти чиста, поэтому первый отказ виден всегда.
+    #
+    # Отказ берётся из `_state_unshapable`, а не из местной проверки: у миграции и
+    # у читающих ручек должен быть ОДИН критерий. Пока он был местным, ручка
+    # `/api/state` отказывала ещё и на `"inbounds": null`, то есть на файле без
+    # подписчиков вообще, — ложный отказ, который запер бы первичную настройку.
+    # Предикат покрывает и третий случай: весь файл не словарь (список вместо
+    # объекта). Раньше он падал здесь на `st.get`, и журнал видел обрывок
+    # AttributeError вместо внятной строки.
+    if _state_unshapable(st):
+        bad = st if not isinstance(st, dict) else st.get("inbounds")
+        _audit_throttled("state_inbounds_unshapable", gap=3600,
+                         type=type(bad).__name__, sample=str(bad)[:60])
+        return False
+    if st is None: return False
+    changed = False
+    raw = st.get("inbounds")
+    inbs = raw or {}
+    if _adopt_flat(st):
+        changed = True
+        inbs = _inb_map(st)
+    dead = []
+    for proto, inb in inbs.items():
+        # Записи здесь — граница доверия (импорт из чужой панели, ручная правка,
+        # бэкап). Строка вместо словаря раньше ПРОПУСКАЛАСЬ («пусть тронет
+        # оператор») — и оставалась в файле навсегда: её не вычищает ни одна
+        # ручка, а 129 циклов по клиентам ждут словарь. На боевой машине это
+        # означало падение страницы подписчиков (`_do_GET`: AttributeError:
+        # 'str' object has no attribute 'get') и молчаливый отказ всего старта
+        # — `_awg_sync`, `_wg_sync` и база трафика обрываются на той же строке,
+        # а catching except превращает это в «автоблокировка не считает байты».
+        # Мусор чинится здесь, а не перекладывается на тик: healing here стоит
+        # ровно столько, сколько стоит чтение, и не просвечивает в ответах.
+        if not isinstance(inb, dict):
+            # №61: `continue` без выбрасывания оставалось ровно наполовину
+            # лечением. Находка №57 научила читающие ручки не видеть такую
+            # запись, а `_build_xray_cfg` читает состояние напрямую (ему
+            # нужен настоящий `st`, чтобы потом отдать конфиг ядру):
+            # `inb.get("disabled")` на строке — AttributeError, то есть
+            # панель теряла способность переписать конфиг ядра вообще:
+            # любая правка подписчика, миграция и старт. Описать вход
+            # словами нельзя — он не может описывать тоннель, значит его
+            # выбрасывают, а не чинят, и запись в аудите говорит об этом.
+            dead.append(proto)
+            _audit("state_junk_dropped", what="inbound", proto=proto, n=1,
+                   sample=str(inb)[:60])
+            continue
+        cl = inb.get("clients")
+        if isinstance(cl, list):
+            keep = [c for c in cl if isinstance(c, dict)]
+            if len(keep) != len(cl):
+                junk = [c for c in cl if not isinstance(c, dict)]
+                inb["clients"] = keep
+                changed = True
+                # `what` различает два уровня одного и того же события: без него
+                # запись «amneziawg, n=1» читается и как выброшенный вход, и как
+                # выброшенная запись внутри входа, а цена у этих двух разная.
+                _audit("state_junk_dropped", what="client", proto=proto, n=len(junk),
+                       sample=str(junk[0])[:60])
+        if proto in ("reality", "vless-xhttp-reality"):
+            for k in ("private_key", "public_key"):
+                if inb.get(k):
+                    fixed = _reality_key_std(inb[k])
+                    if fixed != inb[k]:
+                        inb[k] = fixed
+                        changed = True
+        # Числа обязаны быть числами. Тот же резон, из-за которого ниже чинится
+        # «порт строкой»: state.json приносят из чужих панелей, правят руками и
+        # восстанавливают из бэкапа. Разница в цене: строка вместо числа в
+        # лимите не путает порт, а роняет фоновый тик — и автоблокировка с
+        # предупреждениями выключаются у ВСЕХ, молча, до конца жизни панели.
+        for c in (inb.get("clients") or []):
+            if not isinstance(c, dict):
+                continue
+            for k, cast in (("limit_gb", _gb_of), ("expiry", _ts_of),
+                            ("up", _bytes_of), ("down", _bytes_of),
+                            ("last_up", _bytes_of), ("last_down", _bytes_of),
+                            ("max_devices", _cnt_of), ("created", _ts_of)):
+                if k not in c:
+                    continue
+                fixed = cast(c[k])
+                if fixed != c[k]:
+                    c[k] = fixed
+                    changed = True
+    for proto in dead:
+        inbs.pop(proto, None)
+        changed = True
+    if _reconcile_shared(inbs):
+        changed = True
+    for k in ("clients", "uuid", "proto", "port", "private_key",
+              "public_key", "sid", "sni", "dest", "password"):
+        if st.pop(k, None) is not None:
+            changed = True
+    return changed
 
 def _proto_of(st):
     if not st: return "reality"
     a = st.get("active")
     if a in _VALID_PROTOCOLS: return a
-    inbs = st.get("inbounds") or {}
+    inbs = _inb_map(st)
     for p in _PORTS:
         if p in inbs: return p
     for p in inbs:
@@ -2040,7 +2457,7 @@ def _new_inbound(proto):
 def _alloc_inbound(st, proto):
     inb = _new_inbound(proto)
     used = set()
-    for ib in (st.get("inbounds") or {}).values():
+    for _p, ib in _inb_entries(st):
         if ib.get("port"): used.add(ib["port"])
     if inb["port"] in used:
         inb["port"] = _find_free_port(_PORTS.get(proto), used)
@@ -2140,10 +2557,11 @@ def _proto_backfill(st, proto, inb):
     Записи без uuid пропускаются: state.json их допускает, а подписной строки
     для транспорта всё равно не из чего собрать."""
     refs = {}
-    for p2, ib in (st.get("inbounds") or {}).items():
+    for p2, ib in _inb_entries(st):
         if p2 == proto:
             continue
-        for c in ib.get("clients") or []:
+        for c in (ib.get("clients") or []):
+            if not isinstance(c, dict): continue
             uu = c.get("uuid")
             if not uu:
                 continue
@@ -2239,10 +2657,16 @@ def _ensure_hy2_cert(dom):
             capture_output=True, timeout=60)
         os.chmod(HY2_CERT, 0o644)
         os.chmod(HY2_KEY, 0o600)
-        try: shutil.chown(HY2_CERT, user="nobody", group="nogroup")
-        except Exception: pass
-        try: shutil.chown(HY2_KEY, user="nobody", group="nogroup")
-        except Exception: pass
+        # Ключ остаётся root:root. Прежний `chown nobody:nogroup` был страховкой под
+        # шаблон `xray@.service` (`User=nobody`) — юнит на этой машине выключен,
+        # instances нет, и читает он свой `%i.json`, а не hy2. А результат получался
+        # обратный страховке: `nobody` — чужой uid, и живой файл дожил до наших дней
+        # в `0604 nobody:nogroup`, то есть приватный ключ читался кем угодно.
+        for p in (HY2_CERT, HY2_KEY):
+            try:
+                shutil.chown(p, user="root", group="root")
+            except Exception:
+                pass
     except Exception as e:
         print(f"не удалось создать hy2 cert: {e}", flush=True)
 
@@ -2460,18 +2884,25 @@ def _autoblock_limits(st, force=False):
     out = []
     now = time.time()
     groups = {}
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            groups.setdefault(c["uuid"], []).append(c)
+    # №61: этот обходчик — фоновый тик, и падение в нём не видно никому:
+    # ровно тот сценарий, из-за которого находка №38 молча выключала
+    # автоблокировку у всех. Мусорная запись здесь стоит не страницы с 500, а
+    # неисключаемой блокировки, поэтому фильтруем, а не надеемся на лечение.
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if isinstance(c, dict) and c.get("uuid"):
+                groups.setdefault(c["uuid"], []).append(c)
     parents = {}  # parent uuid -> [member uuid...]
     for u, cs in groups.items():
         p = cs[0].get("family_of")
         if p and p in groups:
             parents.setdefault(p, []).append(u)
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if not isinstance(c, dict): continue
             if c.get("blocked"): continue
-            u = c["uuid"]
+            u = c.get("uuid")
+            if not u: continue
             if c.get("family_of") and c.get("family_of") in groups:
                 continue  # решение принимает хозяин, семья блокируется разом
             members = parents.get(u, [])
@@ -2494,7 +2925,13 @@ def _autoblock_limits(st, force=False):
 
 def _build_xray_cfg(st, force_proto=None):
     inbounds = []
-    for proto, inb in (st.get("inbounds") or {}).items():
+    # №61: конфиг ядра — тоже ЧИТАТЕЛЬ состояния, и притом самый дорогой:
+    # упасть здесь значит не просто не показать страницу, а не суметь
+    # переписать /usr/local/etc/xray/config.json ни при какой правке
+    # подписчика. `_migrate_state` теперь выбрасывает битые записи сам, но
+    # окно между чужой правкой файла и следующим лечением живёт, и форма
+    # чтения стоит ровно одного вызова.
+    for proto, inb in (_state_view(st).get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
             continue
         if inb.get("disabled"):
@@ -2534,7 +2971,7 @@ def _xray_cfg_valid(cfg):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(XRAY), prefix="panel.check.", suffix=".json")
     os.close(fd)
     try:
-        _save(tmp, cfg, 0o644)
+        _save(tmp, cfg, 0o600)
         t = subprocess.run(["xray", "run", "-test", "-config", tmp],
                            capture_output=True, text=True, timeout=30)
         if t.returncode:
@@ -2567,7 +3004,13 @@ def _write_xray(st):
     ok, err = _xray_cfg_valid(cfg)
     if not ok:
         raise RuntimeError(err)
-    _save(XRAY, cfg, 0o644)
+    # 0600, а не 0644: в конфиге лежат приватный ключ сервера и пароли подписчиков.
+    # Привычка 0644 пришла от установочного скрипта xray, где ядро может работать от
+    # `nobody` (шаблон `xray@.service` с `User=nobody` на этой машине есть, но
+    # выключен и читает свой `%i.json`). Боевой `xray.service` — `User=root` с
+    # `CAP_DAC_OVERRIDE`, не-root читателей у файла нет (проверено по открытым fd
+    # всех не-root процессов, по юнитам, таймерам и nginx).
+    _save(XRAY, cfg, 0o600)
 
 _XRAY_LAST_RESTART = [0.0]
 # xray.service живёт с дефолтным лимитом systemd: не больше 5 запусков за 10 секунд.
@@ -2766,9 +3209,14 @@ def _traffic_tick(st):
     if not tr:
         return False
     groups = {}
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            groups.setdefault(c["uuid"], []).append(c)
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if not isinstance(c, dict): continue
+            # запись без `uuid` — её чинит `_ensure_identities`; здесь она нечем,
+            # а группа по None слила бы всех безымянных в одного абонента
+            cu = c.get("uuid")
+            if not cu: continue
+            groups.setdefault(cu, []).append(c)
     changed = False
     for key, cs in groups.items():
         c0 = cs[0]
@@ -2830,15 +3278,20 @@ def _user_traffic(c):
 # legacy-пути не врли), но loops пропускают их — истина всегда в хозяйской группе.
 _FAMILY_MAX = 5
 
+
 def _fam(st, uuid_):
     """-> (parent_uuid, [member_uuid...]). Для соло-клиента -> (uuid_, []).
     Принимает uuid хозяина ИЛИ члена — результат одинаковый (семейное скоуп-ядро)."""
     if not st or not uuid_:
         return uuid_, []
     recs = {}
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            r = recs.setdefault(c["uuid"], c)
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            # №61: сюда приходят сырым снимком (`_state_view` не при чём —
+            # вызывающий потом пишет эти же словари обратно, и подменять их
+            # копиями нельзя), а `c["uuid"]` на мусоре — TypeError/KeyError.
+            if isinstance(c, dict) and c.get("uuid"):
+                recs.setdefault(c["uuid"], c)
     c0 = recs.get(uuid_)
     if c0 is None:
         return uuid_, []
@@ -2852,9 +3305,11 @@ def _fam(st, uuid_):
 def _fam_group(st, uuid_):
     """Все записи uuid-группы клиента (хозяин или член) из state."""
     out = []
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            if c["uuid"] == uuid_:
+    if not uuid_:
+        return out
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if isinstance(c, dict) and c.get("uuid") == uuid_:
                 out.append(c)
     return out
 
@@ -2926,9 +3381,13 @@ def _fam_mirror(st, parent_uuid):
 
 def _fam_resolve_parent(st, key):
     """По uuid или sub_token -> хозяйская запись (или None, если ключ — член семьи)."""
-    for inb in (st.get("inbounds") or {}).values():
-        for c in inb.get("clients", []):
-            if c["uuid"] == key or c.get("sub_token") == key:
+    if not key:
+        return None
+    for _proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if not isinstance(c, dict):
+                continue
+            if (c.get("uuid") and c["uuid"] == key) or c.get("sub_token") == key:
                 return None if c.get("family_of") else c
     return None
 
@@ -2949,8 +3408,9 @@ def _fam_add(st, parent_key, name, max_devices=0):
         md = max(0, min(10, int(max_devices or 0)))
     except Exception:
         md = 0
-    host_inbs = [(proto, inb) for proto, inb in (st.get("inbounds") or {}).items()
-                 for c in inb.get("clients", []) if c["uuid"] == pu]
+    host_inbs = [(proto, inb) for proto, inb in _inb_entries(st)
+                 for c in (inb.get("clients") or [])
+                 if isinstance(c, dict) and pu and c.get("uuid") == pu]
     if not host_inbs:
         return False, "подписка-хозяин не найдена"
     member_uuid = str(uuidlib.uuid4())
@@ -2976,9 +3436,12 @@ def _fam_add(st, parent_key, name, max_devices=0):
 def _fam_del(st, member_key):
     """Удалить участника семьи (хозяина этим путём удалить нельзя)."""
     rec = None
-    for inb in (st.get("inbounds") or {}).values():
-        for c in inb.get("clients", []):
-            if c["uuid"] == member_key or c.get("sub_token") == member_key:
+    if not member_key:
+        return False, "участник не найден"
+    for _proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if isinstance(c, dict) and ((c.get("uuid") and c["uuid"] == member_key)
+                                        or c.get("sub_token") == member_key):
                 rec = c
                 break
         if rec: break
@@ -2986,15 +3449,23 @@ def _fam_del(st, member_key):
         return False, "участник не найден"
     if not rec.get("family_of"):
         return False, "это не участник семьи"
-    mu, tok = rec["uuid"], (rec.get("sub_token") or "")
-    for proto, inb in list((st.get("inbounds") or {}).items()):
-        inb["clients"] = [c for c in inb.get("clients", []) if c["uuid"] != mu]
+    mu, tok = rec.get("uuid") or "", (rec.get("sub_token") or "")
+
+    def _is_member(c):
+        # пустой `mu` (запись без uuid её чинит `_ensure_identities`, но до тика
+        # она возможна) не должен снести все такие же пустые: сравниваем только
+        # словари и только когда есть с чем сравнивать
+        return bool(mu) and isinstance(c, dict) and c.get("uuid") == mu
+
+    for proto, inb in list(_inb_entries(st)):
+        inb["clients"] = [c for c in (inb.get("clients") or []) if not _is_member(c)]
         if not inb["clients"] and proto != "amneziawg":
             del st["inbounds"][proto]
     try:
         _subdev_prune({c.get("sub_token")
-                       for inb in (st.get("inbounds") or {}).values()
-                       for c in inb.get("clients", []) if c.get("sub_token")})
+                       for _p, inb in _inb_entries(st)
+                       for c in (inb.get("clients") or [])
+                       if isinstance(c, dict) and c.get("sub_token")})
     except Exception:
         pass
     try:
@@ -3009,15 +3480,16 @@ def _fam_devlimit(st, member_key, max_devices):
         md = max(0, min(10, int(max_devices or 0)))
     except Exception:
         return False, "max_devices не число"
-    grp = [c for inb in (st.get("inbounds") or {}).values()
-           for c in inb.get("clients", [])
-           if c["uuid"] == member_key or c.get("sub_token") == member_key]
-    uuids = {c["uuid"] for c in grp}
+    grp = [c for _p, inb in _inb_entries(st) for c in (inb.get("clients") or [])
+           if isinstance(c, dict)
+           and ((c.get("uuid") and c["uuid"] == member_key)
+                or (member_key and c.get("sub_token") == member_key))]
+    uuids = {c["uuid"] for c in grp if c.get("uuid")}
     if not grp or not all(c.get("family_of") for c in grp):
         return False, "это не участник семьи"
-    for inb in (st.get("inbounds") or {}).values():
-        for c in inb.get("clients", []):
-            if c["uuid"] in uuids:
+    for _p, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            if isinstance(c, dict) and c.get("uuid") in uuids:
                 c["max_devices"] = md
     return True, {"uuids": sorted(uuids), "max_devices": md}
 
@@ -3043,9 +3515,9 @@ def _fam_adopt(st, parent_key, member_key, max_devices=None):
     mkey = (member_key or "").strip()
     if not mkey:
         return False, "участник не указан"
-    grp = [c for inb in (st.get("inbounds") or {}).values()
-           for c in inb.get("clients", [])
-           if c["uuid"] == mkey or c.get("sub_token") == mkey]
+    grp = [c for _p, inb in _inb_entries(st)
+           for c in (inb.get("clients") or [])
+           if isinstance(c, dict) and (c.get("uuid") == mkey or c.get("sub_token") == mkey)]
     if not grp:
         return False, "подписка не найдена"
     mu = grp[0]["uuid"]
@@ -3054,8 +3526,8 @@ def _fam_adopt(st, parent_key, member_key, max_devices=None):
     if any(c.get("family_of") for c in grp):
         was = grp[0].get("family_of")
         return False, ("эта подписка уже в семье " + str(was)[:8] + " — сначала выведите её")
-    if any(c.get("family_of") == mu for inb in (st.get("inbounds") or {}).values()
-           for c in inb.get("clients", [])):
+    if any(c.get("family_of") == mu for _p, inb in _inb_entries(st)
+           for c in (inb.get("clients") or []) if isinstance(c, dict)):
         return False, "у этой подписки самой есть семья — сначала выведите её участников"
     if len(_fam_member_uuids(st, pu)) >= _FAMILY_MAX:
         return False, f"не больше {_FAMILY_MAX} участников"
@@ -3092,9 +3564,10 @@ def _fam_orphan(st, member_key):
     (`solo_*`), а если семья жила дольше, чем хранится запись, — остаётся
     хозяйский, и оператор поправит его правкой подписки. Блокировку не снимаем:
     за лимит семьи отвечал не один этот человек."""
-    grp = [c for inb in (st.get("inbounds") or {}).values()
-           for c in inb.get("clients", [])
-           if c["uuid"] == (member_key or "").strip() or c.get("sub_token") == (member_key or "").strip()]
+    grp = [c for _p, inb in _inb_entries(st)
+           for c in (inb.get("clients") or [])
+           if isinstance(c, dict) and (c.get("uuid") == (member_key or "").strip()
+                                       or c.get("sub_token") == (member_key or "").strip())]
     if not grp:
         return False, "подписка не найдена"
     if not grp[0].get("family_of"):
@@ -3217,6 +3690,86 @@ def _notify_queued():
             _notify_out(job)
 
 
+# --- повторы ------------------------------------------------------------------
+# До этой правки исходящее письмо либо уходило с первого раза, либо не уходило
+# никогда: `_bot_send_now` глотал любую ошибку и печатал её в stdout, куда никто
+# не смотрит. 502 от Telegram на секунду, таймаут сети у VPS, «слишком часто» на
+# массовом предупреждении о трафике — и подписчик не узнаёт о блокировке, а
+# администратор узнаёт об этом только из его жалобы. Повторять имеет смысл то, что
+# может получиться со второй попытки (429 с указанием срока, 5xx, обрыв сети), и
+# не имеет смысла то, что не получится никогда (400 — кривой текст, 401 — мёртвый
+# токен, 403 — бота заблокировали у получателя).
+_NOTIFY_ATTEMPTS_MAX = 3
+_NOTIFY_RETRY_PENDING_MAX = 256
+_NOTIFY_RETRY_DELAY_MAX = 300
+_retry_heap = []
+_retry_cv = threading.Condition()
+_retry_seq = 0
+
+
+def _notify_retry_after(code, body, attempt):
+    """(повторять, через сколько секунд) по ответу Telegram. Повторяем ровно то,
+    что может получиться позже: «слишком часто» — с названным самим Telegram
+    сроком, 5xx — с нарастающей паузой. Любой другой 4xx — вина отправителя
+    (кривой текст, неподходящий режим разметки, мёртвый токен, блокировка у
+    получателя); крутить его заново бессмысленно."""
+    if code == 429:
+        secs = 15
+        try:
+            secs = int((json.loads(body or "").get("parameters") or {}).get("retry_after"))
+        except Exception:
+            pass
+        return True, max(1, min(secs, 120))
+    if 500 <= code < 600:
+        return True, 20 * attempt
+    if 400 <= code < 500:
+        return False, 0
+    return True, 30 * attempt
+
+
+def _notify_retry_later(delay, job):
+    """Отложить задание на `delay` секунд. True — отложили, False — некуда."""
+    global _retry_seq
+    due = time.time() + max(0.5, min(float(delay), _NOTIFY_RETRY_DELAY_MAX))
+    with _retry_cv:
+        if len(_retry_heap) >= _NOTIFY_RETRY_PENDING_MAX:
+            return False
+        _retry_seq += 1
+        heapq.heappush(_retry_heap, (due, _retry_seq, job))
+        _retry_cv.notify_all()
+    return True
+
+
+def _notify_retry_loop():
+    """Один поток заводит отложенные письма обратно в общую очередь. Сам он
+    никуда не пишет и никого не ждёт — только перекладывает."""
+    while True:
+        with _retry_cv:
+            now = time.time()
+            while _retry_heap and _retry_heap[0][0] <= now:
+                _, _, job = heapq.heappop(_retry_heap)
+                _notify_out(job)
+            wait = 5.0
+            if _retry_heap:
+                wait = max(0.2, min(5.0, _retry_heap[0][0] - time.time()))
+            _retry_cv.wait(wait)
+
+
+def _notify_requeue(job, attempt, reason, delay):
+    """Запланировать повтор и сказать об этом в журнале. Текст письма в журнал не
+    уходит — там и так чужие uuid и ссылки."""
+    if attempt >= _NOTIFY_ATTEMPTS_MAX:
+        _audit_throttled("notify_dropped", gap=60, attempt=attempt, reason=reason,
+                         why="исчерпаны попытки")
+        return False
+    if not _notify_retry_later(delay, job):
+        _notify_count_lost()
+        return False
+    _audit_throttled("notify_retry", gap=60, attempt=attempt, reason=reason,
+                     delay=int(min(delay, _NOTIFY_RETRY_DELAY_MAX)))
+    return True
+
+
 def _maybe_traffic_alerts(st):
     """TG-предупреждения: 80% лимита, скорая блокировка (3/1 день), сброс цикла.
     Возвращает True, если выставили новые флаги (state надо сохранять).
@@ -3230,21 +3783,27 @@ def _maybe_traffic_alerts(st):
     now = time.time()
     changed = False
     seen = set()
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            if c["uuid"] in seen or c.get("blocked") or c.get("family_of"):
+    for proto, inb in _inb_entries(st):
+        # №63: этот цикл — фоновый тик, и падение в нём выключает предупреждения
+        # всем (тот же урок, из-за которого `_autoblock_limits` уже ходит через
+        # общий фильтр): испорченный вход или запись без `uuid` обрывали обход на
+        # середине, а журнал не говорил ничего
+        for c in (inb.get("clients") or []):
+            if not isinstance(c, dict): continue
+            cu = c.get("uuid")
+            if not cu or cu in seen or c.get("blocked") or c.get("family_of"):
                 continue  # предупреждения — раз на семью, от имени хозяина
-            seen.add(c["uuid"])
+            seen.add(cu)
             group = []
-            for p2, i2 in (st.get("inbounds") or {}).items():
-                for c2 in i2.get("clients", []):
-                    if c2["uuid"] == c["uuid"]:
+            for p2, i2 in _inb_entries(st):
+                for c2 in (i2.get("clients") or []):
+                    if isinstance(c2, dict) and c2.get("uuid") == cu:
                         group.append(c2)
             msgs = []
             tgc = str(c.get("tg_chat") or "")
             sub_msgs = []
             lim = _gb_of(c.get("limit_gb"))
-            _, fam_up, fam_down = _fam_ud(st, c["uuid"])
+            _, fam_up, fam_down = _fam_ud(st, cu)
             fam_used = fam_up + fam_down
             if lim > 0 and not c.get("warned_80"):
                 if fam_used >= lim * _GB * 0.8:
@@ -3361,8 +3920,11 @@ def _ensure_identities(st):
     """
     if not st: return False
     fixes = []
-    inbs = st.get("inbounds") or {}
+    inbs = _inb_map(st)
     for proto, inb in inbs.items():
+        # этот лекарь вызывают читающие ручки: падать на битом входе он права не
+        # имеет, иначе лечение состояния тонет вместе со страницей
+        if not isinstance(inb, dict): continue
         cl = inb.get("clients")
         if not isinstance(cl, list): continue
         for i, c in enumerate(cl):
@@ -3375,11 +3937,13 @@ def _ensure_identities(st):
                 fixes.append((proto, i, c, "name", c["name"]))
     have = {}
     for inb in inbs.values():
+        if not isinstance(inb, dict): continue
         for c in (inb.get("clients") or []):
             if isinstance(c, dict) and c.get("uuid") and c.get("sub_token"):
                 have.setdefault(c["uuid"], c["sub_token"])
     fresh = {}
     for proto, inb in inbs.items():
+        if not isinstance(inb, dict): continue
         cl = inb.get("clients")
         if not isinstance(cl, list): continue
         for i, c in enumerate(cl):
@@ -3417,7 +3981,10 @@ def _subs_summary(st, for_display=False):
     ipv6 = _my_ipv6()
     users = {}
     _ensure_identities(st)
-    for proto, inb in (st.get("inbounds") or {}).items():
+    for proto, inb in _inb_map(st).items():
+        # вызывающих этот агрегат — десять ручек, включая публичные /p/ и /sb/:
+        # битый вход не должен стоить им всем страницы
+        if not isinstance(inb, dict): continue
         for c in inb.get("clients", []):
             # см. `_do_GET`: окно до починки состояния не должно стоить всей вкладки
             if not isinstance(c, dict):
@@ -3584,7 +4151,11 @@ def _validate_and_apply(st, force_proto=None):
     os.close(fd)
     try:
         cfg = _build_xray_cfg(st, force_proto=force_proto)
-        _save(tmp, cfg, 0o644)
+        # 0600: пробный конфиг — те же приватные ключи, что и боевой. `mkstemp`
+        # создал файл с 0600, а `_save` переписывает права; при 0644 файл,
+        # оставшийся после `kill -9` между записью и `finally`, висел бы в
+        # /usr/local/etc/xray читаемым всеми.
+        _save(tmp, cfg, 0o600)
         t = subprocess.run(["xray", "run", "-test", "-config", tmp],
                            capture_output=True, text=True, timeout=30)
         if t.returncode:
@@ -3593,7 +4164,7 @@ def _validate_and_apply(st, force_proto=None):
         try:
             with _xray_apply_gate() as waited:
                 prev = (_read_raw(XRAY), _read_raw(STATE))
-                _save(XRAY, cfg, 0o644)
+                _save(XRAY, cfg, 0o600)
                 _save(STATE, st)
                 try:
                     _xray_restart()
@@ -5985,7 +6556,9 @@ def _restore_raw(path, data):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data); f.flush(); os.fsync(f.fileno())
-        os.chmod(path, 0o644 if path == XRAY else 0o600)
+        # Без прежнего исключения для XRAY (`0o644 if path == XRAY`): возвращая
+        # байты конфига ядра, оно возвращало и право читать их всеми.
+        os.chmod(path, 0o600)
     except Exception as e:
         print("restore " + path + ": " + str(e), flush=True)
 
@@ -6440,10 +7013,10 @@ def _install_update(confirm=False, job=None):
         step(3, "running")
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
         bdir = f"{BASE}/backup-v{VERSION}-{ts}"
-        os.makedirs(bdir, exist_ok=True)
+        _mkdir_private(bdir)
         for fn in ("panel.py", "index.html"):
             src = os.path.join(BASE, fn)
-            if os.path.exists(src): shutil.copy2(src, os.path.join(bdir, fn))
+            if os.path.exists(src): _copy_private(src, os.path.join(bdir, fn))
         step(3, "done", os.path.basename(bdir))
         step(4, "running")
         boot_before = int(time.time())
@@ -8200,7 +8773,7 @@ def _bot_send_message(chat_id, text, parse_mode=None, reply_markup=None):
     # который должен следить за лимитами, сам перестаёт за ними следить.
     _notify_out(job)
 
-def _bot_send_now(want_fp, chat_id, text, parse_mode=None, reply_markup=None):
+def _bot_send_now(want_fp, chat_id, text, parse_mode=None, reply_markup=None, attempt=1):
     token = CFG_CACHE.get("bot_token", "")
     if not token or _bot_fp(token) != want_fp:
         # письмо копилось в очереди, а за это время бота заменили или выключили:
@@ -8208,6 +8781,7 @@ def _bot_send_now(want_fp, chat_id, text, parse_mode=None, reply_markup=None):
         return
     if len(text) > 4000:
         text = text[:4000] + "\n… (обрезано)"
+    reason = ""
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = {"chat_id": chat_id, "text": text}
@@ -8219,15 +8793,25 @@ def _bot_send_now(want_fp, chat_id, text, parse_mode=None, reply_markup=None):
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10):
-            pass
+            return
     except urllib.error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", "replace")
         except Exception:
             body = ""
         print(f"[bot] sendMessage HTTP {e.code}: {body}", flush=True)
+        retry, delay = _notify_retry_after(e.code, body, attempt)
+        reason = "http_%d" % e.code
+        if not retry:
+            _audit_throttled("notify_dropped", gap=60, attempt=attempt, reason=reason)
+            return
     except Exception as e:
-        print("[bot] sendMessage error: " + str(e), flush=True)
+        # сюда же идут socket.timeout и URLError: для письма это «временно»
+        print("[bot] sendMessage error: " + _bot_err_text(e, token), flush=True)
+        retry, delay = True, 10 * attempt
+        reason = type(e).__name__
+    _notify_requeue((_bot_send_now, (want_fp, chat_id, text, parse_mode, reply_markup,
+                                     attempt + 1)), attempt, reason, delay)
 
 
 def _bot_answer_callback(callback_query_id, text=None, show_alert=False):
@@ -8260,7 +8844,7 @@ def _bot_answer_now(want_fp, callback_query_id, text=None, show_alert=False):
         with urllib.request.urlopen(req, timeout=10):
             pass
     except Exception as e:
-        print("[bot] answerCallbackQuery error: " + str(e), flush=True)
+        print("[bot] answerCallbackQuery error: " + _bot_err_text(e, token), flush=True)
 
 def _lang_keyboard():
     return {"inline_keyboard": [[
@@ -12450,7 +13034,7 @@ def _mux_apply(vpn_domain=None, confirm=False, force=False):
     if t.returncode != 0:
         inb.update(prev); inb.pop("_mux_enabled", None)
         _save(STATE, st)
-        _save(XRAY, _build_xray_cfg(st), 0o644)
+        _save(XRAY, _build_xray_cfg(st), 0o600)
         try:    # откат мюкса не должен прятаться за отказом systemd
             _xray_restart()
         except Exception as e:
@@ -13107,16 +13691,20 @@ def _device_tick(st):
     limits = {}
     names = {}
     tok_of = {}
-    for proto, inb in (st.get("inbounds") or {}).items():
-        for c in inb.get("clients", []):
-            names[c["uuid"]] = c.get("name") or str(c["uuid"])[:8]
+    for proto, inb in _inb_entries(st):
+        for c in (inb.get("clients") or []):
+            # №63: тик устройств, как и тик лимитов, обязан дожить до конца:
+            # падение на одном мусорном входе лишало счётчика устройств всех
+            cu = c.get("uuid") if isinstance(c, dict) else None
+            if not cu: continue
+            names[cu] = c.get("name") or str(cu)[:8]
             if c.get("sub_token"):
-                tok_of[c["uuid"]] = c["sub_token"]
+                tok_of[cu] = c["sub_token"]
             if proto in ("wireguard", "amneziawg"):
                 continue
             md = _cnt_of(c.get("max_devices"))
             if md > 0:
-                limits[c["uuid"]] = max(limits.get(c["uuid"], 0), md)
+                limits[cu] = max(limits.get(cu, 0), md)
     now = time.time()
     pact = {}
     for line in _access_log_lines():
@@ -13681,9 +14269,13 @@ def _sb_config(st, sub_path, host, panel_port):
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto == "amneziawg":
             continue  # magic-амнезия в sing-box wireguard не импортируется
+        # ручка публичная (/sb/<токен>): битая запись в состоянии не имеет права
+        # стоить подписчику его конфигурации
+        if not isinstance(inb, dict): continue
         if inb.get("disabled"):
             continue
         for c in inb.get("clients", []):
+            if not isinstance(c, dict): continue
             if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
                 continue
             try:
@@ -14104,6 +14696,18 @@ def _py_sane(path):
         with open(path, encoding="utf-8") as f:
             src = f.read()
         compile(src, path, "exec")
+        tree = ast.parse(src, path)
+        # compile() ловит только сломанный синтаксис. Обрезка, которая пришла на
+        # границу целого оператора, синтаксис не портит: ровно половина боевого
+        # panel.py компилируется без ошибки и даже запускается — а всё, что было
+        # ниже среза, исчезает уже в работе. То есть «возврат после сбоя» ломает
+        # панель ровно тем способом, от которого эта проверка и защищает. Поэтому
+        # файл считается целым, только если на его верхнем уровне есть последняя
+        # обязательная часть — страж точки входа, он в файле последний.
+        if not any(isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                   and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"
+                   for n in tree.body):
+            return False, "нет стража точки входа: файл обрезан или это не panel.py"
         return True, ""
     except Exception as e:
         return False, type(e).__name__ + ": " + str(e)[:260]
@@ -14228,11 +14832,11 @@ def _update_guard_spawn(bdir, expect_ver, not_before, window=120):
 def _panel_backup_now():
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     bdir = os.path.join(BASE, "backup-v%s-%s" % (VERSION, ts))
-    os.makedirs(bdir, exist_ok=True)
+    _mkdir_private(bdir)
     for fn in ("panel.py", "index.html"):
         src = os.path.join(BASE, fn)
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(bdir, fn))
+            _copy_private(src, os.path.join(bdir, fn))
     for b in _panel_backups()[7:]:
         try:
             shutil.rmtree(os.path.join(BASE, b["dir"]))
@@ -14269,10 +14873,10 @@ def _panel_restore(version, confirm=False, job=None):
             # откат оседал на диске навсегда.
             keep = os.path.join(BASE, "backup-v%s-pre-restore-%s" % (VERSION, ts))
             step(1, "running")
-            os.makedirs(keep, exist_ok=True)
+            _mkdir_private(keep)
             for fn in ("panel.py", "index.html"):
                 if os.path.exists(os.path.join(BASE, fn)):
-                    shutil.copy2(os.path.join(BASE, fn), os.path.join(keep, fn))
+                    _copy_private(os.path.join(BASE, fn), os.path.join(keep, fn))
             step(1, "done", os.path.basename(keep))
             step(2, "running")
             boot_before = int(time.time())
@@ -15614,6 +16218,185 @@ def _bot_webhook_mode():
     return bool(CFG_CACHE.get("bot_webhook_url"))
 
 
+def _bot_webhook_default_url():
+    """Адрес, который панель зарегистрирует, если оператор вписал свой не сам.
+    Вынесен из set_webhook в одно место, чтобы карточка доставки могла сравнить
+    его с тем, что висит у Telegram: после смены домена вебхум остаётся висеть
+    на старом адресе, Telegram стучится в никуда, и в журнале панели при этом
+    пусто — команды просто перестают появляться. Пустой домен — пустой адрес:
+    врать про `https://:8443/...` хуже, чем честно попросить домен заполнить."""
+    dom = str(CFG_CACHE.get("panel_domain", "") or "").strip()
+    if not dom:
+        return ""
+    return "https://%s:%s/api/bot/webhook" % (dom, CFG_CACHE.get("panel_port", 8444))
+
+
+_BOT_TOKEN_SHAPE = re.compile(r"\d{5,16}:[A-Za-z0-9_-]{20,}")
+
+
+def _bot_err_text(exc, token=""):
+    """Текст ошибки обращения к Telegram — наружу, но без токена.
+
+    `urllib` кладёт в строку исключения URL запроса (`ValueError: unknown url type: …`,
+    `InvalidURL`, `HTTPError` с телом), а адрес бота выглядит как
+    `https://api.telegram.org/bot<токен>/setWebhook`. Значит отказ «не дошло»,
+    записанный в аудит или отданный админке, уносил бы секрет бота — а это не
+    подсказка, а полный доступ к чужому боту. Поэтому вырезается и конкретный
+    токен, и любая строка, похожая на токен по форме: вторая ловит текст,
+    собранный ещё до того, как мы подставили значение.
+
+    Здесь держат ТЕКСТ, а не имя класса (в отличие от `_bot_webhook_info`):
+    карточке доставки достаточно сказать «Telegram не ответил», а оператор,
+    нажавший «включить вебхум», обязан увидеть причину — иначе он будет повторять
+    то же нажатие, не понимая, что Telegram отказывает, например, на не-домен.
+
+    Функция обязана быть тотальной: её зовут из `except`, и падение здесь
+    (например, на исключении с поломанным `__str__`) убило бы не ответ, а весь
+    фоновый цикл опроса — то есть бот замолчал бы молча, ровно та находка, из-за
+    которой эта карточка и появилась.
+    """
+    try:
+        s = str(exc)
+        if token:
+            s = s.replace(token, "‹токен›")
+        return _BOT_TOKEN_SHAPE.sub("‹токен›", s)[:200]
+    except Exception:
+        return type(exc).__name__
+
+
+_BOT_INFO_TTL = 10.0
+_bot_info_cache = {"t": 0.0, "remote": None, "err": ""}
+_bot_info_lk = threading.Lock()
+
+
+def _bot_webhook_info(token, force=False):
+    """Спросить у Telegram, как он сам видит доставку. getWebhookInfo — единственный
+    способ узнать, что вебхум зарегистрирован, но не работает (сертификат протух,
+    порт закрыт, адрес не резолвится): у панели свои записи в порядке, а бот мёртв.
+    Отвечает (remote|None, текст_ошибки) и не бросает — это справочные цифры.
+    Ответ живёт 10 секунд: карточка открывается вместе с вкладкой и по кнопке
+    «обновить», и без замка на это место частое нажатие превращалось бы в звонки
+    в Telegram от имени бота.
+
+    Ошибку отдаём именем класса, а не `str(e)`: в строку urlopen попадает URL, а в
+    URL — токен бота. Наружу он не должен уходить ни в каком виде.
+    """
+    now = time.time()
+    if not force:
+        with _bot_info_lk:
+            if now - _bot_info_cache["t"] < _BOT_INFO_TTL:
+                return _bot_info_cache["remote"], _bot_info_cache["err"]
+    remote = err = None
+    try:
+        api = "https://api.telegram.org/bot%s/getWebhookInfo" % token
+        with urllib.request.urlopen(api, timeout=6) as resp:
+            data = json.load(resp)
+        if not data.get("ok"):
+            # описание ошибки Telegram — про доставку, токена в нём нет
+            remote, err = None, str(data.get("description") or "telegram отказал")[:200]
+        else:
+            r = data.get("result") or {}
+            remote = {
+                "url": r.get("url") or "",
+                "pending_update_count": int(r.get("pending_update_count") or 0),
+                "max_connections": int(r.get("max_connections") or 40),
+                "ip_address": r.get("ip_address") or "",
+                "last_error_message": str(r.get("last_error_message") or "")[:200],
+                "last_error_date": int(r.get("last_error_date") or 0),
+            }
+            err = ""
+    except Exception as e:
+        remote, err = None, type(e).__name__
+    with _bot_info_lk:
+        _bot_info_cache["t"] = time.time()
+        _bot_info_cache["remote"] = remote
+        _bot_info_cache["err"] = err or ""
+    return remote, _bot_info_cache["err"]
+
+
+def _bot_delivery_state(force=False):
+    """Всё, по чему можно понять, как письма бота доходят прямо сейчас.
+
+    Режим берётся тем же признаком, что у фонового цикла (`_bot_webhook_mode`),
+    чтобы карточка не рисовала режим, в который сама панель не верит. Локальный
+    режим и удалённый могут разойтись: `setWebhook` дошёл до Telegram, но запись в
+    конфиг не легла (обрыв между ними), либо вебхум сняли с другой стороны.
+    Расхождение — это молча мёртвый бот, поэтому его считает панель, а не глаза:
+    при вебхуме без адреса у Telegram команды не приходят вообще, а при опросе с
+    висящим вебхумом getUpdates отвечает 409 и цикл только печатает ошибку.
+
+    Отвечает только тем, что безопасно показать: отпечаток токена вместо токена,
+    длина секрета вместо секрета.
+    """
+    token = CFG_CACHE.get("bot_token", "") or ""
+    try:
+        paused = bool((_mv_load() or {}).get("pause_bot"))
+    except Exception as e:
+        print("[bot] доставка: maintenance не прочитано: " + str(e), flush=True)
+        paused = False
+    with _retry_cv:
+        retry_pending = len(_retry_heap)
+    local_url = CFG_CACHE.get("bot_webhook_url", "") or ""
+    out = {
+        "configured": bool(token),
+        "bot": _bot_fp(token) if token else "",
+        "mode": "webhook" if local_url else "poll",
+        "webhook_url": local_url,
+        "webhook_default": _bot_webhook_default_url(),
+        "secret_len": len(str(CFG_CACHE.get("bot_webhook_secret") or "")),
+        "paused": paused,
+        "chat_ids": [str(x) for x in (CFG_CACHE.get("bot_chat_ids") or [])],
+        "queued": _notify_q.qsize(),
+        "queue_max": _NOTIFY_QUEUE_MAX,
+        "dropped": _notify_lost,
+        "retry_pending": retry_pending,
+        "retry_max": _NOTIFY_ATTEMPTS_MAX,
+        "remote": None,
+        "remote_error": "",
+        "warnings": [],
+    }
+    try:
+        out["tz"] = _tz_label()
+    except Exception:
+        out["tz"] = ""
+    if not token:
+        out["warnings"].append("Токен бота не задан — панель никуда не пишет.")
+        return out
+    remote, err = _bot_webhook_info(token, force=force)
+    out["remote"], out["remote_error"] = remote, err
+    if remote is None:
+        out["warnings"].append("Telegram не ответил (%s) — адрес вебхума у него "
+                               "может отличаться от того, что записан у панели." % (err or "?"))
+        return out
+    if local_url and not remote["url"]:
+        out["warnings"].append("Панель ждёт вебхум, а Telegram его не помнит: команды "
+                               "не приходят. Нажми «🔗 Включить вебхум» заново.")
+    if not local_url and remote["url"]:
+        out["warnings"].append("Telegram стучится в вебхум (%s), а панель его опрашивает: "
+                               "getUpdates отдаёт 409, бот мёртв. Либо включи вебхум "
+                               "здесь, либо удали его кнопкой ниже." % remote["url"])
+    if local_url and remote["url"] and remote["url"] != local_url:
+        out["warnings"].append("Адреса не совпадают: у панели %s, у Telegram %s."
+                               % (local_url, remote["url"]))
+    if local_url and remote["url"] == local_url and out["webhook_default"] and \
+            local_url != out["webhook_default"]:
+        out["warnings"].append("Зарегистрирован адрес, отличный от того, который панель "
+                               "считает своим (%s). Работает, но после следующей "
+                               "перерегистрации переедет." % out["webhook_default"])
+    if remote["last_error_message"]:
+        out["warnings"].append("Последняя ошибка Telegram: %s%s" % (
+            remote["last_error_message"],
+            "" if not remote["last_error_date"] else
+            " (%s)" % _ldate("%d.%m %H:%M", remote["last_error_date"])))
+    if not local_url and remote["pending_update_count"] > 0:
+        out["warnings"].append("В очереди Telegram висит %d обновлений — опрос их не "
+                               "читает (пауза или бот выключен)." % remote["pending_update_count"])
+    if paused:
+        out["warnings"].append("Бот на паузе (обслуживание): письма из очереди наружу "
+                               "не уходят.")
+    return out
+
+
 def _bot_poll_loop():
     time.sleep(10)
     last_update_id = 0
@@ -15640,16 +16423,16 @@ def _bot_poll_loop():
                                 with _STATE_LOCK:
                                     _process_bot_update(update)
                         except Exception as e:
-                            print("[bot] poll update error: " + str(e), flush=True)
+                            print("[bot] poll update error: " + _bot_err_text(e), flush=True)
                 elif data.get("description"):
                     print("[bot] getUpdates: " + str(data.get("description")), flush=True)
         except (socket.timeout, TimeoutError):
             pass
         except urllib.error.URLError as e:
             if not isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)):
-                print("[bot] poll loop error: " + str(e), flush=True)
+                print("[bot] poll loop error: " + _bot_err_text(e), flush=True)
         except Exception as e:
-            print("[bot] poll loop error: " + str(e), flush=True)
+            print("[bot] poll loop error: " + _bot_err_text(e), flush=True)
         time.sleep(2)
 
 threading.Thread(target=_ddns_loop, daemon=True).start()
@@ -15657,6 +16440,9 @@ threading.Thread(target=_rotate_loop, daemon=True).start()
 # Один поток на всю исходящую почту Telegram: ни тик, ни обработчик запроса не
 # тратит 10 секунд на письмо, которого может и не быть.
 threading.Thread(target=_notify_worker, daemon=True).start()
+# Отложенные повторы живут в своём таймере, а не в рабочем потоке: поток отправки
+# не должен спать 30 секунд ради одного письма — за это время вся очередь стоит.
+threading.Thread(target=_notify_retry_loop, daemon=True).start()
 threading.Thread(target=_limits_loop, daemon=True).start()
 threading.Thread(target=_bot_poll_loop, daemon=True).start()
 threading.Thread(target=_rulesets_loop, daemon=True).start()
@@ -15812,20 +16598,20 @@ def _restore(data):
         raise RuntimeError("в копии нет конфига панели")
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     bdir = f"{BASE}/restore-backup-{ts}"
-    os.makedirs(bdir, exist_ok=True)
+    _mkdir_private(bdir)
     snap = {}
     for src, name in ((CFG, "panel_config.json"), (STATE, "state.json"), (XRAY, "xray_config.json"),
                       (THEME, "theme.json"), (PAYMENTS_F, "payments.json")):
         blob = open(src, "rb").read() if os.path.exists(src) else None
         snap[src] = blob
         if blob is not None:
-            shutil.copy2(src, os.path.join(bdir, name))
+            _copy_private(src, os.path.join(bdir, name))
     try:
         _save(CFG, data["panel_config"], 0o600)
         _save(STATE, st, 0o600)
         _write_xray(st)
         if isinstance(data.get("theme"), dict):
-            _save(THEME, data["theme"], 0o644)
+            _save(THEME, data["theme"], 0o600)
         if isinstance(data.get("payments"), dict) and data["payments"]:
             _save(PAYMENTS_F, data["payments"], 0o600)
         if data.get("wallpaper"):
@@ -15925,7 +16711,7 @@ def _autobk_make():
     data = _backup()
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     fname = f"veil-backup-{ts}.json.gz"
-    os.makedirs(_AUTOBK_DIR, exist_ok=True)
+    _mkdir_private(_AUTOBK_DIR)
     raw = gzip.compress(json.dumps(data, ensure_ascii=False).encode())
     fd = os.open(os.path.join(_AUTOBK_DIR, fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
@@ -15958,7 +16744,7 @@ def _tg_send_document(chat_id, fname, raw, caption=""):
         with urllib.request.urlopen(req, timeout=60) as r:
             return bool(json.loads(r.read() or b"{}").get("ok"))
     except Exception as e:
-        print("[autobk] sendDocument error: " + str(e), flush=True)
+        print("[autobk] sendDocument error: " + _bot_err_text(e, token), flush=True)
         return False
 
 def _autobk_loop():
@@ -16806,7 +17592,7 @@ def _mv_apply_main():
                            "нельзя переехать «в себя»")
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     keep = f"{BASE}/pre-move-{ts}"
-    os.makedirs(keep, exist_ok=True)
+    _mkdir_private(keep)
     for name in sorted(os.listdir(BASE)):
         if name.startswith("pre-move-"):
             continue
@@ -17644,6 +18430,34 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", c)
         self.end_headers(); self.wfile.write(b)
 
+    def _refuse_unshapable(self, raw, public=False):
+        """True — названный 500 уже отправлен, обработчику надо вернуться сразу (№64).
+
+        Одна функция, а не шесть одинаковых веток, потому что первый вечер
+        долечил только тех читателей, до которых нашарилась ручка: `/api/state`,
+        `/api/subs` и `/api/subs/export` врали пустотой, а `/api/dashboard`,
+        `/api/clients` и `/api/vpn/protocols` на контейнере-списке падали в общий
+        500 с трейсбеком в журнале (замерено cc10 на живом state.json). Отказывать
+        они отказывали честно — но без причины, и оператор видел «внутренняя
+        ошибка панели» вместо «файл испорчен, ничего не трогаем».
+
+        `public` — ответ тому, кто не вошёл: `/sub/<токен>` читает гость без
+        пароля. Отказывать ему надо тем же словом «нет», а не названием
+        внутреннего файла: путь и имя state.json наружу не отдаются (тот же
+        резон, из-за которого текст исключения в общем 500 не показывается).
+
+        Поток записей той же мерой, что и у миграции: одна строка в час с числом
+        подавленных, иначе чужая правка state.json стирает единственный журнал.
+        """
+        if not _state_unshapable(raw):
+            return False
+        _audit_throttled("state_read_refused", gap=3600,
+                         path=urllib.parse.urlparse(self.path).path,
+                         type=type(raw if not isinstance(raw, dict)
+                                      else raw.get("inbounds")).__name__)
+        self._send(500, {"error": _UNSHAPABLE_ERR_PUB if public else _UNSHAPABLE_ERR})
+        return True
+
     def _api_pay(self, p):
         b = self._body()
         pc = _pay_cfg()
@@ -17816,7 +18630,7 @@ class H(http.server.BaseHTTPRequestHandler):
         t = _ext_auth(self)
         if t is None:
             return
-        st = _load(STATE) or {}
+        st = _state_view(_load(STATE) or {})
         inbs = st.get("inbounds") or {}
         if p == "/api/ext/status":
             try:
@@ -18153,7 +18967,9 @@ class H(http.server.BaseHTTPRequestHandler):
             try:
                 import base64
                 sub_path = p[5:].strip("/") if p.startswith("/sub/") else ""
-                st = _load(STATE) or {}
+                raw_st = _load(STATE)
+                if self._refuse_unshapable(raw_st, public=True): return
+                st = _state_view(raw_st or {})
                 host = _hop_pub_host()
                 host = host if "://" not in host else urllib.parse.urlparse(host).netloc
                 panel_port = CFG_CACHE.get("panel_port", 8444)
@@ -18401,7 +19217,14 @@ class H(http.server.BaseHTTPRequestHandler):
             tok = p[4:].strip("/")
             if not tok:
                 return self._send(400, {"error": "нужен токен подписки"})
-            st = _load(STATE) or {}
+            raw_st = _load(STATE)
+            # №64: тот же класс лжи, что у `/p/` и `/sub/`: на испорченном
+            # контейнере `_subs_summary` не находит клиента и страница отдавала
+            # «не найдено» вместо «недоступно». Конфиг sing-box по пустому списку
+            # выдать тем более нельзя — клиент получил бы рабочий файл без единого
+            # сервера.
+            if self._refuse_unshapable(raw_st, public=True): return
+            st = raw_st or {}
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
@@ -18462,7 +19285,15 @@ class H(http.server.BaseHTTPRequestHandler):
             # Публичная страница подписки: сюда ведёт profile-web-page-url (кнопка «i»
             # в клиентах). Показывает имя, статус, срок, трафик и способы подключения.
             tok = p[3:].strip("/")
-            st = _load(STATE) or {}
+            raw_st = _load(STATE)
+            # №64: здесь вранье достается не оператору, а подписчику. `_subs_summary`
+            # обходит входы через `_inb_map`, на контейнере-списке он отдаёт пустоту,
+            # и личная страница клиента отвечала «подписка не найдена» (404) по живой
+            # записи: человек видел, что его подписки «нет», и удалял/создавал её
+            # заново, то есть порча файла толкала его к реальным потерям. Отказ
+            # честнее, даже без объяснения про state.json.
+            if self._refuse_unshapable(raw_st, public=True): return
+            st = raw_st or {}
             # Читающая ветка state.json НЕ пишет: её приведением занимается
             # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
             # единственный способ потерять чужую запись: GET читает без замка,
@@ -18674,7 +19505,19 @@ class H(http.server.BaseHTTPRequestHandler):
             just_born = _onboard_ensure()
             if just_born:
                 _onboard_notify()
-            st = _load(STATE)
+            raw_st = _load(STATE)
+            # №64: честный отказ №57 дошёл не до всех читающих ручек. Соседи на
+            # испорченном состоянии падают в 500 (`/api/dashboard`,
+            # `/api/clients`, публичный `/sub`), а эта ручка бережена СВОИХ
+            # обращений: `_client_count` и `_proto_of` на контейнере-списке дают 0
+            # и «reality», и ответ выходит 200 с `configured: false` — то есть
+            # «ничего не настроено» про машину с 17 входами и 119 записями.
+            # Морда по этому флагу показывает экран первичной настройки и зовёт
+            # создавать подписку заново, а ложь дешевле правды ровно до того
+            # момента, пока по лжи не начинают действовать. Пустое состояние — НЕ
+            # отказ: это новая машина, ей и положено отвечать «не настроено».
+            if self._refuse_unshapable(raw_st): return
+            st = _state_view(raw_st)
             running = _unit_active("xray")
             out = {"version": VERSION, "running": running, "login": CFG_CACHE.get("login", ""),
                    "configured": _client_count(st) > 0,
@@ -18686,8 +19529,13 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, out)
         if p == "/api/vpn/protocols":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            st = _load(STATE) or {}
-            inbs = st.get("inbounds") or {}
+            # №64: эта ручка падала на контейнере-списке с трейсбеком и отдавала
+            # «внутренняя ошибка панели» — формально отказ, но без причины, а
+            # морде фронта нечем отличить «файл битый» от «панель сломалась».
+            raw_st = _load(STATE)
+            if self._refuse_unshapable(raw_st): return
+            st = _state_view(raw_st)
+            inbs = _inb_map(st)
             return self._send(200, {"current": _proto_of(st),
                                     "configured": _client_count(st) > 0,
                                     "protocols": [dict(p, disabled=bool((inbs.get(p["id"]) or {}).get("disabled")),
@@ -18702,7 +19550,9 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, _inbound_public(proto, inb))
         if p == "/api/clients":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            st = _load(STATE)
+            raw_st = _load(STATE)
+            if self._refuse_unshapable(raw_st): return
+            st = _state_view(raw_st)
             if not st: return self._send(200, {"clients": [], "configured": False})
             # Читающая ветка state.json НЕ пишет: её приведением занимается
             # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
@@ -18779,6 +19629,12 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE)
             if not st: return self._send(200, {"subs": [], "configured": False})
+            # №64: та же ленивость, что уже убрана у `/api/state`: `_subs_summary`
+            # обходит входы через `_inb_map`, а он на контейнере-списке отдаёт
+            # пустоту, и вкладка «Подписка» показала бы «подписчиков нет» на
+            # машине, где их 119 записей. Это ровно та страница, по которой
+            # судят, цела ли состояние после чужой правки файла.
+            if self._refuse_unshapable(st): return
             # Читающая ветка state.json НЕ пишет: её приведением занимается
             # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
             # единственный способ потерять чужую запись: GET читает без замка,
@@ -18812,7 +19668,11 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             fmt = ((qs.get("format") or ["json"])[0]).strip().lower()
-            st = _load(STATE) or {}
+            raw_st = _load(STATE)
+            # №64: пустой экспорт хуже пустого экрана — файл уносят с собой,
+            # кладут в отчёт и по нему решают, что терять нечего.
+            if self._refuse_unshapable(raw_st): return
+            st = raw_st or {}
             # Читающая ветка state.json НЕ пишет: её приведением занимается
             # фоновый тик под _STATE_LOCK (см. _limits_loop). Здесь же оставался
             # единственный способ потерять чужую запись: GET читает без замка,
@@ -19115,7 +19975,9 @@ class H(http.server.BaseHTTPRequestHandler):
             })
         if p == "/api/dashboard":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
-            st = _load(STATE) or {}
+            raw_st = _load(STATE)
+            if self._refuse_unshapable(raw_st): return
+            st = _state_view(raw_st or {})
             uuids = set()
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
@@ -19341,6 +20203,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 "token": CFG_CACHE.get("bot_token", ""),
                 "chat_ids": CFG_CACHE.get("bot_chat_ids", [])
             })
+        if p == "/api/bot/delivery":
+            # Только чтение: режим, адрес у Telegram, что висит в очереди. Кнопка
+            # «обновить» просит fresh=1, обычный вход во вкладку берёт кэш.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            _dq = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            fresh = (_dq.get("fresh") or [""])[0] in ("1", "true", "yes")
+            return self._send(200, _bot_delivery_state(force=fresh))
         if p in ("/icon-1024.png", "/icon-512.png", "/icon-192.png", "/icon-veil.png",
                  "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
                  "/apple-touch-icon-180x180.png", "/apple-touch-icon-167x167.png",
@@ -19985,10 +20854,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 history.append(entry)
                 history = history[-50:]
                 try:
-                    tmp = history_file + ".tmp"
-                    with open(tmp, "w") as f:
-                        json.dump(history, f, ensure_ascii=False)
-                    os.replace(tmp, history_file)
+                    # `_save`, а не самодельный `open(tmp,"w") + os.replace`: у
+                    # replace права берутся от временного файла, а временный,
+                    # созданный `open(...,"w")`, живёт по umask 022 — то есть
+                    # каждый такой запрос возвращал бы файл истории к 0644 ровно
+                    # после того, как страж старта закрыл его до 0600 (находка #58).
+                    _save(history_file, history)
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
                 _gp_maybe_alert(entry)
@@ -21487,7 +22358,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(200, {"info": data["result"]})
                     return self._send(400, {"error": "бот не ответил"})
                 except Exception as e:
-                    return self._send(400, {"error": str(e)})
+                    return self._send(400, {"error": _bot_err_text(e, token)})
 
             if p == "/api/bot/set_webhook":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -21495,7 +22366,15 @@ class H(http.server.BaseHTTPRequestHandler):
                 token = CFG_CACHE.get("bot_token", "")
                 if not token:
                     return self._send(400, {"error": "бот не настроен"})
-                url = b.get("url") or (f"https://{CFG_CACHE.get('panel_domain', '').strip()}:{CFG_CACHE.get('panel_port', 8444)}/api/bot/webhook")
+                url = (b.get("url") or "").strip() or _bot_webhook_default_url()
+                if not url:
+                    # Без домена «адрес по умолчанию» превращался в
+                    # https://:8444/api/bot/webhook, Telegram его принимал, а
+                    # письма просто переставали приходить: регистрация прошла,
+                    # стукнуться некуда.
+                    return self._send(400, {"error": "не задан адрес вебхума и в настройках не заполнен домен панели"})
+                if not url.startswith("https://"):
+                    return self._send(400, {"error": "Telegram принимает вебхум только на https"})
                 secret = CFG_CACHE.get("bot_webhook_secret") or secrets.token_urlsafe(24)
                 CFG_CACHE["bot_webhook_secret"] = secret
                 # Секрет — локальная половина двусторонней сделки: его кладём на
@@ -21515,13 +22394,21 @@ class H(http.server.BaseHTTPRequestHandler):
                         CFG_CACHE["bot_webhook_url"] = url
                         _cfg_save()
                         _audit("bot_webhook_set", url=url)
+                        # Ответ Telegram только что изменился: кэш getWebhookInfo
+                        # старше этих байт, и карточка доставки на нём соврёт
+                        # «вебхума нет» ещё 10 секунд.
+                        with _bot_info_lk:
+                            _bot_info_cache["t"] = 0.0
+                            _bot_info_cache["remote"] = None
+                            _bot_info_cache["err"] = ""
                         return self._send(200, {"ok": True, "url": url})
                     _audit("bot_webhook_set_failed", url=url,
                            detail=str(data.get("description") or "")[:200])
                     return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
-                    _audit("bot_webhook_set_failed", url=url, detail=str(e)[:200])
-                    return self._send(400, {"error": str(e)})
+                    _audit("bot_webhook_set_failed", url=url,
+                           detail=_bot_err_text(e, token))
+                    return self._send(400, {"error": _bot_err_text(e, token)})
 
             if p == "/api/bot/delete_webhook":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -21535,10 +22422,15 @@ class H(http.server.BaseHTTPRequestHandler):
                     if data.get("ok"):
                         CFG_CACHE.pop("bot_webhook_url", None)
                         _cfg_save()
+                        with _bot_info_lk:
+                            _bot_info_cache["t"] = 0.0
+                            _bot_info_cache["remote"] = None
+                            _bot_info_cache["err"] = ""
+                        _audit("bot_webhook_deleted")
                         return self._send(200, {"ok": True})
                     return self._send(400, {"error": data.get("description", "failed")})
                 except Exception as e:
-                    return self._send(400, {"error": str(e)})
+                    return self._send(400, {"error": _bot_err_text(e, token)})
 
             # ---- security ----
             if p == "/api/security":
@@ -22295,6 +23187,12 @@ if __name__ == "__main__":
     if _taken:
         print("VEILERR: запуск отменён: " + _taken, file=sys.stderr, flush=True)
         sys.exit(1)
+    # Единственный экземпляр — значит править файлы сейчас безопасно: рядом не
+    # осталось процесса, который одновременно пишет эти же файлы.
+    try:
+        _harden_secret_files()
+    except Exception as e:
+        print("harden perms: " + str(e), flush=True)
     print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
     _load_sessions()
     try:
