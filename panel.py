@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.16"
+VERSION = "2.16.17"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1278,8 +1278,9 @@ def _harden_secret_files(suffixes=(".json", ".bin")):
     Поэтому здесь пять проходов: свои файлы в BASE, секреты ядра по правилу
     имени, весь каталог ядра, снимки восстановления/отката/переезда и `backups/auto`
     — единственный каталог внутри `backups/`, который панель создаёт сама и где
-    лежит полный слепок своих секретов. Публичный сертификат не прячут (его читают
-    клиенты), `certs/`, `avatars/` и остальные `backups/` не обходятся — там свои правила
+    лежит полный слепок своих секретов. Плюс `avatars/`: там credential стоит в
+    САМОМ ИМЕНИ файла. Публичный сертификат не прячут (его читают
+    клиенты), `certs/` и остальные `backups/` не обходятся — там свои правила
     записи и другие владельцы. Возвращает список исправленного.
     """
     fixed = []
@@ -1382,6 +1383,24 @@ def _harden_secret_files(suffixes=(".json", ".bin")):
             continue
         for sub in subs:
             _close(os.path.join(d, sub))
+    # Аватары подписчиков: здесь секрет лежит НЕ внутри файла, а в его ИМЕНИ —
+    # `_avatar_path` называет файл `sub_token`'ом, то есть перечислить каталог
+    # значит собрать рабочие ссылки подписки (`/sub/<токен>` отдаёт конфиг целиком,
+    # 0600 содержимого от этого не прячет). Каталог создавался по umask 022 → 0755,
+    # а `BASE` сам 0755, так что имя читал любой локальный процесс. Замер на этой
+    # машине: `avatars` `0755 root:root`, `1` файл, его имя совпадает с живым
+    # `sub_token` подписчика. Новые аватары уже закрыты с рождения (`_mkdir_private`
+    # + `os.open(..., 0o600)`), этот проход лечит созданный прежним кодом.
+    avdir = _AVATAR_DIR
+    if os.path.isdir(avdir):
+        _close(avdir, want_dir=True)
+        try:
+            for n in sorted(os.listdir(avdir)):
+                p = os.path.join(avdir, n)
+                if os.path.isfile(p) and not os.path.islink(p):
+                    _close(p)
+        except OSError as e:
+            print("права файлов: каталог аватаров не прочитан: " + str(e), flush=True)
     # Автобэкап: каталог, который панель создаёт сама и в который кладёт ПОЛНЫЙ
     # слепок секретов (`_backup()` = конфиг панели с токеном бота, состояние,
     # конфиг ядра с приватным ключом, темы, платежи). Сами файлы пишутся через
@@ -5901,9 +5920,14 @@ def _avatar_save(tok, data):
     if not path:
         return None
     try:
-        os.makedirs(_AVATAR_DIR, exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(data)
+        _mkdir_private(_AVATAR_DIR)
+        old_umask = os.umask(0o077)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        finally:
+            os.umask(old_umask)
         return mime
     except Exception:
         return None
