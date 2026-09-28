@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.17"
+VERSION = "2.16.18"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -404,6 +404,18 @@ for _p in PROTOCOLS:
     _p["ui_group_label"] = _GROUP_LABELS.get(_p["ui_group"], _p["ui_group"])
 _VALID_PROTOCOLS = tuple(p["id"] for p in PROTOCOLS)
 _PROTO_MAP = {p["id"]: p for p in PROTOCOLS}
+
+# Форма credential. `sub_token` — это и право доступа (`/p/<токен>` отдаёт страницу,
+# `/sub/<токен>` — конфиг целиком), и адрес в HTML страницы подписчика: панель выдаёт
+# ровно такой, и чтение ссылки в боте (`_bot_sub_link_tok`) требует ровно его. Принять
+# другой значило бы пустить кавычку в `src`/`href` страницы подписчика — там она
+# закрывает атрибут и рождает чужой тег с обработчиком.
+_CRED_SHAPE = r"[A-Za-z0-9_-]{8,64}"
+_SUB_TOK_SHAPE = re.compile(_CRED_SHAPE)
+# uuid читает ядро, но `xray run -test` принимает и `deadbeef" onclick=x` (замерено:
+# rc=0), так что формой его держит только панель.
+_UUID_SHAPE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 # Proto labels for bot messages
 PROTO_LABELS = {p["id"]: p["label"] for p in PROTOCOLS}
@@ -4845,9 +4857,13 @@ def _import_from_links(st, text):
                 if it.get("password"): inb["password"] = it["password"]
             c = _new_client(base, proto, inb)
             c["sub_token"] = sub_token
-            if it.get("uuid") and not any(x.get("uuid") == it["uuid"] for x in inb.get("clients", [])):
-                c["uuid"] = it["uuid"]
-            elif it.get("uuid"):
+            u = it.get("uuid")
+            if u and not (isinstance(u, str) and _UUID_SHAPE.fullmatch(u)):
+                warnings.append(base + ": uuid неверной формы — выдан новый")
+                u = ""
+            if u and not any(x.get("uuid") == u for x in inb.get("clients", [])):
+                c["uuid"] = u
+            elif u:
                 warnings.append(base + ": uuid занят на " + proto + ", назначен новый")
             if proto.startswith("trojan") and it.get("password"):
                 c["password"] = it["password"]
@@ -4875,6 +4891,12 @@ def _import_from_json(st, data):
             continue
         name = (s.get("name") or "Клиент").strip()[:40] or "Клиент"
         tok = s.get("sub_token") or ""
+        # Форма, а не «что прислали». Токен — и право доступа, и адрес в HTML
+        # страницы подписчика (`src`/`href`); кавычка в нём разрывает атрибут и
+        # рождает чужой тег с обработчиком. Значение в предупреждение не пишем.
+        if tok and not (isinstance(tok, str) and _SUB_TOK_SHAPE.fullmatch(tok)):
+            warnings.append(name + ": токен подписки неверной формы — выдан новый")
+            tok = ""
         if not tok or tok in existing_toks:
             tok = secrets.token_urlsafe(16)
         else:
@@ -4907,6 +4929,11 @@ def _import_from_json(st, data):
                             reset_cycle=reset_cycle, max_devices=max_devices)
             c["sub_token"] = tok
             u = cc.get("uuid")
+            # Ядро форму не отбрасывает: `xray run -test` принимает и
+            # `deadbeef" onclick=x` (замерено rc=0), так что держит её только панель.
+            if u and not (isinstance(u, str) and _UUID_SHAPE.fullmatch(u)):
+                warnings.append(name + ": uuid неверной формы — выдан новый")
+                u = ""
             if u and not any(x.get("uuid") == u for x in inb.get("clients", [])):
                 c["uuid"] = u
             if proto.startswith("trojan") and cc.get("password") is not None:
@@ -5125,6 +5152,9 @@ def _extimport_apply(st, items):
                 warnings.append(it.get("name", "?") + ": inbound " + proto + ": " + str(e)[:70])
                 continue
         u = it.get("uuid")
+        if u and not (isinstance(u, str) and _UUID_SHAPE.fullmatch(u)):
+            warnings.append("uuid неверной формы у «%s» — выдан новый (ссылка изменится)" % (it.get("name") or "?"))
+            u = ""
         if u and u in by_uuid:
             c = _new_client(it.get("name") or "Кент", proto, inb)
             warnings.append("дубликат uuid у «%s» — выдан новый (ссылка изменится)" % (it.get("name") or "?"))
@@ -5978,6 +6008,12 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     if lang not in _SUB_LANGS:
         lang = "ru"
     L = _sub_L(lang)
+    # Экран для сток, попадающих в HTML страницы подписчика. Определён в начале,
+    # потому что первая из них — атрибут `href`, а вложенный `def` после строки
+    # вызова дал бы NameError ровно там, где страницу видит человек без пароля.
+    def _esc(s):
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
     status, st_key = _sub_status(u)
     status_txt = L[st_key]
     now = time.time()
@@ -6023,15 +6059,15 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     awg_url = f"{_pb(host, panel_port)}/api/awgconf/{tok}"
     conf_blocks = []
     if wg_conf:
-        conf_blocks.append('<a class="btn-conf" href="' + wg_url + '" download>'
+        conf_blocks.append('<a class="btn-conf" href="' + _esc(wg_url) + '" download>'
                            '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
                            'WireGuard · .conf</a>')
     if awg_conf:
-        conf_blocks.append('<a class="btn-conf" href="' + awg_url + '" download>'
+        conf_blocks.append('<a class="btn-conf" href="' + _esc(awg_url) + '" download>'
                            '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
                            'AmneziaWG · .conf</a>')
     if u.get("sb_url"):
-        conf_blocks.append('<a class="btn-conf" href="' + u["sb_url"] + '">'
+        conf_blocks.append('<a class="btn-conf" href="' + _esc(u["sb_url"]) + '">'
                            '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
                            + L["conf_sb"] + '</a>')
     try:
@@ -6092,9 +6128,6 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     plat_default = _sub_ua_platform(ua)
     if plat_default not in cat:
         plat_default = next(iter(cat), "")
-    def _esc(s):
-        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-                .replace(">", "&gt;").replace('"', "&quot;"))
     def _ago_txt(iso):
         try:
             dt = datetime.datetime.fromisoformat(iso).timestamp()
@@ -6197,7 +6230,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                     + inner + '</div>' + foot
                     + '<div class="devnote">' + _esc(L["fam_note"]) + '</div></div>')
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
-    langnav = "".join('<a href="?lang=' + lk + '"' + (' class="sel"' if lk == lang else "") +
+    langnav = "".join('<a href="?lang=' + _esc(lk) + '"' + (' class="sel"' if lk == lang else "") +
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
     js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
                "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
@@ -6652,7 +6685,7 @@ document.addEventListener('DOMContentLoaded',function(){
     # к каждому показу /p, и страница с ним не кэшировалась вообще
     _av = _avatar_version(tok)
     ava_img = ("/p/" + tok + "/avatar?v=" + str(_av)) if _av else ""
-    avatar_html = ('<img src="' + ava_img + '" alt>' if ava_img else avatar)
+    avatar_html = ('<img src="' + _esc(ava_img) + '" alt>' if ava_img else _esc(avatar))
     _ava_cam = ('<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" '
                 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
                 '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>'
@@ -6675,7 +6708,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__LBONL__", L["lb_onl"]).replace("__LBCON__", L["lb_conns"])
                 .replace("__LBUSED__", L["lb_used"])
                 .replace("__ONL__", str(onl)).replace("__CONNS__", str(conns))
-                .replace("__SUB__", sub_url).replace("__PAGE__", page_url)
+                .replace("__SUB__", _esc(sub_url)).replace("__PAGE__", _esc(page_url))
                 .replace("__CONFS__", confs_html)
                 .replace("__ADDRNT__", addr_html)
                 .replace("__HEADLINE__", head_line)
@@ -7676,7 +7709,7 @@ def _bot_sub_keyboard(B):
 
 def _bot_sub_link_tok(text):
     """Достаёт токен подписки из ссылки вида https://…/sub/<tok> (или /p/<tok>)."""
-    m = re.search(r"(?:/sub/|/p/)([A-Za-z0-9_-]{8,64})", text or "")
+    m = re.search(r"(?:/sub/|/p/)(" + _SUB_TOK_SHAPE.pattern + ")", text or "")
     return m.group(1) if m else ""
 
 def _bot_bind(chat_id, tok):
@@ -7782,11 +7815,11 @@ def _bot_sub_cb(chat_id, data, B):
     if data == "sub_link":
         for u in subs[:5]:
             sub_url, _page = _bot_sub_urls(u)
-            _bot_send_message(chat_id, B["sub_link_msg"] % sub_url, "HTML")
+            _bot_send_message(chat_id, B["sub_link_msg"] % _html.escape(sub_url), "HTML")
         return
     if data == "sub_apps":
         for u in subs[:5]:
-            _bot_send_message(chat_id, B["sub_apps_msg"] % _bot_sub_urls(u)[1], "HTML")
+            _bot_send_message(chat_id, B["sub_apps_msg"] % _html.escape(_bot_sub_urls(u)[1]), "HTML")
         return
     if data == "sub_tg":
         sent = 0
@@ -8910,7 +8943,8 @@ def _onboard_notify():
         if not info:
             return
         B = _bot_B(ids[0])
-        _bot_send_message(ids[0], B["onboard_msg"] % (info["sub_url"], info["page_url"]),
+        _bot_send_message(ids[0], B["onboard_msg"] % (_html.escape(info["sub_url"]),
+                                                      _html.escape(info["page_url"])),
                           "HTML", _main_menu_keyboard(B))
     except Exception as e:
         print("onboard bot: " + str(e), flush=True)
@@ -9191,7 +9225,7 @@ def _bot_update_apply(update):
                     lim = B["unlim"] if r["limit_gb"] <= 0 else (B["gb"] % r["limit_gb"])
                     day = B["forever"] if r["expiry_days"] <= 0 else (B["daysu"] % r["expiry_days"])
                     _bot_send_message(chat_id,
-                        B["created"] % (_html.escape(name), lim, day, r['sub_url']),
+                        B["created"] % (_html.escape(name), lim, day, _html.escape(r['sub_url'])),
                         "HTML", _main_menu_keyboard(B))
                 return
             if not _is_admin(from_id):
@@ -22899,7 +22933,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     f2b_changed = True
                 if "metrics_token" in body:
                     mt = (body["metrics_token"] or "").strip()
-                    if mt and not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", mt):
+                    if mt and not re.fullmatch(_CRED_SHAPE, mt):
                         return self._send(400, {"error": "metrics_token: 8-64 символа [A-Za-z0-9_-]"})
                     if mt:
                         CFG_CACHE["metrics_token"] = mt
