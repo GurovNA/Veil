@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.15"
+VERSION = "2.16.16"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -788,6 +788,30 @@ def _audit_val(k, v):
     if isinstance(v, str) and _secret_key(k):
         return "sha1:" + hashlib.sha1(v.encode("utf-8", "replace")).hexdigest()[:10]
     return _audit_redact(v)
+
+# Путь запроса — это не только маршрут. На части адресов следующий сегмент и есть
+# чужой credential: `/sub/<tok>`, `/p/<tok>`, `/sb/<tok>`, `/api/wgconf/<tok>` и
+# `/api/awgconf/<tok>` отдают подписочный `sub_token` (или `uuid`), `/pay/buy/<tok>`
+# принимает то же самое, а `/pay/i/<id>` — bearer-номер чужого счёта (#72). Обрыв
+# соединения на странице подписки и любая 500-ка на этих маршрутах писали путь в
+# журнал как есть, а `_audit_redact` бьёт по ИМЕНИ ключа: `path` в списке
+# защищённых не лежит, потому что остальные пути оператору нужны целиком
+# (`/api/clients/add`). Сворачивается только токен — форма пути и его продолжение
+# (`/p/<tok>/family/adopt`) остаются читаемыми, а отпечаток остаётся ответом на
+# «та же ли это подписка».
+_AUDIT_TOK_ROUTES = ("sub", "sb", "p", "api/wgconf", "api/awgconf", "pay/buy", "pay/i")
+_AUDIT_TOK_PATH_RE = re.compile(
+    "(^|/)(" + "|".join(re.escape(x) for x in _AUDIT_TOK_ROUTES) +
+    r")/([A-Za-z0-9_\-]{8,64})")
+
+
+def _audit_path(p):
+    """Форма пути для журнала: сегмент-credential — отпечатком, остальное как есть."""
+    def _one(m):
+        return (m.group(1) + m.group(2) + "/sha1:"
+                + hashlib.sha1(m.group(3).encode("utf-8", "replace")).hexdigest()[:10])
+    return _AUDIT_TOK_PATH_RE.sub(_one, str(p or ""))
+
 
 def _sample_ident(body):
     """Чистит образцы идентификаторов в ГОТОВОЙ форме (#68).
@@ -11546,7 +11570,28 @@ def _front_site_write():
     with open(p, "w", encoding="utf-8") as f:
         f.write(_FRONT_SITE_HTML)
 
+# Маршруты, на которых следующий сегмент адреса и есть чужой credential подписки
+# (тот же список, что маскирует журнал: `_AUDIT_TOK_ROUTES`). Сайт-маска их не
+# обслуживает — подписка живёт на порту панели, — поэтому сюда попадают только
+# опечатка в порту, сканирование и чужие проверки ссылок.
+# Зачем это нужно отдельно от #72: nginx пишет `$request` в access.log как есть и
+# про маску панели не знает, то есть закрытый журнал панели оставлял второй канал
+# с тем же токеном (`/var/log/nginx/access.log`, 0640 www-data:adm, ротация с
+# хранением). Плюс `try_files … /index.html` на неизвестном пути отвечает 200
+# чужой страницей: подписка, запрошенная не с того порта, выглядит успешной.
+# Тот же приём, что на фронте моста (`webproxy.conf`: `access_log off`).
+_FRONT_TOK_LOCATIONS = ("^/(sub|sb|p|pay)(/|$)", "^/api/(wg|awg)conf(/|$)")
+
+
+def _front_tok_block(indent="    "):
+    """Строки `location` для конфига маски: без записи URL и без ложного 200."""
+    return "".join('%slocation ~ "%s" {\n%s    access_log off;\n%s    return 404;\n%s}\n'
+                   % (indent, rx, indent, indent, indent)
+                   for rx in _FRONT_TOK_LOCATIONS)
+
+
 def _front_nginx_apply(domain, cert, key):
+    _loc = _front_tok_block()
     conf = ("# Veil: сайт-маска для TLS-F (управляет панель — правка руками затрётся)\n"
             "server {\n"
             "    listen 443 ssl;\n"
@@ -11558,13 +11603,19 @@ def _front_nginx_apply(domain, cert, key):
             "    root %s;\n"
             "    index index.html;\n"
             "    location / { try_files $uri $uri/ /index.html; }\n"
+            % (domain, cert, key, FRONT_SITE_DIR)
+            + _loc +
             "}\n"
             "server {\n"
             "    listen 80;\n"
             "    listen [::]:80;\n"
             "    server_name %s;\n"
-            "    return 301 https://$host$request_uri;\n"
-            "}\n" % (domain, cert, key, FRONT_SITE_DIR, domain))
+            # `return` на уровне server исполняется ДО выбора location, поэтому
+            # редирект обязан сидеть в `location /` — иначе блоки выше никогда не
+            # сработают и credential из URL уедет в access.log вместе с 301.
+            "    location / { return 301 https://$host$request_uri; }\n" % domain
+            + _loc +
+            "}\n")
     if os.path.exists(_NG_FRONT_CONF):
         try:
             if open(_NG_FRONT_CONF, encoding="utf-8").read() == conf:
@@ -18490,7 +18541,7 @@ def _client_gone(path, e):
             return
         _client_gone_at[0] = now
     try:
-        _audit("client_gone", path=path, detail=type(e).__name__)
+        _audit("client_gone", path=_audit_path(path), detail=type(e).__name__)
     except Exception:
         pass
 
@@ -18565,7 +18616,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if not _state_unshapable(raw):
             return False
         _audit_throttled("state_read_refused", gap=3600,
-                         path=urllib.parse.urlparse(self.path).path,
+                         path=_audit_path(urllib.parse.urlparse(self.path).path),
                          type=type(raw if not isinstance(raw, dict)
                                       else raw.get("inbounds")).__name__)
         self._send(500, {"error": _UNSHAPABLE_ERR_PUB if public else _UNSHAPABLE_ERR})
@@ -19005,8 +19056,8 @@ class H(http.server.BaseHTTPRequestHandler):
             # Текст исключения наружу не отдаём — путь бывает неаутентицированным.
             import traceback
             traceback.print_exc()
-            _audit("get_error", path=urllib.parse.urlparse(self.path).path,
-                   detail=type(e).__name__ + ": " + str(e)[:200])
+            _audit("get_error", path=_audit_path(urllib.parse.urlparse(self.path).path),
+                   detail=type(e).__name__ + ": " + _audit_path(str(e))[:200])
             if not self._resp_started:
                 try:
                     self._send(500, {"error": "внутренняя ошибка панели"})
@@ -23121,8 +23172,8 @@ class H(http.server.BaseHTTPRequestHandler):
             # Настоящая причина — в stderr и в аудите.
             import traceback
             traceback.print_exc()
-            _audit("post_error", path=urllib.parse.urlparse(self.path).path,
-                   detail=type(e).__name__ + ": " + str(e)[:200])
+            _audit("post_error", path=_audit_path(urllib.parse.urlparse(self.path).path),
+                   detail=type(e).__name__ + ": " + _audit_path(str(e))[:200])
             # 500 только если ответ ещё не начался (см. send_response_only выше).
             if not self._resp_started:
                 self._send(500, {"error": "внутренняя ошибка панели"})
