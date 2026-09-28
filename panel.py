@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.14"
+VERSION = "2.16.15"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -742,13 +742,26 @@ def _save_audit():
 # Имена полей, чьё значение — секрет или bearer-креденциал. Аудит читается
 # через /api/audit человеком с правом «security», и раньше туда попадали живые
 # подписочные токены и API-ключи: этой галки хватало, чтобы получить чужую подписку.
+# `uuid` — из того же класса (#70): для VLESS это и есть пароль входа, а право
+# «security» выдаётся оператору отдельно от «clients», так что журнал был вторым,
+# неочевидным способом прочитать чужой доступ. Плюс `_ai_audit` (`recent_audit`)
+# уносит эти же строки наружу, на внешний AI-хост. Сам credential при этом не
+# теряется для разбора: отпечаток стабилен, то есть «та же ли это подписка»
+# остаётся вопросом с ответом, а `name`/`ip`/`node` в событии не скрыты.
 _SECRET_KEYS = {"token", "tok", "sub", "secret", "password", "passwd", "pass",
                 "psk", "salt", "hash", "otp", "totp", "key", "cookie",
                 "authorization", "private", "private_key", "privkey", "priv_pem",
                 "api_key", "apikey", "session", "sid", "pin", "cvv", "token_hint",
-                "client_private_key", "cert_pem", "sub_token", "sub_path"}
+                "client_private_key", "cert_pem", "sub_token", "sub_path", "uuid"}
 _SECRET_SUFFIX = ("_token", "_secret", "_password", "_passwd", "_psk",
-                  "_private_key", "_api_key", "_apikey", "_hash", "_salt", "_key")
+                  "_private_key", "_api_key", "_apikey", "_hash", "_salt", "_key",
+                  "_uuid", "_uuids")
+
+# форма идентификаторов, а не их значения: образец в журнале описывает мусор, но
+# не выдаёт подписчика (#68)
+_SAMPLE_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                             r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_SAMPLE_MAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@")
 
 def _secret_key(k):
     kl = str(k).lower()
@@ -775,6 +788,67 @@ def _audit_val(k, v):
     if isinstance(v, str) and _secret_key(k):
         return "sha1:" + hashlib.sha1(v.encode("utf-8", "replace")).hexdigest()[:10]
     return _audit_redact(v)
+
+def _sample_ident(body):
+    """Чистит образцы идентификаторов в ГОТОВОЙ форме (#68).
+
+    `_audit_redact` режет секреты по ключам структуры и по двум шаблонам — `tok=`
+    и `scheme://`; здесь ни того, ни другого уже нет: мусорный вход это голый
+    `uuid` или адрес почты, записанные как скаляр. Маска съедает только сам
+    идентификатор: `***@host.example.test` по-прежнему говорит, кто и откуда, —
+    но не что именно.
+    """
+    body = _SAMPLE_UUID_RE.sub("***", body)
+    return _SAMPLE_MAIL_RE.sub("***@", body)
+
+def _audit_sample(v, limit=60):
+    """ФОРМА подозреваемой записи для журнала, без её значений (#68).
+
+    Прежний `str(v)[:60]` клал в `audit.json` кусок боевого состояния: на срезе в
+    шестьдесят символов умещались `uuid` подписчика и его имя. Журнал отдаётся
+    админке, переживает любой объём правок и попадает в резервные копии, а
+    `_audit_redact` тут бессилен — он режет секреты по КЛЮЧАМ структуры, а в
+    строку-выжимку структура уже превратилась (и обрезана посреди значения).
+
+    Оператору при отказе нужно другое: чем именно не словарь этот вход, сколько
+    в нём записей и тот ли это мусор, что час назад. Первое дают ключи и длина,
+    второе — отпечаток исходного объекта: он неотделим от формы, но по нему
+    нельзя восстановить идентификатор, в отличие от превью.
+
+    Скаляры при этом остаются собой: число или строка вроде «мусор» не прячут
+    структуру, а после выброса их уже никто не прочитает. Словари и списки — это
+    как раз форма боевого состояния, от них остаются ключи, длина и отпечаток.
+
+    Строку режет не только `_audit_redact`: он работает по КЛЮЧАМ структуры, а здесь
+    ключей уже нет. Голый `uuid` и адрес почты в список-мусор кладутся как есть, ни
+    `tok=`, ни `scheme://` перед ними не стоят, поэтому образец проходит вторую
+    чистку: последовательность вида uuid и локальная часть адреса до `@` становятся
+    `***`. Хост и длина при этом остаются читаемыми — по ним отказ и различается, а
+    `***@host` говорит оператору «вот этот подписчик», не выдавая его адрес.
+
+    Длина записана контрактом: содержательная часть не больше `limit`, целиком
+    строка не больше `limit + 14` (хвост `sha8=` ровно столько и стоит). Иначе
+    «обрезано до 60» превращается в «обрезано как получится», ровно так же, как
+    это случилось в #65 с перечнем путей в журнале ремонта.
+    """
+    try:
+        raw = repr(v)
+    except Exception:
+        raw = "<не разбирается>"
+    if isinstance(v, dict):
+        keys = ",".join(sorted(str(k) for k in v))
+        body = "dict n=%d keys=[%s]" % (len(v), keys)
+    elif isinstance(v, (list, tuple)):
+        body = "%s n=%d kinds=%s" % (type(v).__name__, len(v),
+                                     ",".join(sorted({type(x).__name__ for x in v})))
+    elif isinstance(v, str):
+        body = "str len=%d %r" % (len(v), _audit_redact(v))
+    else:
+        # только `raw`: второй вызов `repr` здесь (`%r`) у объекта с кривым
+        # `__repr__` бросил бы из хелпера, который вызван ИЗ `except`
+        body = "%s %s" % (type(v).__name__, raw)
+    return _sample_ident(body)[:limit] + " sha8=" + hashlib.sha256(
+        raw.encode("utf-8", "replace")).hexdigest()[:8]
 
 def _audit(ev, **kw):
     """Запись в аудит-журнал. ev — событие, kw — детали (имя клиента, uuid, ip и т.п.)."""
@@ -1728,7 +1802,9 @@ def _awg_sync(st, force=False):
     """Синхронизирует панель с системой: ключи интерфейса awg0 и список peers."""
     if not st:
         return False
-    inbounds = st.setdefault("inbounds", {})
+    inbounds = _inb_writable(st)
+    if inbounds is None:
+        return False
     inb = inbounds.get("amneziawg")
     if inb is None:
         inb = _alloc_inbound(st, "amneziawg")
@@ -1904,7 +1980,9 @@ def _wg_sync(st, force=False):
     if not st:
         return False
     _ensure_wg_net()
-    inbounds = st.setdefault("inbounds", {})
+    inbounds = _inb_writable(st)
+    if inbounds is None:
+        return False
     inb = inbounds.get("wireguard")
     if inb is None:
         inb = _alloc_inbound(st, "wireguard")
@@ -1999,7 +2077,7 @@ def _wg_is_wireguard(inb):
 
 def _ensure_wg_std(st):
     changed = False
-    for inb in (st or {}).get("inbounds", {}).values():
+    for _, inb in _inb_entries(st):
         if not _wg_is_wireguard(inb):
             continue
         for f in ("private_key", "public_key", "psk"):
@@ -2062,7 +2140,7 @@ def _ensure_all_protos(st):
 
 def _ensure_xray_keys_urlsafe(st):
     changed = False
-    for inb in (st or {}).get("inbounds", {}).values():
+    for _, inb in _inb_entries(st):
         if "public_key" not in inb or _wg_is_wireguard(inb):
             continue
         for f in ("private_key", "public_key"):
@@ -2193,6 +2271,41 @@ def _inb_entries(st):
             yield proto, inb
 
 
+def _inb_writable(st):
+    """`inbounds` НАСТОЯЩИМ словарём для того, кто в него ПИШЕТ (№67).
+
+    Чем плохи прежние `st.setdefault("inbounds", {})` и
+    `(st or {}).get("inbounds", {})`: оба возвращают то, что в файле УЖЕ записано.
+    Ключ present со значением `null`, `""`, `[]` или списком входов — это не
+    словарь, и первое же `.get("amneziawg")` или `.values()` падает. У читающей
+    ручки падение отозвалось бы 500-кой, а здесь цена совсем другая: этих
+    обходчиков зовёт блок старта, где один внешний `except` превращает
+    AttributeError в одну строку в stdout, а вместе с ней снимает `_ensure_wg_net`,
+    `_awg_sync`, `_wg_sync`, постановку базы трафика и `if chg: _save`. Иначе
+    говоря, молча выключает исцеление туннелей после перезагрузки ОС, заведённое
+    №50, и не оставляет в аудите ни одного свидетельства.
+
+    Два «пустых» случая решаются по-разному, и критерий тот же, что у миграции и
+    у читающих ручек, — `_state_unshapable`:
+      * ложная пустота (`null`, `""`, `[]`, `0`, отсутствующий ключ) — входов в
+        файле нет, терять нечего, поэтому здесь честно создаётся настоящий
+        словарь и дальше идёт то, что всегда делалось при отсутствующем ключе;
+      * непустой не-словарь — подписчики в файле есть. Создать вместо них пустой
+        контейнер значило бы выбрать за оператора форму, в которой его тоннелей
+        нет (№63 запретила это миграции), поэтому ответ — `None` и ровно ноль
+        записанных байтов.
+    """
+    if not isinstance(st, dict):
+        return None
+    raw = st.get("inbounds")
+    if isinstance(raw, dict):
+        return raw
+    if _state_unshapable(st):
+        return None
+    st["inbounds"] = {}
+    return st["inbounds"]
+
+
 def _client_count(st):
     if not st: return 0
     return sum(len(inb.get("clients") or []) for inb in _inb_map(st).values()
@@ -2310,7 +2423,7 @@ def _migrate_state(st):
     if _state_unshapable(st):
         bad = st if not isinstance(st, dict) else st.get("inbounds")
         _audit_throttled("state_inbounds_unshapable", gap=3600,
-                         type=type(bad).__name__, sample=str(bad)[:60])
+                         type=type(bad).__name__, sample=_audit_sample(bad))
         return False
     if st is None: return False
     changed = False
@@ -2343,7 +2456,7 @@ def _migrate_state(st):
             # выбрасывают, а не чинят, и запись в аудите говорит об этом.
             dead.append(proto)
             _audit("state_junk_dropped", what="inbound", proto=proto, n=1,
-                   sample=str(inb)[:60])
+                   sample=_audit_sample(inb))
             continue
         cl = inb.get("clients")
         if isinstance(cl, list):
@@ -2356,7 +2469,7 @@ def _migrate_state(st):
                 # запись «amneziawg, n=1» читается и как выброшенный вход, и как
                 # выброшенная запись внутри входа, а цена у этих двух разная.
                 _audit("state_junk_dropped", what="client", proto=proto, n=len(junk),
-                       sample=str(junk[0])[:60])
+                       sample=_audit_sample(junk[0]))
         if proto in ("reality", "vless-xhttp-reality"):
             for k in ("private_key", "public_key"):
                 if inb.get(k):
@@ -21456,7 +21569,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not added:
                     if norm:
                         _save(STATE, st)
-                        _audit("client_expand_tokens", uuid=u, merged=",".join(sorted(set(norm))))
+                        # `merged_uuids` вместо `merged`: суффикс под маской, и список
+                        # uuid подписчиков не уезжает в журнал открытым (#70). Число
+                        # слитых токенов остаётся — оператору нужен именно ответ
+                        # «сколько записей подравили», а не их идентификаторы.
+                        _audit("client_expand_tokens", uuid=u,
+                               merged_uuids=",".join(sorted(set(norm))),
+                               merged_n=len(norm))
                     return self._send(200, {"added": [], "note": "уже во всех протоколах",
                                              "tokens_merged": sorted(set(norm))})
                 try: _awg_sync(st)
@@ -21524,7 +21643,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not ok: return self._send(400, {"error": res})
                 _save(STATE, st)
                 _audit("family_adopt", uuid=res["uuid"], name=res["name"],
-                       parent=res["parent"], parent_name=res["parent_name"])
+                       parent_uuid=res["parent"], parent_name=res["parent_name"])
                 return self._send(200, {"ok": True, "member": res})
 
             if p == "/api/clients/family/orphan":
@@ -21538,7 +21657,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not ok: return self._send(400, {"error": res})
                 _save(STATE, st)
                 _audit("family_orphan", uuid=res["uuid"], name=res["name"],
-                       was_parent=res["was_parent"])
+                       was_parent_uuid=res["was_parent"])
                 return self._send(200, {"ok": True, "member": res})
 
             if p == "/api/clients/delete":
@@ -21770,7 +21889,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         nodes_res = {"deployed": dep, "skipped": skip}
                     except Exception as e:
                         nodes_res = {"error": str(e)[:120]}
-                _audit("client_rotate", old=old_uuid, new=new_uuid, name=rec.get("name"))
+                # old/new переименованы в old_uuid/new_uuid: суффикс `_uuid` теперь
+                # под маской, и ротация не оставляет в журнале свежий credential
+                # подписчика открытым (#70).
+                _audit("client_rotate", old_uuid=old_uuid, new_uuid=new_uuid,
+                       name=rec.get("name"))
                 return self._send(200, {"ok": True, "uuid": new_uuid,
                                         "sub_token": rec.get("sub_token") or "",
                                         "nodes": nodes_res,
@@ -23242,7 +23365,7 @@ if __name__ == "__main__":
         # базу на теперешний снимок: теряем максимум минуту, а не гигабайты.
         try:
             _tr = _statsquery()
-            for _inb in (st.get("inbounds") or {}).values():
+            for _proto, _inb in _inb_entries(st):
                 for _c in (_inb.get("clients") or []):
                     _t = _tr.get(_c.get("uuid")) or {}
                     _lu = int(_t.get("uplink", 0) or 0); _ld = int(_t.get("downlink", 0) or 0)
@@ -23255,7 +23378,7 @@ if __name__ == "__main__":
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
                 (ib or {}).get("tag") == "api" for ib in (xc.get("inbounds") or [])))
-        has_wg = any(("public_key" in ib) for ib in (st or {}).get("inbounds", {}).values()) if st else False
+        has_wg = any("public_key" in inb for _, inb in _inb_entries(st)) if st else False
         if (st and _client_count(st) > 0 and (need_rewrite or has_wg)):
             _write_xray(st)
             new_xc = _load(XRAY)
