@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.19"
+VERSION = "2.16.20"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -769,6 +769,28 @@ _SECRET_SUFFIX = ("_token", "_secret", "_password", "_passwd", "_psk",
                   "_private_key", "_api_key", "_apikey", "_hash", "_salt", "_key",
                   "_uuid", "_uuids")
 
+# Два разделителя между словом-атрибутом и значением — не придирка к вкусу, а
+# разница в поверхности. `_AUDIT_SECRET_RE` исторический (#72): он режет ТЕЛО
+# события, где структура уже есть и `key` — это имя поля. `_LOG_SECRET_RE` — для
+# СВОБОДНОГО текста чужого журнала (ручка «Логи», #91): там тот же шаблон с
+# пробелом в разделителе срабатывает на прозу, и на живой машине широкий вариант
+# сворачивал бы `42 033` из `170 140` строк ротации `syslog.4.gz` (24.70 %) —
+# `Asymmetric key parser 'x509' registered`, `Forward Password Requests to
+# Plymouth`, `key management` внутри телеметовских INFO. Требование `=` или `:`
+# стоит того же закрытия: на всём корпусе (`2 536 005` строк из `5` файлов)
+# широкий вариант меняет `330 683` строки (13.04 %), строгий — `480` (0.019 %),
+# а все `42` строки `telemt … secret=` на текущем `/var/log/syslog` (и `460` по
+# всем ротациям) вычищают оба.
+_AUDIT_SECRET_RE = re.compile(r"(tok|token|secret|key|password|psk)[=\"\s:]+[A-Za-z0-9_.+\-/]{6,}",
+                              re.I)
+_LOG_SECRET_RE = re.compile(r"(tok|token|secret|key|password|psk)[\"'\s]*[=:][\"'\s]*"
+                            r"[A-Za-z0-9_.+\-/]{6,}", re.I)
+# ссылки подписчика: scheme://<пароль или id>@host — секрет лежит до `@`, он один
+# на обеих поверхностях (и в теле события, и в свободном тексте), поэтому
+# вынесен в константу, а не переписывается в двух местах
+_AUDIT_URL_RE = re.compile(r"((?:vless|vmess|trojan|ss|hy2|hysteria2|wireguard|amneziawg)://"
+                           r")[^@]+@", re.I)
+
 # форма идентификаторов, а не их значения: образец в журнале описывает мусор, но
 # не выдаёт подписчика (#68)
 _SAMPLE_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -779,21 +801,23 @@ def _secret_key(k):
     kl = str(k).lower()
     return kl in _SECRET_KEYS or kl.endswith(_SECRET_SUFFIX)
 
-def _audit_redact(v):
+def _audit_redact(v, strict_sep=False):
     """Скрывает секреты в строке; внутри dict/list идёт рекурсивно (события
-    передают словари: тело запроса, конфиг, срез состояния)."""
+    передают словари: тело запроса, конфиг, срез состояния).
+
+    `strict_sep=True` — для свободного текста (журнал чужого процесса): разделитель
+    обязан быть `=` или `:`, иначе маска съедает прозу. См. комментарий у
+    `_LOG_SECRET_RE` — там измеренная цена широкого варианта."""
     if isinstance(v, dict):
         return {k: ("sha1:" + hashlib.sha1(str(val).encode("utf-8", "replace")).hexdigest()[:10]
-                    if isinstance(val, str) and _secret_key(k) else _audit_redact(val))
+                    if isinstance(val, str) and _secret_key(k) else _audit_redact(val, strict_sep))
                 for k, val in v.items()}
     if isinstance(v, (list, tuple)):
-        return [_audit_redact(x) for x in v]
+        return [_audit_redact(x, strict_sep) for x in v]
     if isinstance(v, str):
-        v = re.sub(r"(tok|token|secret|key|password|psk)[=\"\s:]+[A-Za-z0-9_.+\-/]{6,}",
-                   r"\1=***", v, flags=re.I)
+        v = (_LOG_SECRET_RE if strict_sep else _AUDIT_SECRET_RE).sub(r"\1=***", v)
         # ссылки подписчика: scheme://<пароль или id>@host — секрет до @
-        v = re.sub(r"((?:vless|vmess|trojan|ss|hy2|hysteria2|wireguard|amneziawg)://"
-                   r")[^@]+@", r"\1***@", v, flags=re.I)
+        v = _AUDIT_URL_RE.sub(r"\1***@", v)
     return v
 
 def _audit_val(k, v):
@@ -1395,14 +1419,15 @@ def _harden_secret_files(suffixes=(".json", ".bin")):
             continue
         for sub in subs:
             _close(os.path.join(d, sub))
-    # Аватары подписчиков: здесь секрет лежит НЕ внутри файла, а в его ИМЕНИ —
-    # `_avatar_path` называет файл `sub_token`'ом, то есть перечислить каталог
+    # Аватары подписчиков: секрет лежал НЕ внутри файла, а в его ИМЕНИ — прежний
+    # `_avatar_path` называл файл `sub_token`'ом, то есть перечислить каталог
     # значит собрать рабочие ссылки подписки (`/sub/<токен>` отдаёт конфиг целиком,
     # 0600 содержимого от этого не прячет). Каталог создавался по umask 022 → 0755,
     # а `BASE` сам 0755, так что имя читал любой локальный процесс. Замер на этой
     # машине: `avatars` `0755 root:root`, `1` файл, его имя совпадает с живым
-    # `sub_token` подписчика. Новые аватары уже закрыты с рождения (`_mkdir_private`
-    # + `os.open(..., 0o600)`), этот проход лечит созданный прежним кодом.
+    # `sub_token` подписчика. Имена теперь отпечатки (`_avatar_path`), а этот проход
+    # лечит права тех, что ещё не переехали: новые аватары закрыты с рождения
+    # (`_mkdir_private` + `os.open(..., 0o600)`).
     avdir = _AVATAR_DIR
     if os.path.isdir(avdir):
         _close(avdir, want_dir=True)
@@ -2169,13 +2194,20 @@ def _ensure_all_protos(st):
         for c in inb.get("clients", []):
             key = c.get("sub_token") or c["uuid"]
             if key not in refs:
-                refs[key] = {"uuid": c["uuid"], "name": c.get("name") or "Клиент",
+                refs[key] = {"uuid": c["uuid"], "name": c.get("name"),
                              "sub_token": c.get("sub_token"),
                              "limit_gb": c.get("limit_gb", 0),
                              "expiry": c.get("expiry", 0),
                              "created": c.get("created", 0)}
     # Раскидаем каждого подписчика по всем inbounds (без потери уже существующих клиентов)
+    no_name = 0
     for ref in refs.values():
+        # Лечать можно только подписчика с именем: без него запись в state испорчена,
+        # а «Клиент» вместо имени скрыл бы поломку и породил нового видимого подписчика.
+        # uuid/sub_token в журнал не пишутся — это credential подписчика.
+        if _client_name(ref["name"]) is None:
+            no_name += 1
+            continue
         for proto, inb in inbounds.items():
             if not inb.get("clients"):
                 inb["clients"] = []
@@ -2191,6 +2223,8 @@ def _ensure_all_protos(st):
                     c[k] = ref[k]
             inb["clients"].append(c)
             changed = True
+    if no_name:
+        print(f"ensure_all: у {no_name} подписчиков нет имени — они не разложены по входам", flush=True)
     return changed
 
 def _ensure_xray_keys_urlsafe(st):
@@ -2742,16 +2776,27 @@ def _proto_backfill(st, proto, inb):
     lst = inb.setdefault("clients", [])
     have = {c.get("uuid") for c in lst}
     n = 0
+    no_name = 0
     for uu, ref in refs.items():
-        if not uu or uu in have:
+        if not uu:
             continue
-        c = _new_client((ref.get("name") or "Клиент"), proto, inb)
+        if uu in have:
+            continue
+        nm = _client_name(ref.get("name"))
+        if nm is None:
+            no_name += 1
+            continue
+        # name входит в _CLIENT_SHARED и был бы перезаписан сырым значением с пробелами
+        ref["name"] = nm
+        c = _new_client(nm, proto, inb)
         for k in _CLIENT_SHARED:
             if k in ref:
                 c[k] = ref[k]
         c["uuid"] = uu
         lst.append(c)
         n += 1
+    if no_name:
+        print(f"proto_backfill: {proto} — у {no_name} подписчиков нет имени, они не перенесены", flush=True)
     return n
 
 def _enable_proto(st, proto):
@@ -3563,9 +3608,13 @@ def _fam_add(st, parent_key, name, max_devices=0):
     """Создать участника семьи: полноценный клиент (свой uuid/токен/ключи по всем
     протоколам хозяина), но тариф, алерты и блокировка — общие с хозяином.
     -> (ok, dict-участника | текст ошибки)."""
-    name = (name or "").strip()[:40]
-    if not name:
+    name = _client_name(name)
+    if name is None:
+        # Сюда приходит и число, и список: старый `(name or "").strip()` на них падал
+        # в AttributeError, то есть в 500 вместо «имя пустое».
         return False, "имя пустое"
+    if len(name) > _NAME_MAX:
+        return False, "имя участника длиннее %d символов" % _NAME_MAX
     parent = _fam_resolve_parent(st, parent_key)
     if parent is None:
         return False, "подписка-хозяин не найдена"
@@ -4100,9 +4149,13 @@ def _ensure_identities(st):
             if not c.get("uuid"):
                 c["uuid"] = str(uuidlib.uuid4())
                 fixes.append((proto, i, c, "uuid", c["uuid"]))
-            if not c.get("name"):
-                c["name"] = "Клиент"
-                fixes.append((proto, i, c, "name", c["name"]))
+            if "name" not in c or (isinstance(c.get("name"), str) and not c["name"].strip()):
+                # Ключ заводим ПУСТЫМ. Раньше сюда писалось «Клиент» — и в state.json
+                # появлялся подписчик с правдоподобным именем, которого никто не заводил;
+                # отличить его от настоящего оператор уже не мог.
+                if c.get("name") != "":
+                    c["name"] = ""
+                    fixes.append((proto, i, c, "name", ""))
     have = {}
     for inb in inbs.values():
         if not isinstance(inb, dict): continue
@@ -4560,7 +4613,7 @@ def _subs_export_json(st):
                 continue
             s = subs.get(tok)
             if s is None:
-                s = {"name": c.get("name") or "Клиент", "sub_token": tok,
+                s = {"name": c.get("name") or "без имени", "sub_token": tok,
                      "limit_gb": _gb_of(c.get("limit_gb")),
                      "expiry": _ts_of(c.get("expiry")),
                      "reset_cycle": c.get("reset_cycle") or "",
@@ -4591,7 +4644,7 @@ def _subs_export_links(st):
     for u in _subs_summary(st):
         protos = [x["proto"] for x in u.get("protos", [])]
         labels = ", ".join(_proto_meta(pr).get("label", pr) for pr in protos)
-        out.append("# ==== " + (u.get("name") or "Клиент") + " (" + labels + ") ====")
+        out.append("# ==== " + (u.get("name") or "без имени") + " (" + labels + ") ====")
         for pr in protos:
             ln = (u.get("links") or {}).get(pr)
             if ln and "\n" not in ln:
@@ -4618,10 +4671,14 @@ def _split_hostport(s):
     return s, ""
 
 def _sub_base_name(name):
-    name = (name or "").strip()
+    if not isinstance(name, str):
+        return ""
+    name = name.strip()
     if " · " in name:
         name = name.rsplit(" · ", 1)[0].strip()
-    return (name[:40] or "Клиент")
+    # Пустое остаётся пустым: «Клиент» здесь склеивал в одну группу все ссылки без
+    # имени и выдавал им общий credential.
+    return name[:40]
 
 def _map_vless_proto(sec, typ):
     typ = {"splithttp": "xhttp", "tcp": "tcp", "ws": "ws", "grpc": "grpc"}.get(typ, typ)
@@ -4837,6 +4894,11 @@ def _import_from_links(st, text):
         groups.setdefault(_sub_base_name(it.get("name")), []).append(it)
     imported = 0
     for base, its in groups.items():
+        # Отказ до генерации токена: без имени подписчик не заводится, а оператору
+        # сказано сколько строк пропущено (имя ссылки — её фрагмент, uuid не печатаем).
+        if not base:
+            warnings.append("пропущено ссылок без имени: %d — панель не придумывает имя подписчика" % len(its))
+            continue
         sub_token = secrets.token_urlsafe(16)
         made = 0
         for it in its:
@@ -4889,7 +4951,13 @@ def _import_from_json(st, data):
     for s in subs:
         if not isinstance(s, dict):
             continue
-        name = (s.get("name") or "Клиент").strip()[:40] or "Клиент"
+        name = _client_name(s.get("name"))
+        if name is None:
+            # Отказ до secrets.token_urlsafe(): подписчик без имени не заводится и не
+            # получает credential, которого никто не просил.
+            warnings.append("пропущена подписка без имени (панель не придумывает имя)")
+            continue
+        name = name[:40]
         tok = s.get("sub_token") or ""
         # Форма, а не «что прислали». Токен — и право доступа, и адрес в HTML
         # страницы подписчика (`src`/`href`); кавычка в нём разрывает атрибут и
@@ -5052,7 +5120,7 @@ def _xui_parse_items(con, warnings):
                             (inb_name, "reality-группа" if protocol == "vless" else "trojan-tcp-tls"))
         for c in (s.get("clients") or []):
             if not isinstance(c, dict): continue
-            name = (str(c.get("email") or c.get("remark") or "").strip() or inb_name or "Кент")[:40]
+            name = (str(c.get("email") or c.get("remark") or "").strip() or inb_name)[:40]
             it = {"name": name, "veil_proto": veil_proto, "uuid": None, "password": None,
                   "limit_gb": _bytes_to_gb(c.get("totalGB")), "expiry": _xui_expiry(c.get("expiryTime")),
                   "blocked": not (enable and c.get("enable", True)), "flow": str(c.get("flow") or "")}
@@ -5087,7 +5155,11 @@ def _marzban_parse_items(con, warnings):
         if not veil_proto:
             warnings.append("пропуск пользователя %s: протокол %s не маппится" % (username, proxy_protocol))
             continue
-        it = {"name": (str(username or "Кент").strip() or "Кент")[:40], "veil_proto": veil_proto,
+        mname = str(username or "").strip()[:40]
+        if not mname:
+            warnings.append("пропуск пользователя без имени — панель не придумывает имя")
+            continue
+        it = {"name": mname, "veil_proto": veil_proto,
               "uuid": None, "password": None, "limit_gb": _bytes_to_gb(data_limit),
               "expiry": _xui_expiry(expire), "blocked": str(status or "active") != "active",
               "flow": str(proxy_settings.get("flow") or "")}
@@ -5138,9 +5210,16 @@ def _extimport_apply(st, items):
     by_uuid = {c.get("uuid") for inb in (st.get("inbounds") or {}).values()
                for c in inb.get("clients", []) if c.get("uuid")}
     for it in items:
+        # Имя проверяем первым: до создания входа и до вставки клиента. Запись без
+        # имени не превращается в «Кента» — она пропускается и попадает в warning.
+        nm = _client_name(it.get("name"))
+        if nm is None:
+            warnings.append("пропущена запись без имени (панель не придумывает имя)")
+            continue
+        nm = nm[:40]
         proto = it.get("veil_proto")
         if proto not in _VALID_PROTOCOLS:
-            warnings.append(it.get("name", "?") + ": неизвестный протокол " + str(proto))
+            warnings.append(nm + ": неизвестный протокол " + str(proto))
             continue
         inb = (st.get("inbounds") or {}).get(proto)
         if inb is None:
@@ -5149,17 +5228,17 @@ def _extimport_apply(st, items):
                 st.setdefault("inbounds", {})[proto] = inb
                 warnings.append("создан новый inbound %s (порт %s) — проверь его точечные настройки" % (proto, inb.get("port")))
             except Exception as e:
-                warnings.append(it.get("name", "?") + ": inbound " + proto + ": " + str(e)[:70])
+                warnings.append(nm + ": inbound " + proto + ": " + str(e)[:70])
                 continue
         u = it.get("uuid")
         if u and not (isinstance(u, str) and _UUID_SHAPE.fullmatch(u)):
-            warnings.append("uuid неверной формы у «%s» — выдан новый (ссылка изменится)" % (it.get("name") or "?"))
+            warnings.append("uuid неверной формы у «%s» — выдан новый (ссылка изменится)" % nm)
             u = ""
         if u and u in by_uuid:
-            c = _new_client(it.get("name") or "Кент", proto, inb)
-            warnings.append("дубликат uuid у «%s» — выдан новый (ссылка изменится)" % (it.get("name") or "?"))
+            c = _new_client(nm, proto, inb)
+            warnings.append("дубликат uuid у «%s» — выдан новый (ссылка изменится)" % nm)
         else:
-            c = _new_client(it.get("name") or "Кент", proto, inb)
+            c = _new_client(nm, proto, inb)
             if u: c["uuid"] = u
         if proto.startswith("trojan") and it.get("password"):
             c["password"] = it["password"]
@@ -5924,13 +6003,109 @@ def _sub_days_left(L, lang, n):
     return L["exp_n"] % n
 
 _AVATAR_DIR = os.path.join(BASE, "avatars")
+_AVATAR_KEY_LK = threading.Lock()
 
-def _avatar_path(tok):
-    """Путь к файлу аватара подписчика (токен — право доступа; на диске, не в state.json)."""
-    t = re.sub(r"[^A-Za-z0-9_-]", "", str(tok or ""))[:64]
+
+def _avatar_key(create=False):
+    """Ключ, по которому строятся имена файлов аватаров. Лежит в config.json.
+
+    `salt` пароля для этого не годится: его пересоздают при смене пароля, вместе
+    с ним осиротели бы все аватары. Без ключа читающие пути возвращают старое
+    имя (так аватары прежней установки не теряются), а запись ключ создаёт — то
+    есть credential-имя больше не рождается ни на одном пути.
+    """
+    with _AVATAR_KEY_LK:
+        k = CFG_CACHE.get("avatar_key")
+        if isinstance(k, str) and re.fullmatch(r"[0-9a-f]{32,128}", k):
+            return k
+        if not create:
+            return ""
+        k = secrets.token_hex(32)
+        CFG_CACHE["avatar_key"] = k
+        _cfg_save()
+        return k
+
+
+def _avatar_stem(tok):
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(tok or ""))[:64]
+
+
+def _avatar_legacy_path(tok):
+    t = _avatar_stem(tok)
+    return os.path.join(_AVATAR_DIR, t + ".img") if t else ""
+
+
+def _avatar_derived_path(stem, key):
+    h = hmac.new(bytes.fromhex(key), stem.encode("utf-8", "replace"),
+                 hashlib.sha256).hexdigest()[:40]
+    return os.path.join(_AVATAR_DIR, h + ".img")
+
+
+def _avatar_path(tok, create=False):
+    """Путь к файлу аватара: имя — отпечаток токена с ключом, а не сам токен.
+
+    Подписочный токен — это право доступа (`/sub/<токен>` отдаёт конфиг целиком),
+    и пока файл назывался им же, credential лежал на диске второй копией — в
+    ИМЕНИ. Имя уносит в себя любая поверхность, видящая список каталога или argv:
+    28.09 на этой машине строка sudo-логирования записала живое имя аватара в
+    `/var/log/auth.log` (0640 syslog:adm) — журнал, который панель ни чистит, ни
+    шифрует, в отличие от собственного аудита, где такие значения свёрнуты
+    отпечатком (#72). Старое имя переезжает на новое при первом касании.
+    """
+    t = _avatar_stem(tok)
     if not t:
         return ""
-    return os.path.join(_AVATAR_DIR, t + ".img")
+    legacy = os.path.join(_AVATAR_DIR, t + ".img")
+    k = _avatar_key(create)
+    if not k:
+        return legacy
+    dst = _avatar_derived_path(t, k)
+    if os.path.exists(dst):
+        return dst
+    if os.path.exists(legacy):
+        try:
+            os.replace(legacy, dst)
+        except OSError:
+            return legacy
+    return dst
+
+
+def _avatar_migrate_legacy():
+    """Разово переносит аватары, названные токеном, на имена-отпечатки.
+
+    Отличить «уже переехавшее» имя от старого по одному только имени нельзя: и
+    то и другое — допустимая последовательность тех же символов. Поэтому идём по
+    живым токенам и для каждого проверяем ровно пару «старое имя → новое».
+    """
+    try:
+        stt = _load(STATE) or {}
+    except Exception:
+        return 0
+    k = _avatar_key(create=True)
+    if not k:
+        return 0
+    moved = 0
+    for _proto, inb in _inb_entries(stt):
+        for c in (inb.get("clients") or []):
+            tok = c.get("sub_token")
+            if not tok:
+                continue
+            legacy = _avatar_legacy_path(tok)
+            if not legacy or not os.path.isfile(legacy):
+                continue
+            stem = _avatar_stem(tok)
+            dst = _avatar_derived_path(stem, k)
+            if dst == legacy:
+                continue
+            try:
+                if os.path.exists(dst):
+                    os.remove(legacy)
+                else:
+                    os.replace(legacy, dst)
+                moved += 1
+            except OSError:
+                pass
+    return moved
 
 def _avatar_save(tok, data):
     """Проверяет, что bytes — PNG/JPEG/GIF/WebP ≤ 160 КБ, и пишет в файл. Возвращает mime или None."""
@@ -5946,7 +6121,7 @@ def _avatar_save(tok, data):
         mime = "image/webp"
     else:
         return None
-    path = _avatar_path(tok)
+    path = _avatar_path(tok, create=True)
     if not path:
         return None
     try:
@@ -5958,15 +6133,24 @@ def _avatar_save(tok, data):
                 f.write(data)
         finally:
             os.umask(old_umask)
+        # Старое имя (равное токену) могло пережить переезд, если новое уже
+        # существовало: оставлять credential-имя на диске нельзя.
+        legacy = _avatar_legacy_path(tok)
+        if legacy and legacy != path and os.path.exists(legacy):
+            try:
+                os.remove(legacy)
+            except OSError:
+                pass
         return mime
     except Exception:
         return None
 
 def _avatar_remove(tok):
-    try:
-        os.remove(_avatar_path(tok))
-    except OSError:
-        pass
+    for p in (_avatar_path(tok), _avatar_legacy_path(tok)):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 def _avatar_version(tok):
     """Метка времени файла аватара для cache-busting URL (?v=...), или 0 если файла нет."""
@@ -6797,9 +6981,57 @@ def _wg_addr(inb, default):
     raise RuntimeError("в пуле туннеля " + pre + "x/24 не осталось свободных адресов — "
                        "расширьте подсеть входа")
 
+# Единственный предел имени подписчика. Число живёт здесь, а не в головах
+# вызывающих мест: до #94 создание подписчика не знало никакого предела, а
+# переименование резало молча — то есть у одного поля было два правила.
+_NAME_MAX = 40
+
+
+def _client_name(name):
+    """Имя подписчика: строка с непробельным содержимым, иначе None.
+    Ничего не придумывает и не обрезает — решение за вызывающим местом: оно знает,
+    чем отвечать (400, пропуск с предупреждением, ошибка бота). None в `_new_client`
+    превращается в отказ, поэтому ни одно место не может молча завести подписчика
+    с именем «Кент»."""
+    if not isinstance(name, str):
+        return None
+    s = name.strip()
+    return s or None
+
+def _client_name_input(raw):
+    """Имя из запроса на интерактивном пути: форма, содержимое и предел — отказом
+    с причиной. Вызывающее место отвечает 400, не дожидаясь `_new_client`.
+
+    Обрезка вместо отказа оставила бы оператора с подпиской, названной не так,
+    как он набрал, — ровно то, с чем панель рассталась в #81, когда перестала
+    додумывать имя. Но и пропустить предел нельзя: имя ложится в состояние
+    копией на каждый вход (измерено: 17), поэтому байт имени стоит панели ~68
+    байт файла, а тело запроса принимают до 8 МиБ.
+    """
+    if raw is not None and not isinstance(raw, str):
+        raise _BodyError("имя подписчика — строка")
+    nm = (raw or "").strip()
+    if not nm:
+        raise _BodyError("имя подписчика обязательное")
+    if len(nm) > _NAME_MAX:
+        raise _BodyError("имя подписчика длиннее %d символов" % _NAME_MAX)
+    return nm
+
+
 def _new_client(name, proto=None, inb=None, **kw):
+    # Раньше здесь сидело додумывание: `(name or "").strip() or "Кент"`. Оно
+    # превращало ошибку любого вызывающего места в рабочего подписчика с чужим
+    # именем, credential и ссылкой — и морда показывала его оператору как настоящего.
+    nm = _client_name(name)
+    if nm is None:
+        raise ValueError("у подписчика нет имени — панель его не придумывает")
+    # Последняя граница: через эту функцию идут все места создания, и ни одно
+    # из них не может пронести имя длиннее предела (отказ ДО генераторов
+    # credential — порядок важен так же, как в #81).
+    if len(nm) > _NAME_MAX:
+        raise ValueError("имя подписчика длиннее %d символов" % _NAME_MAX)
     c = {"uuid": str(uuidlib.uuid4()),
-         "name": (name or "").strip() or "Кент",
+         "name": nm,
          "sub_token": secrets.token_urlsafe(16),
          "created": int(time.time())}
     # Лимиты трафика/срок (0 = без ограничений)
@@ -9216,7 +9448,12 @@ def _bot_update_apply(update):
                         return
                     stp["days"] = days
                     BOT_NEW_SUB.pop(chat_id, None)
-                    name = stp.get("name") or "Клиент"
+                    name = _client_name(stp.get("name"))
+                    if name is None:
+                        # Имя спрашивают на первом шаге, здесь его не додумывают:
+                        # «Клиент» в response = подписчик, которого никто не заводил.
+                        _bot_send_message(chat_id, B["add_nameempty"], "HTML")
+                        return
                     try:
                         r = _create_subscription(name, limit_gb=stp.get("limit_gb", 0), expiry_days=days)
                     except Exception as e:
@@ -9945,18 +10182,54 @@ def _node_host_ok(node):
             return None
     return host
 
-_TRUSTED_PROXY_NETS = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"),
-                       ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"),
-                       ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("fe80::/10"))
+# Кому панель верит в X-Forwarded-For. По умолчанию — только петля: собственного
+# фронта у панели нет, она отдаётся наружу на прямом :8443, и всё, что приходит не
+# с петли, пришло от клиента напрямую.
+# RFC1918 в список по умолчанию не входит (#89): в 10.0.0.0/8 лежат туннельные сети
+# самих подписчиков (здесь 10.10.0.0/24 и 10.20.0.0/24), а их трафик делает круг
+# через этот же сервер — подписчик приходит на :8443 с адресом из «доверенной»
+# сети и до правки вписывал себе в устройства любой IP заголовком. Свой фронт
+# (nginx на петле, отдельный прокси-хост, туннель) оператор называет явно списком
+# `trusted_proxy_cidrs` в config.json.
+_TRUSTED_PROXY_NETS = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
+_TRUSTED_NETS_CACHE = [None, _TRUSTED_PROXY_NETS]
+
+def _trusted_proxy_nets():
+    """Сети фронтов из `trusted_proxy_cidrs`, разобранные один раз на значение.
+    Мусорную строку не чиним и не расширяем доверие молча: не разобралось —
+    значит сети нет. Сплошное 0.0.0.0/0 (::/0) тоже не принимаем: это не фронт,
+    а отмена проверки — тот самый класс, который здесь закрывается."""
+    raw = CFG_CACHE.get("trusted_proxy_cidrs") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        raw = []
+    key = repr([str(x) for x in raw])
+    if _TRUSTED_NETS_CACHE[0] != key:
+        nets = list(_TRUSTED_PROXY_NETS)
+        for item in raw:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            try:
+                n = ipaddress.ip_network(s, strict=False)
+            except Exception:
+                continue
+            if n.prefixlen == 0:
+                continue
+            nets.append(n)
+        _TRUSTED_NETS_CACHE[0] = key
+        _TRUSTED_NETS_CACHE[1] = tuple(nets)
+    return _TRUSTED_NETS_CACHE[1]
 
 def _req_client_ip(self):
     """Адрес, который пишем в журнал «устройства подписки». X-Forwarded-For
-    слушаем ТОЛЬКО когда соединение пришло от собственного фронта (петля или
-    RFC1918): панель наружу отдаётся на прямом :8443, и без этой оговорки
-    подписчик вписывает себе в устройство любой IP, а владелец видит ровно то,
-    что клиент сам напечатал в заголовке. Сети перечислены явно, а не через
-    is_private: туда входят и служебные диапазоны вроде 203.0.113.0/24, которые
-    по факту маршрутизируются."""
+    слушаем ТОЛЬКО когда соединение пришло от названного фронта (петля или явно
+    перечисленная сеть) И заголовок разбирается как адрес. Иначе — настоящего
+    пира: без этой оговорки подписчик вписывает себе в устройство любой IP, а
+    владелец видит ровно то, что клиент сам напечатал в заголовке. Возвращаем
+    нормализованный литерал, а не исходную строку: в файл не уезжает ни
+    «unknown», ни хвост от цепочки, ни то, что не является адресом."""
     try:
         peer = str((self.client_address or [""])[0] or "")
     except Exception:
@@ -9965,10 +10238,14 @@ def _req_client_ip(self):
     if xff and peer:
         try:
             ip = ipaddress.ip_address(peer)
-            if any(ip in n for n in _TRUSTED_PROXY_NETS):
-                return xff
+            mapped = getattr(ip, "ipv4_mapped", None)
+            if mapped is not None:
+                ip = mapped
+            xip = ipaddress.ip_address(xff)
         except ValueError:
-            pass
+            return peer
+        if any(ip in n for n in _trusted_proxy_nets()):
+            return str(xip)
     return peer or "?"
 
 def _dial_addr_ok(host):
@@ -10184,6 +10461,24 @@ def _ssh_target_ok(user, host):
     # «-» в начале уехал бы в getopt ssh как опция (-oProxyCommand=...) = RCE на бэке
     return bool(_SSH_USER_RE.fullmatch(user or "") and _SSH_HOST_RE.fullmatch(host or ""))
 
+def _scrub(text, *secrets):
+    """Вычёркивает из текста наружу то, что панель сама считает секретом.
+
+    У SSH-воркеров есть свойство: stdin — это «пароль + скрипт», и если sudo не
+    спросил пароль (кэш timestamp или NOPASSWD), bash исполняет первую строку как
+    команду и печатает её в stderr. Так пароль фронта попадает в steps[].detail,
+    job["error"] и audit.json. Панель не отдаёт наружу ни одно значение, которое
+    она сама держит как credential, — даже в обрезанном виде."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    # длинные вперёд: короткий секрет не должен уцелеть внутри длинного
+    for s in sorted({x for x in secrets if isinstance(x, str) and len(x) >= 4},
+                    key=len, reverse=True):
+        if s in out:
+            out = out.replace(s, "[скрыто]")
+    return out
+
 def _boot_askpass_run(password, argv, timeout=60):
     """Запуск ssh/ssh-copy-id с вводом пароля через SSH_ASKPASS (пароль — только в env)."""
     fd, script = tempfile.mkstemp(prefix=".vpw")
@@ -10252,13 +10547,13 @@ def _node_bootstrap_worker(jid):
     sni = prm.get("sni") or "www.samsung.com"
 
     def st(i, s, d=""):
-        _boot_step(jid, i, s, d)
+        _boot_step(jid, i, s, _scrub(d, password))
 
     def finish(ok, err=None):
         with BOOT_LOCK:
             job["done"] = True
             job["ok"] = ok
-            job["error"] = err
+            job["error"] = _scrub(err, password)
             jp = job.get("params") or {}
             jp["password"] = ""
 
@@ -10266,7 +10561,8 @@ def _node_bootstrap_worker(jid):
         st(i, "failed", msg)
         finish(False, msg)
         try:
-            _audit("node_bootstrap_fail", host=host, step=i, error=str(msg)[:200])
+            _audit("node_bootstrap_fail", host=host, step=i,
+                   error=_scrub(str(msg)[:200], password))
         except Exception:
             pass
 
@@ -10344,7 +10640,7 @@ def _node_bootstrap_worker(jid):
         haspy = len(parts) > 2 and parts[2] != "nopy"
         if mode == "s_s":
             try:
-                if key_run("sudo -S -p '' true", timeout=30,
+                if key_run("sudo -k -S -p '' true", timeout=30,
                            input=password.rstrip("\n") + "\n").returncode == 0:
                     mode = "sudo_s"
             except Exception:
@@ -10362,7 +10658,7 @@ def _node_bootstrap_worker(jid):
                 shell = "sudo -n bash -euo pipefail -s --"
             elif mode == "sudo_s":
                 script = password.rstrip("\n") + "\n" + script
-                shell = "sudo -S -p '' bash -euo pipefail -s --"
+                shell = "sudo -k -S -p '' bash -euo pipefail -s --"
             return subprocess.run(base + [target, shell] + [shlex.quote(str(a)) for a in args],
                                   capture_output=True, text=True, timeout=timeout, input=script)
 
@@ -10626,7 +10922,7 @@ def _deploy_client_to_veil(n, host, recs, by_proto, u):
     if proto_local is None:
         return deployed, [{"host": host, "reason": "нет общего поддерживаемого протокола с нодой"}]
     c0 = by_proto[proto_local][2]
-    body = {"name": c0.get("name") or "Клиент", "proto": proto_local,
+    body = {"name": c0.get("name") or "без имени", "proto": proto_local,
             "limit_gb": _gb_of(c0.get("limit_gb"))}
     ed = _node_expiry_days(c0)
     if ed:
@@ -10657,7 +10953,7 @@ def _deploy_client_to_agent(n, host, recs, rec, u):
             n["agent_params"] = ap = hd
         elif not ap.get("public_key"):
             return deployed, [{"host": host, "reason": herr or "нода не вернула параметры"}]
-    body = {"action": "add", "uuid": u, "name": c0.get("name") or "Клиент",
+    body = {"action": "add", "uuid": u, "name": c0.get("name") or "без имени",
             "limit_gb": _gb_of(c0.get("limit_gb"))}
     ed = _node_expiry_days(c0)
     if ed:
@@ -12787,36 +13083,64 @@ def _hop_ssh_job(hid, user, password, ssh_port):
     with HOP_LOCK:
         HOP_JOBS[jid] = job
         if len(HOP_JOBS) > 30:
+            now = int(time.time())
             old = sorted(HOP_JOBS, key=lambda k: HOP_JOBS[k]["created"])[:-20]
-            for k in [x for x in old if HOP_JOBS[x]["done"]]:
+            # Одного «done» для отбора мало: поток воркера мог так и не стартовать, и
+            # тогда незавершённая задача держала бы SSH-пароль в памяти до конца
+            # жизни процесса. По возрасту — как в BOOT_JOBS.
+            for k in [x for x in old
+                      if HOP_JOBS[x]["done"] or now - HOP_JOBS[x]["created"] > 1800]:
                 HOP_JOBS.pop(k, None)
     threading.Thread(target=_hop_ssh_worker, args=(jid,), daemon=True).start()
     return jid
+
+def _hop_public_job(jid):
+    """Карточка задачи для ручки статуса: шаги и итог, но НЕ params.
+
+    В `params` лежит SSH-пароль фронта, который оператор набрал в форме. Воркер
+    стирает его в `finish()`, то есть между стартом и финалом (до ~5 минут на
+    таймаутах `ssh`) он живёт в словаре. Ручка `/api/hop/bootstatus` отдавала этот
+    словарь целиком и по праву «hop», которое выдаётся отдельно от владельца, —
+    то есть пароль возвращался наружу каждому, кто опрашивает статус установки.
+    Тот же класс уже закрыт у переезда (`_mv_public_job`) и у бутстрапа нод
+    (`/api/nodes/bootstrap/status` собирает ответ списком полей).
+    """
+    with HOP_LOCK:
+        j = HOP_JOBS.get(jid)
+        if not j:
+            return None
+        j = json.loads(json.dumps(j, default=str))
+    j.pop("params", None)
+    return j
 
 def _hop_ssh_worker(jid):
     import shlex
     with HOP_LOCK:
         job = HOP_JOBS.get(jid) or {}
         prm = dict(job.get("params") or {})
+    # до закрытий: fail() возможен раньше, чем ниже берётся prm, а _scrub должен
+    # иметь секрет при себе всегда
+    password = prm.get("password") or ""
     def st(i, s, d=""):
         with HOP_LOCK:
             j = HOP_JOBS.get(jid)
             if j:
                 j["steps"][i]["state"] = s
                 if d:
-                    j["steps"][i]["detail"] = str(d)[:300]
+                    j["steps"][i]["detail"] = _scrub(str(d), password)[:300]
     def finish(ok, err=None):
         with HOP_LOCK:
             job["done"] = True
             job["ok"] = bool(ok)
-            job["error"] = err
+            job["error"] = _scrub(err, password)
             jp = job.get("params") or {}
             jp["password"] = ""
     def fail(i, msg):
         st(i, "failed", msg)
         finish(False, msg)
         try:
-            _audit("hop_bootstrap_fail", id=job.get("hop"), step=i, error=str(msg)[:200])
+            _audit("hop_bootstrap_fail", id=job.get("hop"), step=i,
+                   error=_scrub(str(msg)[:200], password))
         except Exception:
             pass
     hid = job.get("hop") or ""
@@ -12825,7 +13149,6 @@ def _hop_ssh_worker(jid):
         return fail(0, "хоп не найден")
     host = hop.get("front_ip") or ""
     user = prm.get("user") or "root"
-    password = prm.get("password") or ""
     sport = int(prm.get("ssh_port") or 22)
     try:
         st(0, "running")
@@ -12883,7 +13206,7 @@ def _hop_ssh_worker(jid):
             return fail(1, "на фронте нет ss (iproute2) — не проверить занятость портов")
         if mode == "s_s":
             try:
-                if key_run("sudo -S -p '' true", timeout=30,
+                if key_run("sudo -k -S -p '' true", timeout=30,
                            input=password.rstrip("\n") + "\n").returncode == 0:
                     mode = "sudo_s"
             except Exception:
@@ -12899,7 +13222,7 @@ def _hop_ssh_worker(jid):
         if mode == "sudo_n":
             shell = "sudo -n bash -euo pipefail -s"
         elif mode == "sudo_s":
-            shell = "sudo -S -p '' bash -euo pipefail -s"
+            shell = "sudo -k -S -p '' bash -euo pipefail -s"
             stdin_txt = password.rstrip("\n") + "\n" + script
         r = subprocess.run(base + [target, shell], capture_output=True, text=True,
                            timeout=240, input=stdin_txt)
@@ -17294,9 +17617,12 @@ def _mv_new_job(params):
            "params": params}
     with MV_LOCK:
         MV_JOBS[jid] = job
+        now = int(time.time())
         old = sorted(MV_JOBS, key=lambda k: MV_JOBS[k]["created"])[:-10]
         for k in old:
-            if MV_JOBS[k].get("done"):
+            # Отбор по одному «done» не спасает: поток мог и не стартовать, а в
+            # `params` этого словаря лежит SSH-пароль нового хоста.
+            if MV_JOBS[k].get("done") or now - int(MV_JOBS[k].get("created") or 0) > 1800:
                 MV_JOBS.pop(k, None)
     threading.Thread(target=_mv_worker, args=(jid,), daemon=True).start()
     return jid
@@ -17324,6 +17650,7 @@ def _mv_worker(jid):
     ports = _mv_ports_plan()
 
     def st(i, s, d=""):
+        d = _scrub(d, password)
         with MV_LOCK:
             j = MV_JOBS.get(jid)
             if j:
@@ -17334,6 +17661,7 @@ def _mv_worker(jid):
             _mv_note("шаг %s — %s%s" % (MV_STEPS[i], s, (": " + str(d)[:180]) if d else ""))
 
     def finish(okv, err=None):
+        err = _scrub(err, password)
         with MV_LOCK:
             job["done"] = True
             job["ok"] = bool(okv)
@@ -17345,6 +17673,7 @@ def _mv_worker(jid):
         _mv_save(stv)
 
     def fail(i, msg):
+        msg = _scrub(msg, password)
         st(i, "failed", msg)
         finish(False, msg)
         _mv_setp(step="failed")
@@ -17411,7 +17740,7 @@ def _mv_worker(jid):
             return fail(0, "на новом хосте нет ss (iproute2) — не проверить порты")
         if mode == "s_s":
             try:
-                if key_run("sudo -S -p '' true", timeout=30,
+                if key_run("sudo -k -S -p '' true", timeout=30,
                            input_txt=password.rstrip("\n") + "\n").returncode == 0:
                     mode = "sudo_s"
             except Exception:
@@ -17423,7 +17752,7 @@ def _mv_worker(jid):
             if mode == "sudo_n":
                 full = "sudo -n " + cmd
             elif mode == "sudo_s":
-                full = "sudo -S -p '' " + cmd
+                full = "sudo -k -S -p '' " + cmd
                 input_txt = (password.rstrip("\n") + "\n") + (input_txt or "")
             else:
                 full = cmd
@@ -17433,7 +17762,7 @@ def _mv_worker(jid):
             shell = "bash -s"
             if sudo and mode != "root":
                 shell = ("sudo -n bash -s" if mode == "sudo_n"
-                         else "sudo -S -p '' bash -s" if mode == "sudo_s" else shell)
+                         else "sudo -k -S -p '' bash -s" if mode == "sudo_s" else shell)
             in_txt = script
             if sudo and mode == "sudo_s":
                 in_txt = password.rstrip("\n") + "\n" + script
@@ -18592,6 +18921,89 @@ class _BodyError(ValueError):
         self.code = code
 
 
+def _field(b, key):
+    """Поле тела как строка: строка возвращается сама, отсутствие и `null` —
+    пустой строкой, любой другой тип — отказом `400`. Раньше здесь стояло
+    `(b.get(key) or "").strip()`, и на числе, списке или словаре оно падало в
+    AttributeError; воронка `do_POST` превращала это в `500` «внутренняя ошибка
+    панели» и в запись `post_error`. То есть панель обвиняла себя в том, что
+    прислал вызывающий, а оператор в журнале видел шум вместо причины.
+    Значение поля в отказ не попадает — поля могут быть путями и адресами."""
+    v = b.get(key)
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    raise _BodyError("поле «%s» — строка, а не %s" % (key, type(v).__name__))
+
+
+def _nfield(b, key, default=0, lo=None, hi=None):
+    """Поле тела как целое число. `null`, отсутствие и пустая строка — `default`;
+    число и числовая строка — как умели раньше; список, словарь, «abc» — отказ
+    `400` с именем поля. Голый `int(b.get(key) or 0)` на списке падал в TypeError,
+    и воронка do_POST отвечала за это 500 и писала post_error.
+    Границы `lo`/`hi` не только про вежливость: поле уходит в файл истории, а
+    диск сервера и так заполнен на 83%. Значение в текст отказа не печатается."""
+    v = b.get(key)
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return default
+    try:
+        n = int(v) if isinstance(v, (int, float)) else int(str(v).strip())
+    except (TypeError, ValueError, OverflowError):
+        raise _BodyError("поле «%s» — число, а не %s" % (key, type(v).__name__))
+    if lo is not None and n < lo:
+        raise _BodyError("поле «%s»: не меньше %s" % (key, lo))
+    if hi is not None and n > hi:
+        raise _BodyError("поле «%s»: не больше %s" % (key, hi))
+    return n
+
+
+def _slist(b, key, seps=r"[,\s]+", limit=256):
+    """Поле тела как список строк: морда шлёт массив, а человек в поле «пул»
+    вставляет строку через пробел — раньше оба формата разбирать приходилось
+    на месте, и `(x or "").strip()` на элементе-числе падало в AttributeError
+    (500) вместо «элемент списка — строка». Не-список и не-строка тоже отказ,
+    а не молчаливый пустой пул: опустошить пул молча опаснее, чем попросить
+    переписать поле. Пустота возвращается пустым списком, это законный «выключить».
+    `limit` — чтобы один запрос не раздувал конфиг до размеров тела."""
+    v = b.get(key)
+    if v is None or v == "":
+        return []
+    if isinstance(v, str):
+        items = [x for x in re.split(seps, v) if x]
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            if not isinstance(x, str):
+                raise _BodyError("элемент «%s» — строка, а не %s" % (key, type(x).__name__))
+        items = list(v)
+    else:
+        raise _BodyError("поле «%s» — список или строка, а не %s" % (key, type(v).__name__))
+    if len(items) > limit:
+        raise _BodyError("поле «%s»: не больше %s значений" % (key, limit))
+    return items
+
+
+def _jfield(b, key, limit=20000, kinds=(list, dict)):
+    """Поле тела как JSON-структура с известным верхом по размеру. Нужно там,
+    где значение едет в файл: без веры в тип и в объём один запрос превращал
+    историю в несколько сотен мегабайт. `kinds` — какие структуры тут законны:
+    морда шлёт список объектов, и словарь она же сломает при отрисовке.
+    Тип в текст отказа печатается, значение — нет."""
+    v = b.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, kinds):
+        raise _BodyError("поле «%s» — %s, а не %s"
+                         % (key, " или ".join(k.__name__ for k in kinds), type(v).__name__))
+    try:
+        size = len(json.dumps(v, ensure_ascii=False))
+    except (TypeError, ValueError):
+        raise _BodyError("поле «%s» — не JSON" % key)
+    if size > limit:
+        raise _BodyError("поле «%s» слишком большое" % key)
+    return v
+
+
 # Гость, который повесил трубку посреди письма, — не сбой панели. Пока этого
 # различия не было, живой прогон шторма (V7) оставлял в аудите 16 записей
 # post_error, и ВСЕ шестнадцать — ConnectionReset/BrokenPipe от оборванных
@@ -18713,7 +19125,7 @@ class H(http.server.BaseHTTPRequestHandler):
             _audit("pay_settings", provider=prov, enabled=bool(b.get("enabled")))
             return self._send(200, _pay_summary())
         if p == "/api/pay/plans":
-            act = (b.get("action") or "").strip()
+            act = _field(b, 'action').strip()
             try:
                 with PAY_LOCK:
                     d = _pay_load()
@@ -18927,8 +19339,14 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         tid = t.get("id")
         if p == "/api/ext/clients":
-            name = (b.get("name") or "").strip() or "Клиент"
-            proto = (b.get("proto") or "").strip()
+            # Тот же отказ, что и в /api/clients/add (#80): раньше пустое тело значило
+            # «заведи подписчика по умолчанию», имя додумывалось, и внешний вызывающий
+            # получал 200 с рабочим credential подписчика, которого никто не просил.
+            # Порядок важен: выход раньше, чем создан токен, uuid и ключи транспорта.
+            if not int(getattr(self, "_body_read", 0) or 0):
+                return self._send(400, {"error": "нужно тело запроса: имя подписчика обязательное"})
+            name = _client_name_input(b.get("name"))
+            proto = _field(b, 'proto').strip()
             st = _load(STATE) or {}
             inb = (st.get("inbounds") or {}).get(proto)
             if not inb:
@@ -18947,7 +19365,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if _edays < 0 or _edays > 36500:
                 return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
             expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
-            reset_cycle = (b.get("reset_cycle") or "").strip().lower()
+            reset_cycle = _field(b, 'reset_cycle').strip().lower()
             try:
                 max_devices = max(0, int(b.get("max_devices") or 0))
             except Exception:
@@ -18973,7 +19391,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "sub_url": f"{_pb(host, panel_port)}/sub/{c.get('sub_token')}",
                 "link": link}})
         if p == "/api/ext/clients/update":
-            u = (b.get("uuid") or "").strip()
+            u = _field(b, 'uuid').strip()
             st = _load(STATE) or {}
             group = _ext_owned_group(st, tid, u)
             if not group:
@@ -18991,7 +19409,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 for c in group:
                     c["expiry"] = exp; c["warned_days"] = []
             if "reset_cycle" in b:
-                rc = (b.get("reset_cycle") or "").strip().lower()
+                rc = _field(b, 'reset_cycle').strip().lower()
                 if rc not in ("", "day", "week", "month"):
                     return self._send(400, {"error": "reset_cycle: day|week|month или ''"})
                 for c in group: c["reset_cycle"] = rc
@@ -19004,7 +19422,7 @@ class H(http.server.BaseHTTPRequestHandler):
             _audit("ext_client_update", uuid=u, token=t.get("label"))
             return self._send(200, {"ok": True})
         if p == "/api/ext/clients/delete":
-            u = (b.get("uuid") or "").strip()
+            u = _field(b, 'uuid').strip()
             st = _load(STATE) or {}
             group = _ext_owned_group(st, tid, u)
             if not group:
@@ -20116,6 +20534,18 @@ class H(http.server.BaseHTTPRequestHandler):
                     ls = _tail_lines(src[3], want)
                 except Exception:
                     return self._send(502, {"error": "log file unavailable"})
+            # Журнал чужого процесса — входная поверхность: панель не знает, что
+            # тот сочинит в stdout. На этой машине `telemt` при старте печатает
+            # ссылки прокси целиком (`tg://webproxy?server=…&secret=<ключ>`), systemd
+            # несёт их в journald, rsyslog — в `/var/log/syslog`, а ручка отдаёт их
+            # всякому с узким правом `logs` (не владельцу). Сворачиваются той же
+            # политикой, чем закрыт исходящий журнал (#72), плюс путь-credential
+            # (`/sub/<tok>`) отпечатком (#72). Разделитель — строгий (`=` или `:`):
+            # в свободном тексте широкий съедал бы прозу, см. `_LOG_SECRET_RE`.
+            # Порядок важен: фильтр `q=` применяется уже к вычищенному тексту, иначе
+            # поиск остаётся оракулом — «строка нашлась / не нашлась» восстанавливает
+            # ключ по одному символу.
+            ls = [_audit_path(_audit_redact(x, strict_sep=True)) for x in ls]
             if grep:
                 gl = grep.lower()
                 ls = [x for x in ls if gl in x.lower()][:lines]
@@ -20365,11 +20795,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/hop/bootstatus":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            jid = (q.get("id") or [""])[0]
-            with HOP_LOCK:
-                j = HOP_JOBS.get(jid)
-                return self._send(200, json.loads(json.dumps(j, default=str)) if j
-                                  else {"error": "задание не найдено"})
+            jid = ((q.get("id") or [""])[0] or "")[:12]
+            return self._send(200, _hop_public_job(jid) or {"error": "задание не найдено"})
         if p == "/api/migrate/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _mv_view())
@@ -20434,8 +20861,16 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"enabled": enabled, "secret": secret, "uri": f"otpauth://totp/VeilPanel:{CFG_CACHE.get('login', 'admin')}?secret={secret}&issuer=VeilPanel"})
         if p == "/api/bot/config":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            # Токен бота — это право управлять ботом ВНЕ панели: им шлют сообщения
+            # всем подписчикам и переводят бота на чужой вебхук. Право ручки — `bot`
+            # (`_perm_for`), его выдают оператору отдельно от владельца, а GET
+            # отдавал ему строку токена целиком. Морде токен не нужен: ей нужны
+            # признаки «задан» и отпечаток, а пустое поле формы означает «не менять».
+            tok = CFG_CACHE.get("bot_token", "") or ""
             return self._send(200, {
-                "token": CFG_CACHE.get("bot_token", ""),
+                "token": "",
+                "token_set": bool(tok),
+                "token_fp": _bot_fp(tok) if tok else "",
                 "chat_ids": CFG_CACHE.get("bot_chat_ids", [])
             })
         if p == "/api/bot/delivery":
@@ -20503,7 +20938,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     _login_history("fail", ip=cip, ua=ua_h, user=b.get("login"))
                     return self._send(401, {"error": "неверный логин или пароль"})
                 if is_owner and CFG_CACHE.get("totp_enabled"):
-                    totp_code = (b.get("totp_code") or "").strip()
+                    totp_code = _field(b, 'totp_code').strip()
                     if not totp_code or not _totp_verify(CFG_CACHE.get("totp_secret", ""), totp_code):
                         _login_fail(cip)
                         _login_history("fail", ip=cip, ua=ua_h, user=b.get("login"), err="totp")
@@ -20605,7 +21040,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         jk = "telemt"
                         fn = lambda jid: _tg_switch(tgt, True, job=jid)
                     else:
-                        typ = (b.get("type") or "").strip()
+                        typ = _field(b, 'type').strip()
                         jk = "restore"
                         if typ == "panel":
                             fn = lambda jid: _panel_restore(tgt, True, job=jid)
@@ -20653,15 +21088,15 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(403, {"error": "только владелец"})
                 b = self._body() or {}
                 if "base" in b:
-                    nb = (b.get("base") or "").strip()
+                    nb = _field(b, 'base').strip()
                     if nb and not re.match(r"^https?://", nb):
                         return self._send(400, {"error": "URL должен быть http(s)://"})
                     CFG_CACHE["ai_base"] = nb or "https://api.openai.com/v1"
                 if "model" in b:
-                    CFG_CACHE["ai_model"] = (b.get("model") or "gpt-4o-mini").strip()[:120]
+                    CFG_CACHE["ai_model"] = (_field(b, 'model') or "gpt-4o-mini").strip()[:120]
                 if "enabled" in b:
                     CFG_CACHE["ai_enabled"] = bool(b.get("enabled"))
-                if (b.get("key") or "").strip():           # пустая строка — не затираем ключ
+                if _field(b, 'key').strip():           # пустая строка — не затираем ключ
                     CFG_CACHE["ai_key"] = b["key"].strip()[:400]
                 _cfg_save()
                 _audit("ai_config", user=u.get("login"), enabled=bool(CFG_CACHE.get("ai_enabled")),
@@ -20873,7 +21308,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     res.update(_fam_urls(res["sub_token"]))
                     _audit("family_add", uuid=res["uuid"], name=res["name"], via="p")
                     return self._send(200, {"ok": True, "member": res})
-                mu = (b.get("member_uuid") or "").strip()
+                mu = _field(b, "member_uuid").strip()
                 mrec = next((c for inb in (st.get("inbounds") or {}).values()
                              for c in inb.get("clients", [])
                              if c["uuid"] == mu or c.get("sub_token") == mu), None)
@@ -20899,7 +21334,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(404, {"error": "неизвестное действие семьи"})
             if p == "/api/inbound/settings":
                 b = self._body()
-                proto = (b.get("proto") or "").strip()
+                proto = _field(b, 'proto').strip()
                 if proto in ("wireguard", "amneziawg"):
                     return self._send(400, {"error": "для WireGuard/AmneziaWG точечные настройки пока недоступны"})
                 st = _load(STATE) or {}
@@ -20941,7 +21376,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "inbound": _inbound_public(proto, inb)})
             if p == "/api/inbound/toggle":
                 b = self._body()
-                proto = (b.get("proto") or "").strip()
+                proto = _field(b, 'proto').strip()
                 if proto not in _VALID_PROTOCOLS:
                     return self._send(400, {"error": "неизвестный протокол"})
                 st = _load(STATE) or {}
@@ -20969,7 +21404,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # входа под который у панели нет вовсе. Раньше его доставали только
                 # руками в state.json — в обход `xray run -test` и без отката.
                 b = self._body() or {}
-                proto = (b.get("proto") or "").strip()
+                proto = _field(b, 'proto').strip()
                 if proto not in _VALID_PROTOCOLS:
                     return self._send(400, {"error": "неизвестный протокол"})
                 st = _load(STATE) or {}
@@ -21037,7 +21472,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/sessions/revoke":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 b = self._body() or {}
-                sid = (b.get("sid") or "").strip()
+                sid = _field(b, 'sid').strip()
                 cip = self.client_address[0]
                 ua_h = (self.headers.get("User-Agent") or "")[:256]
                 if sid in SESSIONS:
@@ -21082,9 +21517,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 entry = {
                     "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "success": bool(b.get("success")),
-                    "success_count": int(b.get("success_count") or 0),
-                    "total_count": int(b.get("total_count") or 0),
-                    "details": b.get("details") or [],
+                    "success_count": _nfield(b, "success_count", lo=0, hi=10 ** 6),
+                    "total_count": _nfield(b, "total_count", lo=0, hi=10 ** 6),
+                    "details": _jfield(b, "details", kinds=(list,)) or [],
                 }
                 history.append(entry)
                 history = history[-50:]
@@ -21103,6 +21538,12 @@ class H(http.server.BaseHTTPRequestHandler):
             # ---- vpn setup / новый клиент (старые ссылки никогда не трогаются) ----
             if p == "/api/vpn":
                 b = self._body()
+                # Имя больше не считается от счётчика («Основной», «Клиент 7»): такой
+                # подписчик попадал в state без связи с тем, кто его завёл, а ответ 200
+                # скрывал, что имени не передали. Отказ — до token_urlsafe() и uuid4().
+                if not int(getattr(self, "_body_read", 0) or 0):
+                    return self._send(400, {"error": "нужно тело запроса: имя подписчика обязательное"})
+                name = _client_name_input(b.get("name"))
                 want = b.get("proto") or None
                 if want and want not in _VALID_PROTOCOLS:
                     return self._send(400, {"error": "неизвестный протокол"})
@@ -21117,7 +21558,6 @@ class H(http.server.BaseHTTPRequestHandler):
                     inb = _alloc_inbound(st, proto)
                     st.setdefault("inbounds", {})[proto] = inb
                     
-                name = "Основной" if _client_count(st) == 0 else f"Клиент {_client_count(st) + 1}"
                 sub_token = secrets.token_urlsafe(16)
                 client_uuid = str(uuidlib.uuid4())
                 
@@ -21149,8 +21589,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                label = (b.get("label") or "").strip() or "Токен"
-                scopes = [s for s in (b.get("scopes") or []) if s in _EXT_SCOPES]
+                label = _field(b, 'label').strip() or "Токен"
+                scopes = [s for s in _slist(b, "scopes", limit=len(_EXT_SCOPES))
+                          if s in _EXT_SCOPES]
                 if not scopes:
                     return self._send(400, {"error": "выбери хотя бы один scope"})
                 toks = _node_tokens()
@@ -21168,7 +21609,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                tid = (b.get("id") or "").strip()
+                tid = _field(b, 'id').strip()
                 toks = _node_tokens()
                 label = next((t.get("label") for t in toks if t.get("id") == tid), None)
                 out = [t for t in toks if t.get("id") != tid]
@@ -21181,7 +21622,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                host = (b.get("host") or "").strip()
+                host = _field(b, 'host').strip()
                 nodes = get_nodes()
                 node = next((n for n in nodes
                              if (n.get("host") or "").strip().lower() == host.lower()), None)
@@ -21208,7 +21649,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                host = (b.get("host") or "").strip()
+                host = _field(b, 'host').strip()
                 nodes = get_nodes()
                 node = next((n for n in nodes
                              if (n.get("host") or "").strip().lower() == host.lower()), None)
@@ -21226,14 +21667,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                name = (b.get("name") or "").strip() or "Нода"
-                host = (b.get("host") or "").strip()
+                name = _field(b, 'name').strip() or "Нода"
+                host = _field(b, 'host').strip()
                 try:
                     port = int(str(b.get("port") or 0).strip() or "0")
                 except (TypeError, ValueError):
                     return self._send(400, {"error": "порт должен быть числом"})
-                token = (b.get("token") or "").strip()
-                ntype = (b.get("type") or "agent").strip().lower()
+                token = _field(b, 'token').strip()
+                ntype = (_field(b, 'type') or "agent").strip().lower()
                 if ntype not in ("agent", "veil"):
                     return self._send(400, {"error": "type: agent|veil"})
                 if not host:
@@ -21260,7 +21701,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                host = (b.get("host") or "").strip()
+                host = _field(b, 'host').strip()
                 nodes = get_nodes()
                 node = next((n for n in nodes
                              if (n.get("host") or "").strip().lower() == host.lower()), None)
@@ -21285,11 +21726,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                host = (b.get("host") or "").strip()
-                user = (b.get("user") or "").strip()
+                host = _field(b, 'host').strip()
+                user = _field(b, 'user').strip()
                 password = str(b.get("password") or "")
-                name = ((b.get("name") or "").strip() or "Veil node")[:40]
-                sni = (b.get("sni") or "").strip()[:80]
+                name = (_field(b, 'name').strip() or "Veil node")[:40]
+                sni = _field(b, 'sni').strip()[:80]
                 try:
                     sport = int(b.get("ssh_port") or 22)
                 except Exception:
@@ -21319,7 +21760,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                fmt = (b.get("format") or "json").strip().lower()
+                fmt = (_field(b, 'format') or "json").strip().lower()
                 st = _load(STATE)
                 if st is None:
                     st = _new_state()
@@ -21375,9 +21816,23 @@ class H(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         return self._send(400, {"error": "файл повреждён (не корректный base64)"})
                 else:
-                    path = (b.get("db_path") or "").strip()
+                    path = _field(b, 'db_path').strip()
                     if not path:
                         return self._send(400, {"error": "не прислан файл базы"})
+                    u = _auth_user(self) or {}
+                    if not u.get("owner"):
+                        # `db_path` — единственная ветка импорта, где панель сама
+                        # открывает путь с диска, и единственная, которой нет ни в
+                        # одном интерфейсе (фронт всегда шлёт `db_b64`). При этом
+                        # маршрут отдавался по праву «клиенты»: оператор читал
+                        # любой SQLite-файл сервера от имени root и получал его
+                        # поля в ответе. Владелец такой находкой ничего не приобретает
+                        # (у него с 2.13.7 есть root-терминал в браузере), поэтому
+                        # здесь именно «только владелец», а не новый список каталогов
+                        # — он ломал бы законный сценарий «база уже лежит на сервере».
+                        _audit("ext_import_path_denied", login=u.get("login") or "?",
+                               route=p)
+                        return self._send(403, {"error": "недостаточно прав", "need": "owner"})
                     if not re.fullmatch(r"[A-Za-z0-9/_.\-]{2,512}", path) \
                             or not re.search(r"\.(db|sqlite3?|database)$", path, re.I):
                         return self._send(400, {"error": "разрешён только путь к файлу .db/.sqlite без специальных символов"})
@@ -21420,7 +21875,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self):
                     return self._send(401, {"error": "unauthorized"})
                 b = self._body()
-                iid = (b.get("import_id") or "").strip()[:12]
+                iid = _field(b, 'import_id').strip()[:12]
                 with EXTIMPORT_LOCK:
                     job = EXTIMPORT.get(iid)
                 if not job:
@@ -21453,13 +21908,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 # раньше, чем secrets.token_urlsafe() и uuid4() вызваны хотя бы раз.
                 if not int(getattr(self, "_body_read", 0) or 0):
                     return self._send(400, {"error": "нужно тело запроса: имя подписчика обязательное"})
-                _rn = b.get("name")
-                if _rn is not None and not isinstance(_rn, str):
-                    return self._send(400, {"error": "имя подписчика — строка"})
-                name = (_rn or "").strip()
-                if not name:
-                    return self._send(400, {"error": "имя подписчика обязательное"})
-                want_proto = (b.get("proto") or "").strip()
+                name = _client_name_input(b.get("name"))
+                want_proto = _field(b, 'proto').strip()
                 st = _load(STATE)
                 if st is None:
                     st = _new_state(want_proto or "reality")
@@ -21484,11 +21934,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 if _edays < 0 or _edays > 36500:
                     return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
                 expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
-                reset_cycle = (b.get("reset_cycle") or "").strip().lower()
+                reset_cycle = _field(b, 'reset_cycle').strip().lower()
                 try: max_devices = max(0, int(b.get("max_devices") or 0))
                 except Exception: max_devices = 0
                 # Telegram-прокси в подписке: отдельная (персональная) ссылка, общая или не надо
-                tg_mode = (b.get("tg_proxy") or "").strip().lower()
+                tg_mode = _field(b, 'tg_proxy').strip().lower()
                 if tg_mode not in ("off", "shared", "personal"):
                     tg_mode = ""
                 tg_user = (_tg_slug(name, "client") + "-" + sub_token[:6]) if tg_mode == "personal" else ""
@@ -21548,12 +21998,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 # 👨‍👩‍👧 семейная подписка: участники создаются сразу в этой же
                 # транзакции — одна перезагрузка xray, а не по разу на участника
                 fam_res, fam_err = [], []
-                try:
-                    _fn = int(b.get("family_members") or 0)
-                except Exception:
-                    _fn = 0
-                _fnames = [str(x).strip() for x in (b.get("family_names") or [])
-                           if str(x).strip()][:_FAMILY_MAX]
+                _fn = _nfield(b, "family_members", lo=0, hi=_FAMILY_MAX)
+                # `_slist`, а не голый перебор: строка «Анна» раньше обходила по
+                # БУКВАМ и заводила четыре подписки вместо одной, а число или
+                # словарь в этом поле роняли обработчик в 500. Разделитель —
+                # только запятая: имя с пробелом («Иван Петров») остаётся именем.
+                _fnames = [x.strip() for x in _slist(b, "family_names", seps=",",
+                                                     limit=_FAMILY_MAX) if x.strip()]
                 _fn = max(0, min(_FAMILY_MAX, max(_fn, len(_fnames))))
                 for _i in range(_fn):
                     _nm = (_fnames[_i] if _i < len(_fnames) else f"Участник {_i+1}")[:40]
@@ -21602,7 +22053,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/deploy":
                 b = self._body()
-                u = (b.get("uuid") or "").strip()
+                u = _field(b, 'uuid').strip()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 try:
@@ -21615,8 +22066,8 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/undeploy":
                 b = self._body()
-                u = (b.get("uuid") or "").strip()
-                host = (b.get("host") or "").strip().lower()
+                u = _field(b, 'uuid').strip()
+                host = _field(b, 'host').strip().lower()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 recs = [c for proto, inb in (st.get("inbounds") or {}).items()
@@ -21646,7 +22097,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/expand":
                 b = self._body() or {}
-                u = (b.get("uuid") or "").strip()
+                u = _field(b, 'uuid').strip()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 src, have = None, set()
@@ -21657,13 +22108,20 @@ class H(http.server.BaseHTTPRequestHandler):
                             have.add(proto)
                 if not src: return self._send(404, {"error": "клиент не найден"})
                 added = []
+                no_name = 0
                 # семья растёт вместе с хозяином: недостающие протоколы заводим и членам
-                targets = [(u, src.get("name") or "Клиент", src)]
+                targets = [(u, src.get("name"), src)]
                 for mu in _fam_member_uuids(st, u):
                     mg = _fam_group(st, mu)
                     if mg: targets.append((mu, mg[0].get("fam_name") or mg[0].get("name"), mg[0]))
                 norm = []
                 for tu, tname, tsrc in targets:
+                    # Имя берём с оригинала и не додумываем: «Клиент» на новом транспорте
+                    # был бы записью, которой у оператора нет и которую он не найдёт.
+                    tname = _client_name(tname)
+                    if tname is None:
+                        no_name += 1
+                        continue
                     trows = [(pr, inb, c) for pr, inb in (st.get("inbounds") or {}).items()
                              for c in (inb.get("clients") or []) if c.get("uuid") == tu]
                     thave = {pr for pr, _i, _c in trows}
@@ -21677,7 +22135,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                  if c.get("sub_token")), "") or (tsrc.get("sub_token") or "")
                     for proto, inb in (st.get("inbounds") or {}).items():
                         if proto in thave: continue
-                        c = _new_client(tname or "Клиент", proto, inb,
+                        c = _new_client(tname, proto, inb,
                                         limit_gb=tsrc.get("limit_gb"), expiry=tsrc.get("expiry") or 0,
                                         reset_cycle=tsrc.get("reset_cycle"), max_devices=tsrc.get("max_devices"))
                         c["uuid"] = tu
@@ -21689,7 +22147,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             if tsrc.get(k): c[k] = tsrc[k]
                         if tu != u:
                             c["family_of"] = u
-                            c["fam_name"] = tname or "Клиент"
+                            c["fam_name"] = tname
                             c["tg_proxy"] = ""; c["tg_user"] = ""
                             if tsrc.get("blocked"):
                                 c["blocked"] = tsrc["blocked"]
@@ -21704,6 +22162,8 @@ class H(http.server.BaseHTTPRequestHandler):
                                 c["sub_token"] = ttok
                                 norm.append(tu)
                 if not added:
+                    note = ("не расширено: у %d записей нет имени, панель его не придумывает" % no_name
+                            if no_name else "уже во всех протоколах")
                     if norm:
                         _save(STATE, st)
                         # `merged_uuids` вместо `merged`: суффикс под маской, и список
@@ -21713,7 +22173,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         _audit("client_expand_tokens", uuid=u,
                                merged_uuids=",".join(sorted(set(norm))),
                                merged_n=len(norm))
-                    return self._send(200, {"added": [], "note": "уже во всех протоколах",
+                    # Число молча пропущенных записей — не «уже во всех протоколах»:
+                    # оператор вправе знать, что расширение встало не из-за порядка,
+                    # а из-за того, что у записи нет имени. Идентификаторы не печатаем.
+                    return self._send(200, {"added": [], "note": note,
+                                             "skipped_no_name": no_name,
                                              "tokens_merged": sorted(set(norm))})
                 try: _awg_sync(st)
                 except Exception: pass
@@ -21722,11 +22186,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 try: _apply_state(st)
                 except Exception: pass
                 _audit("client_expand", uuid=u, protos=",".join(added))
-                return self._send(200, {"added": added})
+                res = {"added": added}
+                if no_name:
+                    res["skipped_no_name"] = no_name
+                return self._send(200, res)
 
             if p == "/api/clients/family/add":
                 b = self._body() or {}
-                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                key = (_field(b, "uuid") or _field(b, "sub_token")).strip()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 ok, res = _fam_add(st, key, b.get("name"), b.get("max_devices") or 0)
@@ -21743,7 +22210,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/family/del":
                 b = self._body() or {}
-                key = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                key = (_field(b, "member_uuid") or _field(b, "uuid")).strip()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 ok, res = _fam_del(st, key)
@@ -21756,7 +22223,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/family/devlimit":
                 b = self._body() or {}
-                key = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                key = (_field(b, "member_uuid") or _field(b, "uuid")).strip()
                 st = _load(STATE)
                 if not st: return self._send(404, {"error": "нет состояния"})
                 ok, res = _fam_devlimit(st, key, b.get("max_devices") or 0)
@@ -21770,8 +22237,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 # «добавить участника», только человека не заставляют покупать
                 # заново и не выдают ему новый ключ. Свой URL он сохраняет.
                 b = self._body() or {}
-                key = (b.get("uuid") or b.get("sub_token") or "").strip()
-                mkey = (b.get("member_uuid") or b.get("member_token") or "").strip()
+                key = (_field(b, "uuid") or _field(b, "sub_token")).strip()
+                mkey = (_field(b, "member_uuid") or _field(b, "member_token")).strip()
                 if not mkey:
                     return self._send(400, {"error": "member_uuid не указан"})
                 st = _load(STATE)
@@ -21785,7 +22252,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/family/orphan":
                 b = self._body() or {}
-                mkey = (b.get("member_uuid") or b.get("uuid") or "").strip()
+                mkey = (_field(b, "member_uuid") or _field(b, "uuid")).strip()
                 if not mkey:
                     return self._send(400, {"error": "member_uuid не указан"})
                 st = _load(STATE)
@@ -21908,7 +22375,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # у участника — только на него. Причины limit/expired не трогает:
                 # их снимает только оплата или «разблокировать».
                 b = self._body()
-                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                key = (_field(b, "uuid") or _field(b, "sub_token")).strip()
                 if not key:
                     return self._send(400, {"error": "нужен uuid или sub_token"})
                 st = _load(STATE)
@@ -21955,7 +22422,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Зачем: ссылку увидели лишние глаза / «утёкший» клиент — без перевыпуска
                 # доступа подписчик становится невидим для старых ключей.
                 b = self._body()
-                key = (b.get("uuid") or b.get("sub_token") or "").strip()
+                key = (_field(b, "uuid") or _field(b, "sub_token")).strip()
                 if not key:
                     return self._send(400, {"error": "нужен uuid или sub_token"})
                 st = _load(STATE)
@@ -22038,8 +22505,8 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/clients/rename":
                 b = self._body()
-                u = b.get("uuid"); name = (b.get("name") or "").strip()[:40]
-                if not name: return self._send(400, {"error": "имя пустое"})
+                u = b.get("uuid")
+                name = _client_name_input(b.get("name"))
                 st = _load(STATE)
                 proto, inb, c = _find_client(st, u)
                 if not inb: return self._send(404, {"error": "клиент не найден"})
@@ -22076,9 +22543,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     # ставили только при создании, и опечатка («анна» вместо
                     # «Анна») оставалась с человеком навсегда — она видна ему
                     # самому в подписке, в боте и в списке у оператора.
-                    nm = str(b.get("name") or "").strip()[:40]
-                    if not nm:
-                        return self._send(400, {"error": "имя пустое"})
+                    nm = _client_name_input(b.get("name"))
                     for c in group:
                         c["name"] = nm
                         if c.get("fam_name"):
@@ -22102,7 +22567,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     for c in group:
                         c["expiry"] = group[0]["expiry"]; c["warned_days"] = []
                 if "reset_cycle" in b:
-                    rc = (b.get("reset_cycle") or "").strip().lower()
+                    rc = _field(b, 'reset_cycle').strip().lower()
                     if rc not in ("", "day", "week", "month"):
                         return self._send(400, {"error": "reset_cycle: day|week|month или ''"})
                     for c in group: c["reset_cycle"] = rc
@@ -22115,7 +22580,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "max_devices от 0 до 1000"})
                     for c in group: c["max_devices"] = md
                 if "tg_proxy" in b:
-                    tm = (b.get("tg_proxy") or "").strip().lower()
+                    tm = _field(b, 'tg_proxy').strip().lower()
                     if tm not in ("off", "shared", "personal"):
                         return self._send(400, {"error": "tg_proxy: off|shared|personal"})
                     for c in group:
@@ -22158,14 +22623,14 @@ class H(http.server.BaseHTTPRequestHandler):
 
             if p == "/api/bans/unban":
                 b = self._body()
-                ip = (b.get("ip") or "").strip()
+                ip = _field(b, 'ip').strip()
                 if not ip: return self._send(400, {"error": "ip не указан"})
                 if not _f2b_unban(ip): return self._send(404, {"error": "такого бана нет"})
                 return self._send(200, {"ok": True})
 
             if p == "/api/favorite":
                 b = self._body()
-                proto = (b.get("proto") or "").strip()
+                proto = _field(b, 'proto').strip()
                 if proto not in _VALID_PROTOCOLS:
                     return self._send(400, {"error": "неизвестный протокол"})
                 st = _load(STATE) or _new_state()
@@ -22184,8 +22649,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     b = self._body()
-                    host = (b.get("host") or "").strip()
-                    token = (b.get("token") or "").strip()
+                    host = _field(b, 'host').strip()
+                    token = _field(b, 'token').strip()
                     if not host or not token:
                         return self._send(400, {"error": "нужны host и token"})
                     if not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", host):
@@ -22216,19 +22681,16 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "%s: %s…%s" % (key, lo, hi)})
                     CFG_CACHE[key] = v
                 if "provider" in b:
-                    pv = (b.get("provider") or "").strip().lower()
+                    pv = _field(b, 'provider').strip().lower()
                     if pv not in ("off", "dynv6", "cloudflare", "both"):
                         return self._send(400, {"error": "provider: off|dynv6|cloudflare|both"})
                     CFG_CACHE["rot_provider"] = pv
                 if "use_iface" in b:
                     CFG_CACHE["rot_use_iface"] = bool(b.get("use_iface"))
                 if "pool" in b:
-                    raw = b.get("pool")
-                    if isinstance(raw, str):
-                        raw = re.split(r"[,\s]+", raw)
                     ips = []
-                    for x in raw or []:
-                        x = (x or "").strip()
+                    for x in _slist(b, "pool", limit=64):
+                        x = x.strip()
                         if not x:
                             continue
                         if not _is_ip4(x):
@@ -22237,17 +22699,17 @@ class H(http.server.BaseHTTPRequestHandler):
                             ips.append(x)
                     CFG_CACHE["rot_pool"] = ips
                 if "target" in b:
-                    t0 = (b.get("target") or "").strip()
+                    t0 = _field(b, 'target').strip()
                     if t0 and (t0.startswith("http") or "/" in t0 or " " in t0 or ":" in t0):
                         return self._send(400, {"error": "адрес проверки: только имя хоста или IPv4"})
                     CFG_CACHE["rot_target"] = t0
                 if "path" in b:
-                    pth = (b.get("path") or "/").strip()
+                    pth = (_field(b, 'path') or "/").strip()
                     if not pth.startswith("/"):
                         pth = "/" + pth
                     CFG_CACHE["rot_path"] = pth[:200]
                 if "cf_token" in b:
-                    tk = (b.get("cf_token") or "").strip()
+                    tk = _field(b, 'cf_token').strip()
                     if tk:
                         CFG_CACHE["cf_token"] = tk
                         CFG_CACHE.pop("cf_zone_id", None)
@@ -22255,18 +22717,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         CFG_CACHE.pop("cf_token", None)
                         CFG_CACHE.pop("cf_zone_id", None)
                 if "cf_zone" in b:
-                    z = (b.get("cf_zone") or "").strip().lower()
+                    z = _field(b, 'cf_zone').strip().lower()
                     if z and not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", z):
                         return self._send(400, {"error": "зона: имя домена"})
                     CFG_CACHE["cf_zone"] = z
                     CFG_CACHE.pop("cf_zone_id", None)
                 if "cf_records" in b:
-                    raw = b.get("cf_records")
-                    if isinstance(raw, str):
-                        raw = re.split(r"[,\s]+", raw)
                     rec = []
-                    for x in raw or []:
-                        x = (x or "").strip().strip(".").lower()
+                    for x in _slist(b, "cf_records", limit=64):
+                        x = x.strip().strip(".").lower()
                         if not x:
                             continue
                         if not re.fullmatch(r"(?i)@?[a-z0-9][a-z0-9.-]*|@|apex", x):
@@ -22287,7 +22746,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "message": "проверка запущена (до 3–4 минут)"})
             if p == "/api/rotate/swap":
                 b = self._body()
-                ip = (b.get("ip") or "").strip()
+                ip = _field(b, 'ip').strip()
                 if ip and not _is_ip4(ip):
                     return self._send(400, {"error": "не верный IPv4"})
                 if ip:
@@ -22323,8 +22782,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     b2 = self._body()
-                    name = (b2.get("name") or "").strip()
-                    atok = (b2.get("account_token") or "").strip()
+                    name = _field(b2, 'name').strip()
+                    atok = _field(b2, 'account_token').strip()
                     return self._send(200, _dynv6_create_zone(name, atok))
                 except urllib.error.HTTPError as e:
                     try:
@@ -22387,11 +22846,11 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/hop/ssh":
                 try:
                     b = self._body() or {}
-                    hid = (b.get("id") or "").strip()
+                    hid = _field(b, 'id').strip()
                     hop = next((h for h in _hop_load() if h.get("id") == hid), None)
                     if not hop:
                         raise RuntimeError("хоп не найден")
-                    user = (b.get("user") or "root").strip()
+                    user = (_field(b, 'user') or "root").strip()
                     if not _SSH_USER_RE.fullmatch(user):
                         raise RuntimeError("SSH-логин содержит недопустимые символы")
                     sport = int(b.get("ssh_port") or 22)
@@ -22401,7 +22860,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         busy = any((not j["done"]) and j.get("hop") == hid for j in HOP_JOBS.values())
                     if busy:
                         raise RuntimeError("установка на этот фронт уже идёт")
-                    jid = _hop_ssh_job(hid, user, str(b.get("password") or ""), sport)
+                    jid = _hop_ssh_job(hid, user, _field(b, 'password'), sport)
                     _audit("hop_bootstrap_start", id=hid, front_ip=hop.get("front_ip"))
                     return self._send(200, {"id": jid})
                 except Exception as e:
@@ -22409,20 +22868,20 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/hop/relink":
                 try:
                     b = self._body() or {}
-                    return self._send(200, _hop_relink((b.get("id") or "").strip()))
+                    return self._send(200, _hop_relink(_field(b, 'id').strip()))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/hop/status":
                 try:
                     b = self._body() or {}
-                    hid = (b.get("id") or "").strip() or None
+                    hid = _field(b, 'id').strip() or None
                     return self._send(200, _hop_check(hid))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/hop/remove":
                 try:
                     b = self._body() or {}
-                    return self._send(200, _hop_remove((b.get("id") or "").strip(),
+                    return self._send(200, _hop_remove(_field(b, 'id').strip(),
                                                        bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
@@ -22511,14 +22970,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Публичный, но только по одноразовому токену фронт-скрипта.
                 try:
                     b = self._body() or {}
-                    return self._send(200, _hop_register((b.get("tok") or "").strip(),
+                    return self._send(200, _hop_register(_field(b, 'tok').strip(),
                                                          self.client_address[0]))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/cert/config":
                 try:
                     b = self._body() or {}
-                    email = (b.get("email") or "").strip()
+                    email = _field(b, 'email').strip()
                     if email:
                         CFG_CACHE["cert_email"] = email
                     elif "email" in b:
@@ -22557,8 +23016,8 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/2fa/setup":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 b = self._body() or {}
-                code = (b.get("code") or "").strip()
-                secret = (b.get("secret") or CFG_CACHE.get("totp_pending_secret") or "").strip()
+                code = _field(b, 'code').strip()
+                secret = (_field(b, "secret") or CFG_CACHE.get("totp_pending_secret") or "").strip()
                 if not secret or not code:
                     return self._send(400, {"error": "укажи секрет и код подтверждения"})
                 if not _totp_verify(secret, code):
@@ -22572,7 +23031,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/2fa/disable":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 b = self._body() or {}
-                code = (b.get("code") or "").strip()
+                code = _field(b, 'code').strip()
                 secret = CFG_CACHE.get("totp_secret", "")
                 if secret and code and not _totp_verify(secret, code):
                     return self._send(400, {"error": "неверный код 2FA"})
@@ -22585,13 +23044,19 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/bot/config":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 if self.command == "GET":
+                    # Тот же ответ, что и в `_do_GET`. Ветка на словах мёртвая (GET
+                    # приходит туда), но держать в ней открытое credential нельзя:
+                    # её хватило бы один раз вызвать из нового места.
+                    tok = CFG_CACHE.get("bot_token", "") or ""
                     return self._send(200, {
-                        "token": CFG_CACHE.get("bot_token", ""),
+                        "token": "",
+                        "token_set": bool(tok),
+                        "token_fp": _bot_fp(tok) if tok else "",
                         "chat_ids": CFG_CACHE.get("bot_chat_ids", [])
                     })
                 if self.command == "POST":
                     b = self._body() or {}
-                    token = (b.get("token") or "").strip()
+                    token = _field(b, 'token').strip()
                     chat_ids_raw = b.get("chat_ids")
                     if isinstance(chat_ids_raw, str):
                         chat_ids = [x.strip() for x in chat_ids_raw.split(",") if x.strip()]
@@ -22603,6 +23068,13 @@ class H(http.server.BaseHTTPRequestHandler):
                         CFG_CACHE["bot_token"] = token
                     CFG_CACHE["bot_chat_ids"] = chat_ids
                     _cfg_save()
+                    # Событие, а не значения: «кто поменял токен бота» до этой правки
+                    # восстанавливалось только по mtime config.json, а ручка лежит на
+                    # отдельном операторском праве `bot`.
+                    _audit("bot_config_updated",
+                           token_changed=bool(token),
+                           token_fp=_bot_fp(str(CFG_CACHE.get("bot_token") or "")),
+                           chats=len(chat_ids))
                     return self._send(200, {"ok": True})
 
             if p == "/api/bot/test":
@@ -22626,7 +23098,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 token = CFG_CACHE.get("bot_token", "")
                 if not token:
                     return self._send(400, {"error": "бот не настроен"})
-                url = (b.get("url") or "").strip() or _bot_webhook_default_url()
+                url = _field(b, 'url').strip() or _bot_webhook_default_url()
                 if not url:
                     # Без домена «адрес по умолчанию» превращался в
                     # https://:8444/api/bot/webhook, Telegram его принимал, а
@@ -22698,8 +23170,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not self._is_cur_pw(b.get("current_password", "")):
                     return self._send(401, {"error": "неверный текущий пароль"})
                 changed = False
-                nl = (b.get("login") or "").strip()
-                np_ = b.get("password") or ""
+                nl = _field(b, 'login').strip()
+                np_ = _field(b, 'password')
                 if nl and nl != CFG_CACHE.get("login"):
                     CFG_CACHE["login"] = nl; changed = True
                 if np_:
@@ -22760,9 +23232,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 raw = self._read_exact(self._declared_len())
                 try: body = json.loads(raw.decode("utf-8", "replace") or "{}")
                 except Exception: body = {}
-                sni = (body.get("sni") or "").strip()
-                proto = (body.get("proto") or "").strip()
-                domain = (body.get("domain") or "").strip()
+                sni = _field(body, 'sni').strip()
+                proto = _field(body, 'proto').strip()
+                domain = _field(body, 'domain').strip()
                 if domain and not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?", domain):
                     return self._send(400, {"error": "недопустимый домен (разрешены буквы, цифры, точка и дефис)"})
                 port = body.get("port")
@@ -23071,29 +23543,29 @@ class H(http.server.BaseHTTPRequestHandler):
                         return self._send(400, {"error": "update_hours: 1..168"})
                     CFG_CACHE["sub_update_hours"] = h
                 if "tg_mode" in b:
-                    m = (b.get("tg_mode") or "").strip().lower()
+                    m = _field(b, 'tg_mode').strip().lower()
                     if m not in ("off", "shared", "personal"):
                         return self._send(400, {"error": "tg_mode: off|shared|personal"})
                     CFG_CACHE["sub_tg_mode"] = m
                 if "tg_shared_user" in b:
-                    su = _tg_slug(b.get("tg_shared_user"), "")
+                    su = _tg_slug(_field(b, 'tg_shared_user').strip(), "")
                     if not su:
                         return self._send(400, {"error": "имя общего прокси пустое"})
                     CFG_CACHE["tg_shared_user"] = su
                 if "support_url" in b:
-                    su = (b.get("support_url") or "").strip()
+                    su = _field(b, 'support_url').strip()
                     if su and not re.match(r"^(https?://|tg://)", su):
                         return self._send(400, {"error": "support-url: нужен https:// или tg://"})
                     CFG_CACHE["sub_support_url"] = su[:250]
                 if "brand" in b:
-                    CFG_CACHE["sub_brand"] = (b.get("brand") or "").strip()[:25]
+                    CFG_CACHE["sub_brand"] = _field(b, 'brand').strip()[:25]
                 _cfg_save()
                 _audit("sub_settings", **_sub_settings())
                 return self._send(200, {"ok": True, **_sub_settings()})
             if p == "/api/sub/format":
                 b = self._body()
-                tok = (b.get("sub_token") or "").strip()
-                fmt = (b.get("fmt") or "auto").strip().lower()
+                tok = _field(b, 'sub_token').strip()
+                fmt = (_field(b, 'fmt') or "auto").strip().lower()
                 if not tok:
                     return self._send(400, {"error": "нужен sub_token"})
                 if not _subdev_set_pref(tok, fmt):
@@ -23102,8 +23574,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "fmt": fmt})
             if p == "/api/sub/devices/del":
                 b = self._body()
-                tok = (b.get("sub_token") or "").strip()
-                ip = (b.get("ip") or "").strip()
+                tok = _field(b, 'sub_token').strip()
+                ip = _field(b, 'ip').strip()
                 if not (tok and ip):
                     return self._send(400, {"error": "нужны sub_token и ip"})
                 _subdev_remove(tok, ip)
@@ -23499,6 +23971,15 @@ if __name__ == "__main__":
         _harden_secret_files()
     except Exception as e:
         print("harden perms: " + str(e), flush=True)
+    # Аватары подписчиков были названы их подписочным токеном; переезд имён на
+    # отпечатки делаем здесь, а не в `_harden_secret_files`: та функция про
+    # права, а тут — чтобы credential-имя не дожило до первого запроса.
+    try:
+        n = _avatar_migrate_legacy()
+        if n:
+            _audit("avatars_renamed", n=n)
+    except Exception as e:
+        print("avatars migrate: " + str(e), flush=True)
     print("Veil " + VERSION + " слушает " + bind + ":" + str(port), flush=True)
     _load_sessions()
     try:
