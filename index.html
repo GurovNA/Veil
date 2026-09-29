@@ -2363,6 +2363,16 @@ async function updateMetrics(){
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
+// Значение внутри onclick="..." — строковый литерал JS, но сначала его читает
+// HTML-парсер и раскодирует сущности: escapeHtml даёт &#39; -> ' и литерал
+// захлопывается чужим кодом. Здесь экранируем то, что видит JS, и гасим &.
+function jsStr(s){
+  return String(s==null?'':s)
+    .replace(/[&\\]/g,m=>m==='&'?'&amp;':'\\\\')
+    .replace(/'/g,'\\x27').replace(/"/g,'\\u0022')
+    .replace(/</g,'\\u003c').replace(/>/g,'\\u003e')
+    .replace(/[\r\n\u2028\u2029]/g,c=>'\\u'+('000'+c.charCodeAt(0).toString(16)).slice(-4));
+}
 
 let USERS=[];
 function subSettings(uu){
@@ -2382,8 +2392,10 @@ function famOrphan(muuid,nmv){
 function subCard(c){
   const _su = c.sub_url || (location.origin + '/sub/' + c.sub_token);
   const _pu = _su.replace('/sub/', '/p/');
-  const tok = escapeHtml(c.sub_token||'');
-  const nm = escapeHtml(c.name);
+  // tok/nm/mtok/fmn уходят внутрь onclick="..." — их экранирует jsStr, а не escapeHtml.
+  const tok = jsStr(c.sub_token||'');
+  const nm = jsStr(c.name);
+  const nmH = escapeHtml(c.name);
   // --- статус ---
   let status;
   if(c.blocked){
@@ -2426,10 +2438,10 @@ function subCard(c){
   const linksDet = lm.length
     ? '<details class="uc-det"><summary>🔗 Ссылки по протоколам · '+lm.length+'</summary>'
       +'<div class="uc-row" style="margin-top:7px">'+lm.map(([proto,link])=>{
-          const lb=escapeHtml(protoLabels[proto]||proto);
+          const lb=escapeHtml(protoLabels[proto]||proto), lbJ=jsStr(protoLabels[proto]||proto);
           if((proto==='wireguard'||proto==='amneziawg')&&c.conf_url)
             return '<a class="uc-raw" href="'+escapeHtml(c.conf_url)+'" download>⬇ '+lb+'</a>';
-          return '<button class="uc-raw" onclick="copyText(\''+escapeHtml(link)+'\',\'Ссылка '+lb+' скопирована\')">'+lb+'</button>';
+          return '<button class="uc-raw" onclick="copyText(\''+jsStr(link)+'\',\'Ссылка '+lbJ+' скопирована\')">'+lb+'</button>';
         }).join('')+'</div></details>'
     : '';
   // --- устройства ---
@@ -2441,7 +2453,7 @@ function subCard(c){
     return '<div class="uc-devrow"><span title="'+escapeHtml(who)+'">'+escapeHtml(who)+'</span>'
       +'<span class="ip">'+escapeHtml(ipTxt)+'</span>'
       +'<span class="ago">'+escapeHtml(_ago(d.last_ts))+(d.n>1?' ·×'+d.n:'')+'</span>'
-      +'<button class="uc-i del" title="Забыть это устройство" onclick="delSubDevice(\''+tok+'\',\''+escapeHtml(d.ip||'')+'\')">✕</button></div>';
+      +'<button class="uc-i del" title="Забыть это устройство" onclick="delSubDevice(\''+tok+'\',\''+jsStr(d.ip||'')+'\')">✕</button></div>';
   }).join('');
   const devDet='<details class="uc-det"><summary title="Устройство = приложение подписчика, а не IP: смена сети (Wi-Fi → мобильный) не добавляет устройство. У клиентов без устойчивого отпечатка (часть приложений) устройство пока отличается по IP.">🖥 Устройства · '+devs.length+'</summary>'
     +(devs.length?'<div style="display:flex;flex-direction:column;gap:4px;margin-top:7px">'+devRows+'</div>'
@@ -2453,9 +2465,11 @@ function subCard(c){
   if(fam){
     const famRows = fam.map(function(m){
       const fmn = escapeHtml(m.name || (m.uuid||'').slice(0,8));
-      const mtok = escapeHtml(m.uuid||'');
-      const msub = escapeHtml(m.sub_url || (location.origin + '/sub/' + (m.sub_token||'')));
-      const mpage = escapeHtml(m.page_url || msub.replace('/sub/', '/p/'));
+      const fmnJ = jsStr(m.name || (m.uuid||'').slice(0,8));
+      const mtok = jsStr(m.uuid||'');
+      const msub0 = m.sub_url || (location.origin + '/sub/' + (m.sub_token||''));
+      const msub = jsStr(msub0);
+      const mpage = jsStr(m.page_url || msub0.replace('/sub/', '/p/'));
       const opts = [];
       for(let i=0;i<=10;i++) opts.push('<option value="'+i+'"'+((m.max_devices||0)===i?' selected':'')+'>'+(i===0?'без лимита':'устройств: '+i)+'</option>');
       return '<div class="uc-devrow">'
@@ -2464,8 +2478,8 @@ function subCard(c){
         + '<select class="uc-pick" style="max-width:130px" title="Сколько устройств этому участнику (личное число — у каждого в семье свой потолок)" onchange="famDevLimit(\''+mtok+'\',this.value)">'+opts.join('')+'</select>'
         + '<button class="uc-i" title="Скопировать ссылку подписки участника" onclick="copyText(\''+msub+'\',\'Ссылка участника скопирована\')">📋</button>'
         + '<button class="uc-i" title="Страница участника" onclick="window.open(\''+mpage+'\',\'_blank\')">👤</button>'
-        + '<button class="uc-i del" title="Удалить участника" onclick="famDelMember(\''+mtok+'\',\''+fmn+'\')">✕</button>'
-        + '<button class="uc-i" title="Вывести из семьи: человек останется со своей ссылкой, но платит сам за себя" onclick="famOrphan(\''+mtok+'\',\''+fmn+'\')">⤒</button>'
+        + '<button class="uc-i del" title="Удалить участника" onclick="famDelMember(\''+mtok+'\',\''+fmnJ+'\')">✕</button>'
+        + '<button class="uc-i" title="Вывести из семьи: человек останется со своей ссылкой, но платит сам за себя" onclick="famOrphan(\''+mtok+'\',\''+fmnJ+'\')">⤒</button>'
         + '</div>';
     }).join('');
     famDet = '<details class="uc-det"><summary title="Участники пользуются одной оплаченной подпиской: у каждого своя ссылка и свой лимит устройств, но трафик и срок считаются на всю семью. Предупреждения и блокировка — по общему расходу.">👨‍👩‍👧 Семья · '+fam.length+(fam.length>=5?' · максимум':'')+'</summary>'
@@ -2490,15 +2504,15 @@ function subCard(c){
   return '<div class="uc">'
     + '<div class="uc-top">'
       + '<span class="uc-dot'+(c.online>0?' on':'')+'" title="'+(c.online>0?'онлайн':'офлайн')+'"></span>'
-      + '<span class="uc-name" title="'+nm+'">'+nm+'</span><span class="uc-sp"></span>'
+      + '<span class="uc-name" title="'+nmH+'">'+nmH+'</span><span class="uc-sp"></span>'
       + '<span class="uc-act">'
-        + '<button class="uc-i" title="Скопировать ссылку подписки" onclick="copyText(\''+escapeHtml(_su)+'\',\'Ссылка подписки скопирована\')">📋</button>'
-        + '<button class="uc-i" title="QR-код" onclick="showQR(\''+escapeHtml(_su)+'\',\'Подписка: '+nm+'\')">📷</button>'
-        + '<button class="uc-i" title="Страница подписчика" onclick="window.open(\''+escapeHtml(_pu)+'\',\'_blank\')">👤</button>'
-        + '<button class="uc-i" title="'+(c.blocked?'Включить подписчика (вернётся в конфиг — связь восстановится)':'Выключить подписчика (ссылки перестанут работать; трафик и настройки сохранятся)')+'" onclick="subToggle(\''+tok+'\',\''+escapeHtml(c.uuid||'')+'\','+(c.blocked?'true':'false')+',\''+escapeHtml(c.blocked_reason||'')+'\')">'+(c.blocked?'▶':'⏸')+'</button>'
+        + '<button class="uc-i" title="Скопировать ссылку подписки" onclick="copyText(\''+jsStr(_su)+'\',\'Ссылка подписки скопирована\')">📋</button>'
+        + '<button class="uc-i" title="QR-код" onclick="showQR(\''+jsStr(_su)+'\',\'Подписка: '+nm+'\')">📷</button>'
+        + '<button class="uc-i" title="Страница подписчика" onclick="window.open(\''+jsStr(_pu)+'\',\'_blank\')">👤</button>'
+        + '<button class="uc-i" title="'+(c.blocked?'Включить подписчика (вернётся в конфиг — связь восстановится)':'Выключить подписчика (ссылки перестанут работать; трафик и настройки сохранятся)')+'" onclick="subToggle(\''+tok+'\',\''+jsStr(c.uuid||'')+'\','+(c.blocked?'true':'false')+',\''+jsStr(c.blocked_reason||'')+'\')">'+(c.blocked?'▶':'⏸')+'</button>'
         + '<button class="uc-i" title="Обновить ключи (uuid, пароли, WG-ключи). Ссылка подписки НЕ меняется — приложения сами подтянут новое. Полезна, если ссылка «утекла»" onclick="subRotate(\''+tok+'\',\''+nm+'\')">🔁</button>'
         + '<button class="uc-i del" title="Удалить подписчика" onclick="doSubDelete(\''+tok+'\')">🗑</button>'
-        + '<button class="uc-i" title="Настройки подписки: имя, срок (в том числе до конкретной даты), лимит, семья" onclick="subSettings(\''+escapeHtml(c.uuid||'')+'\')">⚙</button>'
+        + '<button class="uc-i" title="Настройки подписки: имя, срок (в том числе до конкретной даты), лимит, семья" onclick="subSettings(\''+jsStr(c.uuid||'')+'\')">⚙</button>'
       + '</span>'
     + '</div>'
     + '<div class="uc-chips">'+famChip+status+expChip+cliChip+'</div>'
@@ -2980,12 +2994,12 @@ function hopBadge(state,tokLeft,tokAlive){
 function hopPendingBox(x){
   return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;color:var(--acc)">⚙ установить фронт: SSH в один клик или одна команда на фронте</summary>'
     +'<div style="padding:8px 4px 0">'
-    +'<div id="hopAct_'+x.id+'"><button class="sec tiny" onclick="hopRelink(\''+x.id+'\')">🔗 Выдать команду установки (curl | sh)</button> <span class=mut style="font-size:12px">— или через SSH:</span></div>'
+    +'<div id="hopAct_'+x.id+'"><button class="sec tiny" onclick="hopRelink(\''+jsStr(x.id)+'\')">🔗 Выдать команду установки (curl | sh)</button> <span class=mut style="font-size:12px">— или через SSH:</span></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">'
     +'<input id="hopU_'+x.id+'" value="root" placeholder="SSH-логин" style="width:110px" autocomplete=off>'
     +'<input id="hopSP_'+x.id+'" type=number min=1 max=65535 value=22 style="width:80px" title="SSH-порт">'
     +'<input id="hopP_'+x.id+'" type=password placeholder="SSH-пароль" style="width:170px" autocomplete=new-password>'
-    +'<button class=tiny onclick="hopSsh(\''+x.id+'\')">⚡ Установить по SSH</button></div>'
+    +'<button class=tiny onclick="hopSsh(\''+jsStr(x.id)+'\')">⚡ Установить по SSH</button></div>'
     +'<div id="hopBoot_'+x.id+'" style="margin-top:8px;font-size:13px"></div>'
     +'<div class=mut style="font-size:12px;margin-top:6px">SSH-пароль нужен однократно (для установки ключа панели), нигде не сохраняется. Не забудь открыть порты ['+esc((x.ports||[]).join(', '))+'] в security group облака фронта.</div>'
     +'</div></details>';
@@ -3023,8 +3037,8 @@ function renderHop(){
         +hopBadge(x.state,x.tok_left||0,x.tok_alive)
         +'<span class=mut style="font-size:12.5px">порты: '+esc((x.ports||[]).join(', '))+'</span>'
         +'<span style="margin-left:auto;display:flex;gap:6px">'
-        +'<button class="sec tiny" onclick="hopCheck(\''+x.id+'\')">Проверить</button>'
-        +'<button class="sec tiny" onclick="hopDel(\''+x.id+'\',\''+esc(x.front_ip)+'\')">Удалить</button></span></div>'
+        +'<button class="sec tiny" onclick="hopCheck(\''+jsStr(x.id)+'\')">Проверить</button>'
+        +'<button class="sec tiny" onclick="hopDel(\''+jsStr(x.id)+'\',\''+jsStr(x.front_ip)+'\')">Удалить</button></span></div>'
         +lc+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
     }).join('');
   }
@@ -3166,9 +3180,9 @@ async function renderNodes(){
       '</div>' +
       '<div style="display:flex;align-items:center;gap:8px">' +
       '<span style="' + (n.online ? 'color:#4ade80' : 'color:#f87171') + '">' + (n.online ? '● онлайн' : '● офлайн') + '</span>' +
-      '<button class=tiny onclick="restartNode(\''+escapeHtml(n.host||'')+'\')"'+(n.online?'':' disabled')+'>🔄 Перезапустить</button>' +
-      '<button class=tiny onclick="checkNode(\''+escapeHtml(n.host||'')+'\')">Проверить</button>' +
-      '<button class=tiny onclick="delNode(\'' + escapeHtml(n.host||'') + '\')">Удалить</button></div></div>'
+      '<button class=tiny onclick="restartNode(\''+jsStr(n.host||'')+'\')"'+(n.online?'':' disabled')+'>🔄 Перезапустить</button>' +
+      '<button class=tiny onclick="checkNode(\''+jsStr(n.host||'')+'\')">Проверить</button>' +
+      '<button class=tiny onclick="delNode(\'' + jsStr(n.host||'') + '\')">Удалить</button></div></div>'
     ).join('');
   }catch(e){
     box.innerHTML = '<p class=mut>Ноды не добавлены — пока сервер работает в одностерверном режиме.</p>';
@@ -3185,7 +3199,7 @@ async function loadNodeTokens(){
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
       '<div><strong>'+esc(t.label)+'</strong> <span class=mut style="font-size:11px">'+(t.scopes||[]).map(s=>s==='write'?'запись':'чтение').join(' + ')+'</span>' +
       '<div class=mut style="font-size:11.5px">id '+esc(t.id)+' · создан '+new Date((t.created||0)*1000).toLocaleDateString()+(t.last_used?(' · использован '+new Date(t.last_used*1000).toLocaleString()):' · ещё не использовался')+'</div></div>' +
-      '<button class=tiny onclick="doRevokeNodeToken(\''+esc(t.id)+'\',\''+esc(t.label)+'\')">Отозвать</button></div>'
+      '<button class=tiny onclick="doRevokeNodeToken(\''+jsStr(t.id)+'\',\''+jsStr(t.label)+'\')">Отозвать</button></div>'
     ).join('');
   }catch(e){ box.textContent='не удалось загрузить токены'; }
 }
@@ -3765,7 +3779,7 @@ function renderProtoCards(){
         '<div class=prow>'+
         '<button class=pacc title="Раскрыть клиентов">+</button>'+
         '<div class=ptitle><div class=pname></div><span class=pbadge>0</span></div>'+
-        (p.has_inbound?'<label class=psw title="Переключатель: выключенный протокол убирается из конфига Xray и из всех подписок — клиенты по нему перестают работать, остальные не трогаются"><input type=checkbox '+(p.disabled?'':'checked')+' onchange="protoToggle(\''+p.id+'\',!this.checked,this)"><i></i></label>':'<button class=penable title="Транспорт не задействован: входа под него в Xray нет. Кнопка создаст вход, положит в него всех текущих подписчиков и перезапустит Xray — на секунду соединения прервутся">＋</button>')+
+        (p.has_inbound?'<label class=psw title="Переключатель: выключенный протокол убирается из конфига Xray и из всех подписок — клиенты по нему перестают работать, остальные не трогаются"><input type=checkbox '+(p.disabled?'':'checked')+' onchange="protoToggle(\''+jsStr(p.id)+'\',!this.checked,this)"><i></i></label>':'<button class=penable title="Транспорт не задействован: входа под него в Xray нет. Кнопка создаст вход, положит в него всех текущих подписчиков и перезапустит Xray — на секунду соединения прервутся">＋</button>')+
         '<button class=pstar '+(isFav?'style="color:var(--warn)"':'')+' title="'+(isFav?'Убрать из избранного':'Добавить в избранное')+'">★</button>'+
         '<button class=pcheck title="Ещё — добавить клиента">⋯</button>'+
         '</div>'+
@@ -4150,27 +4164,33 @@ async function disable2fa(){
     toast('2FA отключена','ok');
   }catch(e){alert('Ошибка: '+e.message);}
 }
+let botTokenSet=false;
 async function loadBotConfig(){
   try{
     const d=await api('/api/bot/config');
-    if(d.token) $('botToken').value=d.token;
+    // Панель больше не отдаёт токен наружу: приходит признак «задан» и отпечаток.
+    // Пустое поле формы теперь означает «не менять», а не «токена нет».
+    botTokenSet=!!d.token_set;
     if(d.chat_ids) $('botChatIds').value=d.chat_ids.join(', ');
+    if(botTokenSet) setMsg('botMsg','Токен сохранён (отпечаток '+(d.token_fp||'?')+') — пустое поле означает «не менять»','');
   }catch(e){}
 }
 async function saveBotConfig(){
   const token=$('botToken').value.trim();
   const chat_ids=$('botChatIds').value.split(',').map(x=>x.trim()).filter(x=>x);
-  if(!token){ setMsg('botMsg','Введите Bot Token','err'); return; }
+  if(!token && !botTokenSet){ setMsg('botMsg','Введите Bot Token','err'); return; }
   setMsg('botMsg','Сохраняю...','');
   try{
     await api('/api/bot/config',{method:'POST',body:JSON.stringify({token,chat_ids})});
+    botTokenSet=true;
+    $('botToken').value='';
     setMsg('botMsg','Настройки бота сохранены','ok');
     toast('Настройки бота сохранены','ok');
   }catch(e){ setMsg('botMsg',e.message,'err'); }
 }
 async function testBotConnection(){
   const token=$('botToken').value.trim();
-  if(!token){ setMsg('botMsg','Сначала сохраните токен','err'); return; }
+  if(!token && !botTokenSet){ setMsg('botMsg','Сначала сохраните токен','err'); return; }
   setMsg('botMsg','Проверяю подключение...','');
   try{
     const r=await api('/api/bot/test',{method:'POST',body:JSON.stringify({})});
@@ -4390,7 +4410,7 @@ async function loadRotate(){
     if(ih){
       const ips=[];
       (s.iface||[]).forEach(a=>(a.ipv4||[]).forEach(ip=>{ if(ip&&!ip.startsWith('127.')&&!ips.includes(ip)) ips.push(ip); }));
-      ih.innerHTML=ips.length?('адреса интерфейсов (клик — добавить в пул): '+ips.map(x=>'<button class="tiny" style="margin:2px" onclick="addRotIp(\''+x+'\')">'+x+'</button>').join('')):'';
+      ih.innerHTML=ips.length?('адреса интерфейсов (клик — добавить в пул): '+ips.map(x=>'<button class="tiny" style="margin:2px" onclick="addRotIp(\''+jsStr(x)+'\')">'+x+'</button>').join('')):'';
     }
     renderRotateStatus(s);
   }catch(e){ setMsg('rotMsg','Не удалось загрузить статус: '+e.message,'err'); }
@@ -6409,9 +6429,9 @@ function renderTgMain(){
       + '<span class=mut style="font-size:12px">клиент «'+esc(u.username)+'»</span></div>';
     h += '<div class="link-row" style="margin-top:8px"><code style="display:block;background:color-mix(in srgb,var(--bg) 72%,transparent);border:1px solid var(--br);border-radius:9px;padding:9px;font-size:11px;word-break:break-all;max-height:none">'+esc(u.link)+'</code></div>';
     h += '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'
-      + '<button class="tiny sec" onclick="copyText(\''+esc(u.link)+'\',\'Ссылка скопирована\')">📋 Копировать</button>'
-      + '<button class="tiny sec" onclick="showQR(\''+esc(u.link)+'\',\'Ссылка с сайт-маской\')">📷 QR</button>'
-      + '<button class="tiny sec" onclick="openProxyInTg(\''+esc(u.link)+'\')">📱 Открыть в Telegram</button>';
+      + '<button class="tiny sec" onclick="copyText(\''+jsStr(u.link)+'\',\'Ссылка скопирована\')">📋 Копировать</button>'
+      + '<button class="tiny sec" onclick="showQR(\''+jsStr(u.link)+'\',\'Ссылка с сайт-маской\')">📷 QR</button>'
+      + '<button class="tiny sec" onclick="openProxyInTg(\''+jsStr(u.link)+'\')">📱 Открыть в Telegram</button>';
     if(fresh.length > 1) h += '<span class=mut style="font-size:12px">и ещё '+(fresh.length-1)+' клиентов(а) с этим же фронтом — ниже</span>';
     h += '</div>';
     h += '<p class=mut style="font-size:12px;margin:8px 0 0;line-height:1.55">Это самая «молочная» ссылка: прокси прячется за <b>твоим</b> доменом с настоящим сертификатом. Раздавай её новым людям. Старые ссылки с прежним фронтом не отвалятся — прежние домены остаются в списке <code>tls_domains</code>.</p>';
@@ -6762,7 +6782,7 @@ function renderPay(){
   $('payHookCb').textContent=d.hook_cb;$('payHookYoo').textContent=d.hook_yoo;
   payProvUI();
   $('payPlans').innerHTML=d.plans.length?d.plans.map(p=>
-    '<div style="display:flex;gap:10px;align-items:center;padding:6px 2px;border-bottom:1px solid rgba(128,128,128,.15)"><b>'+escapeHtml(p.title)+'</b><span class=mut style="font-size:12px">'+(p.days>0?p.days+' дн.':'')+(p.days>0&&p.gb>0?' · ':'')+(p.gb>0?p.gb+' ГБ':'безлимит')+(p.reset?' · сброс трафика':'')+(p.shop?' · 🛒 витрина':' · не в витрине')+'</span><span style="margin-left:auto;font-weight:700;white-space:nowrap">'+p.price+' '+escapeHtml(p.currency)+'</span><button class="tiny danger" onclick="payPlanDel(\''+p.id+'\')">✕</button></div>').join('')
+    '<div style="display:flex;gap:10px;align-items:center;padding:6px 2px;border-bottom:1px solid rgba(128,128,128,.15)"><b>'+escapeHtml(p.title)+'</b><span class=mut style="font-size:12px">'+(p.days>0?p.days+' дн.':'')+(p.days>0&&p.gb>0?' · ':'')+(p.gb>0?p.gb+' ГБ':'безлимит')+(p.reset?' · сброс трафика':'')+(p.shop?' · 🛒 витрина':' · не в витрине')+'</span><span style="margin-left:auto;font-weight:700;white-space:nowrap">'+p.price+' '+escapeHtml(p.currency)+'</span><button class="tiny danger" onclick="payPlanDel(\''+jsStr(p.id)+'\')">✕</button></div>').join('')
     :'<p class=mut>Тарифов пока нет — добавь первый ниже.</p>';
   $('payPlanSel').innerHTML=d.plans.map(p=>'<option value="'+escapeHtml(p.id)+'">'+escapeHtml(p.title)+' — '+p.price+' '+escapeHtml(p.currency)+'</option>').join('')||'<option>—</option>';
   $('paySubSel').innerHTML=(d.subs||[]).map(s=>'<option value="'+escapeHtml(s.token)+'">'+escapeHtml(s.name||'без имени')+' · '+(s.expiry?new Date(s.expiry*1000).toLocaleDateString():'бессрочно')+'</option>').join('')||'<option value="">нет клиентов</option>';
@@ -6775,8 +6795,8 @@ function renderPayInvs(){
     const st=v.applied?'✅ оплачено':(v.status==='paid'?'⚠️ не применено':'⏳ ожидает');
     const dt=v.created?new Date(v.created*1000).toLocaleString():'';
     let btns='<a class="tiny sec" style="text-decoration:none;padding:3px 8px;border-radius:6px;border:1px solid rgba(128,128,128,.4)" target=_blank href="/pay/i/'+v.id+'">Открыть</a> ';
-    if(!v.applied)btns+='<button class="tiny sec" onclick="payConfirm(\''+v.id+'\')">Подтвердить</button> ';
-    if(!v.applied&&(v.provider==='cryptobot'||v.provider==='yookassa'))btns+='<button class="tiny sec" onclick="payCheck(\''+v.id+'\')">Проверить</button>';
+    if(!v.applied)btns+='<button class="tiny sec" onclick="payConfirm(\''+jsStr(v.id)+'\')">Подтвердить</button> ';
+    if(!v.applied&&(v.provider==='cryptobot'||v.provider==='yookassa'))btns+='<button class="tiny sec" onclick="payCheck(\''+jsStr(v.id)+'\')">Проверить</button>';
     return '<div style="display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px;flex-wrap:wrap"><code>'+v.id+'</code><b>'+escapeHtml(v.name||'?')+'</b>'+(v.kind=='shop'?'<span title="покупка с витрины">🛒</span>':'')+'<span class=mut>'+escapeHtml(v.title||'')+'</span><span>'+v.price+' '+escapeHtml(v.currency)+'</span><span>'+st+'</span><span class=mut style="font-size:11px">'+dt+'</span><span style="margin-left:auto;display:flex;gap:4px">'+btns+'</span></div>';
   }).join('')+'<p class=mut style="font-size:12px;margin-top:6px">Неоплаченных: '+d.unpaid+' · собрано с тарифами: '+d.paid_total+'</p>';
 }
@@ -7437,7 +7457,7 @@ function renderSessionsList(items,rows){
       `<td title="${escapeHtml(s.ua||'')}">${escapeHtml((s.ua||'').slice(0,50))}</td>`+
       `<td>${escapeHtml(createdStr)}</td>`+
       `<td>${s.remember?'да (30д)':'нет'}${expStr?`<br><span style="font-size:11px;color:var(--mut2)">до ${expStr}</span>`:''}</td>`+
-      `<td>${s.current?'':`<button class="tiny danger" onclick="revokeSid('${escapeHtml(s.sid||s.token||'')}')">Завершить</button>`}</td></tr>`;
+      `<td>${s.current?'':`<button class="tiny danger" onclick="revokeSid('${jsStr(s.sid||s.token||'')}')">Завершить</button>`}</td></tr>`;
   }).join('')||'<tr><td colspan=6 class=mut>Сессий нет</td></tr>';
 }
 async function revokeSid(sid){
