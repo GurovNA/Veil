@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.20"
+VERSION = "2.16.21"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1695,12 +1695,22 @@ def _gen_keys():
                        + " байт) — обновите панель под эту версию xray")
 
 # ---------- AmneziaWG (системный kernel-интерфейс awg0) ----------
-AWG_IFACE = "awg0"
-AWG_CONF = "/etc/amnezia/amneziawg/awg0.conf"
+# ПЕСОЧНИЦА ХАРНЕССОВ. VEIL_SYS_SANDBOX=<каталог> переселяет пути конфигов в этот
+# каталог и переименовывает интерфейсы. Без этого харнесс, который проверяет
+# `_wg_write_conf` на живом коде, пишет НАСТОЯЩИЙ /etc/wireguard/veilwg.conf и
+# перезапускает НАСТОЯЩИЙ туннель — 30.09 так и случилось: конфиг живой панели
+# оказался заменён тестовым (чужой порт, ноль peers), и WireGuard/AmneziaWG молчали
+# до тех пор, пока живой подписчик не пересохранить. Имена интерфейсов меняются
+# нарочно: `systemctl start wg-quick@sbx-veilwg` обязан провалиться, а не поднять
+# живой туннель. Обычный запуск панели переменную не задаёт — пути те же, что и были.
+SBX = (os.environ.get("VEIL_SYS_SANDBOX") or "").strip()
+
+AWG_IFACE = "sbx-awg0" if SBX else "awg0"
+AWG_CONF = os.path.join(SBX or "/etc/amnezia/amneziawg", "awg0.conf")
 AWG_ADDR = "10.20.0.1/24"
 
-WG_IFACE = "veilwg"
-WG_CONF = "/etc/wireguard/veilwg.conf"
+WG_IFACE = "sbx-veilwg" if SBX else "veilwg"
+WG_CONF = os.path.join(SBX or "/etc/wireguard", "veilwg.conf")
 WG_ADDR = "10.10.0.1/24"
 # ULA-адреса ВНУТРИ туннелей. Клиенты (INCY/нативный WG) вешают в туннель
 # AllowedIPs ::/0; без собственного v6-адреса в туннеле все IPv6-запросы
@@ -1985,7 +1995,7 @@ def _wg_iface_synced(inb):
         return False
 
 def _wg_write_conf(inb):
-    os.makedirs("/etc/wireguard", exist_ok=True)
+    os.makedirs(os.path.dirname(WG_CONF), exist_ok=True)
     # право ставим при открытии: с open(...,"w") файл с приватным ключом
     # несколько мгновений живёт под umask (0644), и только потом chmod(0600)
     fd = os.open(WG_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -2003,7 +2013,8 @@ def _soft_sync(iface, conf_text):
     # имя уникальное по нити: панель — ThreadingTCPServer, у всех нитей один PID,
     # и два параллельных добавления подписчика писали бы в один файл, а затем
     # чужой finally стирал бы его из-под ещё не запустившегося syncconf
-    path = "/etc/wireguard/.veil-soft-%d-%d.conf" % (os.getpid(), threading.get_ident())
+    path = os.path.join(os.path.dirname(WG_CONF),
+                        ".veil-soft-%d-%d.conf" % (os.getpid(), threading.get_ident()))
     try:
         lines = [l for l in conf_text.splitlines()
                  if l.split("=", 1)[0].strip() not in ("Address", "MTU")]
@@ -2080,6 +2091,11 @@ def _ensure_wg_net():
     """IPv4/IPv6-forwarding + NAT masquerade для туннельных подсетей
     (wireguard 10.10.0.0/24 + fd10:10::/64 и amneziawg 10.20.0.0/24 + fd20:10::/64).
     Идемпотентно; повторно применяется при каждом старте панели."""
+    if SBX:
+        # Под песочницей не трогаем ни sysctl, ни живой nft: `nft flush table ip
+        # veil_wg` снял бы masquerade у настоящих подписчиков, а это ровно тот
+        # вред, который харнесс может нанести, даже не написав ни одного файла.
+        return
     try:
         subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"],
                        capture_output=True, text=True, timeout=10)
@@ -3361,6 +3377,8 @@ def _statsquery():
             # «интервал минус предыдущий интервал» — при ровном трафике 0, и
             # лимит перестал бы считаться совсем. Сброс нам не нужен: накопление
             # ведём в state (up/down), а базой служит last_up/last_down.
+            ["xray", "api", "statsquery", "--server", f"127.0.0.1:{_STATS_PORT}",
+             "-pattern", "user"],
             capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return {}
@@ -5372,6 +5390,24 @@ def _incy_link(proto, inb, c, host):
         return (f"wireguard://{key}@{_incy_wg_ep(host)}:{inb['port']}?{q}#{urllib.parse.quote(name)}")
     return _link(inb, host, c, proto, std=True)
 
+
+# #110: порядок узлов в подписке = порядок на экране клиента (приложения ничего не
+# пересортировывают). Обход по GeoIP живёт только на xray-протоколах, а WireGuard к
+# тому же детектируется провайдером, поэтому прячущие конфиги идут первыми, а
+# туннельные — в самом низу: WireGuard, затем AmneziaWG (тот же порядок, что и
+# карточки кабинета в #108).
+_TUNNEL_LAST = {"wireguard": 90, "amneziawg": 100}
+
+
+def _sub_order(keys):
+    """Ключи `inb_links`/`inc_links`/`sb_objs` в том порядке, в каком их увидит клиент.
+
+    Сортировка устойчивая: порядок xray-протоколов остаётся как в состоянии, вниз
+    уезжают ровно туннельные. Ключ — `proto` либо `proto|uuid` (`/sub` без токена
+    отдаёт ссылки всех подписчиков, и без uuid в ключе все, кроме первой, терялись).
+    """
+    return sorted(keys, key=lambda k: _TUNNEL_LAST.get(str(k).split("|")[0], 0))
+
 def _singbox_outbound(proto, inb, c, host):
     meta = _proto_meta(proto)
     host = _pub_host(inb, host, proto)
@@ -5477,6 +5513,14 @@ if not os.path.exists(_LOGO_PNG):
 # "wg"/"awg": карточка показывается только если у подписчика есть этот протокол.
 # Для WireGuard/AmneziaWG — импорт личного конфига (wgconf:// или скачивание .conf),
 # а не подписки.
+# Порядок = порядок на странице. INCY и Happ идут первыми в каждом списке: у них
+# обход РФ включён в саму подписку, человеку не нужно ничего настраивать.
+# На десктопах и ТВ deep-link не обещаем ("link": "") — карточка копирует
+# подписку и ведёт на официальную страницу загрузки.
+# Порядок внутри группы = порядок на экране (render() ничего не пересортировывает).
+# #108: туннельные карточки идут в конце — обход по GeoIP живёт только на xray-
+# протоколах, а WireGuard к тому же детектируется провайдером, поэтому прячущие
+# всегда выше; AmneziaWG — самый последний.
 _SUB_APP_CATALOG = {
     "ios": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://apps.apple.com/app/incy/id6756943388", "link": "incy://import/{rawsub}#{name}"},
@@ -5484,27 +5528,29 @@ _SUB_APP_CATALOG = {
         {"name": "sing-box (SFI)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Streisand", "ic": "S", "col": "#9333ea", "col2": "#d946ef", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "Foxray", "ic": "F", "col": "#ea580c", "col2": "#f59e0b", "store": "https://apps.apple.com/app/foxray-vpn-fast-secure/id6770070697", "link": ""},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1441195209", "link": "wgconf://{wgconf}", "wg": True},
-        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "link": "wgconf://{awgconf}", "awg": True},
         {"name": "Shadowrocket", "ic": "S", "col": "#334155", "col2": "#64748b", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}?remark={name}", "pay": True},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
         {"name": "Loon", "ic": "L", "col": "#e11d48", "col2": "#f43f5e", "store": "https://apps.apple.com/app/loon/id1373567447", "link": "", "pay": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1441195209", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "link": "wgconf://{awgconf}", "awg": True},
     ],
     "android": [
-        {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
-        {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://play.google.com/store/apps/details?id=com.happproxy", "link": "happ://", "precopy": 1},
+        {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
+        {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "Karing", "ic": "K", "col": "#7c3aed", "col2": "#c084fc", "store": "https://karing.app/en/download", "link": ""},
         {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Hysteria2", "ic": "H", "col": "#e11d48", "col2": "#f97316", "store": "https://github.com/apernet/hysteria/releases", "link": "", "hy2": True},
+        {"name": "Amnezia VPN", "ic": "A", "col": "#0ea5e9", "col2": "#818cf8", "store": "https://play.google.com/store/apps/details?id=org.amnezia.vpn", "link": "", "awg": True},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "link": "wgconf://{awgconf}", "awg": True},
-        {"name": "Amnezia VPN", "ic": "A", "col": "#0ea5e9", "col2": "#818cf8", "store": "https://play.google.com/store/apps/details?id=org.amnezia.vpn", "link": "", "awg": True},
     ],
     "windows": [
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://github.com/Happ-proxy/happ-desktop/releases", "link": ""},
         {"name": "v2rayN", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayN/releases", "link": ""},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://github.com/hiddify/hiddify-next/releases", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "Clash Verge Rev", "ic": "C", "col": "#2563eb", "col2": "#3b82f6", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}#{name}"},
@@ -5515,26 +5561,33 @@ _SUB_APP_CATALOG = {
         {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "link": "wgconf://{awgconf}", "awg": True},
     ],
     "macos": [
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://github.com/Happ-proxy/happ-desktop/releases", "link": ""},
         {"name": "sing-box (SFM)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Streisand", "ic": "S", "col": "#9333ea", "col2": "#d946ef", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
     ],
     "apple_tv": [
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://apps.apple.com/app/incy/id6756943388", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-proxy-utility-for-tv/id6748297274", "link": ""},
         {"name": "sing-box (SFT)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "wgconf://{wgconf}", "wg": True},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "wgconf://{wgconf}", "wg": True},
     ],
     "android_tv": [
-        {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://play.google.com/store/apps/details?id=com.happproxy", "link": ""},
+        {"name": "v2rayNG", "ic": "V", "col": "#f59e0b", "col2": "#f97316", "store": "https://github.com/2dust/v2rayNG/releases", "link": "v2rayng://install-sub/?url={sub}#{name}"},
         {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
     ],
     "linux": [
+        {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
+        {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://github.com/Happ-proxy/happ-desktop/releases", "link": ""},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "Clash Verge Rev", "ic": "C", "col": "#2563eb", "col2": "#3b82f6", "store": "https://github.com/clash-verge-rev/clash-verge-rev/releases", "link": "clash://install-config?url={sub}#{name}"},
         {"name": "Nekoray", "ic": "N", "col": "#65a30d", "col2": "#84cc16", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
@@ -5632,6 +5685,10 @@ _SUB_TXT_RU = {
     "btn_add": "Добавить / Импортировать", "btn_install": "Установить конфиг",
     "btn_how": "Как подключиться", "btn_copy": "Скопировать подписку",
     "btn_share": "Поделиться",
+    "btn_qr": "QR-код", "qr_hd": "QR-код подписки",
+    "qr_hint": "Наведите камеру приложения на этот код — подписка добавится сама.",
+    "qr_err": "Код не открылся. Скопируйте ссылку кнопкой выше.",
+    "fam_qr": "QR-код участника",
     "hint_pick": "Выберите приложение и нажмите «Добавить / Импортировать».",
     "ft_sub": "Подписка:", "ft_page": "Ваша страница:",
     "tag_paid": "платно", "store_dl": "Скачать ↗",
@@ -5685,6 +5742,8 @@ _SUB_TXT_RU = {
     "fam_none": "Пока никого. Добавь участника — у него появится своя подписка с общим тарифом.",
     "fam_add": "＋ Добавить участника",
     "fam_name_prompt": "Имя участника (например: Жена)",
+    "fam_edit": "Переименовать участника",
+    "fam_renamed": "Имя изменено.",
     "fam_del_q": "Удалить участника семьи? Его ссылка перестанет работать.",
     "fam_share": "личных %s GB",
     "fam_full": "Больше нельзя: в семье максимум %d участника.",
@@ -5725,6 +5784,10 @@ _SUB_TXT = {
     "btn_add": "Add / Import", "btn_install": "Install config",
     "btn_how": "How to connect", "btn_copy": "Copy subscription",
     "btn_share": "Share",
+    "btn_qr": "QR code", "qr_hd": "Subscription QR code",
+    "qr_hint": "Point your app camera at this code — the subscription adds itself.",
+    "qr_err": "The code did not open. Copy the link with the button above.",
+    "fam_qr": "Member QR code",
     "hint_pick": "Choose an app and tap “Add / Import”.",
     "ft_sub": "Subscription:", "ft_page": "Your page:",
     "tag_paid": "paid", "store_dl": "Download ↗",
@@ -5779,6 +5842,8 @@ _SUB_TXT = {
     "fam_none": "No members yet. Add one — they get their own subscription on the shared plan.",
     "fam_add": "＋ Add member",
     "fam_name_prompt": "Member name (e.g., Wife)",
+    "fam_edit": "Rename member",
+    "fam_renamed": "Name updated.",
     "fam_del_q": "Remove this family member? Their link will stop working.",
     "fam_share": "%s GB personal",
     "fam_full": "Limit reached: up to %d members per family.",
@@ -5818,6 +5883,10 @@ _SUB_TXT = {
     "btn_add": "افزودن / وارد کردن", "btn_install": "نصب کانفیگ",
     "btn_how": "چگونه وصل شویم", "btn_copy": "کپی اشتراک",
     "btn_share": "اشتراک‌گذاری",
+    "btn_qr": "کد QR", "qr_hd": "کد QR اشتراک",
+    "qr_hint": "دوربین اپ را روی این کد بگیرید — اشتراک خودش اضافه می‌شود.",
+    "qr_err": "کد باز نشد. با دکمهٔ بالا لینک را کپی کنید.",
+    "fam_qr": "کد QR عضو",
     "hint_pick": "یک اپ انتخاب کنید و «افزودن / وارد کردن» را بزنید.",
     "ft_sub": "اشتراک:", "ft_page": "صفحه شما:",
     "tag_paid": "پولی", "store_dl": "دانلود ↗",
@@ -5871,6 +5940,8 @@ _SUB_TXT = {
     "fam_none": "هنوز عضو‌ای نیست. بیفزایید — لینک شخصی با پلن مشترک می‌گیرد.",
     "fam_add": "＋ افزودن عضو",
     "fam_name_prompt": "نام عضو (مثلاً همسر)",
+    "fam_edit": "تغییر نام عضو",
+    "fam_renamed": "نام تغییر کرد.",
     "fam_del_q": "این عضو حذف شود؟ لینک او از کار می‌افتد.",
     "fam_share": "%s گیگ شخصی",
     "fam_full": "بیشتر نمی‌شود: حداکثر %d عضو در خانواده.",
@@ -5910,6 +5981,10 @@ _SUB_TXT = {
     "btn_add": "添加 / 导入", "btn_install": "安装配置",
     "btn_how": "如何连接", "btn_copy": "复制订阅",
     "btn_share": "分享",
+    "btn_qr": "二维码", "qr_hd": "订阅二维码",
+    "qr_hint": "用应用摄像头对准此码，订阅会自动添加。",
+    "qr_err": "二维码未能打开，请用上面的按钮复制链接。",
+    "fam_qr": "成员二维码",
     "hint_pick": "选择应用，然后点「添加 / 导入」。",
     "ft_sub": "订阅：", "ft_page": "您的页面：",
     "tag_paid": "付费", "store_dl": "下载 ↗",
@@ -5960,6 +6035,8 @@ _SUB_TXT = {
     "fam_none": "还没有成员。添加后，对方将获得共享同一套餐的独立订阅。",
     "fam_add": "＋ 添加成员",
     "fam_name_prompt": "成员名称（如：妻子）",
+    "fam_edit": "重命名成员",
+    "fam_renamed": "名称已更新。",
     "fam_del_q": "删除该成员？其链接将立即失效。",
     "fam_share": "个人 %s GB",
     "fam_full": "已达上限：每个家庭最多 %d 位成员。",
@@ -6188,6 +6265,465 @@ def _avatar_serve(tok):
         return None, None
     return mime, raw
 
+# ----------------------------------------------------------------------- QR
+# Панель рисует QR сама и отдаёт его картинкой (SVG): страница подписчика не
+# должна зависеть от чужих cdn, а встроенная в админскую морду qrcodejs ей не
+# доступна. Кодировщик сверен матрица-в-матрицу против настоящей qrcodejs из
+# index.html (её матрицу снимают в node) и против libqrencode: прибор
+# gp/f10_qr_test.py.
+#
+# Выбор маски повторяет штраф getLostPoint из qrcodejs дословно, вместе с её
+# отклонениями от ISO. Это не самодеятельность: формат разрешает ЛЮБУЮ из 8
+# масок (её номер передан в служебных битах, сканер читает, а не вычисляет),
+# зато «панель и браузер рисуют один и тот же код» становится проверяемым.
+_QR_RS = (  # строка на версию: 4 уровня L,M,Q,H; каждый — плоские тройки (блоков, всего слов, слов данных)
+    ((1,26,19),(1,26,16),(1,26,13),(1,26,9)),  # v1
+    ((1,44,34),(1,44,28),(1,44,22),(1,44,16)),  # v2
+    ((1,70,55),(1,70,44),(2,35,17),(2,35,13)),  # v3
+    ((1,100,80),(2,50,32),(2,50,24),(4,25,9)),  # v4
+    ((1,134,108),(2,67,43),(2,33,15,2,34,16),(2,33,11,2,34,12)),  # v5
+    ((2,86,68),(4,43,27),(4,43,19),(4,43,15)),  # v6
+    ((2,98,78),(4,49,31),(2,32,14,4,33,15),(4,39,13,1,40,14)),  # v7
+    ((2,121,97),(2,60,38,2,61,39),(4,40,18,2,41,19),(4,40,14,2,41,15)),  # v8
+    ((2,146,116),(3,58,36,2,59,37),(4,36,16,4,37,17),(4,36,12,4,37,13)),  # v9
+    ((2,86,68,2,87,69),(4,69,43,1,70,44),(6,43,19,2,44,20),(6,43,15,2,44,16)),  # v10
+    ((4,101,81),(1,80,50,4,81,51),(4,50,22,4,51,23),(3,36,12,8,37,13)),  # v11
+    ((2,116,92,2,117,93),(6,58,36,2,59,37),(4,46,20,6,47,21),(7,42,14,4,43,15)),  # v12
+    ((4,133,107),(8,59,37,1,60,38),(8,44,20,4,45,21),(12,33,11,4,34,12)),  # v13
+    ((3,145,115,1,146,116),(4,64,40,5,65,41),(11,36,16,5,37,17),(11,36,12,5,37,13)),  # v14
+    ((5,109,87,1,110,88),(5,65,41,5,66,42),(5,54,24,7,55,25),(11,36,12,7,37,13)),  # v15
+    ((5,122,98,1,123,99),(7,73,45,3,74,46),(15,43,19,2,44,20),(3,45,15,13,46,16)),  # v16
+    ((1,135,107,5,136,108),(10,74,46,1,75,47),(1,50,22,15,51,23),(2,42,14,17,43,15)),  # v17
+    ((5,150,120,1,151,121),(9,69,43,4,70,44),(17,50,22,1,51,23),(2,42,14,19,43,15)),  # v18
+    ((3,141,113,4,142,114),(3,70,44,11,71,45),(17,47,21,4,48,22),(9,39,13,16,40,14)),  # v19
+    ((3,135,107,5,136,108),(3,67,41,13,68,42),(15,54,24,5,55,25),(15,43,15,10,44,16)),  # v20
+    ((4,144,116,4,145,117),(17,68,42),(17,50,22,6,51,23),(19,46,16,6,47,17)),  # v21
+    ((2,139,111,7,140,112),(17,74,46),(7,54,24,16,55,25),(34,37,13)),  # v22
+    ((4,151,121,5,152,122),(4,75,47,14,76,48),(11,54,24,14,55,25),(16,45,15,14,46,16)),  # v23
+    ((6,147,117,4,148,118),(6,73,45,14,74,46),(11,54,24,16,55,25),(30,46,16,2,47,17)),  # v24
+    ((8,132,106,4,133,107),(8,75,47,13,76,48),(7,54,24,22,55,25),(22,45,15,13,46,16)),  # v25
+    ((10,142,114,2,143,115),(19,74,46,4,75,47),(28,50,22,6,51,23),(33,46,16,4,47,17)),  # v26
+    ((8,152,122,4,153,123),(22,73,45,3,74,46),(8,53,23,26,54,24),(12,45,15,28,46,16)),  # v27
+    ((3,147,117,10,148,118),(3,73,45,23,74,46),(4,54,24,31,55,25),(11,45,15,31,46,16)),  # v28
+    ((7,146,116,7,147,117),(21,73,45,7,74,46),(1,53,23,37,54,24),(19,45,15,26,46,16)),  # v29
+    ((5,145,115,10,146,116),(19,75,47,10,76,48),(15,54,24,25,55,25),(23,45,15,25,46,16)),  # v30
+    ((13,145,115,3,146,116),(2,74,46,29,75,47),(42,54,24,1,55,25),(23,45,15,28,46,16)),  # v31
+    ((17,145,115),(10,74,46,23,75,47),(10,54,24,35,55,25),(19,45,15,35,46,16)),  # v32
+    ((17,145,115,1,146,116),(14,74,46,21,75,47),(29,54,24,19,55,25),(11,45,15,46,46,16)),  # v33
+    ((13,145,115,6,146,116),(14,74,46,23,75,47),(44,54,24,7,55,25),(59,46,16,1,47,17)),  # v34
+    ((12,151,121,7,152,122),(12,75,47,26,76,48),(39,54,24,14,55,25),(22,45,15,41,46,16)),  # v35
+    ((6,151,121,14,152,122),(6,75,47,34,76,48),(46,54,24,10,55,25),(2,45,15,64,46,16)),  # v36
+    ((17,152,122,4,153,123),(29,74,46,14,75,47),(49,54,24,10,55,25),(24,45,15,46,46,16)),  # v37
+    ((4,152,122,18,153,123),(13,74,46,32,75,47),(48,54,24,14,55,25),(42,45,15,32,46,16)),  # v38
+    ((20,147,117,4,148,118),(40,75,47,7,76,48),(43,54,24,22,55,25),(10,45,15,67,46,16)),  # v39
+    ((19,148,118,6,149,119),(18,75,47,31,76,48),(34,54,24,34,55,25),(20,45,15,61,46,16)),  # v40
+)
+_QR_AL = (  # центры выравнивающих блоков; у v1 их нет
+    (),
+    (6,18),
+    (6,22),
+    (6,26),
+    (6,30),
+    (6,34),
+    (6,22,38),
+    (6,24,42),
+    (6,26,46),
+    (6,28,50),
+    (6,30,54),
+    (6,32,58),
+    (6,34,62),
+    (6,26,46,66),
+    (6,26,48,70),
+    (6,26,50,74),
+    (6,30,54,78),
+    (6,30,56,82),
+    (6,30,58,86),
+    (6,34,62,90),
+    (6,28,50,72,94),
+    (6,26,50,74,98),
+    (6,30,54,78,102),
+    (6,28,54,80,106),
+    (6,32,58,84,110),
+    (6,30,58,86,114),
+    (6,34,62,90,118),
+    (6,26,50,74,98,122),
+    (6,30,54,78,102,126),
+    (6,26,52,78,104,130),
+    (6,30,56,82,108,134),
+    (6,34,60,86,112,138),
+    (6,30,58,86,114,142),
+    (6,34,62,90,118,146),
+    (6,30,54,78,102,126,150),
+    (6,24,50,76,102,128,154),
+    (6,28,54,80,106,132,158),
+    (6,32,58,84,110,136,162),
+    (6,26,54,82,110,138,166),
+    (6,30,58,86,114,142,170),
+)
+_QR_EC = {"L": 0, "M": 1, "Q": 2, "H": 3}
+_QR_AUTO = "auto"                            # подобрать уровень по длине
+_QR_ECB = {0: 1, 1: 0, 2: 3, 3: 2}           # служебные биты уровня: L=01 M=00 Q=11 H=10
+_QR_MAX_BYTES = 2953                         # ёмкость v40-L: больше в QR не помещается ничего
+_QR_SCALE = 6                                # пикселей на модуль в SVG
+_QR_CACHE = {}                               # payload -> svg: ручка публичная, генерация не бесплатна
+
+_QR_EXP = [0] * 512
+_QR_LOG = [0] * 256
+_QR_GENCACHE = {}
+
+
+def _qr_gf():
+    """Поле GF(256) с примитивным многочленом 0x11D — общий знаменатель RS-кода."""
+    x = 1
+    for i in range(255):
+        _QR_EXP[i] = x
+        _QR_LOG[x] = i
+        x <<= 1
+        if x & 0x100:
+            x ^= 0x11D
+    for i in range(255, 512):
+        _QR_EXP[i] = _QR_EXP[i - 255]
+
+
+_qr_gf()
+
+
+def _qr_mul(a, b):
+    return 0 if not a or not b else _QR_EXP[_QR_LOG[a] + _QR_LOG[b]]
+
+
+_QR_MASKS = [lambda r, c: (r + c) % 2 == 0,
+             lambda r, c: r % 2 == 0,
+             lambda r, c: c % 3 == 0,
+             lambda r, c: (r + c) % 3 == 0,
+             lambda r, c: (r // 2 + c // 3) % 2 == 0,
+             lambda r, c: (r * c) % 2 + (r * c) % 3 == 0,
+             lambda r, c: ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+             lambda r, c: ((r * c) % 3 + (r + c) % 2) % 2 == 0]
+
+
+def _qr_blocks(ver, ec):
+    """Список блоков (всего слов, слов данных) — по одному элементу на блок."""
+    ent = _QR_RS[ver - 1][ec]
+    out = []
+    for i in range(0, len(ent), 3):
+        n, tot, dcnt = ent[i], ent[i + 1], ent[i + 2]
+        for _ in range(n):
+            out.append((tot, dcnt))
+    return out
+
+
+def _qr_cap(ver, ec):
+    return sum(d for _t, d in _qr_blocks(ver, ec))
+
+
+def _qr_lenbits(ver):
+    return 8 if ver <= 9 else 16
+
+
+def _qr_gen(n):
+    g = _QR_GENCACHE.get(n)
+    if g is None:
+        p = [1]
+        for i in range(n):
+            ng = [0] * (len(p) + 1)
+            for j, c in enumerate(p):
+                ng[j] ^= c
+                ng[j + 1] ^= _qr_mul(c, _QR_EXP[i])
+            p = ng
+        _QR_GENCACHE[n] = p
+        g = p
+    return g
+
+
+def _qr_ec(words, n):
+    """Байты коррекции: остаток от деления сообщения на производящий полином."""
+    g = _qr_gen(n)
+    res = [0] * n
+    for w in words:
+        k = w ^ res[0]
+        res = res[1:] + [0]
+        for i, gi in enumerate(g[1:]):
+            res[i] ^= _qr_mul(gi, k)
+    return res
+
+
+def _qr_digit(x):
+    n = 0
+    while x:
+        n += 1
+        x >>= 1
+    return n
+
+
+def _qr_bch(data, gen, xorv):
+    sh = _qr_digit(gen) - 1
+    v = data << sh
+    while _qr_digit(v) - _qr_digit(gen) >= 0:
+        v ^= gen << (_qr_digit(v) - _qr_digit(gen))
+    return ((data << sh) | v) ^ xorv
+
+
+def _qr_funcmap(ver):
+    """Функционные модули и запрет на их маскировку: поисковые угольники,
+    выравнивающие блоки, тактовые линии, места формата и версии."""
+    size = ver * 4 + 17
+    m = [[0] * size for _ in range(size)]
+    fixed = [[False] * size for _ in range(size)]
+
+    def setm(r, c, v):
+        m[r][c] = 1 if v else 0
+        fixed[r][c] = True
+
+    def probe(r0, c0):
+        for dr in range(-1, 8):
+            if r0 + dr < 0 or r0 + dr >= size:
+                continue
+            for dc in range(-1, 8):
+                if c0 + dc < 0 or c0 + dc >= size:
+                    continue
+                on = (0 <= dr <= 6 and dc in (0, 6)) or (0 <= dc <= 6 and dr in (0, 6)) \
+                     or (2 <= dr <= 4 and 2 <= dc <= 4)
+                setm(r0 + dr, c0 + dc, on)
+
+    probe(0, 0)
+    probe(size - 7, 0)
+    probe(0, size - 7)
+    for r in _QR_AL[ver - 1]:
+        for c in _QR_AL[ver - 1]:
+            if fixed[r][c]:
+                continue
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    setm(r + dr, c + dc, max(abs(dr), abs(dc)) != 1)
+    for i in range(8, size - 8):
+        if not fixed[i][6]:
+            setm(i, 6, i % 2 == 0)
+        if not fixed[6][i]:
+            setm(6, i, i % 2 == 0)
+    for i in range(9):
+        if i != 6:
+            fixed[8][i] = True
+            fixed[i][8] = True
+    for i in range(8):
+        fixed[8][size - 1 - i] = True
+        fixed[size - 1 - i][8] = True
+    fixed[size - 8][8] = True
+    if ver >= 7:
+        for i in range(18):
+            fixed[i // 3][i % 3 + size - 11] = True
+            fixed[i % 3 + size - 11][i // 3] = True
+    return m, fixed
+
+
+def _qr_stream(data, ver, ec):
+    """Поток кодслов: заголовок byte-mode, данные, терминатор, выравнивание по
+    байту, заполнители EC/11, затем данные и коррежка блоков, перемешанные
+    пословно — именно в таком порядке их читает сканер."""
+    cap = _qr_cap(ver, ec) * 8
+    if len(data) * 8 + 4 + _qr_lenbits(ver) > cap:
+        return None
+    buf = []
+
+    def put(val, n):
+        for i in range(n - 1, -1, -1):
+            buf.append((val >> i) & 1)
+
+    put(4, 4)
+    put(len(data), _qr_lenbits(ver))
+    for b in data:
+        put(b, 8)
+    if len(buf) + 4 <= cap:
+        put(0, 4)
+    while len(buf) % 8:
+        buf.append(0)
+    pad = (0xEC, 0x11)
+    i = 0
+    while len(buf) < cap:
+        put(pad[i % 2], 8)
+        i += 1
+    words = [int("".join(map(str, buf[k:k + 8])), 2) for k in range(0, len(buf), 8)]
+    bl, ecl, pos = [], [], 0
+    for tot, dcnt in _qr_blocks(ver, ec):
+        dat = words[pos:pos + dcnt]
+        pos += dcnt
+        bl.append(dat)
+        ecl.append(_qr_ec(dat, tot - dcnt))
+    out = []
+    for i in range(max(len(b) for b in bl)):
+        for b in bl:
+            if i < len(b):
+                out.append(b[i])
+    for i in range(max(len(e) for e in ecl)):
+        for e in ecl:
+            if i < len(e):
+                out.append(e[i])
+    return out
+
+
+def _qr_build(ver, ec, stream, mask, test=False):
+    size = ver * 4 + 17
+    m, fixed = _qr_funcmap(ver)
+    col, up, bi = size - 1, True, 0
+    while col > 0:
+        if col == 6:
+            col -= 1
+        rng = range(size - 1, -1, -1) if up else range(size)
+        for r in rng:
+            for dc in (0, 1):
+                c = col - dc
+                if fixed[r][c]:
+                    continue
+                bit = 0
+                if bi // 8 < len(stream):
+                    bit = (stream[bi // 8] >> (7 - bi % 8)) & 1
+                bi += 1
+                if _QR_MASKS[mask](r, c):
+                    bit ^= 1
+                m[r][c] = bit
+        up = not up
+        col -= 2
+    f = _qr_bch((_QR_ECB[ec] << 3) | mask, 0x537, 0x5412)
+    for e in range(15):
+        b = 0 if test else (f >> e) & 1
+        if e < 6:
+            m[e][8] = b
+        elif e < 8:
+            m[e + 1][8] = b
+        else:
+            m[size - 15 + e][8] = b
+        if e < 8:
+            m[8][size - e - 1] = b
+        elif e == 8:
+            m[8][7] = b
+        else:
+            m[8][14 - e] = b
+    m[size - 8][8] = 0 if test else 1
+    if ver >= 7:
+        v = _qr_bch(ver, 0x1F25, 0)
+        for i in range(18):
+            b = 0 if test else (v >> i) & 1
+            r, c = i // 3, i % 3 + size - 11
+            m[r][c] = b
+            m[c][r] = b
+    return m
+
+
+def _qr_lost(m):
+    """Штраф — пословный порт getLostPoint из qrcodejs."""
+    size = len(m)
+    p = 0.0
+    for r in range(size):
+        for c in range(size):
+            g, n = m[r][c], 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    if 0 <= r + dr < size and 0 <= c + dc < size and g == m[r + dr][c + dc]:
+                        n += 1
+            if n > 5:
+                p += 3 + n - 5
+    for r in range(size - 1):
+        for c in range(size - 1):
+            j = m[r][c] + m[r + 1][c] + m[r][c + 1] + m[r + 1][c + 1]
+            if j in (0, 4):
+                p += 3
+    pat = [1, 0, 1, 1, 1, 0, 1]
+    for r in range(size):
+        for c in range(size - 6):
+            if [m[r][c + i] for i in range(7)] == pat:
+                p += 40
+    for c in range(size):
+        for r in range(size - 6):
+            if [m[r + i][c] for i in range(7)] == pat:
+                p += 40
+    k = sum(sum(row) for row in m)
+    p += 10 * (abs(100.0 * k / size / size - 50.0) / 5.0)
+    return p
+
+
+def _qr_pick_ver(nbytes, ec):
+    for v in range(1, 41):
+        if 4 + _qr_lenbits(v) + nbytes * 8 <= _qr_cap(v, ec) * 8:
+            return v
+    return None
+
+
+def _qr_auto_ec(nbytes):
+    """Пока код короткий — берём стойкость (Q): экран телефона читает плотные
+    коды хорошо, а повреждённый снимок — нет. Дальше важнее размер модуля."""
+    for ec, lim in (("Q", 13), ("M", 20), ("L", 40)):
+        v = _qr_pick_ver(nbytes, _QR_EC[ec])
+        if v and v <= lim:
+            return ec
+    return "L"
+
+
+def _qr_encode(text, ec=_QR_AUTO, force_ver=None, force_mask=None):
+    """Матрица QR для текста (byte-mode, UTF-8 без BOM). force_* — для приборов,
+    чтобы мерить против оракула на выбранной им версии и маске."""
+    data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    if not data or len(data) > _QR_MAX_BYTES:
+        return None
+    ecol = _QR_EC[_qr_auto_ec(len(data))] if ec == _QR_AUTO else _QR_EC.get(ec)
+    if ecol is None:
+        return None
+    ver = force_ver or _qr_pick_ver(len(data), ecol)
+    if not ver or ver > 40:
+        return None
+    stream = _qr_stream(data, ver, ecol)
+    if stream is None:
+        return None
+    if force_mask is None:
+        best, low = 0, None
+        for k in range(8):
+            lp = _qr_lost(_qr_build(ver, ecol, stream, k, test=True))
+            if low is None or lp < low:
+                low, best = lp, k
+        force_mask = best
+    m = _qr_build(ver, ecol, stream, force_mask)
+    return {"ver": ver, "ec": ecol, "mask": force_mask, "size": len(m),
+            "stream": stream, "rows": ["".join(str(x) for x in row) for row in m]}
+
+
+def _qr_svg(text, scale=_QR_SCALE, quiet=4):
+    """SVG: белый лист, чёрные модули, тихая зона в 4 модуля. Никаких id —
+    на странице может быть несколько кодов, и id поссорились бы.
+    Возвращает "" для текста, который в QR не влазит или пуст."""
+    if not text:
+        return ""
+    hit = _QR_CACHE.get(text)
+    if hit is not None:
+        return hit
+    res = _qr_encode(text)
+    if res is None:
+        return ""
+    n = res["size"]
+    g = scale * (n + 2 * quiet)
+    d = []
+    for r in range(n):
+        row = res["rows"][r]
+        c = 0
+        while c < n:
+            if row[c] != "1":
+                c += 1
+                continue
+            e = c
+            while e < n and row[e] == "1":
+                e += 1
+            d.append("M%d %dh%dv%dh%dz" % ((c + quiet) * scale, (r + quiet) * scale,
+                                           (e - c) * scale, scale, -(e - c) * scale))
+            c = e
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+           'viewBox="0 0 %d %d" shape-rendering="crispEdges">'
+           '<rect width="%d" height="%d" fill="#fff"/>'
+           '<path fill="#000" d="%s"/></svg>' % (g, g, g, g, g, g, "".join(d)))
+    _QR_CACHE[text] = svg
+    while len(_QR_CACHE) > 64:
+        _QR_CACHE.pop(next(iter(_QR_CACHE)), None)
+    return svg
+
 def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pact=None):
     if lang not in _SUB_LANGS:
         lang = "ru"
@@ -6268,6 +6804,17 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                   .replace("<", "&lt;").replace(">", "&gt;"))
         conf_blocks.append('<a class="btn-conf" href="' + h + '">' + _tgsvg + _lab + '</a>')
     confs_html = "<div class='confs'>" + "".join(conf_blocks) + "</div>" if conf_blocks else ""
+    # QR подписки: кнопка на странице и слой-картинка. Адрес картинки собирает
+    # сервер из своего знания о подписчике, а не из того, что прислал браузер.
+    qr_btn = ('<button class="btn btn-copy" id="qrBtn" data-qr="/p/' + _esc(tok) + '/qr'
+              '" data-qr-t="' + _esc(name_plain) + '" aria-label="' + _esc(L["qr_hd"]) + '">'
+              '<svg viewBox="0 0 24 24"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3z"/>'
+              '<path d="M15 15h2.5v2.5H15zM20.5 15H21v2.5h-2.5zM15 20.5h2.5V21H15zM20.5 18V21h-2.5v-1"/></svg>'
+              + L["btn_qr"] + '</button>')
+    qr_layer = ('<div class="qrlayer" id="qrLayer" role="dialog" aria-modal="true" aria-label="' +
+                _esc(L["qr_hd"]) + '"><div class="qrbox"><img id="qrImg" alt="' +
+                _esc(L["qr_hd"]) + '"><div class="qrname" id="qrName"></div>'
+                '<div class="qrhint">' + _esc(L["qr_hint"]) + '</div></div></div>')
     # Строка под именем: лимиты вместо дубля окончания срока (он есть в карточках).
     cyc_label = {"day": L["reset_day"], "week": L["reset_week"],
                  "month": L["reset_month"]}.get(u.get("reset_cycle") or "", "")
@@ -6340,7 +6887,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                      (ago + ((" ×%d" % n) if n > 1 else "")) if ago else "") if x)
         drows.append('<div class="devr"><div class="devi"><b>' + who +
                      '</b><span>' + sub + '</span></div>'
-                     '<button class="devx" data-ip="' + ip + '">' + L["forget"] + '</button></div>')
+                     '<button class="devx" data-forget data-ip="' + ip + '">' + L["forget"] + '</button></div>')
     if drows:
         devs_html = ('<div class="sec"><h2>' + L["sec_mydev"] + '</h2><div class="devlist">'
                      + "".join(drows) + '</div><div class="devnote">' + L["devnote"] + '</div></div>')
@@ -6395,13 +6942,28 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
         opts = "".join('<option value="%d"%s>%s</option>' % (
             i, " selected" if i == mdv else "", ("∞" if i == 0 else str(i)))
             for i in range(11))
+        # QR участника ведёт на его собственную ручку /p/<его токен>/qr: право
+        # ровно то же, что у ссылки и страницы участника, которые страница и так
+        # отдаёт хозяину. Кнопки без адреса не бывает — её просто не показываем.
+        # Адрес относительный, как у кнопки хозяина: page_url собран из
+        # настроенного домена, а страницу открывают и по IP, и по чужому
+        # домену — абсолютная картинка ушла бы на другой источник, а на
+        # https-странице ещё и утонула бы в mixed-content. Ручка та же, что
+        # у текущей страницы.
+        _pt = f.get("sub_token") or ""
+        _famqr = (('<button type="button" class="devx famqr" data-qr="' + _esc("/p/" + _pt + "/qr") +
+                   '" data-qr-t="' + _esc(f.get("name") or "") + '" title="' + _esc(L["fam_qr"]) +
+                   '" aria-label="' + _esc(L["fam_qr"]) + '">▦</button>') if _pt else "")
         fam_rows.append(
             '<div class="devr famr" data-m="' + _esc(f.get("uuid") or "") + '">'
             '<div class="devi"><b>' + _esc(f.get("name") or "") + '</b><span>' + _esc(seg) +
             '</span></div>'
             '<select class="famdev" title="' + _esc(L["fam_dev_tip"]) + '">' + opts + '</select>'
             '<button type="button" class="devx famcopy" data-l="' + _esc(f.get("sub_url") or "") + '">🔗</button>'
+            + _famqr +
             '<a class="devx" href="' + _esc(f.get("page_url") or "#") + '" target="_blank" rel="noopener">👤</a>'
+            '<button type="button" class="devx famren" data-n="' + _esc(f.get("name") or "") +
+            '" title="' + _esc(L["fam_edit"]) + '" aria-label="' + _esc(L["fam_edit"]) + '">✎</button>'
             '<button type="button" class="devx famdel">✕</button></div>')
     fam_html = ""
     if u.get("family") is not None:
@@ -6418,8 +6980,8 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
     js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
                "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
-               "fam_add fam_name_prompt fam_del_q fam_added fam_del_ok fam_err fam_copy_ok fam_full "
-               "btn_add btn_install btn_how tag_paid store_dl").split()
+               "fam_add fam_name_prompt fam_edit fam_renamed fam_del_q fam_added fam_del_ok fam_err fam_copy_ok fam_full "
+               "btn_add btn_install btn_how tag_paid store_dl qr_err").split()
     ljs_json = json.dumps({k: L[k] for k in js_keys}, ensure_ascii=False)
     tpl = """<!DOCTYPE html><html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -6487,9 +7049,19 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
   font:inherit;font-size:12.5px;font-weight:700;color:#c4b5fd;border:1px dashed rgba(139,92,246,.5);
   background:rgba(139,92,246,.07)}
 .famadd:disabled{opacity:.5;cursor:default}
-.famcopy,a.devx{color:#7dd3fc;background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
+.famcopy,.famqr,a.devx{color:#7dd3fc;background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
   text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
-.famcopy:hover,a.devx:hover{background:rgba(56,189,248,.18)}
+.famcopy:hover,.famqr:hover,a.devx:hover{background:rgba(56,189,248,.18)}
+/* QR поверх страницы: белый лист обязателен — сканер читает чёрные модули
+   только на светлом, тёмная тема страницы для этого не годится */
+.qrlayer{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+  background:rgba(4,8,20,.86);padding:22px}
+.qrlayer.on{display:flex}
+.qrbox{background:#fff;border-radius:20px;padding:16px 16px 13px;max-width:min(360px,86vw);
+  text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+.qrbox img{display:block;width:100%;height:auto;image-rendering:pixelated}
+.qrname{color:#111a33;font-size:13px;font-weight:700;margin-top:11px;word-break:break-word}
+.qrhint{color:#4b5878;font-size:11.5px;margin-top:5px;line-height:1.5}
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 20px 0}
 .stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:rgba(22,29,52,.85);
   border:1px solid rgba(66,84,130,.4);overflow:hidden}
@@ -6522,7 +7094,7 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .rt li{margin:5px 0}
 .rt code{color:#7dd3fc;font-size:11px;background:rgba(10,15,33,.6);padding:1px 5px;border-radius:5px}
 .devlist{display:flex;flex-direction:column;gap:8px}
-.devr{display:flex;align-items:center;gap:10px;background:rgba(22,29,52,.75);
+.devr{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:rgba(22,29,52,.75);
   border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:10px 12px}
 .devi{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
 .devi b{font-size:13px;font-weight:700;color:#edf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -6574,9 +7146,20 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
   background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:sheen 3.4s ease-in-out infinite}
 @keyframes sheen{0%,60%{left:-60%}100%{left:130%}}
 .btn-add:active{transform:scale(.985)}
-.btn-row{display:flex;gap:10px;margin-top:10px}
+.btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
 .btn-row .btn-copy{flex:1;background:rgba(26,34,64,.8);color:#c7d0ea;border:1px solid rgba(66,84,130,.5)}
 .btn-row .btn-copy:hover{border-color:#3b82f6;color:#eef2ff}
+/* Узкий экран. Кнопки в row flex не сжимаются ниже своего min-content (min-width:auto
+   по умолчанию), поэтому третья кнопка рядом с «Скопировать подписку» и «Поделиться»
+   не умещается в ~332px вьюпорта и вылезает за него — ряд обязан переноситься.
+   Строка семьи с ▦ ужата тем же правилом: четыреGlyph-кнопки + select впритык. */
+@media (max-width:420px){
+ .btn-row{gap:8px}
+ .btn-row .btn-copy{padding:13px 10px;font-size:13.5px;gap:7px}
+ .devr{gap:6px;padding:9px 10px}
+ .devx{padding:6px 9px}
+ .famdev{padding:5px 5px;font-size:11px}
+}
 .action{max-width:460px;padding-top:18px;position:relative;z-index:1;width:100%}
 .hint{font-size:12px;color:#8b94b5;margin-top:12px;line-height:1.55;text-align:center;min-height:18px}
 .footer{font-size:11px;color:#58618a;margin:18px 4px 0;text-align:center;line-height:1.9;word-break:break-all;position:relative;z-index:1}
@@ -6646,9 +7229,11 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
   <div class="btn-row fade" style="animation-delay:.22s">
    <button class="btn btn-copy" id="copyBtn"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>__BTNCOPY__</button>
    <button class="btn btn-copy" id="shareBtn"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>__BTNSHARE__</button>
+   __QRBTN__
   </div>
   <div class="hint" id="hint" style="animation:none">__HINTPICK__</div>
  </div>
+ __QRLAYER__
  <div class="footer"><b>__SUBFT__</b> <code>__SUB__</code><br><b>__PAGEFT__</b> <code>__PAGE__</code></div>
 </div>
 <script>
@@ -6769,7 +7354,30 @@ document.addEventListener('DOMContentLoaded',function(){
         .catch(function(){hint(L.js_nocopy);});
     }else{hint(L.js_nocopy);}
   });
-  Array.prototype.forEach.call(document.querySelectorAll('.devx'),function(btn){
+  /* QR. Картинку просим только по нажатию: иначе каждый показ страницы стоил
+     бы серверу лишнего запроса, а человеку — трафика. */
+  (function(){
+    var layer=HP('qrLayer'), img=HP('qrImg'), cap=HP('qrName');
+    if(!layer||!img)return;
+    function close(){layer.className='qrlayer';}
+    Array.prototype.forEach.call(document.querySelectorAll('[data-qr]'),function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();
+        var src=btn.getAttribute('data-qr')||'';
+        if(!src){hint(L.qr_err,'#fb7185');return;}
+        if(img.getAttribute('src')!==src)img.src=src;
+        cap.textContent=btn.getAttribute('data-qr-t')||'';
+        layer.className='qrlayer on';
+      });
+    });
+    img.addEventListener('error',function(){close();hint(L.qr_err,'#fb7185');});
+    layer.addEventListener('click',function(e){if(e.target===layer||e.target===img)close();});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
+  })();
+  /* Забывание устройства — ТОЛЬКО кнопки с data-forget. Класс .devx описывает
+     вид, а не намерение: семейные 🔗/👤/✕ тоже носят .devx и поднимали этот
+     confirm. */
+  Array.prototype.forEach.call(document.querySelectorAll('.devx[data-forget]'),function(btn){
     btn.addEventListener('click',function(){
       var ip=btn.getAttribute('data-ip');
       if(!confirm(L.js_forget_q))return;
@@ -6799,6 +7407,23 @@ document.addEventListener('DOMContentLoaded',function(){
       var lk=cp.getAttribute('data-l')||'';
       if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'#4ade80');},function(){prompt('',lk);});}
       else{prompt('',lk);}
+    });
+    var rn=row.querySelector('.famren');
+    if(rn)rn.addEventListener('click',function(){
+      var nm=prompt(L.fam_name_prompt,rn.getAttribute('data-n')||'');
+      if(nm===null)return;
+      nm=(nm||'').trim(); if(!nm)return;
+      rn.disabled=true;
+      famPost('rename',{member_uuid:mu,name:nm},function(err,j){
+        rn.disabled=false;
+        if(err){hint(F(L.fam_err,err),'#fb7185');return;}
+        /* Имя на строке — то, что вернул сервер, а не то, что набрал человек:
+           пределы и обрезка живут на ручке, и морда не должна врать раньше неё. */
+        var nm2=(j&&j.name)||nm, b=row.querySelector('.devi b');
+        if(b)b.textContent=nm2;
+        rn.setAttribute('data-n',nm2);
+        hint(L.fam_renamed,'#4ade80');
+      });
     });
     var del=row.querySelector('.famdel');
     if(del)del.addEventListener('click',function(){
@@ -6900,6 +7525,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__SECDEV__", L["sec_dev"])
                 .replace("__BTNADD__", L["btn_add"]).replace("__BTNCOPY__", L["btn_copy"])
                 .replace("__BTNSHARE__", L["btn_share"]).replace("__HINTPICK__", L["hint_pick"])
+                .replace("__QRBTN__", qr_btn).replace("__QRLAYER__", qr_layer)
                 .replace("__SUBFT__", L["ft_sub"]).replace("__PAGEFT__", L["ft_page"])
                 .replace("__DEVS__", devs_html)
                 .replace("__USAGE__", usage_html)
@@ -10032,11 +10658,12 @@ def _perm_for(p, m):
         return ["hop"]
     if p.startswith("/api/migrate"):
         return ["owner"]
-    if p in ("/api/tg/switch", "/api/tg/restore"):
+    if p in ("/api/tg/switch", "/api/tg/restore", "/api/tg/restart"):
         # Подмена бинаря и перезапуск systemd-службы — это не «переключить прокси»,
         # а замена софта на машине: право settings, а не proxy. Иначе сотрудник с
         # единственной галкой «прокси» получает возможность залить любой телемет
-        # руткит и поднять его той же кнопкой.
+        # руткит и поднять его той же кнопкой. Ручной рестарт — сюда же: он рвёт
+        # тоннели у всех, кто пользуется прокси прямо сейчас.
         return ["settings"]
     if (p.startswith("/api/tg/") or p.startswith("/api/webproxy")
             or p.startswith("/api/webmux") or p.startswith("/api/front/")):
@@ -10069,7 +10696,7 @@ def _perm_for(p, m):
         return ["appearance"]
     for pref in ("/api/settings", "/api/panel", "/api/xray", "/api/versions", "/api/update",
                  "/api/restart", "/api/port", "/api/inbound", "/api/network", "/api/vpn",
-                 "/api/selftest"):
+                 "/api/selftest", "/api/schedule"):
         if p.startswith(pref):
             return ["settings"]
     return None
@@ -15485,6 +16112,281 @@ def _xray_restore(version, confirm=False, job=None):
     _audit("xray_restored", version=version, frm=cur)
     return {"ok": True, "type": "xray", "version": version}
 
+# ---------- перезапуск служб по графику ----------
+
+_SVC_SERVICES = ("xray", "telemt")
+# Окно догона. Тик живёт каждые 20 секунд, но панель могла лежать обновлением или
+# перезагрузкой, и «проспавшееся» случится уже утром. Перезапуск ядра днём — это
+# обрыв тоннелей у всех подписчиков сразу, поэтому догоняем только полчаса.
+_SVC_CATCHUP = 1800
+_SVC_MAX_JOBS = 20
+
+
+def _svc_new_id():
+    return secrets.token_hex(4)
+
+
+def _svc_time_min(s):
+    """'HH:MM' -> минуты от полуночи; None, если строка не время. Ведём через
+    минуты, а не через `datetime.strptime`: опечатка в времени должна отказать на
+    записи, а не превратиться в срабатывание «когда-нибудь»."""
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(s or "").strip())
+    if not m:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def _svc_stamp(day, mins):
+    """Метка UTC местных `HH:MM` на день `day`. Пояс берём из `_tz_zone()` — из того
+    же места, которым панель рисует даты. Иначе «04:30» в расписании и «04:30» на
+    экране были бы двумя разными часами: на машине с UTC и выбранной Москвой
+    перезапуск ушёл бы в 01:30, то есть в самый пик вечернего пользования."""
+    hh, mm = divmod(mins, 60)
+    try:
+        return int(datetime.datetime(day.year, day.month, day.day, hh, mm,
+                                     tzinfo=_tz_zone()).timestamp())
+    except Exception:
+        return None
+
+
+def _svc_clean(raw):
+    """Проверка присланного графика -> (jobs, ошибки).
+
+    Здесь отказываем громко: молча выбрасоенное задание означало бы, что оператор
+    уверен в настроенной ночной перезагрузке, а её нет. Терпимость к битым записям
+    живёт в `_svc_jobs()`, которая читает уже сохранённый конфиг руками тика."""
+    if isinstance(raw, dict):
+        raw = raw.get("jobs")
+    if not isinstance(raw, list):
+        return None, ["график должен быть списком заданий"]
+    if len(raw) > _SVC_MAX_JOBS:
+        return None, ["больше %d заданий нельзя" % _SVC_MAX_JOBS]
+    errs, jobs, seen = [], [], set()
+    for i, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            errs.append("задание %d: не объект" % i)
+            continue
+        svc = str(item.get("svc") or "").strip()
+        if svc not in _SVC_SERVICES:
+            errs.append("задание %d: служба не из списка" % i)
+            continue
+        mins = _svc_time_min(item.get("time"))
+        if mins is None:
+            errs.append("задание %d: время нужно ЧЧ:ММ" % i)
+            continue
+        rd = item.get("days")
+        if rd is None:
+            rd = []
+        if not isinstance(rd, list):
+            errs.append("задание %d: дни должны быть списком" % i)
+            continue
+        days = []
+        bad = False
+        for d in rd:
+            if isinstance(d, bool) or not isinstance(d, int) or not (0 <= d <= 6) or d in days:
+                bad = True
+                break
+            days.append(d)
+        if bad:
+            errs.append("задание %d: дни — числа от 0 (понедельник) до 6 без повторов" % i)
+            continue
+        jid = str(item.get("id") or "")[:32]
+        if not jid or jid in seen:
+            jid = _svc_new_id()
+        seen.add(jid)
+        jobs.append({"id": jid, "svc": svc, "time": "%02d:%02d" % divmod(mins, 60),
+                     "days": sorted(days), "enabled": bool(item.get("enabled"))})
+    return jobs, errs
+
+
+def _svc_jobs(raw=None, with_errors=False):
+    """Нормальный список заданий: свой словарь или присланный. Broken-запись
+    пропускаем, а не роняем тик: TypeError среди ночи — это молчаливое отсутствие
+    перезапуска, который оператор считал настроенным. Пустые `days` = каждый день.
+    Отброшенные строки возвращаем вторым значением (`with_errors`), чтобы морда
+    могла сказать «в конфиге есть непонятное задание», а не молчать."""
+    src = CFG_CACHE.get("svc_schedule") if raw is None else raw
+    if isinstance(src, dict):
+        src = src.get("jobs")
+    if not isinstance(src, list):
+        src = []
+    jobs, errs = _svc_clean(src)
+    return (jobs, errs) if with_errors else jobs
+
+
+def _svc_jobs_save(jobs):
+    CFG_CACHE["svc_schedule"] = jobs
+    return _cfg_save()
+
+
+def _svc_last():
+    last = CFG_CACHE.get("svc_last")
+    return last if isinstance(last, dict) else {}
+
+
+def _svc_last_save(slot):
+    CFG_CACHE["svc_last"] = slot
+    return _cfg_save()
+
+
+def _svc_due_utc(job, now_ts):
+    """Ближайшее ПРОШЕДШЕЕ срабатывание в метках UTC (или None). Перебор назад на
+    неделю с лишним нужен потому, что дни задаются номером недели, а не числом."""
+    mins = _svc_time_min(job.get("time"))
+    if mins is None:
+        return None
+    lt = _ltime(now_ts)
+    days = job.get("days") or []
+    try:
+        base = datetime.date(lt.tm_year, lt.tm_mon, lt.tm_mday)
+    except Exception:
+        return None
+    for back in range(0, 9):
+        day = base - datetime.timedelta(days=back)
+        if days and day.weekday() not in days:
+            continue
+        ts = _svc_stamp(day, mins)
+        if ts is not None and ts <= now_ts:
+            return ts
+    return None
+
+
+def _svc_next_utc(job, now_ts):
+    """Ближайшее БУДУЩЕЕ срабатывание — то, что морда показывает как «в следующий
+    раз». Свой перебор, а не хитрость с `_svc_due_utc`: сдвиг на сутки назад на
+    границе дня с переходом на летнее время дал бы «следующий раз» в прошлом."""
+    mins = _svc_time_min(job.get("time"))
+    if mins is None:
+        return None
+    lt = _ltime(now_ts)
+    days = job.get("days") or []
+    try:
+        base = datetime.date(lt.tm_year, lt.tm_mon, lt.tm_mday)
+    except Exception:
+        return None
+    for ahead in range(0, 9):
+        day = base + datetime.timedelta(days=ahead)
+        if days and day.weekday() not in days:
+            continue
+        ts = _svc_stamp(day, mins)
+        if ts is not None and ts > now_ts:
+            return ts
+    return None
+
+
+def _svc_unit_up(svc, up=None, tries=6, pause=0.5):
+    """Жив ли юнит после рестарта. Нулём возвращённый `systemctl restart` значит
+    только «команду приняли»: падающий бинарь успевает умереть через полсекунды, и
+    без этой проверки мы записали бы успех над мёртвым прокси."""
+    up = _unit_active if up is None else up
+    for _ in range(tries):
+        try:
+            if up(svc):
+                return True
+        except Exception:
+            return False
+        if pause:
+            time.sleep(pause)
+    return False
+
+
+def _svc_restart(svc, pause=0.5):
+    """Перезапуск службы по имени и честная проверка результата -> (ok, почему нет).
+    Никакого исключения наружу: это вызывается и из тика, где падение означало бы
+    потерянный журнал, и из ручной кнопки, где нужен ответ с причиной."""
+    svc = str(svc or "").strip()
+    if svc == "xray":
+        try:
+            # внутри и проверка конфига на диске, и пауза, и сброс лимита отказов
+            _restart_xray()
+            return True, ""
+        except Exception as e:
+            return False, str(e)[:200]
+    if svc != "telemt":
+        return False, "неизвестная служба: " + svc[:32]
+    try:
+        _unit_forget_failures("telemt")
+        r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
+                           text=True, timeout=90)
+    except Exception as e:
+        return False, str(e)[:200]
+    if _svc_unit_up("telemt", pause=pause):
+        return True, ""
+    return False, (((r.stderr or "") + (r.stdout or "")).strip()[:200]
+                   or "telemt не поднялся после перезапуска")
+
+
+def _svc_sched_tick(now_ts=None, restart=None, save=None, catchup=None):
+    """Один шаг расписания. Всё, что дергает systemd и диск, приходит аргументами:
+    расчёт «кто и когда должен сработать» проверяется прибором на подставных часах,
+    а не ночёвкой на живой машине."""
+    now_ts = int(now_ts if now_ts is not None else time.time())
+    restart = _svc_restart if restart is None else restart
+    save = _cfg_save if save is None else save
+    catchup = _SVC_CATCHUP if catchup is None else catchup
+    fired = []
+    slot = _svc_last()
+    for job in _svc_jobs():
+        if not job["enabled"]:
+            continue
+        due = _svc_due_utc(job, now_ts)
+        if due is None or now_ts - due >= catchup:
+            continue
+        if int(slot.get(job["id"]) or 0) >= due:
+            continue
+        # Пометка ДО перезапуска, и метка — само время срабатывания, а не «сейчас».
+        # Иначе служба, которая не поднимается, ловила бы рестарт каждые 20 секунд,
+        # упиралась в лимит systemd и оставалась лежать до утра; а рестарт панели
+        # внутри окна повторял бы перезапуск ядра заново.
+        slot = dict(slot)
+        slot[job["id"]] = due
+        CFG_CACHE["svc_last"] = slot
+        save()
+        try:
+            res = restart(job["svc"])
+            if isinstance(res, tuple) and len(res) == 2:
+                ok, why = bool(res[0]), str(res[1] or "")
+            else:
+                ok, why = bool(res), ""
+        except Exception as e:
+            ok, why = False, str(e)[:200]
+        _audit("svc_restart", svc=job["svc"], job=job["id"], reason="schedule", ok=ok,
+               late=now_ts - due, detail="" if ok else why[:200])
+        fired.append({"id": job["id"], "svc": job["svc"], "ok": ok})
+    return fired
+
+
+def _svc_view():
+    now = int(time.time())
+    jobs, errs = _svc_jobs(with_errors=True)
+    out = []
+    for j in jobs:
+        nxt = _svc_next_utc(j, now) if j["enabled"] else None
+        due = _svc_due_utc(j, now)
+        out.append(dict(j, next=nxt, next_str=(_ldate("%d.%m.%Y %H:%M", nxt) if nxt else ""),
+                        last_try=int(_svc_last().get(j["id"]) or 0) or None,
+                        passed_str=(_ldate("%d.%m.%Y %H:%M", due) if due else ""),
+                        live=bool(_xray_active() if j["svc"] == "xray" else _unit_active(j["svc"]))))
+    return {"jobs": out, "invalid": errs, "services": list(_SVC_SERVICES), "tz": _tz_label(),
+            "catchup": _SVC_CATCHUP, "max": _SVC_MAX_JOBS,
+            # живность служб отдельно от заданий: без заданий морда иначе показала
+            # бы «ЛЕЖИТ» у поднятого ядра только потому, что перезапускать его нечего
+            "up": {s: bool(_xray_active() if s == "xray" else _unit_active(s))
+                   for s in _SVC_SERVICES}}
+
+
+def _svc_loop():
+    time.sleep(15)
+    while True:
+        try:
+            _svc_sched_tick()
+        except Exception as e:
+            _audit_throttled("svc_sched_error", detail=str(e)[:200])
+        time.sleep(20)
+
+
+threading.Thread(target=_svc_loop, daemon=True).start()
+
 # ---------- telemt version / update / rollback ----------
 
 def _tg_up():
@@ -18853,6 +19755,12 @@ def _ai_key_check(ov=None):
                 "msg": "до эндпоинта не достучались: " + str(e)[:160]}
 
 
+class _AiBadUpstream(RuntimeError):
+    """Ответ провайдера технически 200, но содержимого для ответа нет.
+    Отдельный класс затем, чтобы воронка `/api/ai/chat` отвечала причину,
+    а не превращала 200-ю заглушку в пустой ответ."""
+
+
 def _ai_llm(base, key, model, messages, tools):
     url = (base or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
     body = {"model": model or "gpt-4o-mini", "messages": messages,
@@ -18862,7 +19770,17 @@ def _ai_llm(base, key, model, messages, tools):
         "Content-Type": "application/json", "Authorization": "Bearer " + key})
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=45, context=ctx) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+        raw = r.read().decode("utf-8", "replace")
+    try:
+        j = json.loads(raw)
+    except Exception:
+        # 200 с не-JSON внутри — ровно тот случай, который раньше превращался в «(пусто)»
+        raise _AiBadUpstream("провайдер ответил не JSON: " + raw[:180])
+    if not isinstance(j, dict):
+        raise _AiBadUpstream("провайдер ответил не объект: " + raw[:180])
+    if j.get("error"):
+        raise _AiBadUpstream("провайдер вернул error: " + json.dumps(j["error"], ensure_ascii=False)[:300])
+    return j
 
 
 def _ai_answer(user_msgs, user_login):
@@ -18876,12 +19794,28 @@ def _ai_answer(user_msgs, user_login):
     used = []
     for _ in range(4):
         j = _ai_llm(base, key, model, msgs, _AI_TOOLS)
-        ch = ((j.get("choices") or [{}])[0]).get("message") or {}
+        choices = j.get("choices") or []
+        ch0 = (choices[0] if choices else {}) or {}
+        ch = ch0.get("message") or {}
+        finish = ch0.get("finish_reason")
         tcs = ch.get("tool_calls") or []
         if not tcs:
-            content = ch.get("content") or ""
+            content = (ch.get("content") or "").strip()
+            if not content:
+                # Пустой content при HTTP 200 — это не «ответ ассистента», а отказ
+                # провайдера. Раньше он уходил в морду как законченный ответ:
+                # оператор видел «(пусто)» без причины, а журнал — успешную запись.
+                try:
+                    _audit("ai_chat", user=user_login, ok=False, finish=finish,
+                           tools=used or None,
+                           q=(user_msgs[-1].get("content") or "")[:200] if user_msgs else None)
+                except Exception:
+                    pass
+                raise _AiBadUpstream("провайдер вернул пустой ответ"
+                                     + (" (finish_reason=" + str(finish) + ")" if finish else ""))
             try:
-                _audit("ai_chat", user=user_login, tools=used or None,
+                _audit("ai_chat", user=user_login, ok=True, finish=finish,
+                       tools=used or None,
                        q=(user_msgs[-1].get("content") or "")[:200] if user_msgs else None)
             except Exception:
                 pass
@@ -18902,7 +19836,7 @@ def _ai_answer(user_msgs, user_login):
             msgs.append({"role": "tool", "tool_call_id": tc.get("id"),
                          "content": json.dumps(res, ensure_ascii=False)[:8000]})
     try:
-        _audit("ai_chat", user=user_login, tools=used, too_long=True)
+        _audit("ai_chat", user=user_login, ok=False, tools=used, too_long=True)
     except Exception:
         pass
     return {"answer": "Слишком длинная цепочка запросов — переформулируй короче.", "tools": used}
@@ -19029,6 +19963,13 @@ def _client_gone(path, e):
         pass
 
 
+# `_send` сжимает не всё подряд: ниже этого размера gzip ничего не экономит
+# (типичный `{"ok": true}` — 12 байт), а заголовок стоит.
+_GZIP_MIN = 1024
+# Только текстовые ответы: `image/*` и уже сжатые байты вторым gzip испортятся.
+_GZIP_CT = ("application/json", "text/")
+
+
 class H(http.server.BaseHTTPRequestHandler):
     # HTTP/1.1 = keep-alive: без него каждый <script>/<img>/fetch открывает
     # грузилась секундами. timeout освобождает зависшие потоки через 30 с.
@@ -19068,10 +20009,22 @@ class H(http.server.BaseHTTPRequestHandler):
             obj = dict(obj)
             obj["ok"] = True
         b = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).replace(r'\/', '/').encode()
+        # Мобильный канал: `/api/clients` весит 148 КБ, `/api/subs` — 82 КБ, а морда
+        # берёт их каждые десять секунд. HTML панель сжимала и раньше (`/` и `/p/`),
+        # а JSON до этой строки шёл голым: gzip-6 снимает 93% и стоит миллисекунду.
+        # Кто про gzip не объявился, получает ровно то, что получал.
+        enc = None
+        if len(b) >= _GZIP_MIN and ctype.startswith(_GZIP_CT) and \
+                "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+            b, enc = gzip.compress(b, 6), "gzip"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        # Длина считается ПОСЛЕ сжатия: посчитанная до неё браузер дочитал бы не те
+        # байты, и соединение встало бы.
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if enc: self.send_header("Content-Encoding", enc)
         self._sec_headers()
         for c in getattr(self, "_cookies", []):
             self.send_header("Set-Cookie", c)
@@ -19602,7 +20555,10 @@ class H(http.server.BaseHTTPRequestHandler):
                    "disabled": bool(x.get("disabled")), "created": x.get("created")}
                   for x in (CFG_CACHE.get("users") or [])]
             return self._send(200, {"users": us, "perm_keys": PERM_KEYS})
-        
+
+        if p == "/api/schedule":
+            return self._send(200, _svc_view())
+
         if p.startswith("/sub/") or p in ("/sub", "/sub/"):
             # Универсальная подписка (/sub) или личная подписка клиента (/sub/<subId>).
             # Как в 3x-ui: возвращается base64-список ссылок на ВСЕ протоколы, где есть клиент,
@@ -19709,7 +20665,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not inb_links:
                     return self._send(404, {"error": "нет клиентов"})
 
-                links = list(inb_links.values())
+                # #110: один порядок на все три формата ответа (INCY, sing-box, base64).
+                _ord = _sub_order(inb_links)
+                links = [inb_links[k] for k in _ord]
                 # Формат ответа:
                 #  * INCY — открытые ссылки по одной в строке (в т.ч. wireguard:// и
                 #    amneziawg://); базовый тип для Xray-клиентов с их же документации.
@@ -19744,7 +20702,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         xprof = None
                 if use_sb:
-                    payload = json.dumps(list(sb_objs.values()), ensure_ascii=False).replace(r'\/', '/')
+                    payload = json.dumps([sb_objs[k] for k in _ord if k in sb_objs],
+                                         ensure_ascii=False).replace(r'\/', '/')
                     b = payload.encode("utf-8")
                     ctype = "application/json; charset=utf-8"
                 elif is_incy:
@@ -19755,9 +20714,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     # plaintext-VLESS ноды не попадают: за WebSocket берёт
                     # соседняя нода «VLESS + WebSocket + TLS» (тот же uuid).
                     payload = "\n".join(list(tg_links) + [
-                                        l for l in inc_links.values()
-                                        if not (l.startswith("vless://") and
-                                                "security=none" in l)])
+                                        inc_links[k] for k in _ord
+                                        if k in inc_links and not (
+                                            inc_links[k].startswith("vless://") and
+                                            "security=none" in inc_links[k])])
                     if xprof:
                         # Incy понимает routing-профиль только диплинк-формой
                         # incy://routing/onadd/{b64} (схема обязательна, как happ:// у
@@ -19772,9 +20732,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     # (тот же формат, что для INCY): Shadowrocket, Happ, NekoBox
                     # импортируют их из подписки. Многострочные [Interface]-блоки
                     # клиенты не разбирают и теряли эти протоколы молча.
-                    links = [(inc_links.get(p) or l)
-                             if p.split("|")[0] in ("wireguard", "amneziawg") else l
-                             for p, l in inb_links.items()]
+                    links = [(inc_links.get(p) or inb_links[p])
+                             if p.split("|")[0] in ("wireguard", "amneziawg") else inb_links[p]
+                             for p in _ord]
                     # ссылки нод, куда клиент размещён мастером — в общий base64-список
                     links = links + list(node_links.values()) + tg_links
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
@@ -19907,6 +20867,35 @@ class H(http.server.BaseHTTPRequestHandler):
 
         if p.startswith("/pay/") or p == "/shop":
             return _pay_handle_public(self, p)
+
+        if p.startswith("/p/") and p.endswith("/qr"):
+            # QR подписки отдельной картинкой: сканер клиента наводит камеру на
+            # неё, а не на адрес в строке браузера. Право — сам токен, ровно как
+            # у страницы и аватара; новый доступ ручка не открывает.
+            tok = p[3:-len("/qr")].strip("/")
+            raw_st = _load(STATE)
+            if self._refuse_unshapable(raw_st, public=True): return
+            u = next((x for x in _subs_summary(raw_st or {})
+                      if x["sub_token"] == tok or x["uuid"] == tok), None)
+            if not u:
+                return self._send(404, {"error": "подписка не найдена"})
+            host = _hop_pub_host()
+            host = host if "://" not in host else urllib.parse.urlparse(host).netloc
+            svg = _qr_svg("%s/sub/%s" % (_pb(host, CFG_CACHE.get("panel_port", 8444)),
+                                         u["sub_token"])).encode("utf-8")
+            if not svg:
+                return self._send(404, {"error": "QR не собрался"})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(svg)))
+            # SVG умеют открывать и как отдельный документ; картинки там делать
+            # нечего, и скриптам тоже — этот заголовок так не пускает.
+            self.send_header("Content-Security-Policy", "default-src 'none'")
+            self.send_header("Cache-Control", "no-store")
+            self._sec_headers()
+            self.end_headers()
+            self.wfile.write(svg)
+            return None
 
         if p.startswith("/p/") and p.endswith("/avatar"):
             # Аватар отдельным GET-файлом (токен = право доступа, как у POST-варианта).
@@ -21137,6 +22126,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         det = ""
                     _audit("ai_error", user=u.get("login"), err=str(e))
                     return self._send(502, {"error": "LLM API: " + str(e.code) + (" " + det if det else "")})
+                except _AiBadUpstream as e:
+                    # Технический 200 без содержимого. Без этой ветки он превращался
+                    # в «(пусто)» в морде и в успешную запись в журнале.
+                    _audit("ai_error", user=u.get("login"), err=str(e)[:200])
+                    return self._send(502, {"error": "ассистент не получил ответа: " + str(e)[:200]})
                 except Exception as e:
                     _audit("ai_error", user=u.get("login"), err=str(e))
                     return self._send(502, {"error": "ошибка ассистента: " + str(e)[:200]})
@@ -21331,6 +22325,27 @@ class H(http.server.BaseHTTPRequestHandler):
                     _audit("family_devlimit", uuid=mrec["uuid"],
                            max_devices=res["max_devices"], via="p")
                     return self._send(200, {"ok": True})
+                if act == "rename":
+                    # Имя лежит копией на каждый вход (#94), поэтому правятся ВСЕ
+                    # записи группы uuid: иначе через неделю человек увидел бы своё
+                    # старое имя в другом протоколе. Ключ — uuid найденной записи, а
+                    # не присланное `mu`: там может быть чужой sub_token, и тогда
+                    # группа по uuid вышла бы пустой — отказ молча стал бы «успехом».
+                    # В конфиг Xray имя не уходит (там "email": uuid), поэтому
+                    # переименованию не нужен ни _apply_state, ни рестарт службы.
+                    nm = _client_name_input(b.get("name"))
+                    grp = _fam_group(st, mrec["uuid"])
+                    if not grp:
+                        return self._send(404, {"error": "участник не найден"})
+                    for c in grp:
+                        c["name"] = nm
+                        if "fam_name" in c:
+                            # подпись в семейном блоке на /p; проверка по наличию, а
+                            # не по истинности: пустая строка оставила бы старое имя
+                            c["fam_name"] = nm
+                    _save(STATE, st)
+                    _audit("family_rename", uuid=mrec["uuid"], name=nm, via="p")
+                    return self._send(200, {"ok": True, "name": nm})
                 return self._send(404, {"error": "неизвестное действие семьи"})
             if p == "/api/inbound/settings":
                 b = self._body()
@@ -23483,9 +24498,61 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
                 try:
                     _restart_xray()
+                    # Ручной рестарт пишется в тот же журнал, что и ночной: без
+                    # этой строки «кто положил VPN в 4:30» пришлось бы выяснять по
+                    # косвенным признакам.
+                    _audit("svc_restart", svc="xray", reason="manual", ok=True,
+                           by=(_auth_user(self) or {}).get("login") or "owner")
                     return self._send(200, {"ok": True})
                 except Exception as e:
+                    _audit("svc_restart", svc="xray", reason="manual", ok=False,
+                           by=(_auth_user(self) or {}).get("login") or "owner",
+                           detail=str(e)[:200])
                     return self._send(500, {"error": str(e)})
+            if p == "/api/tg/restart":
+                # Раньше telemt нельзя было поднять даже руками: только через
+                # switch/restore с подтверждением замены бинаря.
+                ok, why = _svc_restart("telemt")
+                _audit("svc_restart", svc="telemt", reason="manual", ok=ok,
+                       by=(_auth_user(self) or {}).get("login") or "owner",
+                       detail="" if ok else why)
+                return self._send(200 if ok else 502,
+                                  {"ok": ok} if ok else {"error": why})
+            if p == "/api/schedule/save":
+                b = self._body()
+                raw = b.get("jobs") if isinstance(b, dict) else None
+                if not isinstance(raw, list):
+                    return self._send(400, {"error": "нужен список заданий: jobs"})
+                jobs, errs = _svc_jobs(raw, with_errors=True)
+                u = _auth_user(self) or {}
+                if errs:
+                    # Ни одного задания не сохраняем: частичный график хуже
+                    # прежнего, оператор проверит список и решит сам.
+                    _audit("svc_schedule_bad", errors="; ".join(errs)[:300],
+                           by=u.get("login") or "owner")
+                    return self._send(400, {"error": "; ".join(errs)[:400]})
+                _svc_jobs_save(jobs)
+                _audit("svc_schedule_save", n=len(jobs),
+                       on=sum(1 for j in jobs if j["enabled"]),
+                       by=u.get("login") or "owner")
+                return self._send(200, _svc_view())
+            if p == "/api/schedule/run":
+                b = self._body() or {}
+                u = _auth_user(self) or {}
+                jid = str(b.get("id") or "")[:32]
+                svc = str(b.get("svc") or "").strip()
+                if jid:
+                    job = next((j for j in _svc_jobs() if j["id"] == jid), None)
+                    if job is None:
+                        return self._send(404, {"error": "задание не найдено"})
+                    svc = job["svc"]
+                if svc not in _SVC_SERVICES:
+                    return self._send(400, {"error": "не указана служба: " + "/".join(_SVC_SERVICES)})
+                ok, why = _svc_restart(svc)
+                _audit("svc_restart", svc=svc, job=jid or None, reason="manual", ok=ok,
+                       by=u.get("login") or "owner", detail="" if ok else why)
+                return self._send(200 if ok else 502,
+                                  {"ok": ok, "svc": svc} if ok else {"error": why})
             # ---- veil-zapret2 fix ----
             if p == "/api/fix/enable":
                 if not _authed(self): return self._send(401, {"error": "unauthorized"})
