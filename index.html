@@ -1417,6 +1417,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <label>окно, мин<input id=f2bWindow type=number min=1 max=1440 value=10 style="width:64px;margin-left:4px"></label>
         <label>бан, часов<input id=f2bBanHrs type=number min=1 max=720 value=24 style="width:64px;margin-left:4px"></label>
       </div>
+      <label style="display:block;margin-top:8px"><input type=checkbox id=f2bSshEnabled> то же для <b>SSH</b>: роботы перебирают пароли и к входу на сервер, а панель этого не видела</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;align-items:center">
+        <label>провалов SSH<input id=f2bSshThreshold type=number min=1 max=1000 value=10 style="width:64px;margin-left:4px"></label>
+        <label style="flex:1;min-width:220px">не банить эти адреса<input id=f2bSshIgnore type=text placeholder="например: 203.0.113.9, 2001:db8::5" style="width:100%;margin-left:4px"></label>
+      </div>
+      <p class=mut id=sshBanLive style="margin:6px 0 0;font-size:12px">автобан SSH: счётчик ещё не читался</p>
       <p class=mut style="margin:6px 0 0;font-size:12px">IP с активной сессией панели и локальные адреса не банятся (защита от самоблокировки).</p>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
         <button class="tiny sec" onclick=loadBans()>Активные баны</button>
@@ -4607,12 +4613,15 @@ function renderRotateStatus(s){
   const c=s.conf||{};
   const pct=(s.pct==null||s.pct==='')?'—':(Math.round(s.pct*10)/10+'%');
   let h='Статус: <b>'+escapeHtml(s.state||'idle')+'</b>';
+  if(!c.enabled) h+=' · <b style="color:#ff6b6b">монитор ВЫКЛЮЧЕН: проверка не идёт</b>';
+  else if(s.runnable===false) h+=' · <span style="color:#e0b341">менять нечем: в пуле нет второго адреса</span>';
   if(s.busy) h+=' · <span style="color:#e0b341">идёт проверка / замена…</span>';
   h+=' · доступность из РФ: <b>'+pct+'</b>'+(s.total?(' ('+s.ok+'/'+s.total+')'):'');
   h+=' · текущий IP: <b>'+escapeHtml(s.now_ip4||'—')+'</b>';
   if(c.provider&&c.provider!=='off'&&s.cf_ip!==undefined) h+=' · Cloudflare A: '+escapeHtml(s.cf_ip||'—');
   h+=' · свободных IP в пуле: '+((s.pool||[]).length);
   h+='<br>последняя замена: '+_rotFmtTs(s.last_swap);
+  if(s.age_min!=null&&c.check_min&&s.age_min>c.check_min*4) h+=' · <span style="color:#e0b341">замер устарел: '+Math.round(s.age_min)+' мин</span>';
   if(s.error) h+='<br><span style="color:#ff6b6b">ошибка: '+escapeHtml(s.error)+'</span>';
   box.innerHTML=h;
   const ev=$('rotEvents');
@@ -7345,6 +7354,11 @@ async function loadNetworkSettings(){
     if(r.split_tunnel!==undefined)$('splitTunnel').value=r.split_tunnel;
     if(r.f2b_enabled!==undefined)$('f2bEnabled').checked=!!r.f2b_enabled;
     if(r.f2b_threshold)$('f2bThreshold').value=r.f2b_threshold;
+    if(r.f2b_ssh_enabled!==undefined)$('f2bSshEnabled').checked=!!r.f2b_ssh_enabled;
+    if(r.f2b_ssh_threshold)$('f2bSshThreshold').value=r.f2b_ssh_threshold;
+    if(r.f2b_ssh_ignore!==undefined)$('f2bSshIgnore').value=r.f2b_ssh_ignore;
+    if(r.ssh_ban_live){var _s=r.ssh_ban_live||{},_u=(r.ssh_ban_live.users||0);
+      $('sshBanLive').textContent='автобан SSH: адресов под порог '+(_s.hits||0)+', забанено '+(_s.banned||0)+', пощажено (своя сессия/список) '+(_s.skipped||0)+', перебираемых имён '+_u+', юнит журнала: '+(((_s.units)||0)?'живой':'НЕ НАЙДЕН — автобан слеп');}
     if(r.f2b_window_min)$('f2bWindow').value=r.f2b_window_min;
     if(r.f2b_ban_hours)$('f2bBanHrs').value=r.f2b_ban_hours;
     if(r.synfix_enabled!==undefined)$('synfixEnabled').checked=!!r.synfix_enabled;
@@ -7413,6 +7427,9 @@ async function saveNetworkSettings(){
       split_tunnel: $('splitTunnel').value,
       f2b_enabled: $('f2bEnabled').checked,
       f2b_threshold: parseInt($('f2bThreshold').value,10)||5,
+      f2b_ssh_enabled: $('f2bSshEnabled').checked,
+      f2b_ssh_threshold: parseInt($('f2bSshThreshold').value,10)||10,
+      f2b_ssh_ignore: $('f2bSshIgnore').value.trim(),
       f2b_window_min: parseInt($('f2bWindow').value,10)||10,
       f2b_ban_hours: parseInt($('f2bBanHrs').value,10)||24,
       synfix_enabled: $('synfixEnabled').checked,
