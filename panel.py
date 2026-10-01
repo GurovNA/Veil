@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.22"
+VERSION = "2.16.23"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -67,7 +67,7 @@ VERSION = "2.16.22"
 #        страховка больше не дергают systemctl restart xray в одну секунду.
 #        Жёлтое облако получило ответ на «сделал поддомен — и что дальше»:
 #        GET /api/cf/front/check?domain= (только имена своей зоны) реально шлёт
-#        WebSocket-handshake через Cloudflare на 443 и по коду ответаorigin объясняет шаг
+#        WebSocket-handshake через Cloudflare на 443 и по коду ответа origin объясняет шаг
 #        словами (101 = работает, 522 = на порту тихо, 404 = имя не под облаком, 400 = путь не
 #        тот), показывает параметры ручного ввода и кнопку к подписчикам; автостарт после
 #        «➕ Создать сразу под облаком». А сам вердикт «это адрес Cloudflare или нет» был
@@ -4626,7 +4626,7 @@ def _link(inb, host, client, proto, std=False):
 
 # ---------- экспорт / импорт подписчиков (B2) ----------
 # Два формата обмена между панелями:
-#   json  — внутренний снимок Veil→Veil (identичность + лимиты на каждый протокол),
+#   json  — внутренний снимок Veil→Veil (идентичность + лимиты на каждый протокол),
 #           восстанавливается без потерь; хост/порты/ключи сервера берёт приёмник.
 #   links — текст ссылок vless/trojan/vmess/ss/hy2 (+ URL подписки) — для 3x-ui,
 #           marzban, Hiddify, Remnawave; на импорте пересоздаём клиентов с той же
@@ -4886,7 +4886,7 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
             self, req, fp, code, msg, headers, newurl)
 
 def _fetch_subscription(url):
-    """Бounded server-side GET подписки по URL администратора (для импорта ссылок)."""
+    """Bounded server-side GET подписки по URL администратора (для импорта ссылок)."""
     if not _url_host_is_public(url):
         raise ValueError("разрешены только внешние http/https адреса")
     req = urllib.request.Request(url, headers={"User-Agent": "veil-panel-import"})
@@ -4971,7 +4971,7 @@ def _import_from_links(st, text):
     return imported, warnings
 
 def _import_from_json(st, data):
-    """Восстанавливаем снимок Veil→Veil без потерь (identичность + лимиты)."""
+    """Восстанавливаем снимок Veil→Veil без потерь (идентичность + лимиты)."""
     warnings = []
     subs = data.get("subs") if isinstance(data, dict) else None
     if not isinstance(subs, list):
@@ -5421,8 +5421,22 @@ def _sub_order(keys):
     """
     return sorted(keys, key=lambda k: _TUNNEL_LAST.get(str(k).split("|")[0], 0))
 
-def _singbox_outbound(proto, inb, c, host):
+def _singbox_outbound(proto, inb, c, host, modern=False):
     meta = _proto_meta(proto)
+    if meta["net"] in ("xhttp", "splithttp"):
+        # Xray-овский xhttp (бывший splithttp) синг-бокс не реализует ВОВСЕ — не
+        # «снял в 1.14», а никогда не было: `check -c` отвечает «unknown transport
+        # type: xhttp» на 1.8.8 / 1.10.7 / 1.11.1 / 1.12.24 / 1.13.2 / 1.14.2, и
+        # принимает из транспортов только ws, grpc и http. В байтах ядер слово
+        # «splithttp» не встречается вовсе, а «xhttp» — только как случайная склейка
+        # соседних строк («Cipher Suite: %»+«http2: server», «on a mux»+«https://»).
+        # Один такой outbound
+        # рушит декодирование ВСЕГО файла, то есть подписчик на Hiddify, NekoBox,
+        # SFA/SFI или Streisand терял разом все рабочие узлы, а не только этот.
+        # Подменить его другим транспортом нельзя — рукопожатие не сошлось бы
+        # никогда: профиль читался бы, а соединение не поднималось. Тот же случай,
+        # что AmneziaWG ниже: для sing-box узла просто нет.
+        return None
     host = _pub_host(inb, host, proto)
     fp = _fp()
     base = c.get("name") or "Veil"
@@ -5444,8 +5458,7 @@ def _singbox_outbound(proto, inb, c, host):
             if inb.get("host"):
                 t["authority"] = inb["host"]
             return t
-        if meta["net"] in ("xhttp", "splithttp"):
-            return {"type": "xhttp", "path": inb.get("path") or "/veil"}
+        # ветки xhttp/splithttp здесь нет намеренно: весь узел отсекается выше
         return None
     if proto in ("amneziawg", "wireguard"):
         if proto == "amneziawg":
@@ -5465,9 +5478,23 @@ def _singbox_outbound(proto, inb, c, host):
             addr = "10.10.0.2/32"
         a6 = _tun6(c, "fd20:10::" if proto == "amneziawg" else "fd10:10::")
         addrs = [addr] + ([a6 + "/128"] if a6 else [])
+        psk = inb.get("psk", "")
         # sing-box НЕ понимает xray-овскую форму (secretKey/address/peers[].publicKey/
         # endpoint): он отвергает неизвестные поля, и тогда не запускается ВЕСЬ конфиг,
         # то есть подписчик теряет разом все протоколы, а не только WireGuard.
+        if modern:
+            # wireguard-outbound снят ядром в 1.13 (замерено 1.13.2/1.14.2: unknown
+            # field "server"), его место — top-level `endpoints`, где allowed_ips
+            # ОБЯЗАТЕЛЬНЫ (замерено: "missing allowed ips for peer 0"). keepalive —
+            # те же 25, что панель пишет в *.conf.
+            peer = {"address": _wg_ep(host), "port": int(port), "public_key": pub,
+                    "allowed_ips": ["0.0.0.0/0"] + (["::/0"] if a6 else []),
+                    "persistent_keepalive_interval": 25}
+            if psk:
+                peer["pre_shared_key"] = psk
+            return {"type": "wireguard", "tag": tag, "address": addrs,
+                    "private_key": priv, "mtu": int(inb.get("mtu", WG_MTU)),
+                    "peers": [peer]}
         ob = {"type": "wireguard", "tag": tag,
               "server": _wg_ep(host),
               "server_port": int(port),
@@ -5475,7 +5502,6 @@ def _singbox_outbound(proto, inb, c, host):
               "private_key": priv,
               "peer_public_key": pub,
               "mtu": int(inb.get("mtu", WG_MTU))}
-        psk = inb.get("psk", "")
         if psk:
             ob["pre_shared_key"] = psk
         return ob
@@ -7165,7 +7191,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
 /* Узкий экран. Кнопки в row flex не сжимаются ниже своего min-content (min-width:auto
    по умолчанию), поэтому третья кнопка рядом с «Скопировать подписку» и «Поделиться»
    не умещается в ~332px вьюпорта и вылезает за него — ряд обязан переноситься.
-   Строка семьи с ▦ ужата тем же правилом: четыреGlyph-кнопки + select впритык. */
+   Строка семьи с ▦ ужата тем же правилом: четыре glyph-кнопки + select впритык. */
 @media (max-width:420px){
  .btn-row{gap:8px}
  .btn-row .btn-copy{padding:13px 10px;font-size:13.5px;gap:7px}
@@ -11955,7 +11981,7 @@ def _tg_mp_preview():
             else:
                 blockers.append("порт :%d занят и свободных альтернатив нет" % public_port)
         else:
-            blockers.append("listener есть на :%d, но telemt его не слушает — перезапустите телеmt" % public_port)
+            blockers.append("listener есть на :%d, но telemt его не слушает — перезапустите telemt" % public_port)
     else:
         # Нет публичного MTProto listener'а → можно добавить на [server] port (или на free)
         want = server_port or 0
@@ -12342,7 +12368,7 @@ def _tg_middle_proxy_on():
     return bool(g.get("use_middle_proxy", True))
 
 def _tg_rotate_secret(username, secret=""):
-    """Смена секрета пользователя: ссылка меняется, телеmt сам обновляет [access.users]."""
+    """Смена секрета пользователя: ссылка меняется, telemt сам обновляет [access.users]."""
     name = (username or "").strip()
     if not name:
         raise RuntimeError("имя пустое")
@@ -15646,10 +15672,20 @@ def _wg_full_tunnel_allowed_ips():
         out.append("::/0")
     return ", ".join(out)
 
-def _sb_config(st, sub_path, host, panel_port):
+def _sb_config(st, sub_path, host, panel_port, legacy=False):
     """Полный standalone-конфиг sing-box для подписчика: tun + all outbounds
-    + split-tunnel RU/IR через rule-sets, раздаваемые панелью. None = нет клиента."""
+    + split-tunnel RU/IR через rule-sets, раздаваемые панелью. None = нет клиента.
+
+    legacy=True — прежние формы для ядра 1.10–1.11 (ручка `/sb/<токен>?legacy=1`).
+    По умолчанию новые: легаси-формы (dns.servers[].address, special outbound `dns`,
+    sniff в инбаунде, wireguard-outbound) ядро сняло в 1.13–1.14, и на них НЕ
+    декодируется ВЕСЬ файл, то есть подписчик теряет разом все протоколы. Замерено
+    живыми ядрами 1.8.8/1.10.7/1.11.1/1.12.24/1.13.2/1.14.2 (`check -c`): прежний
+    конфиг не проходил ни на одном, новые формы молчат на 1.12+, легаси с бутстрапом
+    адресов — молчит на 1.10–1.11."""
+    modern = not legacy
     outs = []
+    eps = []
     tags = []
     split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
     for proto, inb in (st.get("inbounds") or {}).items():
@@ -15665,21 +15701,21 @@ def _sb_config(st, sub_path, host, panel_port):
             if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
                 continue
             try:
-                ob = _singbox_outbound(proto, inb, c, host)
+                ob = _singbox_outbound(proto, inb, c, host, modern)
             except Exception:
                 continue
             if not ob or ob["tag"] in tags:
                 continue
             # приоритет WG-туннелю: он стабильнее TCP-протоколов на мобильных
             if proto == "wireguard":
-                outs.insert(0, ob)
+                (eps if modern else outs).insert(0, ob)
                 tags.insert(0, ob["tag"])
             else:
                 outs.append(ob)
                 tags.append(ob["tag"])
-    if not outs:
+    if not outs and not eps:
         return None
-    first = outs[0]["tag"]
+    first = tags[0]
     # ru: российские домены/сети — напрямую, остальное через VPN (аналог ru_bypass);
     # ir: перечисленные сервисы — через VPN, остальное напрямую (bypass-профиль).
     want = []
@@ -15696,44 +15732,86 @@ def _sb_config(st, sub_path, host, panel_port):
         rule_sets.append({"tag": tag, "type": "remote", "format": "binary",
                           "url": f"{_pb(host, panel_port)}/rulesets/{fname}",
                           "download_detour": "direct"})
-    rules = [{"protocol": ["dns"], "outbound": "dns-out"}]
+    rules = ([{"inbound": ["tun-in", "http-in"], "action": "sniff"}] if modern else [])
+    # легаси- outbound `dns` снят в 1.13: роль исполняет действие hijack-dns
+    rules.append({"protocol": ["dns"], "action": "hijack-dns"} if modern else
+                 {"protocol": ["dns"], "outbound": "dns-out"})
     # Адреса самой панели — всегда мимо туннеля (тот самый «IP в direct»): под VPN
     # клиент иначе уходит туннелем на тот же VPS и MTProto/webproxy не подключается.
     own = _own_ip_cidrs()
     if own:
-        rules.append({"ip_cidr": own, "outbound": "direct"})
+        rules.append({"ip_cidr": own,
+                      "action": "direct"} if modern else {"ip_cidr": own, "outbound": "direct"})
     dom = (CFG_CACHE.get("panel_domain") or "").strip()
     if dom and ":" not in dom and not re.fullmatch(r"[0-9.]+", dom):
-        rules.append({"domain": [dom], "outbound": "direct"})
+        rules.append({"domain": [dom], "action": "direct"} if modern else
+                     {"domain": [dom], "outbound": "direct"})
     final = first
     if rule_sets:
-        rules.append({"rule_set": [x["tag"] for x in rule_sets],
-                      "outbound": first if proxy_matched else "direct"})
+        matched = [x["tag"] for x in rule_sets]
         if proxy_matched:
+            rules.append({"rule_set": matched, "outbound": first})
             final = "direct"
-    dns = {"servers": [
-               {"tag": "local-dns", "address": "https://dns.yandex.com/dns-query",
-                "detour": "direct"},
-               {"tag": "remote-dns", "address": "https://dns.google/dns-query",
-                "detour": first}],
-           "final": "remote-dns"}
+        elif modern:
+            rules.append({"rule_set": matched, "action": "direct"})
+        else:
+            rules.append({"rule_set": matched, "outbound": "direct"})
+    if modern:
+        # `local` — системный резолвер: он назван `domain_resolver` у обоих DoH-серверов
+        # и сам резолвит по системному пути. Замерено НЕ `check -c`, а `run -c` на
+        # 1.12.24 / 1.13.2 / 1.14.2: любой `detour`, указывающий на пустой
+        # `{"type":"direct"}`-выход, ядро бракует на старте службы —
+        # «start dns/https[local-dns]: detour to an empty direct outbound makes no
+        # sense» (жалоба хозяина). Файл при этом декодируется исправно, поэтому ни
+        # одна прежняя нога этого не красила. Прямой путь у local-dns остался по
+        # умолчанию (implicit direct назвать нельзя), а без `domain_resolver` было бы
+        # «missing domain resolver for domain server address» — тоже замерено.
+        # remote-dns обязан идти туннелем, поэтому у него `detour` остаётся, но на
+        # рабочий узел, а не на direct.
+        servers = [{"type": "local", "tag": "boot"},
+                   {"type": "https", "tag": "local-dns", "server": "dns.yandex.com",
+                    "domain_resolver": "boot"},
+                   {"type": "https", "tag": "remote-dns", "server": "dns.google",
+                    "detour": first, "domain_resolver": "boot"}]
+    else:
+        # 1.10–1.11: DoH по доменному имени не живёт без address_resolver (замерено
+        # 1.10.7: «parse dns server[local-dns]: missing address_resolver»), поэтому
+        # и здесь добавлен бутстрап по IP.
+        servers = [{"address": "213.180.204.1", "tag": "boot", "detour": "direct"},
+                   {"tag": "local-dns", "address": "https://dns.yandex.com/dns-query",
+                    "detour": "direct", "address_resolver": "boot"},
+                   {"tag": "remote-dns", "address": "https://dns.google/dns-query",
+                    "detour": first, "address_resolver": "boot"}]
+    dns = {"servers": servers, "final": "remote-dns"}
     dns_rules = []
     if split == "ru" and any(x["tag"] == "geosite-ru" for x in rule_sets):
         dns_rules.append({"rule_set": ["geosite-ru"], "server": "local-dns"})
     if dns_rules:
         dns["rules"] = dns_rules
-    return {
+    tun_in = {"type": "tun", "tag": "tun-in", "interface_name": "veiltun",
+              "address": ["172.19.0.1/30"], "auto_route": True,
+              "strict_route": False, "stack": "mixed"}
+    if not modern:
+        # sniff переехал из инбаунда в правило маршрута (снято в 1.13)
+        tun_in["sniff"] = True
+    tail = [{"type": "direct", "tag": "direct"}]
+    if not modern:
+        tail.append({"type": "dns", "tag": "dns-out"})
+    route = {"rules": rules, "rule_set": rule_sets, "final": final}
+    if modern:
+        # домены в server: у самих outbound'ов (хост панели) — тот же резолвер
+        route["default_domain_resolver"] = {"server": "boot"}
+    cfg = {
         "log": {"level": "warning"},
         "dns": dns,
-        "inbounds": [
-            {"type": "tun", "tag": "tun-in", "interface_name": "veiltun",
-             "address": ["172.19.0.1/30"], "auto_route": True,
-             "strict_route": False, "stack": "mixed", "sniff": True},
-            {"type": "mixed", "tag": "http-in", "listen": "127.0.0.1",
-             "listen_port": 2080}],
-        "outbounds": outs + [{"type": "direct", "tag": "direct"},
-                             {"type": "dns", "tag": "dns-out"}],
-        "route": {"rules": rules, "rule_set": rule_sets, "final": final}}
+        "inbounds": [tun_in,
+                     {"type": "mixed", "tag": "http-in", "listen": "127.0.0.1",
+                      "listen_port": 2080}],
+        "outbounds": outs + tail,
+        "route": route}
+    if eps:
+        cfg["endpoints"] = eps
+    return cfg
 
 # ---------- P5: Prometheus-экспорт ----------
 
@@ -19160,7 +19238,7 @@ def _mv_retire(confirm=False):
     _mv_setp(step="retired", retired_ts=int(time.time()), stopped=stopped, pause_bot=True)
     _mv_note("старый хост пенсионирован: остановлено " + ", ".join(stopped))
     _audit("mv_retire", stopped=stopped)
-    _mv_notify("этот хост pensionирован (остановлено: %s). Панель на :%s ещё доступна "
+    _mv_notify("этот хост выведен из эксплуатации (остановлено: %s). Панель на :%s ещё доступна "
                "для осмотра; после проверки удали хост у хостинга." %
                (", ".join(stopped), CFG_CACHE.get("panel_port") or 8443))
     return {"stopped": stopped}
@@ -21085,7 +21163,11 @@ class H(http.server.BaseHTTPRequestHandler):
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
-            cfgj = _sb_config(st, tok, host, panel_port)
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            # ?legacy=1 — прежние формы для клиента на ядре 1.10–1.11, где новых
+            # форм нет (замерено 1.11.1: unknown field "type").
+            legacy = (q.get("legacy") or [""])[0].strip().lower() in ("1", "true", "yes", "on")
+            cfgj = _sb_config(st, tok, host, panel_port, legacy)
             if cfgj is None:
                 return self._send(404, {"error": "клиент не найден"})
             # Отдаём как файл: браузер сохраняет veil.json (Happ импортирует его),
@@ -23713,7 +23795,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         priv, pub = _gen_keys()
                         c["client_private_key"] = _wg_key_std(priv)
                         c["client_public_key"] = _wg_key_std(pub)
-                        # адрес оставляем: он уже выдан из next_address и зашит вAllowedIPs
+                        # адрес оставляем: он уже выдан из next_address и зашит в AllowedIPs
                 # Семья привязана к хозяину его uuid. Повернули именно хозяина —
                 # перепривязываем участников: иначе family_of остаётся смотреть в
                 # мёртвый uuid, хозяин перестаёт видеть семью (совокупный лимит,
