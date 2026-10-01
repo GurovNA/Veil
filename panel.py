@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.23"
+VERSION = "2.16.24"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -15672,11 +15672,40 @@ def _wg_full_tunnel_allowed_ips():
         out.append("::/0")
     return ", ".join(out)
 
-def _sb_config(st, sub_path, host, panel_port, legacy=False):
+RULE_DL_TAG = "rule-dl"
+
+def _sb_core_at_least(raw, want="1.14"):
+    """Численная форма `?core=` на ручке `/sb/<токен>`: просит те формы конфига,
+    которые живут только с ядра `want`. Принимает `1.14`, `1.14.2`, `114`, `v1.15`.
+    Пустое, нераспознанное или меньше — False, то есть прежняя форма, которая
+    читается ВСЕМИ измеренными ядрами. Угадывать версию ядра по User-Agent нельзя
+    (замерено циклом #118), поэтому выбирает тот, кто ссылку даёт."""
+    s = (raw or "").strip().lower().lstrip("v")
+    # Цифры только ASCII: `\d` в Python тянет и полноширинные «１», а `int()` их
+    # съедает — версия ядра из такой ссылки молча выбрала бы форму.
+    if not re.fullmatch(r"[0-9]{1,4}(\.[0-9]{1,4}){0,2}", s):
+        return False
+    if "." not in s:
+        # Без точки читаем как МИНОР линейки 1.x: `114` и `14` = 1.14, `13` = 1.13.
+        # Голос `2` — это 1.2, а не гадание про будущую мажорную 2.0: при сомнении
+        # остаётся прежняя форма, которая читается всеми измеренными ядрами.
+        got = [int(s[0]), int(s[1:])] if len(s) >= 3 else [1, int(s)]
+    else:
+        parts = [int(x) for x in s.split(".")]
+        got = parts + [0] * (2 - len(parts))
+    w = [int(x) for x in want.split(".")]
+    return (got + [0] * (len(w) - len(got))) >= w
+
+
+def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
     """Полный standalone-конфиг sing-box для подписчика: tun + all outbounds
     + split-tunnel RU/IR через rule-sets, раздаваемые панелью. None = нет клиента.
 
     legacy=True — прежние формы для ядра 1.10–1.11 (ручка `/sb/<токен>?legacy=1`).
+    http_client=True — современная форма клиента загрузки правил (ссылка на тег из
+    верхнеуровневой секции `http_clients`) для ядра 1.14+ (ручка
+    `/sb/<токен>?core=1.14`); на 1.11–1.13 этого поля нет и оно отвергает ВЕСЬ
+    файл, поэтому включается только словом ссылки.
     По умолчанию новые: легаси-формы (dns.servers[].address, special outbound `dns`,
     sniff в инбаунде, wireguard-outbound) ядро сняло в 1.13–1.14, и на них НЕ
     декодируется ВЕСЬ файл, то есть подписчик теряет разом все протоколы. Замерено
@@ -15684,6 +15713,7 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False):
     конфиг не проходил ни на одном, новые формы молчат на 1.12+, легаси с бутстрапом
     адресов — молчит на 1.10–1.11."""
     modern = not legacy
+    http_client = bool(http_client) and modern
     outs = []
     eps = []
     tags = []
@@ -15729,9 +15759,14 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False):
     for fname, tag in want:
         if not os.path.exists(os.path.join(RULESET_DIR, fname)):
             continue
-        rule_sets.append({"tag": tag, "type": "remote", "format": "binary",
-                          "url": f"{_pb(host, panel_port)}/rulesets/{fname}",
-                          "download_detour": "direct"})
+        # Ядро 1.14.0 объявило download_detour устаревшим и удалит его в 1.16.0;
+        # замена http_client в 1.11–1.13 НЕ существует и отвергает ВЕСЬ файл
+        # (замерено check -c на 1.11.1/1.12.24/1.13.2/1.14.2). Поэтому форма
+        # выбирается ссылкой, а не догадкой: `?core=1.14` просит новую.
+        dl = ({"http_client": RULE_DL_TAG} if http_client else
+              {"download_detour": "direct"})
+        rule_sets.append(dict({"tag": tag, "type": "remote", "format": "binary",
+                               "url": f"{_pb(host, panel_port)}/rulesets/{fname}"}, **dl))
     rules = ([{"inbound": ["tun-in", "http-in"], "action": "sniff"}] if modern else [])
     # легаси- outbound `dns` снят в 1.13: роль исполняет действие hijack-dns
     rules.append({"protocol": ["dns"], "action": "hijack-dns"} if modern else
@@ -15809,6 +15844,14 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False):
                       "listen_port": 2080}],
         "outbounds": outs + tail,
         "route": route}
+    if http_client and rule_sets:
+        # Ядро 1.14 так просит описывать клиент загрузки правил: отдельный
+        # http_client БЕЗ детура ходит напрямую (замерено run -c 1.14.2:
+        # `http_client: {"detour": "direct"}` декодируется, но служба падает
+        # «detour to an empty direct outbound makes no sense», а строка
+        # `http_client: "direct"` — «http_client not found»: строка — это тег из
+        # этого списка, а не outbound).
+        cfg["http_clients"] = [{"tag": RULE_DL_TAG}]
     if eps:
         cfg["endpoints"] = eps
     return cfg
@@ -21167,7 +21210,13 @@ class H(http.server.BaseHTTPRequestHandler):
             # ?legacy=1 — прежние формы для клиента на ядре 1.10–1.11, где новых
             # форм нет (замерено 1.11.1: unknown field "type").
             legacy = (q.get("legacy") or [""])[0].strip().lower() in ("1", "true", "yes", "on")
-            cfgj = _sb_config(st, tok, host, panel_port, legacy)
+            # ?core=1.14 — формы, которых нет до 1.14 (http_client вместо
+            # download_detour, который удалён в 1.16). Просит их тот, кто знает
+            # ядро клиента: панель сама его не определяет (замерено #118).
+            hc = _sb_core_at_least((q.get("core") or [""])[0])
+            if hc:
+                legacy = False
+            cfgj = _sb_config(st, tok, host, panel_port, legacy, hc)
             if cfgj is None:
                 return self._send(404, {"error": "клиент не найден"})
             # Отдаём как файл: браузер сохраняет veil.json (Happ импортирует его),
