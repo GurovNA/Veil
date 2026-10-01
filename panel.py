@@ -27,7 +27,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.16.21"
+VERSION = "2.16.22"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -3275,6 +3275,13 @@ def _xray_restart():
     перезапусками, перед каждым снимаем накопленные отказы и верим не коду
     возврата systemctl, а is-active. Бросает RuntimeError с тем, что сказал
     systemctl, — вызывающий честно откатит конфиг."""
+    # ПЕСОЧНИЦА (#114). `VEIL_SYS_SANDBOX` переносит ФАЙЛЫ харнесса, но юнит живого
+    # ядра — не файл. Замер батареи 30.09 в 19:03:12: харнесс, поднявший панель у себя,
+    # сделал apply и через этот вызов перезапустил ЖИВОЕ ядро (подписки на секунду легли),
+    # хотя все пути у него были в песочнице. Тот же приём, что с `sbx-veilwg` в #106:
+    # под песочницей побочного системного эффекта нет вовсе.
+    if SBX:
+        return
     gap = time.time() - _XRAY_LAST_RESTART[0]
     if 0 <= gap < _XRAY_RESTART_GAP:
         time.sleep(_XRAY_RESTART_GAP - gap)
@@ -4310,10 +4317,16 @@ def _subs_summary(st, for_display=False):
     return out
 
 def _start_xray():
+    if SBX:
+        return
     _xray_forget_failures()
     subprocess.run(["systemctl", "start", "xray"], check=True, capture_output=True, timeout=90)
 
 def _stop_xray():
+    # Тот же класс, что `_xray_restart` выше: юнит ядра не переносится песочницей,
+    # а `stop` роняет подписки сильнее рестарта.
+    if SBX:
+        return
     subprocess.run(["systemctl", "stop", "xray"], check=True, capture_output=True, timeout=90)
 
 # _restart_xray определён выше, рядом с _write_xray. Второй копии здесь быть не
@@ -8803,17 +8816,23 @@ def _gp_maybe_alert(entry):
         if total <= 0:
             return
         pct = ok * 100.0 / total
+        try:
+            thr = max(1.0, min(100.0, float(CFG_CACHE.get("rot_threshold") or 50)))
+        except Exception:
+            thr = 50.0
         ids = (CFG_CACHE.get("bot_chat_ids") or [])
         if not ids:
             return
         B = _bot_B(ids[0])
-        if pct <= 50.0 and not _GP_LOW_ALERT_ACTIVE:
+        # Порог тот же, что у решения о замене: иначе панель меняла бы IP молча
+        # (литерал 50 здесь не совпадал с настроенным rot_threshold).
+        if pct <= thr and not _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = True
             ts = _ldate("%d.%m %H:%M")
             _bot_send_message(ids[0],
                 B["gp_low"] % (ok, total, f"{pct:.0f}", ts, B["m_status"]),
                 "HTML")
-        elif pct > 50.0 and _GP_LOW_ALERT_ACTIVE:
+        elif pct > thr and _GP_LOW_ALERT_ACTIVE:
             _GP_LOW_ALERT_ACTIVE = False
             ts = _ldate("%d.%m %H:%M")
             _bot_send_message(ids[0],
@@ -14563,6 +14582,201 @@ def _f2b_maybe_ban(ip):
     except Exception:
         pass
 
+_SSHD_UNITS = ("ssh", "sshd", "sshd-session")
+# Что меряет свип после запуска: сколько прочитано, сколько адресов попали под
+# порог, сколько из них нельзя банить по защите, сколько забанено, и какие имена
+# перебирают. Значение имеет только счёт; `banned` пуст при живом подборе =
+# свип слеп, и это видно числом, а не по «в логах же есть строки».
+_SSH_STAT = {"hits": 0, "banned": 0, "read": 0, "skipped": 0, "users": {}, "t": 0.0,
+             "units": []}
+# Разбираются ровно те строки, которые sshd пишет сам. Считается ОДНО событие —
+# `Failed password`: `Invalid user …` и `Connection closed/Disconnected …` пишет
+# тот же самый сеанс, и под счёт они подвели бы порог ниже, чем просит оператор.
+# Форму этой строки задаёт sshd, а не панель: `Failed password for root from
+# 34.100.153.150 port 37652 ssh2` — после имени идёт ` from `, а не адрес. Первая
+# редакция регулярки требовала `имя АДРЕС from`, то есть гибридную форму, которой
+# в природе нет: на живом журнале она не распознала ни одной из 77 строк, юниты
+# были объявлены мёртвыми, и автобан молчал при 261 провале в час.
+_SSH_FAIL_RX = re.compile(
+    r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)")
+_SSH_OK_RX = re.compile(r"Accepted (?:password|publickey|keyboard-interactive(?:/pam)?) "
+                        r"for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)")
+_SSH_USER_RX = re.compile(r"\bfor (?:invalid user )?(?P<user>\S+)(?: from| port)")
+# Живость юнита меряется НЕ «е ли в выборке считаючий провал»: под подбором
+# последние сотни строк ssh.service — один шум (`Invalid user …`, `Disconnected
+# from …`, `maximum authentication attempts exceeded`), и разведка по считаемым
+# строкам объявляла живой юнит мёртвым. Юнит живой, если он вообще несёт
+# sshd-строку любой формы.
+_SSH_UNIT_RX = re.compile(
+    r"Failed (?:password|publickey) for |Accepted (?:password|publickey|keyboard-interactive)"
+    r"|Invalid user \S+ from |Connection closed by \S+ from |Disconnected from "
+    r"|maximum authentication attempts exceeded")
+
+
+_SSHD_LIVE_UNITS = [list(_SSHD_UNITS)]
+_SSH_PROBE_T = [0.0]
+
+
+def _ssh_units_probe(minutes=60):
+    """Какой юнит реально несёт sshd-строки, а какой пишет пусто.
+
+    `sshd.service` на этой машине не существует (журнал пишет `ssh.service` плюс
+    `sshd-session`). Если бы список юнитов был застывшим, свип читал бы пустой
+    источник и оставался зелёным — ровно тот класс, что #109 и #111.
+
+    Выборка — сутки и `2000` последних строк, а живость судится по ЛЮБОЙ
+    sshd-строке: под подбором считаемых провалов в последних двухстах строках
+    просто не остаётся (это и был второй дефект: при старте свип назвал себя
+    слепым, хотя юнит был жив).
+    """
+    live = []
+    probe_min = max(1440, int(minutes))
+    for u in _SSHD_UNITS:
+        try:
+            r = subprocess.run(["journalctl", "--no-pager", "-u", u, "-n", "2000",
+                                "--since", "%d minutes ago" % probe_min, "-o", "cat"],
+                               capture_output=True, text=True, timeout=20)
+        except Exception:
+            continue
+        if r.returncode == 0 and _SSH_UNIT_RX.search(r.stdout):
+            live.append(u)
+    _SSHD_LIVE_UNITS[0] = live
+    _SSH_PROBE_T[0] = time.time()
+    return live
+
+
+def _ssh_journal_lines(minutes, units):
+    if not units:
+        # Пустой список юнитов НЕ должен превращаться в `journalctl` без `-u`:
+        # без фильтра читается весь журнал, и «свип слеп» становится дорогой
+        # иллюзией работы. Слепота честнее: ноль строк и видно в `ssh_ban_live`.
+        print("[ssh-ban] живых юнитов sshd не найдено: свип слеп", flush=True)
+        return []
+    args = ["journalctl", "--no-pager"]
+    for u in units:
+        args += ["-u", u]
+    args += ["--since", "%d minutes ago" % int(max(1, minutes)), "-o", "cat"]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=25)
+    except Exception as e:
+        print("[ssh-ban] журнал не читается: " + str(e)[:80], flush=True)
+        return None
+    if r.returncode != 0:
+        print("[ssh-ban] journalctl rc=%s" % r.returncode, flush=True)
+        return None
+    return r.stdout.splitlines()
+
+
+def _ssh_parse(lines):
+    """(провалы ip→n, успешные ip, имена провалившихся пользователей, сколько строк прочитано)."""
+    fails, ok_ips, bad_users, read = {}, set(), {}, 0
+    try:
+        mine = {a for e in _all_iface_ips() for a in (e["ipv4"] + e["ipv6"]) if a}
+    except Exception:
+        mine = set()
+    for ln in lines:
+        if " from " not in ln:
+            continue
+        read += 1
+        m = _SSH_OK_RX.search(ln)
+        if m:
+            ok_ips.add(m.group("ip").rstrip(".,;"))
+            continue
+        m = _SSH_FAIL_RX.search(ln)
+        if not m:
+            continue
+        ip = m.group("ip").rstrip(".,;")
+        if ip in mine:
+            continue
+        fails[ip] = fails.get(ip, 0) + 1
+        mu = _SSH_USER_RX.search(ln)
+        if mu:
+            u = mu.group("user")
+            bad_users[u] = bad_users.get(u, 0) + 1
+    return fails, ok_ips, bad_users, read
+
+
+def _ssh_allowlist():
+    """IP, которые панель не банит никогда: активные ssh-сессии + руки оператора.
+
+    Живые сессии снимаются так, чтобы НЕ банить адрес, с которого сидит сам
+    оператор (иначе подбор чужого адреса превратился бы в отрезание хозяина).
+    """
+    out = set()
+    try:
+        r = subprocess.run(["ss", "-H", "-tn", "state", "established", "(", "sport", "=", "22", ")"],
+                           capture_output=True, text=True, timeout=10).stdout
+        for ln in r.splitlines():
+            cols = ln.split()
+            if len(cols) >= 4:
+                peer = cols[3].rsplit(":", 1)[0].strip("[]")
+                if peer:
+                    out.add(peer)
+    except Exception:
+        pass
+    for x in (CFG_CACHE.get("f2b_ssh_ignore") or "").replace(",", " ").split():
+        out.add(x.strip())
+    return out
+
+
+def _ssh_sweep():
+    """Автобан по подбору к sshd, в ту же таблицу inet/veil_bans."""
+    cfg = _f2b_cfg()
+    if not cfg or not CFG_CACHE.get("f2b_ssh_enabled", True):
+        return 0
+    win, ban_sec = cfg[1], cfg[2]
+    # ssh-порог свой и НЕ НИЖЕ панельного: палец оператора, попавший один раз в
+    # чужой журнал, не должен стоить ему доступа к серверу.
+    thr = max(cfg[0], int(CFG_CACHE.get("f2b_ssh_threshold") or 10))
+    mins = max(1, win // 60)
+    # Юниты ищем при старте и не чаще раза в 10 минут: пустой список юнитов —
+    # это не «подбора нет», это свип ничего не видит.
+    if not _SSHD_LIVE_UNITS[0] or time.time() - _SSH_PROBE_T[0] > 600:
+        _ssh_units_probe(mins)
+    lines = _ssh_journal_lines(mins, _SSHD_LIVE_UNITS[0])
+    if lines is None:
+        return 0
+    fails, ok_ips, bad_users, read = _ssh_parse(lines)
+    # Счёт пишется ВСЕГДА, до порога и до банов: «провалов нет» и «свип ничего не
+    # прочитал» для оператора должны различаться числом, а не догадкой.
+    _SSH_STAT.update(hits=len(fails), banned=0, users=dict(bad_users),
+                     skipped=0, read=read, t=time.time(),
+                     units=list(_SSHD_LIVE_UNITS[0]))
+    if not fails:
+        return 0
+    allow = _ssh_allowlist()
+    banned, skipped = [], 0
+    for ip, n in sorted(fails.items(), key=lambda kv: (-kv[1], kv[0])):
+        if n < thr:
+            continue
+        if not _f2b_public(ip) or _f2b_has_session(ip) or ip in allow or ip in ok_ips:
+            skipped += 1
+            continue
+        if not _ban_ip(ip, ban_sec, "ssh fails"):
+            continue
+        with _BANS_LOCK:
+            if ip in BANS:
+                BANS[ip]["fails"] = n
+                _bans_save()
+        _audit("f2b_ban", ip=ip, fails=n, hours=ban_sec // 3600, source="sshd")
+        print("[ssh-ban] бан %s на %dч (%d провалов за %d мин)" % (
+            ip, ban_sec // 3600, n, win // 60), flush=True)
+        banned.append(ip)
+    if banned:
+        try:
+            ids = CFG_CACHE.get("bot_chat_ids") or []
+            if ids:
+                _bot_send_message(ids[0],
+                    "🔒 <b>автобан sshd:</b> %s на %dч (%d провалов за %d мин)" % (
+                        ", ".join(banned[:5]), ban_sec // 3600, win // 60), "HTML")
+        except Exception:
+            pass
+    _SSH_STAT.update(hits=len(fails), banned=len(banned), users=dict(bad_users),
+                     skipped=skipped, read=read, t=time.time(),
+                     units=list(_SSHD_LIVE_UNITS[0]))
+    return len(banned)
+
+
 def _f2b_unban(ip):
     with _BANS_LOCK:
         if ip not in BANS:
@@ -15561,6 +15775,11 @@ def _metrics_text():
     m("veil_login_fail_ips", sum(1 for v in _LOGIN_FAILS.values() if v),
       help_text="IPs with recent failed login attempts")
     m("veil_bans_active", len(BANS), help_text="Active nft bans (veil_bans)")
+    m("veil_ssh_ban_hits", _SSH_STAT["hits"], help_text="sshd source IPs over window")
+    m("veil_ssh_ban_done", _SSH_STAT["banned"], help_text="sshd bans issued at last sweep")
+    m("veil_ssh_ban_skipped", _SSH_STAT["skipped"], help_text="sshd IPs spared by protection")
+    m("veil_ssh_ban_read", _SSH_STAT["read"], help_text="sshd journal lines read")
+    m("veil_ssh_ban_units", len(_SSH_STAT["units"]), help_text="live sshd journal units (0 = blind)")
     try:
         du = shutil.disk_usage("/")
         m("veil_disk_total_bytes", du.total)
@@ -16758,7 +16977,7 @@ def _dynv6_update(force4=None, force6=None):
 
 _ROT = {"ts": 0.0, "ok": 0, "total": 0, "pct": None, "state": "idle",
         "suspect_since": 0.0, "last_swap": 0.0, "ip": "", "error": "",
-        "events": [], "busy": False}
+        "events": [], "busy": False, "alerted": False}
 _ROT_LOCK = threading.Lock()
 
 
@@ -17080,12 +17299,27 @@ def _rotate_ip(reason=""):
         _ROT["ip"] = new
         _ROT["state"] = "idle"
         _ROT["suspect_since"] = 0.0
+        _ROT["alerted"] = False
     _rot_event("замена IP %s → %s%s: %s" % (cur or "?", new, (" (" + reason + ")") if reason else "",
                                             "; ".join(rep)), "swap")
     _audit("ip_rotate", frm=cur, to=new, provider=cfg["provider"], reason=reason)
     _rot_notify("🔁 <b>Сменён IP: %s → %s</b>\n%s\nПричина: %s" %
                 (cur or "?", new, "\n".join(rep), reason or "доступность из РФ"))
     return True, "; ".join(rep)
+
+
+def _rot_complain(cfg, ok, total, pct, reason, alerted):
+    """Одна попытка замены: отказ обязан быть назван, а не возвращён в никуда."""
+    done, msg = _rotate_ip(reason)
+    if done:
+        return
+    _rot_event("замена не выполнена: " + msg, "err")
+    if not alerted:
+        with _ROT_LOCK:
+            _ROT["alerted"] = True
+        _rot_notify("⚠️ <b>IP недоступен из РФ, и заменить нечем</b>\n"
+                    "%d/%d зондов (%.0f%%, порог %.0f%%)\n%s" %
+                    (ok, total, pct, cfg["threshold"], msg))
 
 
 def _rot_tick():
@@ -17098,44 +17332,51 @@ def _rot_tick():
             return
         _ROT["busy"] = True
     try:
-        ok, total = _gp_probe(cfg["target"], cfg["port"], cfg["path"])
-    except Exception as e:
+        try:
+            ok, total = _gp_probe(cfg["target"], cfg["port"], cfg["path"])
+        except Exception as e:
+            with _ROT_LOCK:
+                _ROT["error"] = str(e)[:200]
+            _rot_event("проверка доступности не удалась: " + str(e)[:160], "err")
+            return
+        if total <= 0:
+            with _ROT_LOCK:
+                _ROT["error"] = "нет ответов от зондов"
+            return
+        pct = ok * 100.0 / total
+        now = time.time()
         with _ROT_LOCK:
-            _ROT["error"] = str(e)[:200]
+            _ROT.update(ts=now, ok=ok, total=total, pct=pct, error="")
+            state = _ROT["state"]
+            suspect = _ROT["suspect_since"]
+            alerted = _ROT.get("alerted", False)
+        _gp_record_history(ok, total, cfg)
+        if pct > cfg["threshold"]:
+            if state != "idle":
+                _rot_event("доступность восстановилась: %d/%d (%.0f%%)" % (ok, total, pct), "ok")
+            with _ROT_LOCK:
+                _ROT["state"] = "idle"
+                _ROT["suspect_since"] = 0.0
+                _ROT["alerted"] = False
+            return
+        if state != "suspect":
+            _rot_event("доступность %.0f%% ≤ порога %.0f%% (%d/%d)" % (pct, cfg["threshold"], ok, total),
+                       "warn")
+            with _ROT_LOCK:
+                _ROT["state"] = "suspect"
+                _ROT["suspect_since"] = now
+            if cfg["window_min"] <= 0:
+                _rot_complain(cfg, ok, total, pct, "сразу: %.0f%%" % pct, alerted)
+            return
+        if now - suspect < cfg["window_min"] * 60:
+            return
+        _rot_complain(cfg, ok, total, pct,
+                      "повторно %.0f%% через %d мин" % (pct, cfg["window_min"]), alerted)
+    finally:
+        # Единственное место, где занятость снимается ВСЕГДА: без этого монитор мерил
+        # один раз за жизнь процесса, а нитка выше крутилась без сна.
+        with _ROT_LOCK:
             _ROT["busy"] = False
-        _rot_event("проверка доступности не удалась: " + str(e)[:160], "err")
-        return
-    if total <= 0:
-        with _ROT_LOCK:
-            _ROT["error"] = "нет ответов от зондов"
-            _ROT["busy"] = False
-        return
-    pct = ok * 100.0 / total
-    now = time.time()
-    with _ROT_LOCK:
-        _ROT.update(ts=now, ok=ok, total=total, pct=pct, error="")
-        state = _ROT["state"]
-        suspect = _ROT["suspect_since"]
-    _gp_record_history(ok, total, cfg)
-    if pct > cfg["threshold"]:
-        if state != "idle":
-            _rot_event("доступность восстановилась: %d/%d (%.0f%%)" % (ok, total, pct), "ok")
-        with _ROT_LOCK:
-            _ROT["state"] = "idle"
-            _ROT["suspect_since"] = 0.0
-        return
-    if state != "suspect":
-        _rot_event("доступность %.0f%% ≤ порога %.0f%% (%d/%d)" % (pct, cfg["threshold"], ok, total),
-                   "warn")
-        with _ROT_LOCK:
-            _ROT["state"] = "suspect"
-            _ROT["suspect_since"] = now
-        if cfg["window_min"] <= 0:
-            _rotate_ip("сразу: %.0f%%" % pct)
-        return
-    if now - suspect < cfg["window_min"] * 60:
-        return
-    _rotate_ip("повторно %.0f%% через %d мин" % (pct, cfg["window_min"]))
 
 
 def _gp_record_history(ok, total, cfg):
@@ -17151,9 +17392,10 @@ def _gp_record_history(ok, total, cfg):
             h = []
         h = (h + [entry])[-50:]
         _save(p, h)
-        _gp_maybe_alert(entry)
     except Exception:
         pass
+    # Алерт — не часть записи: упавший файл не имеет права глушить единственный сигнал.
+    _gp_maybe_alert(entry)
 
 
 def _rotate_loop():
@@ -17165,10 +17407,9 @@ def _rotate_loop():
             t0 = time.time()
             if cfg["enabled"] and not _mv_locked():
                 _rot_tick()
-            with _ROT_LOCK:
-                busy = _ROT["busy"]
-            if not busy:
-                time.sleep(max(30, min(120, iv - (time.time() - t0))))
+            # Сон БЕЗусловный: пока он стоял под `if not busy`, залипший флаг
+            # занятости превращал мониторинг в спин без пауз и без замеров.
+            time.sleep(max(30, min(120, iv - (time.time() - t0))))
         except Exception as e:
             try:
                 _ROT["error"] = str(e)[:200]
@@ -17185,6 +17426,8 @@ def _rot_status():
     st["conf"] = cfg
     st["pool"] = _rot_candidates()
     st["now_ip4"] = _pub_ip4() or ""
+    st["runnable"] = bool(_rot_pick_ip(st["now_ip4"]))
+    st["age_min"] = round((time.time() - st.get("ts", 0.0)) / 60.0, 1) if st.get("ts") else None
     st["iface_ips"] = [a.get("ipv4") or [] for a in _all_iface_ips()]
     st["iface"] = [{"iface": a.get("iface"), "ipv4": a.get("ipv4") or []} for a in _all_iface_ips()]
     if cfg["provider"] in ("cloudflare", "both"):
@@ -17611,7 +17854,8 @@ def _limits_loop():
             # `_addr_watch_tick` ходит в DNS, `_synfix_tick` — в командную строку,
             # и «оператор нажал кнопку» превратилось бы в «ждёт, пока страховка
             # сходит наружу».
-            for _fn, _tag in ((_bans_cleanup, "f2b"), (_synfix_tick, "synfix"),
+            for _fn, _tag in ((_bans_cleanup, "f2b"), (_ssh_sweep, "ssh-ban"),
+                              (_synfix_tick, "synfix"),
                               (_addr_watch_tick, "addr")):
                 try:
                     _fn()
@@ -21619,6 +21863,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 "f2b_threshold": int(CFG_CACHE.get("f2b_threshold") or 5),
                 "f2b_window_min": int(CFG_CACHE.get("f2b_window_min") or 10),
                 "f2b_ban_hours": int(CFG_CACHE.get("f2b_ban_hours") or 24),
+                "f2b_ssh_enabled": bool(CFG_CACHE.get("f2b_ssh_enabled", True)),
+                "f2b_ssh_threshold": int(CFG_CACHE.get("f2b_ssh_threshold") or 10),
+                "f2b_ssh_ignore": CFG_CACHE.get("f2b_ssh_ignore", ""),
+                "ssh_ban_live": dict(_SSH_STAT, users=len(_SSH_STAT.get("users") or {})),
                 "synfix_enabled": bool(CFG_CACHE.get("synfix_enabled", True)),
                 "synfix_port_live": _synfix_live()[0],
                 "metrics_token": CFG_CACHE.get("metrics_token", ""),
@@ -24428,9 +24676,19 @@ class H(http.server.BaseHTTPRequestHandler):
                 if "f2b_enabled" in body:
                     CFG_CACHE["f2b_enabled"] = bool(body["f2b_enabled"])
                     f2b_changed = True
+                if "f2b_ssh_enabled" in body:
+                    CFG_CACHE["f2b_ssh_enabled"] = bool(body["f2b_ssh_enabled"])
+                    f2b_changed = True
+                if "f2b_ssh_ignore" in body:
+                    v = str(body["f2b_ssh_ignore"] or "")
+                    if len(v) > 4000:
+                        return self._send(400, {"error": "f2b_ssh_ignore: слишком длинный список"})
+                    CFG_CACHE["f2b_ssh_ignore"] = v
+                    f2b_changed = True
                 for fk, fmin, fmax in (("f2b_threshold", 1, 1000),
                                        ("f2b_window_min", 1, 1440),
-                                       ("f2b_ban_hours", 1, 720)):
+                                       ("f2b_ban_hours", 1, 720),
+                                       ("f2b_ssh_threshold", 1, 1000)):
                     if fk in body:
                         try: fv = int(body[fk])
                         except Exception:
