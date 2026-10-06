@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.0"
+VERSION = "2.17.1"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -3421,13 +3421,28 @@ def _traffic_reset_now(st, uuids, tr=None):
     разблокировали лимит или начали новый цикл, упирался в него заново за минуту."""
     if tr is None:
         tr = _statsquery()
+    pending = 0
+    seen = set()
     for u in uuids:
         t = tr.get(u) or {}
         cu = int(t.get("uplink", 0) or 0); cd = int(t.get("downlink", 0) or 0)
+        if u not in seen:
+            seen.add(u)
+            # интервал от последнего тика до обнуления уже намотан, но в суточную
+            # ячейку ещё не сложен — сюда он попадет один раз на uuid, а не один раз
+            # на зеркало записи
+            c0 = (_fam_group(st, u) or [{}])[0]
+            du = cu - _bytes_of(c0.get("last_up"))
+            dd = cd - _bytes_of(c0.get("last_down"))
+            if du < 0: du = cu
+            if dd < 0: dd = cd
+            pending += du + dd
         for c in _fam_group(st, u):
             c["up"] = 0; c["down"] = 0
             c["last_up"] = cu; c["last_down"] = cd
             c["warned_80"] = False; c["warned_days"] = []
+    if pending > 0:
+        _traffic_days_add(pending)
 
 def _cycle_key(kind, ts=None):
     """Ключ текущего цикла трафика (UTC). '' = lifetime (без сброса)."""
@@ -3464,6 +3479,14 @@ def _traffic_tick(st):
         if c0.get("cycle") != ck:
             base = tr.get(key) or {}
             bu = int(base.get("uplink", 0) or 0); bd = int(base.get("downlink", 0) or 0)
+            # граница цикла совпадает с тиком редко: интервал от предыдущего тика уже
+            # намотан, но ещё не сложен — раньше он терялся из суточной ячейки
+            lu = _bytes_of(c0.get("last_up")); ld = _bytes_of(c0.get("last_down"))
+            du = bu - lu; dd = bd - ld
+            if du < 0: du = bu   # Xray перезапустился — считаем текущее значение с нуля
+            if dd < 0: dd = bd
+            if du or dd:
+                _traffic_days_add(du + dd)
             for c in cs:
                 c["cycle"] = ck
                 c["up"] = 0; c["down"] = 0
@@ -5473,6 +5496,106 @@ def _sub_order(keys):
     отдаёт ссылки всех подписчиков, и без uuid в ключе все, кроме первой, терялись).
     """
     return sorted(keys, key=lambda k: _TUNNEL_LAST.get(str(k).split("|")[0], 0))
+
+# Слои заметности подписки (#167): номер слоя = что видит наблюдатель на проводе.
+# 10 — поток неотличим от обычного HTTPS к сайту; 20 — обёртка чужим именем без
+# нашего сертификата; 30/40 — наш сертификат на общем/чужом порту; 50 — открытый
+# текст; 60 — голый UDP. Внутри слоя порядок не трогаем: сортировка устойчива.
+_STEALTH_HTTPS_NETS = ("ws", "xhttp", "splithttp", "grpc")
+
+def _stealth_layer(scheme, port, sec, net):
+    """Слой по разобраным признакам — единственное место, где они складываются в число.
+
+    Его зовут и из ссылки, и из объекта sing-box, чтобы у двух форм подписки было
+    одно правило, а не два, расходящихся при правке. Для tg-ссылок в `sec` лежит
+    подсхема: `webproxy` — это обычный https-прокси, `proxy` — голый MTProto.
+    """
+    if scheme == "tg":
+        return 10 if sec == "webproxy" else (20 if port == 443 else 50)
+    if scheme in ("hy2", "hysteria2", "wireguard", "amneziawg") or net == "quic":
+        return 60
+    if sec == "reality":
+        return 20
+    if sec == "tls":
+        if port != 443:
+            return 40
+        return 10 if net in _STEALTH_HTTPS_NETS else 30
+    return 50
+
+def _link_stealth(link):
+    """Слой заметности одной ссылки: меньше = незаметнее = выше в подписке.
+
+    Меряется только по тексту ссылки, потому что наблюдатель на проводе видит ровно
+    то же: порт, обёртку, форму потока. В `vmess` эти поля лежат внутри base64-блока,
+    поэтому он распаковывается. Ссылку непонятной формы не выбрасываем: ей достаётся
+    открыто-текстовый слой.
+    """
+    l = (link or "").strip()
+    scheme, _, rest = l.partition("://")
+    scheme = scheme.lower()
+    port = 0
+    sec = net = ""
+    if scheme == "vmess":
+        try:
+            j = json.loads(base64.b64decode(rest + "=" * (-len(rest) % 4)).decode("utf-8", "replace"))
+        except Exception:
+            j = {}
+        try:
+            port = int(j.get("port") or 0)
+        except Exception:
+            port = 0
+        sec = str(j.get("tls") or j.get("security") or "").lower()
+        net = str(j.get("net") or "").lower()
+    elif "://" in l:
+        pm = re.match(r"^[^/?#]*?:(\d{1,5})(?:[/?#]|$)", rest)
+        if pm:
+            port = int(pm.group(1))
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(l).query)
+        sec = (q.get("security") or [""])[0].lower()
+        net = (q.get("type") or [""])[0].lower()
+        if scheme == "tg":
+            # У диплинка порт живёт в параметре, а не в позиции host:port, иначе
+            # фасад на общем порту упал бы в самый заметный слой.
+            sec = l[len("tg://"):].split("?", 1)[0].strip("/").lower()
+            try:
+                port = int((q.get("port") or ["0"])[0])
+            except Exception:
+                port = 0
+    return _stealth_layer(scheme, port, sec, net)
+
+def _sb_stealth(ob):
+    """Тот же слой для outbound-объекта sing-box: поля лежат в самом объекте.
+
+    Порт тут называется не `port`, а `server_port` (у свежего WireGuard — внутри
+    `peers`), а обёртка живёт в `tls`; верхний `security` у vmess — это шифр, а не
+    транспорт, его не трогаем.
+    """
+    port = ob.get("server_port") or ob.get("port") or 0
+    if not port:
+        ps = ob.get("peers") or []
+        port = (ps[0].get("port") if ps and isinstance(ps[0], dict) else 0) or 0
+    try:
+        port = int(port or 0)
+    except Exception:
+        port = 0
+    tls = ob.get("tls") or {}
+    sec = ""
+    if isinstance(tls, dict) and tls.get("enabled"):
+        rl = tls.get("reality")
+        sec = "reality" if (isinstance(rl, dict) and rl.get("enabled")) else "tls"
+    net = ""
+    tr = ob.get("transport") or {}
+    if isinstance(tr, dict):
+        net = str(tr.get("type") or "").lower()
+    return _stealth_layer(str(ob.get("type") or "").lower(), port, sec, net)
+
+def _sub_stealth_sort(links):
+    """Ссылки от незаметных к заметным (#167). Устойчиво: порядок внутри слоя — как пришёл."""
+    return sorted(links, key=_link_stealth)
+
+def _sb_stealth_sort(objs):
+    """То же для объектов sing-box (#167), чтобы у обеих форм подписки был один слой-ключ."""
+    return sorted(objs, key=_sb_stealth)
 
 def _singbox_outbound(proto, inb, c, host, modern=False):
     meta = _proto_meta(proto)
@@ -11911,7 +12034,7 @@ def _tg_status():
         users.append({
             "username": u.get("username", ""),
             "enabled": bool(u.get("enabled")),
-            "link": _tg_pick_tls_link((u.get("links") or {}).get("tls")),
+            "link": _tg_pick_tls_link((u.get("links") or {}).get("tls"), _tg_advertised_host()),
             "web_link": web_links.get(u.get("username", ""), ""),
             "ad_tag": u.get("user_ad_tag") or "",
             "connections": u.get("active_unique_ips", 1 if u.get("current_connections", 0) else 0),
@@ -11921,19 +12044,73 @@ def _tg_status():
         })
     for u in users:
         u["link"] = _tg_fix_mtproto_link(u.get("link") or "", mp.get("port"))
-    res = {"installed": True, "users": users, "sni": _tg_sni(), "mtproto": mp}
+    # #158: розданную вручную ссылку показываем побайтно, как её держат клиенты, —
+    # иначе карточка начнёт предлагать адрес, которого у telemt в истории нет
+    man = _tg_manual_status(d.get("data") or [])
+    by_user = {m["username"]: m for m in man if m["ok"] and m.get("link")}
+    for u in users:
+        m = by_user.get(u["username"])
+        if m:
+            u["link"] = m["link"]
+            u["manual"] = {"port": m["port"], "front": m["front"], "ts": m["ts"]}
+    # #180: ссылка чужого фронта не едет на общий :443 — развилка ведёт её по имени из
+    # секрета, а не по `server=`. Без этого признака морда сверяла фронт с именем маски и
+    # на маршруте `mp` врала в обе стороны: свежая ссылка выглядела чужой, прежняя — своей.
+    for u in users:
+        u["on443"] = bool(_tg_mp_route_for(u.get("link") or ""))
+    res = {"installed": True, "users": users, "sni": _tg_sni(), "mtproto": mp, "manual": man}
     if web:
         res["web"] = web
     return res
+
+
+def _tg_link_front(link):
+    """Фронт, зашитый в `ee`-секрет ссылки, — его назовёт клиент в SNI. Толерантно:
+    битая или чужая ссылка даёт пустую строку, а не исключение (ссылку отдаём всё равно)."""
+    try:
+        q = urllib.parse.parse_qs((link or "").split("?", 1)[1])
+        m = _TG_EE_SECRET.match((q.get("secret") or [""])[0].strip().lower())
+        return "" if not m else bytes.fromhex(m.group(2)).decode("ascii").strip().lower()
+    except Exception:
+        return ""
+
+
+def _tg_mp_route_for(link):
+    """#168: имя, под которым эта ссылка едет общий :443, или пустое — если не едет.
+    Развилка выбирает дорожку по SNI, а клиент берёт SNI из фронта секрета, а не из
+    `server=`. Значит на :443 легальна только ссылка, чей фронт уже называет `mp.<база>`;
+    прежние ссылки (фронт — маска или чужой домен) остаются на публичном порту слушателя."""
+    mp = _tg_mp_domain_on()
+    return mp if mp and _tg_link_front(link) == mp else ""
+
+
+def _tg_advertised_host():
+    """Имя, под которым панель отдаёт СВЕЖУЮ ссылку: имя маршрута, иначе прежнее."""
+    return _tg_mp_domain_on() or _tg_front_host()
+
+
+def _tg_mp_domain_on():
+    """Имя прокси, если маршрут на общий :443 включён (метки ставит `_mux_apply`)."""
+    if not CFG_CACHE.get("tg_mp_on443"):
+        return ""
+    return (CFG_CACHE.get("tg_mp_domain") or "").strip()
+
+
+def _tg_front_host():
+    """Прежний порядок имени ссылки: сайт-маска → hop → база. Именно его держат уже
+    розданные ссылки, поэтому он не зависит от маршрута MTProto."""
+    return ((CFG_CACHE.get("tg_mask_domain") or "").strip() or
+            (CFG_CACHE.get("hop_public_host") or "").strip() or
+            (CFG_CACHE.get("panel_domain") or "").strip())
 
 
 def _tg_host_ok(link):
     # Когда мюкс перенёс tg-фасад на tg.<база> (CFG_CACHE["tg_mask_domain"] ставит
     # _mux_apply и снимает _mux_revert), ссылки обязаны называть именно его: SNI базы
     # занят веб-фронтом. Без мюкса — прежний порядок hop → база.
-    host = (CFG_CACHE.get("tg_mask_domain") or "").strip() or \
-           (CFG_CACHE.get("hop_public_host") or "").strip() or \
-           (CFG_CACHE.get("panel_domain") or "").strip()
+    # #168: имя прокси и имя сайт-маски — РАЗНЫЕ, и подсказываем прокси только ссылке,
+    # которая сама его называет (`_tg_mp_route_for`): иначе ссылка соврёт про :443.
+    host = _tg_mp_route_for(link) or _tg_front_host()
     if not host or not link:
         return link
     return re.sub(r"(?i)(server=)[^&:]+", lambda m: m.group(1)+host, link)
@@ -11990,8 +12167,13 @@ def _tg_mtproto_info():
 
 def _tg_fix_mtproto_link(link, port):
     """Ссылка tg://proxy: подставить публичный домен и реальный порт MTProto
-    (telemt иногда отдаёт порт своего loopback-веб-листенера вместо нативного)."""
+    (telemt иногда отдаёт порт своего loopback-веб-листенера вместо нативного).
+    #168: когда маршрут MTProto на общем :443 включён, новые ссылки идут на него —
+    слушатель на своём порту остаётся живым для уже розданных. На :443 ведём только
+    ссылку, чей фронт уже называет имя прокси (`_tg_mp_route_for`)."""
     link = _tg_host_ok(link)
+    if _tg_mp_route_for(link):
+        port = 443
     if link and port:
         link = re.sub(r"(?i)(port=)\d+", lambda m: m.group(1)+str(port), link)
     return link
@@ -12059,33 +12241,48 @@ def _tg_toml_public_mp_listener(text):
 def _tg_toml_has_any_listener(text):
     return bool(_tg_toml_listeners(text))
 
-def _tg_toml_ipv6_on(text):
-    """Гарантировать [network] ipv6 = true — без этого флага (по умолчанию false)
-    telemt молча НЕ биндит ни :: , ни v6-адрес: AAAA домен живёт, а слушателя нет,
-    и iOS под VPN (где v6-маршрут появляется) теряет MTProto-прокси."""
-    if re.search(r"(?m)^\s*ipv6\s*=\s*true", text):
-        return text
-    m = re.search(r"(?ms)^\s*\[network\]\s*$", text)
-    if m:
-        return text[:m.end()] + "\nipv6 = true\n" + text[m.end():]
-    return text.replace("[server]\n", "[network]\nipv6 = true\n\n[server]\n", 1)
+def _tg_toml_ipv6_set(text, on=True):
+    """Записать [network] ipv6 = true|false. Без флага (по умолчанию false) telemt молча
+    НЕ биндит ни ::, ни v6-адрес: AAAA домен живёт, а слушателя нет, и iOS под VPN
+    (где v6-маршрут появляется) теряет MTProto-прокси.
+    Флаг пишем и в сторону false: прежнее применение оставляло в файле `ipv6 = true`
+    из прошлого захода, поэтому переключатель снимал только слушателя, а не v6-маршруты
+    к DC — а под middle-proxy именно они (сам telemt называет их экспериментальными)
+    рвутся тысячами в час и съедают загрузку медиа."""
+    want = "true" if on else "false"
+    lines = text.split("\n")
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "[network]":
+            start = i
+            break
+    if start is None:
+        return text.replace("[server]\n", "[network]\nipv6 = %s\n\n[server]\n" % want, 1)
+    j = start + 1
+    while j < len(lines) and not lines[j].lstrip().startswith("["):
+        if re.match(r"\s*ipv6\s*=", lines[j]):
+            lines[j] = "ipv6 = " + want
+            return "\n".join(lines)
+        j += 1
+    lines.insert(start + 1, "ipv6 = " + want)
+    return "\n".join(lines)
 
 def _tg_mp_ipv6_want():
-    """Держать ли IPv6-слушателя MTProto. По умолчанию ВКЛ (прежнее поведение).
-    Гасим только когда оператор снял переключатель `tg_mp_ipv6` И middle-proxy включён —
-    именно под middle-proxy v6-маршрут появляется у клиента (iOS под VPN), и тогда
-    публичный `[network] ipv6 = true` + слушатель `::` — осознанный выбор, а не случайность."""
+    """Держать ли IPv6 у MTProto: и слушателя `::`, и [network] ipv6. По умолчанию ВКЛ
+    (прежнее поведение). Гасим только когда оператор снял переключатель `tg_mp_ipv6`
+    И middle-proxy включён — именно под middle-proxy v6-маршрут появляется у клиента
+    (iOS под VPN), и тогда публичный `[network] ipv6 = true` + слушатель `::` —
+    осознанный выбор, а не случайность."""
     return bool(CFG_CACHE.get("tg_mp_ipv6", True)) or not _tg_middle_proxy_on()
 
 def _tg_toml_add_mp_listener(text, port, ipv6=True):
     """Добавить публичные MTProto-listeners на port; вернуть (новый_текст, блок).
-    При ipv6=False — только v4-слушатель и НЕ форсим [network] ipv6 = true.
+    При ipv6=False — только v4-слушатель, и [network] ipv6 пишется явно в false.
     Вставляем сразу после последнего существующего [[server.listeners]] (если есть) —
     тогда все listeners сгруппированы; иначе — в конец файла."""
     if _TG_MP_MARK in text:
         raise RuntimeError("VEIL-MTProto-listener уже добавлен — сначала откат")
-    if ipv6:
-        text = _tg_toml_ipv6_on(text)
+    text = _tg_toml_ipv6_set(text, ipv6)
     block = (
         "# "+_TG_MP_MARK+"\n"
         "[[server.listeners]]\n"
@@ -12111,10 +12308,16 @@ def _tg_toml_add_mp_listener(text, port, ipv6=True):
 
 def _tg_toml_remove_mp_listener(text):
     """Вырезать наши блоки-маркеры (v4+v6): строка-комментарий, заголовок [[server.listeners]]
-    и тело до следующей секции/комментария."""
-    pat = re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\n"
+    и тело до следующей секции/комментария.
+
+    Цифра после маркера переживается намеренно: v6-слушателя прежняя версия панели
+    подписывала `# Veil:MTProtoListener6`, и на живых машинах такой блок до сих пор
+    в файле. Без этой цифры откат вырезал один блок из двух и молча оставлял
+    публичного `::`-слушателя, рапортуя успех.
+    """
+    pat = re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\d*[ \t]*\n"
                      r"\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
-    new, n = pat.subn("", text, count=2)
+    new, n = pat.subn("", text)
     if n == 0:
         raise RuntimeError("наш MTProto-listener не найден в telemt.toml — откатывать нечего")
     return new
@@ -12226,6 +12429,137 @@ def _tls_probe(ip, port, sni, timeout=6):
     except Exception as e:
         return False, str(e)[:120]
 
+_TG_DC_FAIL = re.compile(
+    r"Connection (?:timeout|refused|reset|failed)\s+to\s+([0-9A-Za-z_.:\[\]-]+):(\d+)")
+
+
+def _tg_dc_complaints(mins=10):
+    """К каким адресам Telegram узел не достучался по словам самого telemt.
+
+    telemt говорит это прямо («Upstream failed after retries: Connection timeout to …»), но
+    реплика тонет в журнале, а морда без неё не отличает «прокси сломан» от «у этого сервера
+    нет пути к Telegram». Возвращает ([(хост, порт, число жалоб)], ошибка)."""
+    try:
+        # Приоритет указывать нельзя: telemt пишет в stderr без syslog-префикса, и journald
+        # ставит таким строкам PRIORITY=6. фильтр `-p warning` (≤4) отсекает ВСЕ их, и
+        # самотест молча рапортует «не жаловался» там, где за час сто двадцать таймаутов.
+        r = subprocess.run(["journalctl", "-u", "telemt", "--no-pager", "-q",
+                            "-n", "3000", "--since", "-%dm" % mins],
+                           capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        return [], "журнала systemd нет"
+    except Exception as e:
+        return [], str(e)[:120]
+    if r.returncode != 0:
+        return [], (r.stderr or "journalctl rc=%s" % r.returncode)[:120]
+    tally = {}
+    for m in _TG_DC_FAIL.finditer(r.stdout or ""):
+        host = (m.group(1) or "").strip("[]")
+        try:
+            port = int(m.group(2))
+        except Exception:
+            continue
+        if host:
+            tally[(host, port)] = tally.get((host, port), 0) + 1
+    return sorted(tally.items(), key=lambda kv: (-kv[1], kv[0])), ""
+
+
+_TG_DC_TRIES = 6
+_TG_DC_TIMEOUT = 2.0
+_TG_DC_TTL = 900.0
+# Потерю подъёма мерим СНАРЯДА, а не в ответе на запрос морды: шесть попыток по два метра
+# на адрес — это секунды, а `/api/tg/dcs` открывается на каждом обновлении вкладки.
+_tg_dc_loss = {"rows": {}, "error": ""}
+_tg_dc_loss_lock = threading.Lock()
+
+
+def _tg_dc_endpoints():
+    """Адреса узлов Telegram, с которыми движок работает сам, — из его статистики.
+
+    Вбитый список запрещён тем же, чем он запрещён для жалоб: адреса Telegram меняются, а
+    мерить надо ровно тот путь, которым идёт наша сессия. Исключение — наверх, его читает
+    тик и красит ошибку в снимке, а не в морде."""
+    d = _tg_api("GET", "/v1/stats/dcs").get("data") or {}
+    out = []
+    for x in (d.get("dcs") or []):
+        for ep in (x.get("endpoints") or []):
+            ep = str(ep).strip()
+            if ep:
+                out.append((x.get("dc"), ep))
+    return out
+
+
+def _tg_dc_probe(ep):
+    """Сколько подъёмов соединения до `хост:порт` дошло из `_TG_DC_TRIES`: (ок, провал, лучший мс).
+
+    Именно подъём, а не «отвечает ли адрес»: `_hop_public` делает одну попытку и тонущий в
+    половине случаев узел выдаёт как здоровый — так прежняя проверка и прятала #183.
+    """
+    host, _, port = ep.rpartition(":")
+    try:
+        port = int(port)
+    except Exception:
+        return 0, 0, None
+    # Скобки из `[::1]:443` — не адрес: без них `create_connection` теряет семью и пишет
+    # IPv6-узел в провалы, то есть врёт про потерю там, где ничего не терялось.
+    host = host.strip("[]")
+    ok = fail = 0
+    best = None
+    for _ in range(_TG_DC_TRIES):
+        t0 = time.monotonic()
+        try:
+            s = socket.create_connection((host or ep, port), timeout=_TG_DC_TIMEOUT)
+            s.close()
+            ok += 1
+            ms = (time.monotonic() - t0) * 1000.0
+            best = ms if best is None else min(best, ms)
+        except Exception:
+            fail += 1
+    return ok, fail, (round(best, 1) if best is not None else None)
+
+
+def _tg_dc_loss_tick():
+    """Один адрес за тик: попыток много, тик общий со страховками, и гнать их вразнобой нельзя."""
+    try:
+        eps = _tg_dc_endpoints()
+    except Exception as e:
+        with _tg_dc_loss_lock:
+            _tg_dc_loss["error"] = str(e)[:120]
+        return
+    now = time.time()
+    with _tg_dc_loss_lock:
+        rows = _tg_dc_loss["rows"]
+        stale = [(dc, ep) for dc, ep in eps
+                 if now - float((rows.get(ep) or {}).get("at") or 0) > _TG_DC_TTL]
+        _tg_dc_loss["error"] = ""
+    if not stale:
+        return
+    dc, ep = stale[0]
+    ok, fail, best = _tg_dc_probe(ep)
+    total = ok + fail
+    with _tg_dc_loss_lock:
+        _tg_dc_loss["rows"][ep] = {"dc": dc, "ep": ep, "ok": ok, "fail": fail,
+                                   "total": total,
+                                   "loss": (round(100.0 * fail / total) if total else None),
+                                   "best_ms": best, "at": int(now)}
+
+
+def _tg_dc_loss_view():
+    """Снимок замеров подъёма: строки, теряющие адреса и адреса без потерь. Только чтение."""
+    now = time.time()
+    with _tg_dc_loss_lock:
+        rows = [dict(v) for v in _tg_dc_loss["rows"].values()]
+        err = _tg_dc_loss.get("error") or ""
+    for r in rows:
+        r["stale"] = (now - float(r.get("at") or 0)) > 2 * _TG_DC_TTL
+    rows.sort(key=lambda r: (str(r.get("dc")), r.get("ep") or ""))
+    live = [r for r in rows if not r["stale"]]
+    return {"rows": rows,
+            "lossy": [r["ep"] for r in live if (r.get("loss") or 0) >= 20],
+            "healthy": [r["ep"] for r in live if r.get("loss") == 0],
+            "error": err, "tries": _TG_DC_TRIES, "ttl": int(_TG_DC_TTL)}
+
+
 def _tg_mp_selftest(force=False):
     """«MTProto под VPN» — самотест: помнит ли мир нашу беду (petlya-2026-09).
     1) facade-рукопожатие на свой публичный :7443 (v4 и v6) — путь клиента под VPN
@@ -12258,15 +12592,40 @@ def _tg_mp_selftest(force=False):
         _MPST.update(ts=time.time(), res=res)
         return res
     fronts = _veil_front_domains()
-    sni = (CFG_CACHE.get("front_domain") or "").strip().lower() or (fronts[0] if fronts else "www.microsoft.com")
+    # Имя для рукопожатия берём по приоритету: сначала имя маршрута (под ним едут свежие
+    # ссылки), затем фасад, который называет сам движок, и лишь потом фронт веб-прокси.
+    # Очередь начиналась с `front_domain`, и проверка светилась именем веб-прокси, хотя
+    # MTProto шёл под другим: галочка была зелёной, но доказывала чужое имя (#185).
+    sni = ""
+    whence = ""
+    for cand, label in ((_tg_advertised_host(), "имя маршрута"),
+                        (_tg_sni().get("tls_domain"), "фасад движка"),
+                        (CFG_CACHE.get("front_domain"), "фронт веб-прокси")):
+        v = (cand or "").strip().lower()
+        if v:
+            sni, whence = v, label
+            break
+    if not sni:
+        sni, whence = ((fronts[0] if fronts else "www.microsoft.com").strip().lower(),
+                       "первый фронт движка")
+    gate = "общий :443" if port == 443 else "прежний слушатель :%d" % port
     for ip, fam in ((_pub_ip4(), "IPv4"), (_pub_ip6(), "IPv6")):
         if not ip:
             add("tls_" + fam.lower(), "Facade-рукопожатие %s" % fam, True,
                 "сервер без %s — пропускаем" % fam, warn=True)
             continue
+        if fam == "IPv6" and not _tg_mp_ipv6_want():
+            # Живой замер (`l42`, 05.10): на коробке с `tg_mp_ipv6` снятым проверка
+            # краснела («Connection refused»), хотя слушателя `::` нет по воле оператора.
+            # Спрашивать нечего — и это не поломка: кого касается, тот назван проверкой
+            # «Клиенты едут под именем маршрута».
+            add("tls_ipv6", "Facade-рукопожатие IPv6", True,
+                "IPv6 у MTProto погашен переключателем — слушателя `::` нет, спрашивать "
+                "нечего", warn=True)
+            continue
         ok, detail = _tls_probe(ip, port, sni)
-        add("tls_" + fam.lower(), "Facade-рукопожатие %s на %s:%d (SNI=%s)"
-            % (fam, ip, port, sni), ok, detail)
+        add("tls_" + fam.lower(), "Facade-рукопожатие %s на %s:%d (SNI=%s — %s; %s)"
+            % (fam, ip, port, sni, whence, gate), ok, detail)
     try:
         with open(XRAY, encoding="utf-8") as f:
             xc = json.load(f)
@@ -12292,10 +12651,18 @@ def _tg_mp_selftest(force=False):
         txt = t.stdout or ""
         has_own = ("local_accept" in txt) and (("local6_accept" in txt) or not _pub_ip6())
         has_lim = ("other_accept" in txt) and (("other6_accept" in txt) or not _pub_ip6())
-        add("synfix", "Защита SYN-лимитов: свои проходят, чужие нормируются",
-            t.returncode == 0 and has_own and has_lim,
-            "" if t.returncode == 0 and has_own and has_lim else
-            "нет таблицы veil_synfix или правил (v4/v6) accept/лимит для своих и чужих")
+        # #170: «таблица есть» ещё не значит «таблица верная» — правила могли остаться на
+        # старом наборе портов, пока авто-список уехал (маршрут MTProto на :443).
+        want = tuple(_synfix_ports()["want"])
+        live = _synfix_live()[0]
+        drift = want != live
+        ok = t.returncode == 0 and has_own and has_lim and not drift
+        add("synfix", "Защита SYN-лимитов: свои проходят, чужие нормируются", ok,
+            "" if ok else ("%s%s" % (
+                "" if t.returncode == 0 and has_own and has_lim else
+                "нет таблицы veil_synfix или правил (v4/v6) accept/лимит для своих и чужих; ",
+                ("живые порты %s, должно быть %s" % (list(live) or "пусто", list(want))
+                 if drift else ""))))
     except Exception as e:
         add("synfix", "Защита SYN-лимитов", False, str(e)[:160])
     try:
@@ -12310,6 +12677,69 @@ def _tg_mp_selftest(force=False):
                 warn=True)
     except Exception:
         pass
+    try:
+        mm = _tg_manual_status()
+        if mm:
+            bad = [x for x in mm if not x["ok"]]
+            add("manual", "Разданные ссылки держатся побайтно", not bad,
+                ("все %d на месте" % len(mm)) if not bad else
+                "; ".join("%s — %s" % (x["username"], x["detail"]) for x in bad[:3]))
+    except Exception as e:
+        add("manual", "Разданные ссылки держатся побайтно", False, str(e)[:160])
+    # #180: десктоп держит ссылку, выданную до маршрута `mp` на :443. Такая ссылка не
+    # сломана — она просто едет другой дорогой, и по имени из секрета. Самотест обязан
+    # назвать этих клиентов, иначе «не работает прокси» выглядит как поломка telemt.
+    # Сверяемся с ОТДАВАЕМОЙ ссылкой (`_tg_status`), а не с выдачей telemt: розданную вручную
+    # (#158) клиент держит побайтно, и именно она может быть прежнего фронта.
+    try:
+        mp = _tg_mp_domain_on()
+        if mp:
+            stray = [u.get("username") or "?" for u in (_tg_status().get("users") or [])
+                     if u.get("link") and not u.get("on443")]
+            add("mp_front", "Клиенты едут под именем маршрута", not stray,
+                ("%d из списка — ссылка прежнего фронта: на :443 не едет, живёт на порту "
+                 "слушателя: %s" % (len(stray), ", ".join(stray[:5]))) if stray else
+                ("все под %s" % mp), warn=True)
+    except Exception as e:
+        add("mp_front", "Клиенты едут под именем маршрута", False, str(e)[:160], warn=True)
+    # #180: TCP от клиента проходит весь путь — :443, развилка по SNI, слушатель, — и сессии
+    # всё равно нет: узел сам не дотягивается до адресов Telegram. Это не поломка прокси, и
+    # называть её поломкой прокси значит гонять хозяина по неверному следу. Жалобы берём у
+    # самого telemt, а не из вбитого списка адресов (Telegram их меняет), и обязательно
+    # подтверждаем своей пробой: вчерашняя авария не должна светиться красным сегодня.
+    try:
+        bad, err = _tg_dc_complaints()
+        lv = _tg_dc_loss_view()
+        lossy = [r for r in lv["rows"] if not r["stale"] and (r.get("loss") or 0) >= 20]
+        lost = ", ".join("%s — %d из %d подъёмов не дошли" % (r["ep"], r["fail"], r["total"])
+                         for r in lossy[:2])
+        dead = []
+        for (h, p), n in bad[:2]:
+            if all(not _hop_public(h, p, timeout=2.5) for _ in range(2)):
+                dead.append("%s:%d (%d жалоб)" % (h, p, n))
+        said = ", ".join("%s:%d×%d" % (h, p, x) for (h, p), x in bad[:2])
+        if dead:
+            add("dc", "Путь этого сервера к Telegram", False,
+                "нет пути отсюда: %s — прокси принимает клиента, но сам узел не достучится "
+                "до Telegram; на этом протоколе сессия не держится%s" %
+                (", ".join(dead), (", а по нашему замеру %s" % lost) if lost else ""))
+        elif lossy:
+            note = "telemt не жаловался" if not bad else \
+                "жалобы были (%s), но сейчас отвечает" % said
+            add("dc", "Путь этого сервера к Telegram", True,
+                "%s, а по нашему замеру %s" % (note, lost), warn=True)
+        elif err:
+            add("dc", "Путь этого сервера к Telegram", True,
+                "не измерено: %s" % err, warn=True)
+        elif not bad:
+            add("dc", "Путь этого сервера к Telegram", True,
+                "telemt не жаловался за 10 минут")
+        else:
+            add("dc", "Путь этого сервера к Telegram", True,
+                "жалобы были (%s), но сейчас отвечает — путь неустойчив" % said,
+                warn=True)
+    except Exception as e:
+        add("dc", "Путь этого сервера к Telegram", False, str(e)[:160], warn=True)
     res = {"ok": all(c["ok"] for c in checks), "ran": int(time.time()), "checks": checks}
     _MPST.update(ts=time.time(), res=res)
     return res
@@ -12675,9 +13105,20 @@ def _tg_ensure_secret_in_toml(username, secret):
     with open(TELEMT_CONF, "w", encoding="utf-8") as f:
         f.write(text)
 
-def _tg_pick_tls_link(tls):
-    """Первая ссылка обычно IPv4 — предпочтём её."""
-    for l in tls or []:
+def _tg_pick_tls_link(tls, prefer=""):
+    """Первая ссылка обычно IPv4 — предпочтём её.
+    #168: `prefer` — имя, под которым панель отдаёт ссылку. telemt возвращает по ссылке
+    на каждый фронт, и порядок их не обещан: брать первую и подписывать её чужим именем
+    нельзя — SNI клиент возьмёт из секрета, и развилка уведёт такую ссылку в веб. Поэтому
+    сначала ищем ссылку собственным фронтом, и только потом — прежнюю эвристику."""
+    tls = tls or []
+    prefer = (prefer or "").strip().lower()
+    if prefer:
+        for l in tls:
+            if _tg_link_front(l) == prefer and "server=" in l and \
+                    ":" not in l.split("server=")[1].split("&")[0]:
+                return l
+    for l in tls:
         if "server=" in l and ":" not in l.split("server=")[1].split("&")[0]:
             return l
     return (tls or [""])[0]
@@ -12715,7 +13156,7 @@ def _tg_add(username, mode="both"):
     secret = d.get("secret", "")
     _tg_ensure_secret_in_toml(name, secret)
     links = ((d.get("data") or {}).get("user") or {}).get("links", {})
-    link = _tg_pick_tls_link(links.get("tls"))
+    link = _tg_pick_tls_link(links.get("tls"), _tg_advertised_host())
     web_link = _tg_web_enable_user(name) if mode in ("web", "both") else ""
     return {"username": name, "secret": secret,
             "link": _tg_fix_mtproto_link(link, _tg_mtproto_info().get("port")),
@@ -12796,7 +13237,8 @@ def _tg_rotate_secret(username, secret=""):
         _tg_ensure_secret_in_toml(name, new_secret)
     links = ((d.get("user") or {}).get("links") or {}).get("tls") or []
     return {"username": name, "secret": new_secret,
-            "link": _tg_fix_mtproto_link(_tg_pick_tls_link(links), _tg_mtproto_info().get("port")),
+            "link": _tg_fix_mtproto_link(
+                _tg_pick_tls_link(links, _tg_advertised_host()), _tg_mtproto_info().get("port")),
             "web_link": _tg_web_link(name)}
 
 def _tg_sni():
@@ -12877,7 +13319,652 @@ def _tg_sni_set(tls_domain=None, tls_domains=None):
     return _tg_sni()
 
 
+# ---- #168: откуда telemt снимает настоящую форму TLS (источник фасадного профиля) ----
+# `censorship.mask_host` + `mask_port`. Пока фасад смотрит на публичный :443, источник
+# и есть этот публичный маршрут. С #168 SNI прокси ведёт прямо в слушателя mtproxy, и
+# публичный съём формы превращается в петлю: telemt пришёл бы сам к себе, профиль
+# протухает за `tls_full_cert_ttl_secs`, а без профиля мертво и прокси-клиенту, и браузеру.
+# Поэтому источник уводим на петлевой фронт сайт-маски. Мерено живьём: с `127.0.0.1:8447`
+# профиль скачивается (100 КБ) и отдаётся клиенту полной цепью, 5119 байт рукопожатия.
+_MASK_FRONT_DEFAULT_PORT = 443
+_MASK_FRONT_LOOPBACK = "127.0.0.1"
+# Петлевой фронт имени прокси (#168) может быть назван любым локальным адресом —
+# сверяться надо со списком, а не с одной записью.
+_MASK_FRONT_LOOPBACKS = (_MASK_FRONT_LOOPBACK, "localhost", "::1")
+
+def _tg_mask_front_get():
+    """{mask_host, mask_port} — текущий источник формы. Пустой host = прежнее поведение
+    (снимать с самого фасада по публичному маршруту)."""
+    try:
+        c = _tg_api("GET", "/v1/config").get("data", {}).get("censorship") or {}
+    except Exception:
+        return {"mask_host": "", "mask_port": 0}
+    try:
+        port = int(c.get("mask_port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    return {"mask_host": (c.get("mask_host") or "").strip(), "mask_port": port}
+
+
+def _tg_mask_front_set(host, port):
+    """Поставить источник формы. API принимает только непустой хост (пустая строка — 400),
+    поэтому снятие делает `_tg_mask_front_clear`, а не PATCH."""
+    host = (host or "").strip()
+    port = int(port or 0)
+    if not host or not (1 <= port <= 65535):
+        raise RuntimeError("нужны хост и порт источника формы")
+    _tg_api("PATCH", "/v1/config", {"censorship": {"mask_host": host, "mask_port": port}})
+    _audit("tg_mask_front", host=host, port=port)
+    return _tg_mask_front_get()
+
+
+def _tg_mask_front_clear():
+    """Вернуть источник формы к базовой линии: строки `mask_host` в файле не было, а
+    `mask_port` стоял 443. Через API это невозможно: пустая строка — `400 Bad Request`,
+    `null` — молча `changed: []` (мерено). Значим только вырез строки + перезапуск."""
+    port = _MASK_FRONT_DEFAULT_PORT
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        text = ""
+    if text:
+        new = re.sub(r"(?m)^\s*mask_host\s*=.*\n", "", text)
+        new = re.sub(r"(?m)^(\s*mask_port\s*=\s*)\d+", r"\g<1>%d" % port, new)
+        if new != text:
+            with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+                f.write(new)
+    _tg_api("PATCH", "/v1/config", {"censorship": {"mask_port": port}})
+
+
+def _tg_mask_front_off(saved=None):
+    """Снять источник формы к базовой линии, выбрав движок по снимку «до».
+
+    Одно правило на все три хода (отключение маршрута, откат применения, присмотр):
+    честное «до» — только снимок, записанный при включении. Если в нём чужой хост с
+    портом, возвращаем его PATCH'ем; если пусто, или хост наш петлевой (снимки состояний,
+    записанных до #168, могли сохранить собственное действие как «до»), строку режет
+    `_tg_mask_front_clear` — API пустоту не принимает (`400`), а `null` молча `changed: []`.
+    """
+    back = saved if isinstance(saved, dict) else {}
+    host = (back.get("mask_host") or "").strip()
+    try:
+        port = int(back.get("mask_port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if host and host not in _MASK_FRONT_LOOPBACKS:
+        _tg_mask_front_set(host, port or _MASK_FRONT_DEFAULT_PORT)
+    else:
+        _tg_mask_front_clear()
+
+
+# Присмотр за источником формы (#174). `telemt` сам переписывает полученный PATCH на диск,
+# поэтому рестарт службы его не теряет — теряют другие: восстановление снимка `telemt.toml`,
+# переустановка пакета, любая правка файла со стороны. Симптом всегда молчаливый и всегда
+# один: фасад имени прокси снимает форму сам с себя, профиль протухает, в журнале
+# `Raw TLS fetch attempt failed sni=mp… ServerHelloMissing`, и мертво и прокси-клиенту,
+# и браузеру. Чинить обязан не только тот, кто потерял, а сам порядок.
+_MASK_FRONT_GUARD = {"want": "", "have": "", "fixed": "", "skipped": "", "error": "",
+                     "ts": None}
+
+
+def _tg_mask_front_guard():
+    """Держать источник формы в согласии с маршрутом MTProto на :443.
+
+    Возвращает строку о сделанном ("" — ничего не тронули). На спокойном проходе в журнал
+    не пишет — как хранитель имён. Петлевой порт проверяется живым коннектом: ставить
+    источник на мёртвый порт хуже публичной петли, там хотя бы есть шанс на профиль."""
+    _MASK_FRONT_GUARD.update(want="", have="", fixed="", error="", ts=time.time(),
+                             skipped="песочница: живую службу не трогаем" if SBX else "")
+    if SBX:
+        # Песочница переселяет ФАЙЛЫ харнесса, а юнит `telemt` остаётся живой (`#114`). Значит
+        # сверка делала бы выводы по снимку-фикстуре, а удар пришёлся по настоящей службе.
+        return ""
+    ms = _load(_MUX_STATE, {}) or {}
+    if not (ms.get("mp") or isinstance(ms.get("mp_prev"), dict) or CFG_CACHE.get("tg_mp_on443")):
+        _MASK_FRONT_GUARD["skipped"] = "маршрут MTProto на :443 не применялся"
+        return ""
+    if _mv_locked():
+        _MASK_FRONT_GUARD["skipped"] = "переезд: самопроизвольные правки приостановлены"
+        return ""
+    if not _tg_available():
+        _MASK_FRONT_GUARD["skipped"] = "telemt не отвечает"
+        return ""
+    cur = _tg_mask_front_get()
+    have = "%s:%s" % (cur.get("mask_host") or "", cur.get("mask_port") or 0)
+    local = (cur.get("mask_host") or "").strip() in _MASK_FRONT_LOOPBACKS
+    want_port = 0
+    route_on = bool(ms.get("applied") and ms.get("mp"))
+    if route_on:
+        try:
+            want_port = int(ms.get("mp_mask_port") or 0)
+        except (TypeError, ValueError):
+            want_port = 0
+        if not 1 <= want_port <= 65535:
+            # Маршрут включён, а порта фронта в снимке нет (состояние записано версией,
+            # которая его не писала). Выдумывать порт нельзя, а «снять к базовой линии»
+            # — значит оборвать живую маску: поэтому сверка приостановлена, а не решена.
+            _MASK_FRONT_GUARD["skipped"] = ("маршрут включён, но порт петлевого фронта "
+                                            "в снимке не записан — сверка приостановлена")
+            return ""
+    _MASK_FRONT_GUARD["have"] = have
+    _MASK_FRONT_GUARD["want"] = ("%s:%d" % (_MASK_FRONT_LOOPBACK, want_port)
+                                 if want_port else "базовая линия")
+    try:
+        if route_on:
+            if local and cur.get("mask_port") == want_port:
+                return ""
+            try:
+                with socket.create_connection((_MASK_FRONT_LOOPBACK, want_port), timeout=2):
+                    pass
+            except Exception:
+                _MASK_FRONT_GUARD["skipped"] = ("петлевой фронт на :%d не отвечает — "
+                                                "источник не переведён" % want_port)
+                return ""
+            _tg_mask_front_set(_MASK_FRONT_LOOPBACK, want_port)
+            did = "источник формы → %s:%d" % (_MASK_FRONT_LOOPBACK, want_port)
+        else:
+            if not local:
+                return ""
+            _tg_mask_front_off(ms.get("mp_prev"))
+            did = "источник формы снят к базовой линии"
+        # Правка цензуры применяется перезапуском: `PATCH` отвечает
+        # `restart_required: true` и отдельного reload-эндпоинта у telemt нет (мерено —
+        # `/v1/config/reload` это 404). Без перезапуска чинился бы файл, а не служба.
+        subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        for _ in range(10):
+            time.sleep(1)
+            if _tg_available():
+                break
+    except Exception as e:
+        _MASK_FRONT_GUARD["error"] = str(e)[:120]
+        _audit("tg_mask_front_guard", have=have, want=_MASK_FRONT_GUARD["want"],
+               error=_MASK_FRONT_GUARD["error"])
+        return ""
+    _MASK_FRONT_GUARD["fixed"] = did
+    _audit("tg_mask_front_guard", have=have, want=_MASK_FRONT_GUARD["want"], fixed=did)
+    return did
+
+
+# ------------------------------------------------------------------ #158: подгонка под уже розданную ссылку
+
+_TG_EE_SECRET = re.compile(r"^ee([0-9a-f]{32})([0-9a-f]{2,})$")
+# #196: @MTProxybot отдаёт секрет голыми 32 hex — ни `ee`, ни имени фронта. Клиент по
+# такой строке идёт прямым MTProto на порт, а наш :443 держит TLS-развилку, поэтому
+# рукопожатие не складывается и ссылка «не работает». Физика та же, что у розданных
+# ссылок: телеграм ждёт `ee` + ключ + hex тега, а на фронтовом прокси тегом и является
+# имя фронта. Значит недостающее панель обязана достроить сама, а не требовать от бота.
+_TG_PLAIN_SECRET = re.compile(r"^(?:ee)?([0-9a-f]{32})$")
+_TG_MANUAL_MARK = "Veil:MTProtoManual"
+_TG_MANUAL_STATE = f"{BASE}/tg_manual_links.json"
+_TG_USER_NAME = re.compile(r"[a-zA-Z0-9_.\-]{1,32}")
+
+
+def _tg_manual_front_for(server):
+    """#196: какое имя фронта подшить под голый hex из бота. Адрес из ссылки годится,
+    только если это домен (он и есть то, что клиент назовёт в SNI); IP фронтом быть не
+    может — тогда берём публичное имя MTProto, которое панель раздаёт сама."""
+    s = (server or "").strip().lower().rstrip(".")
+    if ("." in s and ":" not in s and not re.fullmatch(r"[0-9a-f.]+", s) and
+            re.fullmatch(r"[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?", s)):
+        return s
+    return _tg_advertised_host() or _tg_front_host()
+
+
+def _tg_manual_compose(secret, server):
+    """#196: достроить `ee`-секрет из того, что дал бот. Возвращает (секрет, имя фронта)
+    или (None, "") — если строка вообще не похожа на ключ."""
+    m = _TG_PLAIN_SECRET.match((secret or "").strip().lower())
+    if not m:
+        return None, ""
+    front = _tg_manual_front_for(server)
+    if not front:
+        raise RuntimeError("в секрете нет имени фронта, а панели нечем его заменить: "
+                           "узел не отдаёт публичного имени MTProto — включите маршрут "
+                           "на общий порт или вставьте ссылку целиком, с ee…")
+    return "ee" + m.group(1) + front.encode("ascii").hex(), front
+
+
+def _tg_manual_parse(link):
+    """Разобрать готовую ссылку `tg://proxy` целиком: `server`, `port` и `ee`-секрет на ключ и фронт.
+
+    Физика секрета (мерено на `telemt` 3.5.7): `ee` + 32 hex-символа ключа + `hex` имени фронта,
+    без байта длины. Поэтому розданная ссылка самодостаточна: фронт вшит в неё в момент выпуска
+    секрета, а не в момент создания клиента. Под себя panel обязана подстроить ровно три вещи —
+    ключ, список фронтов и публичный слушатель на порту ссылки.
+
+    #196: бот спонсорства отдаёт секрет голыми 32 hex — без `ee` и без фронта, и ссылка с ним
+    не работает на фронтовом порту. Такое вставка достраивается сама; имя фронта, которое
+    панель подшила, возвращается в поле `composed`, чтобы морда показала готовую ссылку.
+    """
+    raw = (link or "").strip().strip('"').strip("'")
+    if not raw:
+        raise RuntimeError("вставьте ссылку целиком: tg://proxy?server=…&port=…&secret=ee…")
+    composed = ""
+    if re.fullmatch(r"(?i)(?:ee)?[0-9a-f]{32}", raw):
+        # Голый ключ без ссылки: адрес и порт берём те, что панель отдаёт уже сейчас.
+        host = _tg_advertised_host() or _tg_front_host()
+        if not host:
+            raise RuntimeError("вставлен только секрет, а у панели нет публичного имени MTProto: "
+                               "включите маршрут на общий порт или вставьте ссылку целиком")
+        secret0, composed = _tg_manual_compose(raw, host)
+        try:
+            gport = int((_tg_mtproto_info() or {}).get("port") or 443)
+        except Exception:
+            gport = 443
+        raw = "tg://proxy?server=%s&port=%d&secret=%s" % (host, gport, secret0)
+        # Порт — как у `_tg_fix_mtproto_link`: ссылка, чей фронт называет имя маршрута,
+        # идёт на общий :443, остальное — на публичный порт слушателя.
+        if _tg_mp_route_for(raw):
+            raw = re.sub(r"(?i)(port=)\d+", lambda m: m.group(1) + "443", raw)
+    if re.match(r"(?i)^https?://t\.me/proxy", raw):
+        i = raw.find("?")
+        if i < 0:
+            raise RuntimeError("в ссылке t.me нет параметров — вставьте её целиком")
+        raw = "tg://proxy" + raw[i:]
+    if not re.match(r"(?i)^tg://proxy\?", raw):
+        raise RuntimeError("это не ссылка tg://proxy: панель подгоняет только MTProto-фасад "
+                           "(вида tg://proxy?server=…&port=…&secret=ee…)")
+    q = {k.lower(): v for k, v in urllib.parse.parse_qs(raw.split("?", 1)[1]).items()}
+    server = (q.get("server") or [""])[0].strip().lower().rstrip(".")
+    ports = (q.get("port") or [""])[0].strip()
+    secret = (q.get("secret") or [""])[0].strip().lower()
+    if not server or not re.fullmatch(r"[a-z0-9]([a-z0-9.:%_\-]{0,251}[a-z0-9])?", server):
+        raise RuntimeError("в ссылке непонятный server= — нужен домен или адрес без порта и пути")
+    if not re.fullmatch(r"[0-9]{1,5}", ports or "") or not 0 < int(ports) < 65536:
+        raise RuntimeError("в ссылке непонятный port= — нужен порт 1…65535")
+    m = _TG_EE_SECRET.match(secret)
+    if not m:
+        secret, composed = _tg_manual_compose(secret, server)
+        m = _TG_EE_SECRET.match(secret or "")
+    if not m:
+        raise RuntimeError("секрет не ee-формата: нужно ee, 32 hex-символа ключа и hex имени фронта")
+    key, tail = m.group(1), m.group(2)
+    try:
+        front = bytes.fromhex(tail).decode("ascii").strip().lower()
+    except Exception:
+        raise RuntimeError("хвост секрета не расшифровывается в имя фронта — ссылка битая")
+    if "." not in front or not re.fullmatch(r"[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?", front):
+        raise RuntimeError("фронт из секрета прочитался как «%s» — это не домен" % front[:40])
+    return {"server": server, "port": int(ports), "key": key, "front": front, "secret": secret,
+            "composed": composed,
+            "link": "tg://proxy?server=%s&port=%d&secret=%s" % (server, int(ports), secret)}
+
+
+def _tg_manual_read_toml():
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        raise RuntimeError("не смог прочитать telemt.toml: %s" % e)
+
+
+def _tg_toml_access_users(text=None):
+    """{имя: ключ} из секции `[access.users]` — без обращения к API."""
+    if text is None:
+        text = _tg_manual_read_toml()
+    m = re.search(r"(?ms)^\s*\[access\.users\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text)
+    if not m:
+        return {}
+    out = {}
+    for ln in m.group(1).splitlines():
+        mm = re.match(r'^\s*"?([^"=\s]+)"?\s*=\s*"([0-9a-f]{32})"\s*$', ln)
+        if mm:
+            out[mm.group(1)] = mm.group(2)
+    return out
+
+
+def _tg_manual_public_ports(text=None):
+    """Порты публичных mtproxy-слушателей (петлевые не в счёт).
+
+    `[server] port` считается только когда блоков `[[server.listeners]]` нет вовсе: telemt
+    трактует массив как исчерпывающий и сам на него не биндится.
+    """
+    if text is None:
+        text = _tg_manual_read_toml()
+    ports = []
+    for L in _tg_toml_listeners(text):
+        if L["transport"] != "mtproxy":
+            continue
+        ip = L["ip"] or "0.0.0.0"
+        if ip.startswith("127.") or ip == "::1":
+            continue
+        if L["port"]:
+            ports.append(int(L["port"]))
+    if ports:
+        return sorted(set(ports))
+    if not _tg_toml_has_any_listener(text):
+        sp = _tg_toml_get_server_port(text)
+        return [int(sp)] if sp else []
+    return []
+
+
+def _tg_toml_add_manual_listener(text, port, ipv6=True):
+    """Добавить публичный mtproxy-слушатель на port, если такого ещё нет; вернуть (текст, добавлено).
+
+    Маркер отдельный от «Оживить MTProto»: ручных портов может быть несколько, и откат одного
+    не обязан съедать другой. Вставка — после последнего имеющегося блока, чтобы слушатели
+    оставались группой и telemt перекрывал массив целиком за один проход.
+    """
+    port = int(port)
+    if port in _tg_manual_public_ports(text):
+        return text, False
+    text = _tg_toml_ipv6_set(text, ipv6)
+    block = (
+        "# " + _TG_MANUAL_MARK + "\n"
+        "[[server.listeners]]\n"
+        "ip = \"0.0.0.0\"\n"
+        "port = " + str(port) + "\n"
+        "transport = \"mtproxy\"\n"
+    )
+    if ipv6:
+        block += (
+            "\n# " + _TG_MANUAL_MARK + "\n"
+            "[[server.listeners]]\n"
+            "ip = \"::\"\n"
+            "port = " + str(port) + "\n"
+            "transport = \"mtproxy\"\n"
+        )
+    last = None
+    for mm in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
+        last = mm
+    if last:
+        ins = last.end()
+        return text[:ins].rstrip("\n") + "\n\n" + block + text[ins:].lstrip("\n"), True
+    return text.rstrip("\n") + "\n\n" + block, True
+
+
+def _tg_manual_records():
+    return _load(_TG_MANUAL_STATE, []) or []
+
+
+def _tg_manual_store(rec):
+    """Запомнить розданную ссылку побайтно за её клиентом.
+
+    Храним именно ссылку, а не её пересборку: карточка не имеет права предлагать оператору
+    другой текст, чем тот, что уже у клиентов на руках.
+    """
+    recs = [r for r in _tg_manual_records() if r.get("username") != rec.get("username")]
+    recs.append(rec)
+    _save(_TG_MANUAL_STATE, recs, 0o600)
+    return recs
+
+
+def _tg_manual_for(username):
+    for r in _tg_manual_records():
+        if r.get("username") == username:
+            return r
+    return None
+
+
+def _tg_link_secret(link):
+    m = re.search(r"(?i)[?&]secret=([^&\s]+)", link or "")
+    return (m.group(1) if m else "").strip().lower()
+
+
+def _tg_user_secrets(row):
+    """Все ee-секреты, которые telemt выдаёт этому клиенту прямо сейчас: по одному на фронт."""
+    out = set()
+    for l in ((row or {}).get("links") or {}).get("tls") or []:
+        s = _tg_link_secret(l)
+        if s:
+            out.add(s)
+    return out
+
+
+def _tg_toml_tls_domains(text=None):
+    """`tls_domain` + `tls_domains` из telemt.toml — то же, что отдаёт API, но без сети."""
+    if text is None:
+        try:
+            text = _tg_manual_read_toml()
+        except Exception:
+            return []
+    doms = []
+    m = re.search(r'(?m)^\s*tls_domain\s*=\s*"([^"]+)"', text)
+    if m:
+        doms.append(m.group(1).strip().lower())
+    m = re.search(r'(?m)^\s*tls_domains\s*=\s*\[([^\]]*)\]', text)
+    if m:
+        doms += [d.strip().strip(",").strip().strip('"').strip().lower()
+                 for d in m.group(1).split(",")]
+    return sorted({d for d in doms if d and "." in d})
+
+
+def _tg_manual_fronts():
+    try:
+        sni = _tg_sni()
+    except Exception:
+        sni = {}
+    doms = [(sni.get("tls_domain") or "")] + list(sni.get("tls_domains") or [])
+    doms = sorted({d.strip().lower() for d in doms if d and d.strip()})
+    # если API молчит, список берём из файла: записать один фронт вместо живого списка
+    # означало бы потерять фронты уже розданных ссылок
+    return doms or _tg_toml_tls_domains()
+
+
+def _tg_key_owner(key):
+    """Имя клиента, которому уже принадлежит этот ключ (по `[access.users]`)."""
+    for name, k in _tg_toml_access_users().items():
+        if k == key:
+            return name
+    return ""
+
+
+def _tg_manual_name(front, key, taken):
+    """Имя нового клиента из фронта: допустимое для telemt и не занятое."""
+    base = _tg_slug((front.split(".")[0] if "." in front else front)[:24], "proxy")[:24]
+    if base not in taken:
+        return base
+    cand = (base[:23] + "-" + key[:8])[:32]
+    if cand not in taken:
+        return cand
+    raise RuntimeError("клиент «%s» уже есть, а имя для этого ключа занято — укажите клиента сами" % cand)
+
+
+def _tg_manual_status(rows=None):
+    """Состояние розданных ссылок: помнит ли telemt побайтно каждый вставленный секрет."""
+    recs = _tg_manual_records()
+    if not recs:
+        return []
+    if rows is None:
+        try:
+            rows = _tg_api("GET", "/v1/users").get("data") or []
+        except Exception:
+            rows = []
+    by = {(r0.get("username") or ""): r0 for r0 in rows or []}
+    out = []
+    for r in recs:
+        name = r.get("username") or ""
+        row = by.get(name)
+        ok = bool(r.get("secret")) and r["secret"] in _tg_user_secrets(row)
+        if not row:
+            detail = "клиент «%s» не найден в telemt" % name
+        elif not r.get("secret"):
+            detail = "ссылка не записана полностью"
+        elif not ok:
+            detail = ("telemt не выдаёт этот секрет: фронт %s или ключ потеряны"
+                      % (r.get("front") or "?"))
+        else:
+            detail = ""
+        out.append({"username": name, "link": r.get("link") or "", "port": r.get("port"),
+                    "front": r.get("front") or "", "ts": r.get("ts") or "",
+                    "ok": ok, "detail": detail})
+    return out
+
+
+def _tg_manual_preview(link, username=""):
+    """Только чтение: план подгонки под розданную ссылку, блокеры и предупреждения.
+
+    Ни файла, ни API не касается.
+    """
+    p = _tg_manual_parse(link)
+    if not _tg_available():
+        raise RuntimeError("telemt API не отвечает — сначала включи MTProto-прокси")
+    text = _tg_manual_read_toml()
+    users = [u.get("username") or "" for u in (_tg_api("GET", "/v1/users").get("data") or [])]
+    name = (username or "").strip()
+    if name and not _TG_USER_NAME.fullmatch(name):
+        raise RuntimeError("имя клиента: только латиница, цифры, _ . - (до 32 символов)")
+    if name and name not in users:
+        raise RuntimeError("клиента «%s» нет в telemt — выберите существующего или оставьте поле пустым"
+                           % name)
+    owner = _tg_key_owner(p["key"])
+    fronts = _tg_manual_fronts()
+    ports = _tg_manual_public_ports(text)
+    blockers, warnings, actions = [], [], []
+    if owner and name and owner != name:
+        blockers.append("ключ из ссылки уже принадлежит клиенту «%s»: перепривязка к «%s» "
+                        "оставила бы два клиента на одном ключе" % (owner, name))
+    target = name or owner
+    if not target:
+        target = _tg_manual_name(p["front"], p["key"], set(users))
+    if target not in users:
+        actions.append("создать клиента «%s»" % target)
+    if owner != target:
+        actions.append("привязать секрет из ссылки к клиенту «%s»" % target)
+    need_front = p["front"] not in fronts
+    if need_front:
+        actions.append("добавить фронт %s в список tls_domains, сохранив остальные" % p["front"])
+    need_port = p["port"] not in ports
+    if need_port:
+        actions.append("добавить публичный MTProto-слушатель на :%d" % p["port"])
+    occ = _sock_occupant(p["port"])
+    if need_port and not occ.get("free") and "telemt" not in (occ.get("proc") or ""):
+        blockers.append("порт :%d занят %s — клиенты по этой ссылке туда не придут"
+                        % (p["port"], occ.get("proc") or "другим процессом"))
+        if p["port"] == 443:
+            blockers.append("на :443 сидит развилка мюкса: MTProto на общий порт включайте "
+                            "галочкой протокола во вкладке «Мюкс», а не здесь")
+    if actions:
+        actions.append("перезапустить telemt один раз")
+    if p.get("composed"):
+        # #196: ссылка на глазах стала другой, и молчать об этом нельзя.
+        warnings.append("панель достроила секрет из бота: было 32 hex без `ee` и без фронта, "
+                        "стало `ee` + ключ + hex(«%s»); готовая ссылка — ниже" % p["composed"])
+    try:
+        ips = _resolve_ips(p["server"])
+        ours = _our_ips()
+        if ips and ours and not (ips & ours):
+            warnings.append("адрес %s из ссылки резолвится на %s, а этот сервер — %s: пока DNS "
+                            "не сойдётся, клиенты по ссылке придут не сюда (это не блокирует "
+                            "подгонку конфига)"
+                            % (p["server"], ", ".join(sorted(ips)[:2]), ", ".join(sorted(ours)[:2])))
+    except Exception:
+        pass
+    issued = _tg_user_secrets(_tg_user_row(target)) if target in users else set()
+    already = p["secret"] in issued and not need_port
+    return {"ok": True, "parsed": p, "username": target, "owner": owner,
+            "front": p["front"], "port": p["port"], "fronts": fronts, "ports": ports,
+            "need_user": target not in users, "need_front": need_front, "need_port": need_port,
+            "restart": bool(actions), "already": already,
+            "actions": actions or ["подгонка не требуется — ссылка уже настроена"],
+            "blockers": blockers, "warnings": warnings, "can_apply": not blockers}
+
+
+def _tg_manual_apply(link, username="", confirm=False):
+    """Подогнать telemt под уже розданную ссылку, чтобы её клиенты не заметили переезда.
+
+    Порядок намеренный: сначала API (он сам перезаписывает telemt.toml), потом правка файла
+    с слушателем, потом единственный перезапуск — иначе telemt затёр бы нашу дописку.
+    Верификация побайтная: секрет, который telemt выдаёт привязанному клиенту, обязан равняться
+    вставленному. Не совпало — возврат снятого файла, рестарт и честный отказ.
+    """
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    pv = _tg_manual_preview(link, username)
+    if not pv["can_apply"]:
+        raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"] or ["неизвестно"]))
+    p = pv["parsed"]
+    target = pv["username"]
+    backup = _tg_manual_read_toml()
+
+    def _restore(why):
+        try:
+            with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+                f.write(backup)
+            subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        except Exception as e2:
+            why += " (откат не выполнен: %s)" % str(e2)[:80]
+        raise RuntimeError(why)
+
+    created = False
+    added = False
+    try:
+        if pv["need_user"]:
+            _tg_add(target, "mtproto")
+            created = True
+        if pv["owner"] != target:
+            _tg_rotate_secret(target, p["key"])
+        if pv["need_front"]:
+            _tg_sni_set(tls_domains=pv["fronts"] + [p["front"]])
+        if pv["need_port"]:
+            # перечитываем: `telemt` сам перезаписывает файл при изменении через API
+            text = _tg_manual_read_toml()
+            text, added = _tg_toml_add_manual_listener(text, p["port"],
+                                                       ipv6=_tg_mp_ipv6_want())
+            if added:
+                with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+                    f.write(text)
+    except Exception as e:
+        _restore("не смог подстроить конфиг: %s — прежнее состояние возвращено" % str(e)[:140])
+    restarted = False
+    if pv["restart"]:
+        r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
+                           text=True, timeout=120)
+        restarted = True
+        if r.returncode != 0:
+            _restore("telemt не перезапустился (rc=%d) — конфиг откачен" % r.returncode)
+    verok = False
+    for _ in range(15 if pv["restart"] else 1):
+        try:
+            got = _tg_user_secrets(_tg_user_row(target))
+        except Exception:
+            got = set()
+        if p["secret"] in got:
+            verok = True
+            break
+        time.sleep(1)
+    if not verok:
+        _restore("telemt не выдаёт вставленный секрет побайтно — ссылка не заработала, "
+                 "конфиг откачен%s" % ("" if not created else
+                                       "; клиента «%s» можно удалить" % target))
+    listening = True
+    if pv["need_port"]:
+        occ = _sock_occupant(p["port"])
+        listening = (not occ.get("free")) and "telemt" in (occ.get("proc") or "")
+        if not listening:
+            _restore("после перезапуска на :%d сидит %s, а не telemt — конфиг откачен"
+                     % (p["port"], occ.get("proc") or "никто"))
+    try:
+        _tg_mp_firewall_open(p["port"])
+    except Exception:
+        pass
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix: " + str(e), flush=True)
+    _tg_manual_store({"username": target, "link": p["link"], "secret": p["secret"],
+                      "front": p["front"], "port": p["port"], "ts": _now_iso()})
+    _audit("tg_manual_link", username=target, port=p["port"], front=p["front"],
+           added_listener=added, added_front=pv["need_front"], created=created,
+           restarted=restarted)
+    note = "Ссылка настроена: telemt выдаёт её побайтно клиенту «%s»" % target
+    if pv["need_port"] and added:
+        note += ", MTProto принимает на :%d" % p["port"]
+    if pv["warnings"]:
+        note += ". " + " ".join(pv["warnings"])
+    return {"ok": True, "username": target, "link": p["link"], "port": p["port"],
+            "front": p["front"], "verified": True, "listening": listening,
+            "added_listener": added, "added_front": pv["need_front"],
+            "created": created, "restarted": restarted, "note": note,
+            "warnings": pv["warnings"]}
+
+
 FRONT_SITE_DIR = "/opt/vpnpanel/frontsite"
+# #168: у MTProto-имени своя сайт-маска — свой корень и свой петлевой фронт. Форма,
+# которую играет прокси, снимается с НЕЁ, а не с чужого фасада: два разных имени не
+# обязаны отдавать один и тот же байт-в-байт сайт.
+FRONT_SITE_MP_DIR = "/opt/vpnpanel/frontsite-mp"
 _NG_FRONT_CONF = "/etc/nginx/conf.d/veil-front.conf"
 
 def _front_dns_ensure(domain):
@@ -12926,11 +14013,29 @@ def _front_cert_issue(domain):
     me = os.path.abspath(__file__)
     py = sys.executable or "python3"
     email = (CFG_CACHE.get("cert_email") or "").strip()
+    # Тот же порядок, что у `_cert_issue` (#175): собственный фронт не имеет права
+    # сузить набор имён уже выпущенной связки — иначе исчезнут имена, под которые
+    # раздают ссылки клиенты.
+    uni = _cert_san_union(domain)
+    if uni["over_limit"]:
+        raise RuntimeError("имён получилось %d, а сервиса выдачи сертификатов позволяет "
+                           "%d в одном сертификате — убери лишние имена" %
+                           (len(uni["keep"]), _SAN_MAX_NAMES))
+    bud = _le_budget(domain)
+    if bud["visible"] and bud["left"] <= 0:
+        raise RuntimeError("лимит выпуска на домен %s исчерпан этой коробкой (%d из %d за "
+                           "неделю)" % (bud["domain"], bud["issued"], bud["limit"]))
+    dargs = []
+    for n0 in uni["keep"] or [domain]:
+        dargs += ["-d", n0]
     args = ["certbot", "certonly", "--manual", "--preferred-challenges", "dns",
             "--manual-auth-hook", "%s %s --dns01-hook auth" % (py, me),
-            "--manual-cleanup-hook", "%s %s --dns01-hook cleanup" % (py, me),
-            "-d", domain, "--non-interactive", "--agree-tos",
-            "--deploy-hook", "systemctl reload nginx"]
+            "--manual-cleanup-hook", "%s %s --dns01-hook cleanup" % (py, me)]
+    args += dargs + ["--non-interactive", "--agree-tos",
+                     "--deploy-hook", "systemctl reload nginx"]
+    if os.path.exists("%s/renewal/veil-%s.conf" % (CERT_DIR, domain)) and \
+            [n.lower() for n in (uni["keep"] or [domain])] != [h.lower() for h in uni["have"]]:
+        args += ["--expand"]
     args += ["--email", email] if email else ["--register-unsafely-without-email"]
     args += ["--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
              "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
@@ -12999,9 +14104,10 @@ footer{margin-top:40px;padding-top:16px;border-top:1px solid #ddd;color:#999;fon
 </html>
 """
 
-def _front_site_write():
-    os.makedirs(FRONT_SITE_DIR, exist_ok=True)
-    p = FRONT_SITE_DIR + "/index.html"
+def _front_site_write(root=None):
+    root = root or FRONT_SITE_DIR
+    os.makedirs(root, exist_ok=True)
+    p = root + "/index.html"
     try:
         if os.path.exists(p) and open(p, encoding="utf-8").read() == _FRONT_SITE_HTML:
             return
@@ -13223,6 +14329,22 @@ def _front_status():
                     out["https_ok"] = bool(ss0.getpeercert())
         except Exception:
             out["https_ok"] = False
+    # #168: «Главная ссылка Telegram» обязана идти за ФАСАДОМ, а не за именем маски. Когда
+    # MTProto ведётся на общий :443 своим SNI, telemt зашивает в секрет новых ссылок
+    # `mp.<база>`; сайт-маска при этом живёт СВОИМ именем (`tg.<база>`), и сверка «фронт
+    # ссылки = домен маски» объявляла бы самую свежую ссылку чужой. `main_front` — то имя,
+    # которое реально уходит в секрет свежих ссылок: живой фасад, если он наш.
+    try:
+        _r = _mp_route_state()
+    except Exception:
+        _r = {}
+    out["mp_on443"] = bool(_r.get("on443") or _r.get("applied"))
+    out["mp_domain"] = (_r.get("domain") or "").strip().lower()
+    _ours = {(out.get("domain") or "").strip().lower(),
+             (CFG_CACHE.get("tg_mask_domain") or "").strip().lower(),
+             out["mp_domain"]}
+    _live = (out.get("tls_domain") or "").strip().lower()
+    out["main_front"] = _live if (_live and _live in _ours) else (out.get("domain") or "")
     return out
 
 _TG_TRANS = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
@@ -13273,7 +14395,8 @@ def _tg_ensure_user(username, web=True):
     mp_port = _tg_pub_port()
     return {"username": name,
             "link": _tg_fix_mtproto_link(
-                _tg_host_ok(_tg_pick_tls_link((u.get("links") or {}).get("tls"))), mp_port),
+                _tg_host_ok(_tg_pick_tls_link((u.get("links") or {}).get("tls"),
+                                              _tg_advertised_host())), mp_port),
             "web_link": _tg_web_link(name) if web else ""}
 
 def _tg_sub_links(client=None):
@@ -13373,7 +14496,7 @@ def _tg_dcs():
     return {"dcs": rows, "generated": int(d.get("generated_at_epoch_secs") or 0),
             "totals": {"required": req, "counted": counted, "alive": alive,
                        "coverage": round(counted / req * 100, 1) if req else 0.0},
-            "threshold": thr}
+            "threshold": thr, "loss": _tg_dc_loss_view()}
 
 def _tg_set_fresh_ratio(pct):
     pct = float(pct)
@@ -13767,7 +14890,14 @@ def _mux_status():
     can_mux = bool(ng["installed"] and ng["stream"] and ng["ssl_preread"])
     our_nginx_443 = (not o443["free"] and "nginx" in (o443.get("proc") or "")
                      and ng["active"] and os.path.exists(_NG_CONF))
-    applied = bool((_load(_MUX_STATE, {}) or {}).get("applied"))
+    mst = _load(_MUX_STATE, {}) or {}
+    applied = bool(mst.get("applied"))
+    # какие входы реально стоят за развилкой: по ним автонастройка решает,
+    # пропускать применение или нет (иначе готовая коробка переделывалась бы каждый прогон)
+    mprotos = [str(e.get("proto")) for e in (mst.get("entries") or [])
+               if isinstance(e, dict) and e.get("proto")]
+    if not mprotos and applied and mst.get("inbound"):
+        mprotos = [str(mst.get("inbound"))]
     plan = []
     if not o443["free"]:
         if our_nginx_443:
@@ -13797,6 +14927,8 @@ def _mux_status():
             "reality_port": reality_port, "reality_ports": reality_ports,
             "tls_ports": tls_ports, "domain": domain,
             "has_cert": has_cert, "cert_dns": cert_dns, "applied": applied,
+            "protos": mprotos,
+            "mp": _mp_route_state(domain),
             "plan": plan, "warnings": warnings}
 
 # ─────────────────────────── #56 slice 2: opt-in SNI-mux (:443) ───────────────────────────
@@ -13811,19 +14943,21 @@ _NG_STREAM_INC = "/etc/nginx/veil-mux-stream.conf"
 _NG_CONF_DIR = "/etc/nginx/conf.d"
 _NG_MUX_DEFAULT = _NG_CONF_DIR + "/veil-mux-default.conf"
 _NG_MUX_MASK = _NG_CONF_DIR + "/veil-mux-mask.conf"
+_NG_MUX_MP_MASK = _NG_CONF_DIR + "/veil-mux-mp-mask.conf"   # #168: маска своего имени у MTProto
 _NG_MAIN_BAK = _NG_MAIN + ".veil-mux.bak"
 _NG_WEB_BAK = _NG_CONF + ".veil-mux.bak"
 _MUX_BAK_SUFFIX = ".veil-mux.bak"
 _MUX_INBOUND = "vless-xhttp-tls"   # cert-TLS inbound, который мюкс переводит на loopback
+_MUX_VPN_LABEL = "vpn"             # метка поддомена для vless-xhttp (живые ссылки не переименовываем)
+_MUX_MP_LABEL = "mp"               # метка поддомена для MTProto-фасада (#168): имя обязано быть своим
 
 _TGBP_STATE = f"{BASE}/tg_mp_port.json"   # помнит, на какой порт мы перенесли mask-фронт MTProto и прежний порт
 
 _MUX_STREAM_TMPL = """# VEIL-MUX (generated) — не редактируйте вручную
 stream {
     map $ssl_preread_server_name $veil_mux_backend {
-        {vpn_domain}      127.0.0.1:{tls_port};
-        {web_domain}      127.0.0.1:{web_port};
-{tg_line}        default           127.0.0.1:{web_port};
+{vpn_lines}        {web_domain}      127.0.0.1:{web_port};
+{tg_line}{mp_line}        default           127.0.0.1:{web_port};
     }
     server {
         listen 443 reuseport;
@@ -13848,21 +14982,54 @@ server {
 }
 """
 
-def _mux_cert(web_domain, vpn_domain, tg_domain=""):
+def _mux_sni_label(proto):
+    """Метка SNI-поддомена для переводимого входа. vless-xhttp остаётся на `vpn` (живые
+    ссылки не переименовываем), остальные — `<протокол>-<транспорт>` без `-tls`
+    (vless-ws-tls → vless-ws). Метка DNS-легальна (строчные/дефис) и ≤63 символов."""
+    p = (proto or "").strip().lower()
+    if not p:
+        return ""
+    if p == _MUX_INBOUND:
+        return _MUX_VPN_LABEL
+    lab = p[:-4] if p.endswith("-tls") else p
+    lab = re.sub(r"[^a-z0-9-]", "-", lab).strip("-").lower()
+    return lab[:63]
+
+def _mux_relocatable(st=None):
+    """Cert-TLS-входы, которые физически можно поставить за stream-развилку :443
+    (tcp/ws/grpc/xhttp + TLS). Reality не попадает (tls=False, свой обман-SNI), UDP
+    (wg/awg/hysteria2) тоже (tls=False) — ssl_preread их не разведёт. Возвращает
+    [{proto,label}] по порядку PROTOCOLS, чтобы UI и apply шли по одному списку."""
+    if st is None:
+        st = _load(STATE, {}) or {}
+    order = {p["id"]: i for i, p in enumerate(PROTOCOLS)}
+    out = []
+    for proto, ib in (st.get("inbounds") or {}).items():
+        if not isinstance(ib, dict) or not ib.get("port"):
+            continue
+        if not (_proto_meta(proto) or {}).get("tls"):
+            continue
+        out.append({"proto": proto, "label": _mux_sni_label(proto)})
+    out.sort(key=lambda e: order.get(e["proto"], 999))
+    return out
+
+def _mux_cert(web_domain, vpn_domain, tg_domain="", extra_domains=None):
     """Сертификат для всех сторон мюкса: рабочий LE-сертификат, иначе self-signed с SAN на
-    все SNI-имена (база, vpn, и tg, если он задан). Возвращает (cert, key, kind)."""
+    все SNI-имена (база, vpn, tg и любые дополнительные переводимые имена). Возвращает
+    (cert, key, kind)."""
     cp = _cert_pathes()
+    all_d = [d for d in ([web_domain, vpn_domain, tg_domain] + list(extra_domains or [])) if d]
     if cp["cert"] and cp["key"] and os.path.exists(cp["cert"]) and os.path.exists(cp["key"]):
         exp = _cert_expire(cp["cert"])
         if exp and exp > time.time() + 86400:
             cn = _cert_dns_names(cp["cert"])
             # берём LE-сертификат только если его SAN реально покрывает ВСЕ SNI-имена мюкса,
             # иначе он не годится и мы честно откатываемся на self-signed SAN-все
-            need = [d for d in (web_domain, vpn_domain, tg_domain) if d]
+            need = all_d
             if all(_host_covered_by(cn, d) for d in need):
                 return cp["cert"], cp["key"], "le"
     names = []
-    for n in (web_domain, vpn_domain, tg_domain):
+    for n in all_d:
         if n and n not in names:
             names.append(n)
     crt = f"{CERT_DIR}/veil-mux.crt"; key = f"{CERT_DIR}/veil-mux.key"
@@ -13914,16 +15081,34 @@ def _mux_ports_in_use():
             used.add(inb["port"])
     return used
 
-def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", mask_port=0):
-    # tg_line добавляет третий SNI-ключ (сайт-маска на tg.<база> → mask_port). При пустом
-    # tg строки НЕТ вовсе: пустой ключ дал бы nginx «conflicting parameter» в map.
+def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", mask_port=0, sni_pairs=None,
+                     mp_domain="", mp_port=0):
+    # sni_pairs — [(domain, port), ...] для НЕСКОЛЬКИХ переводимых cert-TLS входов. Если
+    # не передан — прежний единственный (vpn_domain, tls_port). Пустой/повторный домен
+    # пропускается: пустой ключ дал бы nginx «conflicting parameter» в map.
+    pairs = sni_pairs if sni_pairs is not None else ([(vpn_domain, tls_port)] if vpn_domain else [])
+    seen, vlines = set(), []
+    for d, p in pairs:
+        d = (d or "").strip().lower()
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        vlines.append("        %s      127.0.0.1:%d;\n" % (d, int(p)))
     tg_line = ("        %s     127.0.0.1:%d;\n" % (tg_domain, int(mask_port))) if tg_domain else ""
-    return (_MUX_STREAM_TMPL.replace("{vpn_domain}", vpn_domain)
+    # #168: MTProto-фасад встаёт на общий :443 своим SNI-ключом. Бэкенд — петлевой порт
+    # слушателя mtproxy; наружный слушатель остаётся живым, поэтому прежние ссылки на
+    # порт telemt не ломаются — на :443 уходят только вновь выдаваемые.
+    mp_line = ""
+    mpd = (mp_domain or "").strip().lower()
+    if mpd and int(mp_port or 0) and mpd not in seen and mpd != (tg_domain or "").strip().lower():
+        mp_line = "        %s      127.0.0.1:%d;\n" % (mpd, int(mp_port))
+    return (_MUX_STREAM_TMPL.replace("{vpn_lines}", "".join(vlines))
             .replace("{web_domain}", web_domain)
-            .replace("{tls_port}", str(tls_port)).replace("{web_port}", str(web_port))
-            .replace("{tg_line}", tg_line))
+            .replace("{web_port}", str(web_port))
+            .replace("{tg_line}", tg_line)
+            .replace("{mp_line}", mp_line))
 
-def _mux_mask_conf(tg_domain, mask_port, cert, key):
+def _mux_mask_conf(tg_domain, mask_port, cert, key, root=None):
     """http-сервер сайт-маски под мюксом: stream-развилка по SNI tg.<база> доводит
     соединение до петлевого листнера mask_port, где nginx терминалирует TLS своим
     SAN-сертификатом и отдаёт frontsite. :80-блока нет — редирект хосту базы делает
@@ -13939,8 +15124,16 @@ def _mux_mask_conf(tg_domain, mask_port, cert, key):
             "    root %s;\n"
             "    index index.html;\n"
             "    location / { try_files $uri $uri/ /index.html; }\n"
-            % (int(mask_port), tg_domain, cert, key, FRONT_SITE_DIR)
+            % (int(mask_port), tg_domain, cert, key, root or FRONT_SITE_DIR)
             + _loc + "}\n")
+
+def _mux_mp_mask_conf(mp_domain, mp_mask_port, cert, key):
+    """#168: сайт-маска MTProto-имени. Публичный SNI `mp.<база>` развилка ведёт прямо в
+    слушателя mtproxy, поэтому этот фронт наружу не виден — он нужен как ЛОКАЛЬНЫЙ
+    источник формы: telemt снимает с него настоящую TLS-цепь (`mask_host=127.0.0.1`,
+    `mask_port=<этот порт>`) и играет её прокси-клиенту. Проверено живьём: без покрытия
+    этим именем `SAN` сертификата фронта telemt рвёт рукопожатие на 0 байтах."""
+    return _mux_mask_conf(mp_domain, mp_mask_port, cert, key, root=FRONT_SITE_MP_DIR)
 
 def _mux_nginx_block_installed():
     try:
@@ -14591,31 +15784,81 @@ def _addr_watch_tick():
 
 def _mux_effect():
     """Что мюкс держит СЕЙЧАС — для честного отклика «Применить» (№149).
-    Один SNI у nginx ведёт ровно на один бэкенд, поэтому за общий :443 встаёт
-    только переводимый вход; остальные cert-TLS несут свой порт и через :443 не
-    ходят. Отдельные службы (маска MTProto, фронт-маска) сюда не входят."""
+    Один SNI у nginx ведёт ровно на один бэкенд, поэтому за общий :443 встаёт каждый
+    ПЕРЕВЕДЁННЫЙ вход (галочками их может быть несколько); непереведённые cert-TLS несут
+    свой порт и через :443 не ходят. Список ведём по живому флагу `_mux_enabled` на входах,
+    а не по mux_state: файл-снимок может отстать, а вход уже стоит на петле (правило E).
+    Отдельные службы (маска MTProto, фронт-маска) сюда не входят."""
     ms = _load(_MUX_STATE, {}) or {}
     st = _load(STATE, {}) or {}
     applied = bool(ms.get("applied"))
     muxed = ms.get("inbound") or _MUX_INBOUND
+    muxed_nodes = []
     dedicated = []
     for proto, ib in (st.get("inbounds") or {}).items():
         if not isinstance(ib, dict) or not ib.get("port"):
             continue
         if not (_proto_meta(proto) or {}).get("tls"):
             continue
-        if applied and proto == muxed:
+        if ib.get("_mux_enabled"):
+            muxed_nodes.append({"name": proto, "port": ib.get("port"),
+                                "domain": ib.get("sni") or ""})
             continue
         dedicated.append({"name": proto, "port": ib.get("port")})
     return {"applied": applied, "applied_ts": ms.get("ts"),
             "muxed_node": muxed if applied else None,
+            "muxed_nodes": muxed_nodes,
             "muxed_port": 443 if applied else None,
             "dedicated_tls": dedicated}
 
-def _mux_preview(vpn_domain=None, tg_domain=None):
+def _mp_route_state(base=None):
+    """#168: что держит маршрут MTProto на общем :443 — для морды и самопроверки.
+    `applied` — включён ли он снимком применения; `ours` — резолвится ли имя сюда;
+    `source` — откуда telemt сейчас снимает настоящую форму (петлевой фронт или публичный
+    маршрут: на замуксованной коробке второе означает петлю)."""
+    ms = _load(_MUX_STATE, {}) or {}
+    base = (base or (CFG_CACHE.get("panel_domain") or "")).strip().lower()
+    dom = (ms.get("mp_domain") or ((_MUX_MP_LABEL + "." + base) if base else "")).strip().lower()
+    ti = {}
+    try:
+        ti = _tg_mtproto_info()
+    except Exception:
+        ti = {}
+    front = _tg_mask_front_get()
+    ours = _mp_name_is_ours(dom, base)
+    loopback = (front.get("mask_host") or "").strip() in _MASK_FRONT_LOOPBACKS
+    return {"applied": bool(ms.get("applied") and ms.get("mp")), "domain": dom,
+            "ours": ours, "listener_port": int(ti.get("port") or 0),
+            "listener_up": bool(ti.get("up")), "mask_port": int(ms.get("mp_mask_port") or 0),
+            "front_installed": bool(os.path.exists(_NG_MUX_MP_MASK)),
+            "source": front, "source_local": loopback,
+            "source_guard": dict(_MASK_FRONT_GUARD),
+            "on443": bool(CFG_CACHE.get("tg_mp_on443"))}
+
+
+def _mp_name_is_ours(name, base=None):
+    """#168: включено ли имя MTProto уже на этот сервер (выпущено и резолвится на нас).
+    Пустое имя, совпадение с базой и чужие адреса дают «нет» — маршрут сам не включается."""
+    name = (name or "").strip().lower().rstrip(".")
+    if not name:
+        return False
+    try:
+        return bool(_resolve_ips(name) & _our_ips())
+    except Exception:
+        return False
+
+def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, mp=None):
     web_domain = (CFG_CACHE.get("panel_domain") or "").strip()
     vpn_domain = (vpn_domain or (("vpn." + web_domain) if web_domain else "")).strip().lower()
     tg_domain = (tg_domain or (("tg." + web_domain) if web_domain else "")).strip().lower()
+    # #168: MTProto со своим SNI. Имя по умолчанию — `<метка>.<база>`; `mp=None` — авто:
+    # включать маршрут, только если имя уже наше (выпущено) или маршрут уже применялся.
+    ms0 = _load(_MUX_STATE, {}) or {}
+    mp_domain = (mp_domain or (ms0.get("mp_domain") or
+                 ((_MUX_MP_LABEL + "." + web_domain) if web_domain else ""))).strip().lower()
+    if mp is None:
+        mp = bool(ms0.get("applied") and mp_domain) or _mp_name_is_ours(mp_domain, web_domain)
+    mp = bool(mp) and bool(mp_domain)
     ms = _mux_status()
     ng = ms["nginx"]
     blockers = []
@@ -14645,10 +15888,55 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
         if vpn_domain and tg_domain.strip().lower() == vpn_domain.strip().lower():
             blockers.append("tg-SNI совпадает с VPN-SNI (%s): маска и VPN не встанут на один SNI."
                             % vpn_domain)
+    # #168: «обязательно разные поддомены» — правило, а не пожелание. Имя MTProto обязано
+    # отличаться от веб-фронта, от маски и от каждого переводимого входа: совпавший ключ
+    # map кладёт один SNI на два бэкенда, nginx пишет «conflicting parameter» и падает на -t,
+    # а прокси с веб-прокси на одном имени различить было бы нечем даже при живом nginx.
+    if mp_domain and not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?", mp_domain):
+        blockers.append("некорректное имя MTProto-фасада «%s»" % mp_domain)
+    if mp:
+        for _other, _what in ((web_domain, "домен панели (веб-прокси)"),
+                              (vpn_domain, "VPN-SNI"), (tg_domain, "tg-SNI сайт-маски")):
+            if _other and mp_domain.strip().lower() == _other.strip().lower():
+                blockers.append("имя MTProto «%s» совпадает с «%s»: на одном :443 два прокси "
+                                "разводят РАЗНЫМИ поддоменами — назовите MTProto иначе, например %s.%s"
+                                % (mp_domain, _what, _MUX_MP_LABEL, web_domain or "база"))
+                break
     st = _load(STATE, {}) or {}
     inb = (st.get("inbounds") or {}).get(_MUX_INBOUND)
     if inb is None:
         blockers.append("нет inbound «%s» — включите любой cert-TLS inbound" % _MUX_INBOUND)
+    # Кандидаты на перевод на :443 = все cert-TLS входы. Выбранные (галочками): vpn как есть,
+    # прочие → `<метка>.<база>`. Без `protos` — только vpn, поведение #152 не меняется.
+    relocatable = _mux_relocatable(st)
+    reloc_map = {e["proto"]: e["label"] for e in relocatable}
+    sel = [str(p).strip().lower() for p in (protos or [_MUX_INBOUND]) if str(p or "").strip()]
+    sel_entries = []
+    for proto in sel:
+        if proto not in reloc_map:
+            continue
+        dom = vpn_domain if proto == _MUX_INBOUND else (
+            (reloc_map[proto] + "." + web_domain) if web_domain else "")
+        dom = (dom or "").strip().lower()
+        if dom and dom not in [x["domain"] for x in sel_entries]:
+            sel_entries.append({"proto": proto, "label": reloc_map[proto], "domain": dom})
+    # Доп. SNI (кроме vpn) обязан быть отличён от web/vpn/tg и от прочих выбранных: дубль ключа
+    # map кладёт один SNI на два бэкенда — nginx «conflicting parameter» и падает на -t.
+    base_keys = {}
+    for k, v in ((web_domain, "домен панели"), (vpn_domain, "VPN-SNI"), (tg_domain, "tg-SNI")):
+        if k:
+            base_keys.setdefault(k.strip().lower(), v)
+    if mp and mp_domain:
+        base_keys.setdefault(mp_domain.strip().lower(), "MTProto-фасад")
+    for e in sel_entries:
+        if e["proto"] == _MUX_INBOUND:
+            continue
+        if e["domain"] in base_keys:
+            blockers.append("SNI «%s» совпадает с «%s»: по одному имени stream-развилка не "
+                            "разведёт на два бэкенда — назовите «%s» иначе"
+                            % (e["domain"], base_keys[e["domain"]], e["label"]))
+        else:
+            base_keys[e["domain"]] = e["label"]
     rps = [int(x) for x in (ms.get("reality_ports") or [])] or \
           ([int(ms["reality_port"])] if ms.get("reality_port") else [])
     if 443 in rps or (ms["xray_holds_443"] and not ms["our_nginx_443"]):
@@ -14664,6 +15952,17 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
     if exp and exp > time.time() + 86400:
         names = _cert_dns_names(cp["cert"])
         _need = [d for d in (web_domain, vpn_domain, tg_domain) if d]
+        _need += [e["domain"] for e in sel_entries if e["proto"] != _MUX_INBOUND]
+        # #168: имя MTProto входит в тот же `SAN`-гейт. Мерено живьём: telemt ОТБРАСЫВАЕТ
+        # рукопожатие на 0 байтах, если сыгранная им цепь не покрывает запрошенное имя,
+        # поэтому «нет mp в сертификате» — не косметика, а мёртвый прокси на :443.
+        if mp and mp_domain:
+            _need.append(mp_domain)
+            if names and not _host_covered_by(names, mp_domain):
+                blockers.append("имя MTProto «%s» не попало в список имён рабочего сертификата: "
+                                "telemt играет цепь фронта, а без этого имени обрывает "
+                                "рукопожатие. Нажмите «Выпустить» — панель выпустит сертификат "
+                                "и на это имя тоже" % mp_domain)
         le_ok = bool(names and all(_host_covered_by(names, d) for d in _need))
         miss = [d for d in _need if not _host_covered_by(names, d)]
         if names and miss:
@@ -14676,8 +15975,10 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
                 "nginx при этом не останавливается.")
     else:
         _tg_txt = (", %s→маска" % tg_domain) if tg_domain else ""
+        _ex = [e for e in sel_entries if e["proto"] != _MUX_INBOUND]
+        _ex_txt = (", " + ", ".join("%s→%s" % (e["domain"], e["label"]) for e in _ex)) if _ex else ""
         note = (("nginx stream на :443 разведёт SNI: %s→xray(loopback :%s), %s/default→веб(:%s)"
-                 + _tg_txt + ". Reality остаётся на :%s. Сертификат: %s.")
+                 + _tg_txt + _ex_txt + ". Reality остаётся на :%s. Сертификат: %s.")
                 % (vpn_domain or "?", 4443, web_domain or "?", 8445,
                    ", ".join(str(x) for x in rps) or "—",
                    "LE" if le_ok else "self-signed (SAN на все SNI-имена)"))
@@ -14688,13 +15989,17 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
     mask_port = 0
     veil = None
     can_provision = False
+    dns_ok_map = {}
     try:
         vp = _veil_provider(web_domain)
         ours = _our_ips()
         rips = _resolve_ips(vpn_domain) if vpn_domain else set()
         vpn_dns_ok = bool(rips & ours)
         tg_dns_ok = bool(_resolve_ips(tg_domain) & ours) if tg_domain else False
-        veil = _veil_name_plan(web_domain, vp)
+        dns_ok_map = {}
+        for e in sel_entries:
+            dns_ok_map[e["domain"]] = bool(_resolve_ips(e["domain"]) & ours)
+        veil = _veil_name_plan(web_domain, vp, [_MUX_MP_LABEL] if mp else None)
         can_provision = bool(web_domain and vp in ("dynv6", "cloudflare"))
     except Exception as e:
         print("[mux] veil-проверка имени/IP: " + str(e)[:120], flush=True)
@@ -14707,11 +16012,54 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
         if not tg_dns_ok:
             warns.append("tg-SNI «%s» сейчас не указывает на этот сервер — сайт-маска и tg-прокси "
                          "наружу по :443 не дойдут. Нажмите «Выпустить» (создаст A/AAAA)." % tg_domain)
+    # --- #168: MTProto на общий :443 своим именем ---
+    mp_dns_ok = False
+    mp_port = 0
+    mp_mask_port = 0
+    if mp_domain:
+        try:
+            mp_dns_ok = bool(_resolve_ips(mp_domain) & ours)
+        except Exception:
+            mp_dns_ok = False
+    if mp:
+        try:
+            ti = _tg_mtproto_info()
+        except Exception:
+            ti = {}
+        mp_port = int(ti.get("port") or 0)
+        if not mp_port or not ti.get("up"):
+            blockers.append("публичный MTProto-слушатель telemt не найден (порт «%s», жив «%s»): "
+                            "вести прокси на :443 некуда — сначала включите MTProto"
+                            % (mp_port or "?", bool(ti.get("up"))))
+        elif mp_port == 443:
+            blockers.append("MTProto уже слушает :443 напрямую — развилка его не перекроет, "
+                            "сначала перенесите слушатель на другой порт")
+        try:
+            mp_mask_port = int((_load(_MUX_STATE, {}) or {}).get("mp_mask_port") or 0) or \
+                _find_free_port(pref=[8450, 8451, 8452],
+                                avoid=_mux_ports_in_use() | {8445, 4443, 443, mask_port} - {0})
+        except Exception:
+            mp_mask_port = 0
+        if not mp_dns_ok:
+            warns.append("имя MTProto «%s» сейчас не указывает на этот сервер — прокси по :443 до "
+                         "него не дойдёт (наружу останется ссылка на порт telemt). Нажмите "
+                         "«Выпустить» (создаст A/AAAA и сертификат)." % mp_domain)
+        if not mp_mask_port:
+            warns.append("не найден свободный петлевой порт под сайт-маску имени MTProto — форма "
+                         "прокси будет сниматься с публичного маршрута, то есть с самого telemt")
     if vpn_domain and not vpn_dns_ok and web_domain:
         warns.append("VPN-SNI «%s» сейчас не указывает на этот сервер — подпись до него не дойдёт. "
                      "Нажмите «Выпустить»: панель создаст A/AAAA-запись%s и SAN-сертификат."
                      % (vpn_domain, "" if not (veil or {}).get("renumbered") else
                         " (имя, возможно, с цифрой: занято)"))
+    _pend = [e for e in sel_entries
+             if e["proto"] != _MUX_INBOUND and not dns_ok_map.get(e["domain"])]
+    if _pend:
+        warns.append("SNI «%s» сейчас не указывает на этот сервер — ссылка наружу по :443 до него "
+                     "не дойдёт (перенос делаем, но ссылка останется на базе). Нажмите «Выпустить»."
+                     % ", ".join(e["domain"] for e in _pend))
+    link_ready = vpn_dns_ok or any(dns_ok_map.get(e["domain"]) for e in sel_entries
+                                   if e["proto"] != _MUX_INBOUND)
     return {"web_domain": web_domain, "vpn_domain": vpn_domain, "tg_domain": tg_domain,
             "can_apply": not blockers,
             "blockers": blockers, "reality_port": ms["reality_port"], "reality_ports": rps,
@@ -14719,10 +16067,17 @@ def _mux_preview(vpn_domain=None, tg_domain=None):
             "web_front_on443": web_held, "foreign443": (ms["occupant443"] if foreign else None),
             "cert_kind": ("le" if le_ok else "self-signed"), "note": note,
             "vpn_dns_ok": vpn_dns_ok, "tg_dns_ok": tg_dns_ok, "mask_port": mask_port,
-            "link_host_ready": bool(vpn_dns_ok),
+            "mp": mp, "mp_domain": mp_domain, "mp_dns_ok": mp_dns_ok,
+            "mp_port": mp_port, "mp_mask_port": mp_mask_port,
+            "link_host_ready": bool(link_ready),
+            "relocatable": relocatable,
+            "sel": [{"proto": e["proto"], "label": e["label"], "domain": e["domain"],
+                     "dns_ok": bool(dns_ok_map.get(e["domain"]))} for e in sel_entries],
             "dns_provider": vp, "can_provision": can_provision,
-            "cert_ready": _veil_cert_ready([web_domain, (veil or {}).get("names", {}).get("tg"),
-                                            (veil or {}).get("names", {}).get("vpn")]),
+            "cert_ready": _veil_cert_ready([d for d in (
+                web_domain, (veil or {}).get("names", {}).get("tg"),
+                (veil or {}).get("names", {}).get("vpn"),
+                (veil or {}).get("names", {}).get(_MUX_MP_LABEL)) if d]),
             "veil": (veil if (veil or {}).get("ok") else None),
             "effect": _mux_effect()}
 
@@ -14775,14 +16130,54 @@ def _mux_front_on_port(port):
             return True
     return False
 
-def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
+def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, protos=None,
+               mp_domain=None, mp=None):
     if not confirm:
         raise RuntimeError("нужно подтверждение (confirm): apply меняет nginx.conf и xray")
-    pv = _mux_preview(vpn_domain, tg_domain)
+    pv = _mux_preview(vpn_domain, tg_domain, protos, mp_domain=mp_domain, mp=mp)
+    # Слово хозяина (04.10, дословно): «когда делается сайт маска для мтпрото, то
+    # автоматически он переходит на 443 и делается главной». Значит выпуск имени прокси —
+    # не отдельный шаг морды: если маршрут запрошен, а имени ещё нет в DNS или в списке
+    # имён рабочего сертификата, панель выпускает его сама и только тогда применяет.
+    # Без живого DNS-провайдера остаётся прежний отказ блокировкой — угадывать не на чем.
+    mp_want = (pv.get("mp_domain") or "").strip().lower()
+    if mp and mp_want and pv.get("can_provision") and \
+            (not pv.get("mp_dns_ok") or not _veil_cert_ready([mp_want])):
+        _veil_ensure(None, pv.get("dns_provider"), True, True,
+                     pv.get("web_domain") or "", [_MUX_MP_LABEL])
+        pv = _mux_preview(vpn_domain, tg_domain, protos, mp_domain=mp_domain, mp=mp)
     if not pv["can_apply"]:
         raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"]))
     web_domain, vpn_domain, tg_domain = pv["web_domain"], pv["vpn_domain"], pv.get("tg_domain") or ""
     vpn_dns_ok, tg_dns_ok = bool(pv.get("vpn_dns_ok")), bool(pv.get("tg_dns_ok"))
+    # #168: MTProto на общий :443 СВОИМ SNI. `mp` уже прошёл гейт превью (имя наше или
+    # маршрут уже стоял), поэтому здесь это факт применения, а не намерение.
+    mp = bool(pv.get("mp"))
+    mp_domain = (pv.get("mp_domain") or "").strip().lower()
+    mp_port = int(pv.get("mp_port") or 0)
+    mp_dns_ok = bool(pv.get("mp_dns_ok"))
+    st = _load(STATE, {}) or {}
+    # выбранные к переводу входы: по умолчанию — прежний единственный vless-xhttp (`vpn`),
+    # поэтому живой apply без `protos` не меняет поведение. domain для vpn берём из превью
+    # (там уже пройдёт ренумбер), для прочих — метка+база. dns_ok per-домен решает, ставить
+    # ли link_host (хост ССЫЛКИ); сам перенос делаем для всех выбранных (как и было для vpn).
+    sel = list(protos) if protos else [_MUX_INBOUND]
+    ours = _our_ips()
+    relocatable = {e["proto"]: e["label"] for e in _mux_relocatable(st)}
+    entries = []
+    for proto in sel:
+        proto = (proto or "").strip().lower()
+        if proto in relocatable:
+            dom = vpn_domain if proto == _MUX_INBOUND else (
+                (relocatable[proto] + "." + web_domain) if web_domain else "")
+            dom = (dom or "").strip().lower()
+            if dom:
+                # vpn-домен уже проверен превью (там же ренумбер) — перерешать DNS и
+                # спорить с самим собой нечем; для доп. имён превью их не смотрело,
+                # поэтому свежий резолв на каждую петлевую запись
+                dns_ok = vpn_dns_ok if proto == _MUX_INBOUND else bool(_resolve_ips(dom) & ours)
+                entries.append({"proto": proto, "label": relocatable[proto], "domain": dom,
+                                "dns_ok": dns_ok})
     occ = _sock_occupant(443)
     ms0 = _load(_MUX_STATE, {}) or {}
     mux_live = bool(ms0.get("applied"))
@@ -14800,19 +16195,42 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
                     subprocess.run(["systemctl", "stop", unit], capture_output=True, timeout=30)
             except Exception:
                 pass
-    cert, key, kind = _mux_cert(web_domain, vpn_domain, tg_domain)
+    extra = [e["domain"] for e in entries if e["proto"] != _MUX_INBOUND]
+    # #168: имя MTProto обязано попасть в `SAN` рабочего сертификата: развилка ведёт его SNI
+    # в слушателя mtproxy, а telemt играет цепь фронта и на незнакомом имени рвёт рукопожатие.
+    if mp and mp_domain and mp_domain not in extra and mp_domain != tg_domain:
+        extra.append(mp_domain)
+    cert, key, kind = _mux_cert(web_domain, vpn_domain, tg_domain, extra_domains=extra)
     avail, mod_directive = _mux_stream_module_state()
     if not avail:
         raise RuntimeError("stream-модуль nginx не установлен — выполните apt-get install -y libnginx-mod-stream")
     used = _mux_ports_in_use()
     if mux_live:
-        # те же порты, что уже заняты НАМИ (8445 держит наш nginx, 4443 — наш xray):
-        # «ищи свободный» при каждом повторном apply уводил бы мюкс на случайный порт
+        # тот же веб-порт, что держит НАШ nginx (8445): «ищи свободный» при повторном apply
+        # уводил бы мюкс на случайный порт
         web_port = int(ms0.get("web_port") or 0) or _find_free_port(pref=[8445], avoid=used)
-        tls_port = int(ms0.get("tls_port") or 0) or _find_free_port(pref=[4443], avoid=used | {web_port})
     else:
         web_port = _find_free_port(pref=[8445], avoid=used)
-        tls_port = _find_free_port(pref=[4443], avoid=used | {web_port})
+    # Прежние петлевые порты переводимых входов держим при повторном apply (entries + legacy
+    # tls_port для vpn); новому входу — первый свободный, исключая уже розданные в этом прогоне.
+    prior = {}
+    for e in (ms0.get("entries") or []):
+        if isinstance(e, dict) and e.get("proto") and e.get("port"):
+            prior[str(e["proto"])] = int(e["port"])
+    if not prior.get(_MUX_INBOUND):
+        lt = int(ms0.get("tls_port") or 0) or 0
+        lin = (ms0.get("inbound") or _MUX_INBOUND)
+        if lt and lin:
+            prior[lin] = lt
+    alloc = set()
+    for e in entries:
+        p = prior.get(e["proto"], 0)
+        if not p or p in alloc or p in used:
+            p = _find_free_port(pref=[4443, 4444, 4445, 4446, 4447, 4448, 4449],
+                               avoid=used | {web_port, 443, 8445, 8446} | alloc)
+        e["port"] = p
+        alloc.add(p)
+    tls_port = next((e["port"] for e in entries if e["proto"] == _MUX_INBOUND), 0)
     # Порт_mask под сайт-маску на tg.<база>: держим прежний при повторном apply, иначе
     # берём из `pref`, исключая все занятые и запретные (443-мюкс, 8445-веб, 4443-xray, 8446-старый).
     mask_port = 0
@@ -14825,11 +16243,31 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
         if not occm.get("free") and "nginx" not in (occm.get("proc") or ""):
             raise RuntimeError("порт маски :%d занят %s — освободите или смените"
                                % (mask_port, occm.get("proc") or "?"))
+    # #168: петлевой фронт под сайт-маску MTProto-имени. Держим прежний порт при повторном
+    # apply (на него смотрит `mask_host=127.0.0.1` в telemt), новому — первый свободный,
+    # не пересекающийся с фронтом маски.
+    mp_mask_port = 0
+    if mp and mp_domain:
+        mp_mask_port = int(ms0.get("mp_mask_port") or 0) or 0
+        if not mp_mask_port:
+            mp_mask_port = _find_free_port(
+                pref=[8450, 8451, 8452],
+                avoid=used | {web_port, tls_port, mask_port, 443, 8445, 8446, 4443, 7443} - {0})
+        occp = _sock_occupant(mp_mask_port)
+        if not occp.get("free") and "nginx" not in (occp.get("proc") or ""):
+            raise RuntimeError("порт маски MTProto :%d занят %s — освободите или смените"
+                               % (mp_mask_port, occp.get("proc") or "?"))
 
+    # Снимок ДО любой записи, включая создание эталона: проваленный apply откатывается к
+    # нему, а не к эталону первого мюкса, и при этом не съедает чужие `.veil-mux.bak` (#100).
+    ng_snap = _mux_nginx_snapshot()
     if not os.path.exists(_NG_MAIN_BAK):
         shutil.copy2(_NG_MAIN, _NG_MAIN_BAK)
+    sni_pairs = [(e["domain"], e["port"]) for e in entries]
     with open(_NG_STREAM_INC, "w") as f:
-        f.write(_mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain, mask_port))
+        f.write(_mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain,
+                                 mask_port, sni_pairs=sni_pairs,
+                                 mp_domain=mp_domain if mp else "", mp_port=mp_port if mp else 0))
     # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
     main = open(_NG_MAIN_BAK).read()
     changed = False
@@ -14865,28 +16303,75 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
         _front_site_write()
         with open(_NG_MUX_MASK, "w", encoding="utf-8") as f:
             f.write(_mux_mask_conf(tg_domain, mask_port, cert, key))
+    # #168: у MTProto-имени свой корень и свой петлевой фронт. Пишется ДО nginx -t, как и
+    # маска: без него проверка конфига не увидела бы листнер, а telemt остался бы без
+    # локального источника формы. Снятый маршрут обязан убрать файл — иначе осиротевший
+    # листнер переживает галочку.
+    if mp and mp_domain and mp_mask_port:
+        _front_site_write(FRONT_SITE_MP_DIR)
+        with open(_NG_MUX_MP_MASK, "w", encoding="utf-8") as f:
+            f.write(_mux_mp_mask_conf(mp_domain, mp_mask_port, cert, key))
+    else:
+        try:
+            os.remove(_NG_MUX_MP_MASK)
+        except Exception:
+            pass
 
-    # xray: переводим cert-TLS inbound на loopback:tls_port с нашим сертификатом
-    st = _load(STATE, {}) or {}
-    inb = st["inbounds"][_MUX_INBOUND]
-    # повторный apply: вход УЖЕ смотрит на loopback, поэтому снимок «как было» надо взять
-    # из первой записи. Переснимать с замуксованного входа — значит записать prev=127.0.0.1
-    # и после отката оставить вход глухим (слушает петлю, а ссылки наружу идут на :4443).
-    prev0 = ms0.get("prev") if isinstance(ms0.get("prev"), dict) else None
-    prev = dict(prev0) if (mux_live and prev0 and "port" in prev0) else \
-        {k: inb.get(k) for k in ("listen", "port", "cert", "key")}
-    inb["listen"] = "127.0.0.1"; inb["port"] = tls_port; inb["cert"] = cert; inb["key"] = key
-    inb["_mux_enabled"] = True
-    # единый SNI-хост для всех cert-TLS ссылок = домен VPN из SAN-сертификата мюкса.
-    # Reality не трогаем (у него tls=False и свой ключ). Снимок прежних sni/snis/link_host —
-    # сериализуемый словарь по proto: штатный `_mux_revert` обязан вернуть КАЖДЫЙ штампованный
-    # вход, а не только мюксуемый (иначе sni остальных протекает наружу после отката — #152).
-    # _mux_link_host = хост ССЫЛКИ (vpn.<база>); ставим только если vpn реально резолвится,
-    # иначе пусто → ссылки честно остаются на базе.
+    # xray: переводим ВЫБРАННЫЕ cert-TLS входы на петлевые порты с нашим сертификатом.
+    # prev_map[proto] — снимок «как было» ДО мюкса. Переснимать с уже замуксованного входа
+    # нельзя: запишется 127.0.0.1 и после отката вход останется глухим (слушает петлю, а
+    # ссылки идут наружу на публичный порт). Повторный apply берёт снимок из entries (или
+    # legacy `prev` для vpn), впервые — из текущего входа.
+    inbounds = st.get("inbounds") or {}
+    ms0_prev = ms0.get("prev_map") if isinstance(ms0.get("prev_map"), dict) else {}
+    legacy_prev = ms0.get("prev") if isinstance(ms0.get("prev"), dict) else None
+    vpn_line = ms0.get("inbound") or _MUX_INBOUND
+    prev_map = {}
+    for e in entries:
+        inb = inbounds.get(e["proto"])
+        if not isinstance(inb, dict):
+            continue
+        src = ms0_prev.get(e["proto"]) if mux_live else None
+        if ((not isinstance(src, dict) or "port" not in src) and mux_live
+                and e["proto"] == vpn_line and isinstance(legacy_prev, dict) and "port" in legacy_prev):
+            src = legacy_prev
+        prev_map[e["proto"]] = (dict(src) if isinstance(src, dict) and "port" in src
+                                else {k: inb.get(k) for k in ("listen", "port", "cert", "key")})
+        inb["listen"] = "127.0.0.1"; inb["port"] = e["port"]; inb["cert"] = cert; inb["key"] = key
+        inb["_mux_enabled"] = True
+    # Снятая галочка перестаёт вести: вход, который мюкс держал на петле, но в этом прогоне
+    # его не выбрали, возвращаем на прежний публичный порт и снимаем штамп. Иначе он останется
+    # слушать 127.0.0.1 без строчки в развилке — мёртвый узел, которого ссылки не видят.
+    # Снимок берём из prev_map прошлых применений (переснимать с замуксованного входа нельзя);
+    # где прежнего порта нет — не трогаем: уводить в неизвестность честнее, чем в пустоту.
+    # Выпущенные DNS-имена и SAN не вычищаем — решение хозяина (#156): имя переживёт галочку.
+    rel_prev = {}
+    if mux_live:
+        keep = {e["proto"] for e in entries}
+        for proto, ib in inbounds.items():
+            if not isinstance(ib, dict) or not ib.get("_mux_enabled") or proto in keep:
+                continue
+            snap = ms0_prev.get(proto)
+            if ((not isinstance(snap, dict) or "port" not in snap)
+                    and proto == vpn_line and isinstance(legacy_prev, dict) and "port" in legacy_prev):
+                snap = legacy_prev
+            if not isinstance(snap, dict) or "port" not in snap:
+                continue
+            rel_prev[proto] = dict((k, ib.get(k)) for k in ("listen", "port", "cert", "key"))
+            rel_prev[proto]["_mux_enabled"] = True
+            for k, v in snap.items():
+                if v is None:
+                    ib.pop(k, None)
+                else:
+                    ib[k] = v
+            ib.pop("_mux_enabled", None)
+    # SnI/link_host штампуем всем cert-TLS (как и раньше — снимок sni_prev возвращает
+    # `_mux_revert` у КАЖДОГО), но у переводимых — свой домен из SAN-сертификата мюкса;
+    # хост ССЫЛКИ ставим только если домен реально резолвится, иначе ссылки честна остаются.
     base_prev = ms0.get("sni_prev") if (mux_live and isinstance(ms0.get("sni_prev"), dict)) else None
     sni_prev = {}
-    link_host = vpn_domain if vpn_dns_ok else ""
-    for proto, ib in (st.get("inbounds") or {}).items():
+    reloc = {e["proto"]: e for e in entries}
+    for proto, ib in inbounds.items():
         if not isinstance(ib, dict) or not ib.get("port"):
             continue
         if not (_proto_meta(proto) or {}).get("tls"):
@@ -14898,30 +16383,52 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
                                "snis": ib.get("snis"), "had_snis": "snis" in ib,
                                "link_host": ib.get("_mux_link_host"),
                                "had_link_host": "_mux_link_host" in ib}
-        ib["sni"] = vpn_domain
-        ib["snis"] = [vpn_domain]
-        ib["_mux_link_host"] = link_host
+        if proto in reloc:
+            dom = reloc[proto]["domain"]
+            ib["sni"] = dom; ib["snis"] = [dom]
+            ib["_mux_link_host"] = dom if reloc[proto]["dns_ok"] else ""
+        else:
+            ib["sni"] = vpn_domain
+            ib["snis"] = [vpn_domain]
+            ib["_mux_link_host"] = vpn_domain if vpn_dns_ok else ""
 
     def _revert_mux_sni():
         _mux_restore_sni(st.get("inbounds") or {}, sni_prev)
 
+    def _revert_inbounds():
+        for proto, snap in list(prev_map.items()) + list(rel_prev.items()):
+            inb = (st.get("inbounds") or {}).get(proto)
+            if not isinstance(inb, dict):
+                continue
+            for k, v in snap.items():
+                if v is None:
+                    inb.pop(k, None)
+                else:
+                    inb[k] = v
+            # снимок rel_prev держит `_mux_enabled` живым: проваленный apply обязан вернуть
+            # вход ровно в то состояние, каким мы его застали (на петле и под развилкой)
+            if not snap.get("_mux_enabled"):
+                inb.pop("_mux_enabled", None)
+
     def _full_revert(reason, detail=""):
-        """Откатить ВСЕ побочные эффекты apply к моменту ошибки: xray-вход, sni/link_host,
-        nginx-файлы (включая маску) и, если фасада уже тронули, telemt."""
-        inb.update(prev); inb.pop("_mux_enabled", None); _revert_mux_sni()
+        """Откатить ВСЕ побочные эффекты apply к моменту ошибки: переводимые xray-входы,
+        sni/link_host, nginx-файлы (включая маску) и, если фасада уже тронули, telemt."""
+        _revert_inbounds(); _revert_mux_sni()
         _save(STATE, st)
         _save(XRAY, _build_xray_cfg(st), 0o600)
         try:
             _xray_restart()
         except Exception as e:
             print("xray rollback (%s): %s" % (reason, str(e)[:120]), flush=True)
-        _revert_nginx_files(web_held)
-        raise RuntimeError("%s, откатили: %s" % (reason, (detail or "")[-400:]))
+        _revert_nginx_files(web_held, ng_snap)
+        why = _mux_nginx_reload()
+        raise RuntimeError("%s, откатили: %s" % (reason, ((why + " | ") if why else "") + (detail or "")[-400:]))
 
     ok, err = _validate_and_apply(st)
     if not ok:
-        inb.update(prev); inb.pop("_mux_enabled", None); _revert_mux_sni()
-        _revert_nginx_files(web_held)
+        _revert_inbounds(); _revert_mux_sni()
+        _revert_nginx_files(web_held, ng_snap)
+        _mux_nginx_reload()
         _save(STATE, st)
         raise RuntimeError("xray-валидация не пройдена, откатили: " + (err or ""))
 
@@ -14947,19 +16454,56 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
                      % (r.returncode, _unit_active("nginx"), occ443.get("proc") or "свободно"),
                      "полный откат конфигурации и ссылок")
 
-    # --- tg.<база>: перенос фасада telemt на tg (MTProto-фасад) --- только когда tg резолвится.
-    # Старый фасад (webproxy.myproxyru.vip) сохраняем в tls_domains, чтобы ранее выданные
-    # tg://-ссылки жили: их ee-секрет зафиксировал прежний фронт.
+    # --- фасад telemt: имя, на которое ведут tg://-ссылки, + источник настоящей формы ---
+    # #168: когда маршрут MTProto включён и его имя резолвится на нас, фасадом становится
+    # `mp.<база>`; иначе — прежний перенос на `tg.<база>` (#152). Старые фронты остаются в
+    # `tls_domains`: их ee-секрет зафиксировал прежний фронт, и выданные ссылки должны жить.
+    facade_target = ""
+    if mp and mp_dns_ok:
+        facade_target = mp_domain
+    elif tg_domain and tg_dns_ok:
+        facade_target = tg_domain
     tg_prev = None
+    mp_prev = None
     facade_switched = False
-    if tg_domain and tg_dns_ok:
+    mask_front_switched = False
+    if facade_target:
         cur = _tg_sni()
         old_dom = cur.get("tls_domain") or ""
         old_list = list(cur.get("tls_domains") or [])
         tg_prev = {"tls_domain": old_dom, "tls_domains": old_list}
-        keep = sorted({d.lower() for d in ([old_dom] + old_list) if d and d.lower() != tg_domain.lower()})
+        keep = sorted({d.lower() for d in ([old_dom] + old_list)
+                       if d and d.lower() != facade_target.lower()})
+        # Съём формы: на общем :443 SNI имени ведёт прямо в слушателя mtproxy, поэтому
+        # публичный источник стал бы петлёй (telemt пришёл бы сам к себе). Локальный фронт
+        # сайт-маски даёт настоящую цепь без петли — только тогда, когда маршрут включён.
+        want_front = bool(facade_target == mp_domain and mp_mask_port)
+        mp_prev = _tg_mask_front_get()
+        ours_now = (mp_prev.get("mask_host") or "").strip() in _MASK_FRONT_LOOPBACKS
+        saved_prev = ms0.get("mp_prev") if isinstance(ms0.get("mp_prev"), dict) else None
+        off_front = not want_front and ours_now
         try:
-            _tg_sni_set(tls_domain=tg_domain, tls_domains=keep)
+            if want_front:
+                # идемпотентное применение: источник уже наш петлевой фронт, снимком «до»
+                # остаётся то, что записали при первом включении, — иначе откат вернул бы
+                # петлевой адрес вместо базовой линии. Своего снимка нет — значит снимок
+                # потерян (съём маршрута его стирает), и базовой линией считаем пустоту:
+                # живой петлевой адрес своим «до» быть не может, он и есть наше действие.
+                mp_prev = saved_prev if saved_prev is not None else (
+                    {"mask_host": "", "mask_port": _MASK_FRONT_DEFAULT_PORT}
+                    if ours_now else mp_prev)
+                _tg_mask_front_set(_MASK_FRONT_LOOPBACK, mp_mask_port)
+            elif off_front:
+                # Маршрут снимаем, а фронт имени прокси это применение сейчас удалит. Источник
+                # формы обязано уйти с нашего петлевого порта СРАЗУ: иначе telemt останется
+                # снимать настоящую цепь с мёртвого порта, и маска #152 перестанет играть сайт.
+                # Берём снимок, сделанный при включении; нет снимка — базовая линия. Снимок,
+                # где хост — наш же петлевой фронт, это не «до», а наше собственное действие
+                # (состояния мюкса, записанные до этой правки, переживают такой мусор): таким
+                # откатываться нельзя, иначе маска останется висеть на порту, который это
+                # применение удалит. Правило целиком сложено в `_tg_mask_front_off`.
+                _tg_mask_front_off(saved_prev)
+            _tg_sni_set(tls_domain=facade_target, tls_domains=keep)
             subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
             up = False
             for _ in range(10):
@@ -14968,28 +16512,65 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False):
                     up = True
                     break
             if not up:
-                raise RuntimeError("telemt не поднялся после переноса фасада на «%s»" % tg_domain)
+                raise RuntimeError("telemt не поднялся после переноса фасада на «%s»" % facade_target)
             facade_switched = True
-            CFG_CACHE["tg_mask_domain"] = tg_domain
+            mask_front_switched = want_front
+            if tg_domain:
+                CFG_CACHE["tg_mask_domain"] = tg_domain
+            on443 = facade_target == mp_domain
+            CFG_CACHE["tg_mp_domain"] = mp_domain if on443 else ""
+            CFG_CACHE["tg_mp_on443"] = bool(on443)
             _cfg_save()
         except Exception as e:
+            # сначала источник формы, потом фасад: обе правки перезапускают telemt, и
+            # последним должен уйти снимок фасада — иначе процесс застрянет с нашим
+            # петлевым mask_host в памяти
+            if want_front or off_front:
+                _mux_restore_mask_front(mp_prev)
             _mux_restore_facade(tg_prev)
             _full_revert("перенос tg-фасада не удался", str(e))
 
+    vpn_e = next((e for e in entries if e["proto"] == _MUX_INBOUND), None)
+    link_ready = any(bool(e.get("dns_ok")) for e in entries)
+    # legacy-поля (inbound/prev/tls_port) зеркалим с vpn-записи: старые читатели mux_state
+    # и откат до #155 продолжают работать (правило R-D). prev_map/entries — новое состояние.
     _save(_MUX_STATE, {"applied": True, "web_domain": web_domain, "vpn_domain": vpn_domain,
                        "tg_domain": tg_domain, "mask_port": mask_port,
-                       "link_host_ready": bool(vpn_dns_ok),
-                       "web_port": web_port, "tls_port": tls_port, "cert_kind": kind,
-                       "inbound": _MUX_INBOUND, "prev": prev, "moved_web": moved_web,
+                       "mp": mp, "mp_domain": mp_domain if mp else "",
+                       "mp_port": mp_port if mp else 0,
+                       "mp_mask_port": mp_mask_port if mp else 0,
+                       "mp_dns_ok": mp_dns_ok if mp else False,
+                       "link_host_ready": link_ready,
+                       "web_port": web_port, "tls_port": (vpn_e or {}).get("port") or tls_port,
+                       "cert_kind": kind,
+                       "inbound": _MUX_INBOUND,
+                       "prev": prev_map.get(_MUX_INBOUND) if vpn_e else None,
+                       "entries": entries, "prev_map": prev_map,
+                       "moved_web": moved_web,
                        "sni_prev": sni_prev,
                        "tg_prev": tg_prev if facade_switched else None,
+                       "mp_prev": mp_prev if mask_front_switched else None,
                        "ts": _now_iso()}, 0o600)
+    # #170: набор защищаемых SYN-портов зависит от маршрута — включённый маршрут имени
+    # прокси добавляет в него общий :443, снятый убирает. Пересобираем таблицу сразу:
+    # до минутного тика новый публичный вход прокси стоял бы незащищённым.
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix: " + str(e), flush=True)
     return {"ok": True, "vpn_domain": vpn_domain, "web_domain": web_domain,
             "tg_domain": tg_domain, "mask_port": mask_port,
+            "mp": mp, "mp_domain": mp_domain if mp else "",
+            "mp_port": mp_port if mp else 0, "mp_mask_port": mp_mask_port if mp else 0,
+            "mp_on_443": bool(mp and mask_front_switched),
             "facade_on_tg": bool(facade_switched),
-            "link_host": link_host,
+            "link_host": (vpn_e["domain"] if vpn_e and vpn_e.get("dns_ok") else ""),
+            "link_host_ready": link_ready,
             "web_port": web_port, "tls_port": tls_port, "cert_kind": kind,
             "reapplied": bool(mux_live), "inbound": _MUX_INBOUND,
+            "moved": [{"proto": e["proto"], "label": e["label"], "domain": e["domain"],
+                       "port": e["port"], "dns_ok": bool(e.get("dns_ok"))} for e in entries],
+            "released": sorted(rel_prev),
             "effect": _mux_effect()}
 
 def _mux_restore_sni(inbounds, sni_prev):
@@ -15025,42 +16606,154 @@ def _mux_restore_facade(tg_prev):
     except Exception as e:
         print("facade rollback: " + str(e)[:160], flush=True)
 
+def _mux_restore_mask_front(mp_prev):
+    """Вернуть источник настоящей TLS-формы к снимку ДО #168 и перезапустить telemt.
+    Правило выбора движка (файл или PATCH) — общее с отключением маршрута, оно сложено
+    в `_tg_mask_front_off`: базовая линия (`mask_host` отсутствует) через API не
+    снимается, пустая строка это `400`, поэтому он вырезает строку из файла; был свой
+    хост — ставим его обратно. Снимок с нашим же петлевым адресом внутри — не «до», а
+    наше действие (такие снимки остались в состояниях мюкса, записанных до правки #170):
+    по нему тоже вырезаем, иначе откат вернёт маску на порт, который откатываемое
+    применение как раз удалило."""
+    if not isinstance(mp_prev, dict):
+        return
+    try:
+        _tg_mask_front_off(mp_prev)
+        subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        for _ in range(10):
+            time.sleep(1)
+            if _tg_available():
+                break
+    except Exception as e:
+        print("mask front rollback: " + str(e)[:160], flush=True)
+
 def _mux_sync_link_host():
-    """vpn.<база> зарезолвился ПОСЛЕ применения мюкса (DNS живёт, а применяли раньше) —
-    перевернуть хост ссылок на vpn, не трогая xray: `_mux_link_host` читает только сборка
-    ссылок. Вызывается на старте панели и в хвосте выпуска имён (`_veil_ensure`)."""
+    """Домен(m) переводимых входов зарезолвились ПОСЛЕ применения мюкса (DNS живёт, а применяли
+    раньше) — перевернуть хост ссылок, не трогая xray: `_mux_link_host` читает только сборка
+    ссылок. Вызывается на старте панели и в хвосте выпуска имён (`_veil_ensure`).
+    Проверяем КАЖДУЮ запись из entries; legacy-запись (без entries) — одна vpn."""
     try:
         ms = _load(_MUX_STATE, {}) or {}
         if not ms.get("applied"):
             return False
-        vpn = (ms.get("vpn_domain") or "").strip().lower()
-        if not vpn or ms.get("link_host_ready") or not vpn.startswith("vpn."):
-            return False
-        if not (_resolve_ips(vpn) & _our_ips()):
-            return False
+        ours = _our_ips()
+        entries = ms.get("entries")
+        if not (isinstance(entries, list) and entries):
+            vpn = (ms.get("vpn_domain") or "").strip().lower()
+            entries = [{"proto": ms.get("inbound") or _MUX_INBOUND, "domain": vpn}] \
+                if vpn else []
         st = _load(STATE, {}) or {}
         changed = 0
-        for proto, ib in (st.get("inbounds") or {}).items():
-            if not isinstance(ib, dict) or not ib.get("_mux_enabled"):
+        pending = False
+        for e in entries:
+            dom = (e.get("domain") or "").strip().lower()
+            proto = e.get("proto")
+            if not dom or not proto:
                 continue
-            if ib.get("_mux_link_host") == vpn:
+            if not (_resolve_ips(dom) & ours):
+                pending = True
                 continue
-            ib["_mux_link_host"] = vpn
-            changed += 1
-        _save(STATE, st)
-        _save(_MUX_STATE, dict(ms, link_host_ready=True, ts=_now_iso()), 0o600)
-        _audit("mux_link_host_sync", vpn=vpn, inbounds=changed)
-        return True
+            ib = (st.get("inbounds") or {}).get(proto)
+            if isinstance(ib, dict) and ib.get("_mux_enabled") and ib.get("_mux_link_host") != dom:
+                ib["_mux_link_host"] = dom
+                changed += 1
+            e["dns_ok"] = True
+        all_ready = entries and all(bool(e.get("dns_ok")) for e in entries)
+        if changed or all_ready != bool(ms.get("link_host_ready")):
+            _save(STATE, st)
+            _save(_MUX_STATE, dict(ms, entries=entries, link_host_ready=all_ready,
+                                   ts=_now_iso()), 0o600)
+            _audit("mux_link_host_sync", inbounds=changed, ready=all_ready)
+        return bool(changed)
     except Exception as e:
         print("[mux] sync link_host: " + str(e)[:120], flush=True)
         return False
 
-def _revert_nginx_files(web_held):
+def _mux_nginx_files():
+    """Файлы nginx, которые apply способен тронуть: главный конфиг, его эталон до первого
+    мюкса, stream-вставка, генерируемые фронт и маска, каждый `conf.d/*.conf` (перенос фронтов
+    с :443) и каждый `conf.d/*.veil-mux.bak` (их откат тоже трогает)."""
+    import glob as _glob
+    out = [_NG_MAIN, _NG_MAIN_BAK, _NG_STREAM_INC, _NG_MUX_DEFAULT, _NG_MUX_MASK, _NG_MUX_MP_MASK]
+    for pat in ("*.conf", "*" + _MUX_BAK_SUFFIX):
+        out += sorted(_glob.glob(os.path.join(_NG_CONF_DIR, pat)))
+    return list(dict.fromkeys(out))
+
+def _mux_nginx_snapshot():
+    """Снимок этих файлов ДО применения: путь → содержание, None — если файла не было.
+
+    Нужен потому, что проваленный apply обязан вернуть машину к состоянию ПЕРЕД ПРОГОНОМ, а
+    не к эталону первого мюкса. На уже замуксованной коробке `nginx.conf.veil-mux.bak` —
+    конфигурация до первого применения, а `webproxy.conf.veil-mux.bak` — единственный снимок
+    фронта с `listen 443 ssl`: прежний откат переливал его в фронт и удалял, то есть провал
+    пере-применения съедал последние до-мюксовые бэкапы и стирал развилку с диска (#100,
+    найдено живым прогоном #159)."""
+    snap = {}
+    for p in _mux_nginx_files():
+        try:
+            with open(p, encoding="utf-8") as f:
+                snap[p] = f.read()
+        except Exception:
+            snap[p] = None
+    return snap
+
+def _mux_nginx_restore(snap):
+    """Вернуть файлы ровно к снимку: что было — перезаписать, чего не было — удалить.
+    Осиротевшие `.veil-mux.bak`, которых на момент снимка не было (их создал этот прогон),
+    снимаются отдельно: под этим суффиксом ходит только наш след, поэтому чужие `*.conf`
+    при откате не удаляются ни при каких обстоятельствах."""
+    import glob as _glob
+    for p, txt in (snap or {}).items():
+        if txt is None:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+            continue
+        try:
+            if os.path.exists(p) and open(p, encoding="utf-8").read() == txt:
+                continue
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(txt)
+        except Exception:
+            pass
+    for bak in sorted(_glob.glob(os.path.join(_NG_CONF_DIR, "*" + _MUX_BAK_SUFFIX))):
+        if bak in (snap or {}):
+            continue
+        try:
+            os.remove(bak)
+        except Exception:
+            pass
+
+def _mux_nginx_reload():
+    """Перечитать nginx после отката, чтобы диск и память не разъезжались. Пустая строка —
+    перечитали; иначе — последняя строка `nginx -t`, её добавляем в текст ошибки."""
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=25)
+    if t.returncode != 0:
+        return ((t.stderr or t.stdout or "").strip().splitlines() or ["nginx -t не прошёл"])[-1][:160]
+    cmd = ["systemctl", "reload", "nginx"] if _unit_active("nginx") else ["systemctl", "restart", "nginx"]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=40)
+    except Exception as e:
+        return str(e)[:160]
+    return ""
+
+def _revert_nginx_files(web_held, snap=None):
+    """Откат nginx-файлов мюкса. Со `snap` (проваленный apply) — строго к снимку перед
+    прогоном: существующие до него `.veil-mux.bak` остаются бэкапами, а созданные прогоном
+    исчезают; съедать бэкапы вправе только штатный откат. Без `snap` (`_mux_revert`) — прежний
+    путь: фронты из `.veil-mux.bak`, `nginx.conf` к эталону до первого мюкса, генерируемые
+    файлы долой."""
+    if snap is not None:
+        _mux_nginx_restore(snap)
+        return
     try: os.remove(_NG_STREAM_INC)
     except Exception: pass
     try: os.remove(_NG_MUX_DEFAULT)
     except Exception: pass
     try: os.remove(_NG_MUX_MASK)
+    except Exception: pass
+    try: os.remove(_NG_MUX_MP_MASK)
     except Exception: pass
     if os.path.exists(_NG_MAIN_BAK):
         shutil.copy2(_NG_MAIN_BAK, _NG_MAIN)
@@ -15091,14 +16784,27 @@ def _mux_revert(confirm=False):
     if not ms.get("applied"):
         return {"ok": True, "already": True, "message": "Мюкс не применён — откатывать нечего"}
     web_held = bool(ms.get("moved_web"))
-    had_prev = isinstance(ms.get("prev"), dict) and "port" in (ms.get("prev") or {})
     st = _load(STATE, {}) or {}
     # вернуть sni/snis/_mux_link_host ВСЕХ штампованных cert-TLS входов (штатный откат
     # раньше трогал только мюксуемый вход — sni остальных протекал наружу, #152)
     _mux_restore_sni(st.get("inbounds") or {}, ms.get("sni_prev"))
-    inb = (st.get("inbounds") or {}).get(ms.get("inbound") or _MUX_INBOUND)
-    if inb is not None:
-        for k, v in (ms.get("prev") or {}).items():
+    # Снимок «как было» по КАЖДОМУ переводимому входу: новое состояние несёт prev_map,
+    # legacy-запись до #155 — одиночный prev для vpn-входа. Нормализуем обе формы в одну карту.
+    pm = ms.get("prev_map") if isinstance(ms.get("prev_map"), dict) else {}
+    legacy_inb = ms.get("inbound") or _MUX_INBOUND
+    if not pm:
+        lp = ms.get("prev")
+        pm = {legacy_inb: (lp if isinstance(lp, dict) and "port" in lp else {})}
+    seen = [e.get("proto") for e in (ms.get("entries") or [])
+            if isinstance(e, dict) and e.get("proto")]
+    touched = False
+    for proto in list(dict.fromkeys(list(pm) + seen + [legacy_inb])):
+        inb = (st.get("inbounds") or {}).get(proto)
+        if not isinstance(inb, dict):
+            continue
+        snap = pm.get(proto) or {}
+        had_prev = "port" in snap
+        for k, v in snap.items():
             if v is None:
                 inb.pop(k, None)
             else:
@@ -15111,6 +16817,8 @@ def _mux_revert(confirm=False):
         if not had_prev and (str(inb.get("listen") or "")).strip().lower() in (
                 "127.0.0.1", "localhost", "::1"):
             inb.pop("listen", None)
+        touched = True
+    if touched:
         ok, err = _validate_and_apply(st)
         if not ok:
             return {"ok": False, "message": "xray после отката невалиден: " + (err or "")}
@@ -15128,9 +16836,22 @@ def _mux_revert(confirm=False):
     tg_prev = ms.get("tg_prev")
     if isinstance(tg_prev, dict) and (tg_prev.get("tls_domain") or tg_prev.get("tls_domains")):
         _mux_restore_facade(tg_prev)
-    if CFG_CACHE.pop("tg_mask_domain", None) is not None:
-        _cfg_save()
+    # #168: источник формы. Снятый маршрут обязан вернуть его на публичный съём: локальный
+    # фронт, который мы поставили, после откатов nginx -t может уже не слушать, а пустой
+    # профиль рвёт рукопожатие прокси — молча, без единой ошибки в логе.
+    mp_prev = ms.get("mp_prev")
+    if isinstance(mp_prev, dict):
+        _mux_restore_mask_front(mp_prev)
+    for k in ("tg_mask_domain", "tg_mp_domain", "tg_mp_on443"):
+        if CFG_CACHE.pop(k, None) is not None:
+            _cfg_save()
     _save(_MUX_STATE, {"applied": False, "ts": _now_iso()}, 0o600)
+    # #170: общий :443 выходит из числа защищаемых ровно в тот момент, когда маршрут
+    # имени прокси снят, — пересобираем таблицу, а не ждём минутный тик.
+    try:
+        _synfix_apply()
+    except Exception as e:
+        print("synfix: " + str(e), flush=True)
     return {"ok": True, "message": "Мюкс откачен: nginx, xray и telemt-фасад возвращены к прежнему виду"}
 
 
@@ -15626,9 +17347,11 @@ def _f2b_unban(ip):
 #  1) SYN с TCP-опциями iOS (отпечаток в заголовке) — accept без лимита;
 #  2) все остальные — 54 SYN/мин на IP (реальному клиенту хватает с запасом);
 #  3) сверх — reject «хост недоступен»: сканер видит фильтруемый порт.
-# Таблица inet veil_synfix пересобирается панелью при старте, при смене порта
-# MTProto и раз в минуту при дрейфе. После ребута ОС таблицы нет до старта
-# панели — ok, окнами в 1 минуту защищаемся и сами не ломаемся.
+# Таблица inet veil_synfix пересобирается панелью при старте, при изменении набора
+# защищаемых портов (#170: их несколько — слушатель telemt и общий :443, когда на него
+# включён маршрут имени прокси, плюс то, что дописал оператор) и раз в минуту при дрейфе.
+# После ребута ОС таблицы нет до старта панели — ok, окнами в 1 минуту защищаемся и сами
+# не ломаемся.
 
 _SYNFIX_LOCK = threading.Lock()
 
@@ -15644,34 +17367,139 @@ def _synfix_port():
         port = 0
     return port if port and (info.get("up") or info.get("has_public_listener")) else 0
 
-def _synfix_live():
-    """(порт, число правил) живой таблицы veil_synfix; (0, 0) если таблицы нет."""
+
+_SYNFIX_PORT_LIMIT = 16
+
+def _synfix_parse_ports(val, limit=_SYNFIX_PORT_LIMIT):
+    """Список портов оператора в валидный кортеж. Принимаем и числа, и строку «443, 8443;
+    7443» — морда отдаёт текст. Мусор, чужие типы и values вне 1..65535 отбрасываем молча:
+    это поле правит человек руками, и половина набранного — опечатка, а не намерение."""
+    items = val if isinstance(val, (list, tuple)) else re.split(r"[,;\s]+", str(val or ""))
+    out = []
+    for it in items:
+        if isinstance(it, bool):
+            continue
+        try:
+            p = int(str(it).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= p <= 65535 and p not in out:
+            out.append(p)
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+def _synfix_ports():
+    """{auto, extra, want} — что защищать сегодня (#170, слово хозяина: «смотреть, какие
+    уже есть на прокси, и добавлять»). Авто — живые публичные входы MTProto: слушатель
+    telemt и общий :443, когда на него включён маршрут имени прокси (клиенты с новых ссылок
+    стучат SYN именно туда, и без этой строки защита смотрела только на старый порт).
+    extra — руки оператора. want — объединение; пустое = таблице нечего делать."""
+    auto = []
+    p = _synfix_port()
+    if p:
+        auto.append(p)
+    if CFG_CACHE.get("tg_mp_on443") and 443 not in auto:
+        auto.append(443)
+    extra = list(_synfix_parse_ports(CFG_CACHE.get("synfix_ports")))
+    want = sorted(set(auto) | set(extra)) if CFG_CACHE.get("synfix_enabled", True) else []
+    return {"auto": auto, "extra": extra, "want": want}
+
+def _synfix_dump():
+    """Текст живой таблицы `veil_synfix`; пусто — таблицы нет или `nft` не ответил."""
     try:
         r = subprocess.run(["nft", "list", "table", "inet", "veil_synfix"],
                            capture_output=True, text=True, timeout=5)
     except Exception:
-        return (0, 0)
-    if r.returncode != 0:
-        return (0, 0)
-    m = re.search(r"dport (\d+)", r.stdout or "")
-    return (int(m.group(1)) if m else 0, (r.stdout or "").count("counter"))
+        return ""
+    return (r.stdout or "") if r.returncode == 0 else ""
+
+
+def _synfix_ports_of(txt):
+    """Набор портов из текста таблицы: и одиночные `dport N`, и сетки `dport { A, B }`."""
+    ports = set()
+    for m in re.finditer(r"dport\s+(\d+)", txt):
+        ports.add(int(m.group(1)))
+    for m in re.finditer(r"dport\s*\{([^}]*)\}", txt):
+        for it in m.group(1).split(","):
+            it = it.strip().split("-")[0].strip()
+            if it.isdigit():
+                ports.add(int(it))
+    return tuple(sorted(ports))
+
+
+def _synfix_live():
+    """(кортеж портов, число правил) живой таблицы veil_synfix; ((), 0) если таблицы нет."""
+    txt = _synfix_dump()
+    return (_synfix_ports_of(txt), txt.count("counter"))
+
+# Бюджет лимита SYN-защиты (#180). Защита от шторма обязана оставлять в покое
+# нормального клиента. Живой замер на этой коробке: `Telegram Desktop` открывает
+# соединения пучком — два `SYN` одного источника разделены 27 мс, за 15 секунд их
+# приходит восемь, а на общий порт 443 их накладывается ещё несколько параллельных
+# входов. Прежний запас в один пакет при лимите 54 в минуту не оставлял второму
+# `SYN` из пучка токена: правило приёма не срабатывало, пакет долетал до отбрасывания,
+# клиент получал `icmp host-unreachable` и не мог подключиться никогда — при этом
+# телефон с одним соединением проходил свободно. 600 в минуту — это десять новых
+# соединений в секунду на источник, 40 пакетов запаса: оба числа на два порядка ниже
+# настоящей подписи шторма и выше веера любого клиента, включая семейный `NAT`.
+_SYNFIX_RATE = 600
+_SYNFIX_BURST = 40
+
+# Комплект правил, который обязан стоять в таблице ровно по одному разу: копия сверх —
+# это остаток прежней сборки или гонка двух процессов (#181).
+_SYNFIX_MARKS = ("local_accept", "local6_accept", "ios_accept", "other_accept",
+                 "other6_accept", "other_reject", "other6_reject")
+
+
+def _synfix_stale(txt, want):
+    """Отстала ли живая таблица от нынешнего контракта (#181).
+
+    Сверять только набор портов мало: бюджет лимита и комплект правил меняются релизом, а
+    порты остаются теми же — такая таблица выглядит «верной» и висит до первого дрейфа
+    портов, то есть почти вечно. Именно так прежний лимит, отбивавший пачку переподключений
+    клиента на компьютере, переживал выпуск.
+
+    Пересобираем только на то, что применяет сам: другой бюджет или лишняя копия правила.
+    Бюджет сверяем по строкам, где лимит применён, а не по всему тексту: динамическая сетка
+    печатает адресные записи с тем же текстом лимита, и остаток одной прежней записи прикрыл
+    бы другую генерацию. Записи сетки отличаем по гаснущему времени — у правила его нет.
+    ОТСУТСТВИЕ правила в «ушло» не красим: ядро может его не поддержать, и тогда тик с
+    пересборкой гонял бы таблицу в мусор каждую минуту и сбрасывал накопленное."""
+    if not txt:
+        return bool(want)
+    if _synfix_ports_of(txt) != tuple(want):
+        return True
+    need = "%d/minute burst %d packets" % (_SYNFIX_RATE, _SYNFIX_BURST)
+    for ln in txt.splitlines():
+        if "limit rate" in ln and "expires" not in ln and need not in ln:
+            return True
+    for mark in _SYNFIX_MARKS:
+        if txt.count('"%s"' % mark) > 1:
+            return True
+    return False
+
 
 def _synfix_apply():
-    """Пересобрать inet/veil_synfix под текущий порт MTProto. Возвращает защищённый порт.
-    _limits_loop стартует ещё на импорте модуля — его тик может совпасть со стартовым
-    apply, поэтому пересборка таблицы под локом (иначе правила задвоятся)."""
-    port = _synfix_port() if CFG_CACHE.get("synfix_enabled", True) else 0
+    """Пересобрать inet/veil_synfix под список защищаемых портов (#170). Возвращает этот
+    список. _limits_loop стартует ещё на импорте модуля — его тик может совпасть со стартовым
+    apply, поэтому пересборка таблицы под локом (иначе правила задвоятся).
+    Все правила пишутся одной безымянной сеткой dport, а не по комплекту правил на порт:
+    лимит на источник тогда общий для всех входов прокси, и сканер, обстреливающий
+    сразу два порта, не получает двойной бюджет."""
+    want = _synfix_ports()["want"]
     with _SYNFIX_LOCK:
         _f2b_nft("delete", "table", "inet", "veil_synfix")
-        if not port:
-            return 0
+        if not want:
+            return []
+        dports = "{ %s }" % ", ".join(str(p) for p in want)
         _f2b_nft("add", "table", "inet", "veil_synfix")
         _f2b_nft("add", "chain", "inet", "veil_synfix", "input",
                  "{ type filter hook input priority 0; policy accept; }")
         # своя служебная проверка порта с loopback/из локальных сетей лимиту не
         # подлежит; туда же собственные публичные адреса — это hairpin-петля
         # (клиент под VPN → туннель → xray звонит на свой же :7443): её SYN
-        # приходят с IP сервера и под лимит 54/мин попадать не должны.
+        # приходят с IP сервера и под лимит попадать не должны.
         try:
             own = _own_ip_cidrs()
         except Exception:
@@ -15680,39 +17508,69 @@ def _synfix_apply():
               "172.16.0.0/12", "192.168.0.0/16"] + [c for c in own if ":" not in c]
         v6 = ["::1/128", "fc00::/7", "fe80::/10"] + [c for c in own if ":" in c]
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'tcp dport %d ip saddr { %s } counter accept comment "local_accept"'
-                 % (port, ", ".join(v4)))
+                 'tcp dport %s ip saddr { %s } counter accept comment "local_accept"'
+                 % (dports, ", ".join(v4)))
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'tcp dport %d ip6 saddr { %s } counter accept comment "local6_accept"'
-                 % (port, ", ".join(v6)))
+                 'tcp dport %s ip6 saddr { %s } counter accept comment "local6_accept"'
+                 % (dports, ", ".join(v6)))
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'tcp dport %d tcp flags & (syn|ack) == syn '
+                 'tcp dport %s tcp flags & (syn|ack) == syn '
                  '@th,108,20 0x2ffff @th,160,16 0x204 @th,192,16 0x103 '
-                 '@th,224,24 0x10108 @th,320,32 0x4020000 counter accept comment "ios_accept"' % port)
+                 '@th,224,24 0x10108 @th,320,32 0x4020000 counter accept comment "ios_accept"'
+                 % dports)
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'tcp dport %d tcp flags & (syn|ack) == syn '
-                 'meter veil_synfix { ip saddr timeout 60s limit rate 54/minute burst 1 packets } '
-                 'counter accept comment "other_accept"' % port)
+                 'tcp dport %s tcp flags & (syn|ack) == syn '
+                 'meter veil_synfix { ip saddr timeout 60s limit rate %d/minute burst %d packets } '
+                 'counter accept comment "other_accept"' % (dports, _SYNFIX_RATE, _SYNFIX_BURST))
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'meta nfproto ipv4 tcp dport %d tcp flags & (syn|ack) == syn counter '
-                 'reject with icmp type host-unreachable comment "other_reject"' % port)
+                 'meta nfproto ipv4 tcp dport %s tcp flags & (syn|ack) == syn counter '
+                 'reject with icmp type host-unreachable comment "other_reject"' % dports)
         # IPv6 зеркало: без него v6-SYN проваливаются в policy accept — шторм без лимита.
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'meta nfproto ipv6 tcp dport %d tcp flags & (syn|ack) == syn '
-                 'meter veil_synfix6 { ip6 saddr timeout 60s limit rate 54/minute burst 1 packets } '
-                 'counter accept comment "other6_accept"' % port)
+                 'meta nfproto ipv6 tcp dport %s tcp flags & (syn|ack) == syn '
+                 'meter veil_synfix6 { ip6 saddr timeout 60s limit rate %d/minute burst %d packets } '
+                 'counter accept comment "other6_accept"'
+                 % (dports, _SYNFIX_RATE, _SYNFIX_BURST))
         # IPv6-аналог host-unreachable в ядре называется no-route (type1 code0);
         # administratively-prohibited/host-unreachable nft здесь не принимает.
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
-                 'meta nfproto ipv6 tcp dport %d tcp flags & (syn|ack) == syn counter '
-                 'reject with icmpv6 type no-route comment "other6_reject"' % port)
-    return port
+                 'meta nfproto ipv6 tcp dport %s tcp flags & (syn|ack) == syn counter '
+                 'reject with icmpv6 type no-route comment "other6_reject"' % dports)
+    _audit("synfix_ports", ports=want)
+    return want
+
+def _synfix_ports_accept(raw):
+    """Ручной список портов из морды → (кортеж, None) или ((), текст ошибки). Принимаем и
+    строку «443, 8443», и список чисел. Здесь именно ОТКАЗ, а не молчание `_synfix_parse_ports`:
+    оператор набрал порт руками и хочет его увидеть защищённым — выкинуть половину набранного
+    значит закрыть не то, что он просил, и он узнает об этом только когда сканеры продолжат
+    стучаться. Поэтому любая опечатка возвращается человеку, а не прячется."""
+    toks = list(raw) if isinstance(raw, (list, tuple)) else \
+        [t for t in re.split(r"[,;\s]+", str(raw or "")) if t.strip()]
+    out = []
+    for t in toks:
+        s = str(t).strip()
+        if not s:
+            continue
+        try:
+            p = int(s)
+        except (TypeError, ValueError):
+            p = -1
+        if isinstance(t, bool) or not 1 <= p <= 65535:
+            return ((), "synfix_ports: «%s» — не порт 1..65535" % s[:16])
+        if p not in out:
+            out.append(p)
+    if len(out) > _SYNFIX_PORT_LIMIT:
+        return ((), "synfix_ports: бережём не больше %d портов" % _SYNFIX_PORT_LIMIT)
+    return (tuple(out), None)
 
 def _synfix_tick():
-    """Самоцелость: таблица ушла (ребут/вмешательство) или порт поменялся — пересобрать."""
-    want = _synfix_port() if CFG_CACHE.get("synfix_enabled", True) else 0
-    live, _ = _synfix_live()
-    if live != want:
+    """Самоцелость: таблица ушла (ребут/вмешательство), набор портов разошёлся с живым или
+    таблица ОТСТАЛА от нынешнего контракта — пересобрать. Сверяется не только множество
+    портов (#170): с #181 хранитель видит устаревший бюджет и лишние копии правил, иначе
+    коробка с совпавшими портами вечно досматривает таблицу прежнего выпуска."""
+    want = tuple(_synfix_ports()["want"])
+    if _synfix_stale(_synfix_dump(), want):
         _synfix_apply()
 
 # ---------- лимит устройств на клиента (P3) ----------
@@ -17713,7 +19571,9 @@ def _tg_restore(version, confirm=False, job=None):
 _DDNS = {"configured": False, "host": "", "updated": None, "error": "", "response": "", "ipv4": None, "ipv6": None}
 CERT_DIR = f"{BASE}/certs"
 _CERT_STATE = {"domain": "", "issued": None, "expire": None, "cert": "", "key": "", "error": "", "busy": False,
-               "email": "", "auto": True}
+               "email": "", "auto": True,
+               "san": [], "san_next": [], "san_added": [], "san_dropped": [],
+               "san_error": "", "budget": {}}
 
 def _dynv6_conf():
     c = CFG_CACHE or {}
@@ -18643,6 +20503,18 @@ def _cert_status():
     _CERT_STATE["has_cert"] = bool(cp["cert"] and os.path.exists(cp["cert"]))
     _CERT_STATE["veil_ready"] = _veil_cert_ready(want)
     _CERT_STATE["veil_names"] = want
+    # Что несёт сертификат сейчас и что он понесёт после выпуска (#175). Наружу здесь
+    # не смотрим: `resolve=False` — морде нельзя сетевого запроса на критическом пути,
+    # отсев мёртвых имён сделает выпуск.
+    try:
+        base = (cp["domain"] or _veil_base() or "").strip().lower()
+        uni = _cert_san_union(base, [n for n in want if n != base], resolve=False)
+        _CERT_STATE["san"] = uni["have"]
+        _CERT_STATE["san_next"] = uni["keep"]
+        _CERT_STATE["san_added"] = uni["added"]
+        _CERT_STATE["budget"] = _le_budget(base)
+    except Exception as e:
+        _CERT_STATE["san_error"] = str(e)[:120]
     return dict(_CERT_STATE)
 
 def _veil_want_names():
@@ -18730,6 +20602,135 @@ def _dns01_hook_main(argv=None):
         raise RuntimeError("неизвестное действие хука DNS-01: " + (action or "?"))
 
 
+# Выпуск одного нового имени обязан РАСШИРЯТЬ набор имён рабочего сертификата, а не
+# заменять его (#175). Физика такая: `--expand` с перечнем `-d` пишет новый сертификат
+# с ровно тем набором, который перечислен, — прежние имена, которых в перечне нет,
+# с сертификата снимаются. Подписка, оставшаяся на снятом имени, обрывается на
+# рукопожатии, и журнал это покажет не как ошибку выпуска, а как молчание клиента.
+# Второе ограничение внешнее: лимит выпуска считается на ВЕСЬ зарегистрированный домен
+# за неделю, а не на эту коробку, и переживает чужие выпуски того же домена.
+_LE_CERTS_PER_DOMAIN = 50
+_LE_WINDOW_S = 168 * 3600
+_SAN_MAX_NAMES = 100
+
+# Не полный список публичных суффиксов (тащить его в панель нельзя), а те, что
+# встречаются у хозяев коробок: для них зарегистрированный домен — три метки, а не две.
+_PUB_SUFFIX2 = {"co.uk", "org.uk", "me.uk", "ac.uk", "gov.uk", "com.ru", "net.ru",
+                "org.ru", "pp.ru", "msk.ru", "spb.ru", "com.ua", "in.ua", "co.il",
+                "com.tr", "net.tr", "co.nz", "com.au", "net.au", "org.au", "co.jp",
+                "ne.jp", "or.jp", "com.cn", "net.cn", "org.cn", "com.br", "com.pl",
+                "com.sg", "com.hk", "co.kr", "com.tw", "com.mx", "com.co", "co.za",
+                "com.ar", "com.pe", "com.kz", "com.by", "com.ee", "com.sa", "com.eg"}
+
+
+def _reg_domain(name):
+    """Зарегистрированный домен (публичный суффикс + одна метка) — граница лимита выпуска."""
+    n = (name or "").strip().rstrip(".").lower()
+    parts = [p for p in n.split(".") if p]
+    if len(parts) < 2:
+        return ""
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _PUB_SUFFIX2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _cert_lineage_cert(domain):
+    """Рабочая цепочка связки этого домена; "" — читать нечего."""
+    d0 = (domain or "").strip().lower().rstrip(".")
+    if not d0:
+        return ""
+    live = "%s/live/veil-%s/fullchain.pem" % (CERT_DIR, d0)
+    if os.path.exists(live):
+        return live
+    cp = _cert_pathes()
+    if cp.get("domain") == d0 and cp.get("cert") and os.path.exists(cp["cert"]):
+        return cp["cert"]
+    return ""
+
+
+def _cert_san_union(domain, extras=None, ours=None, cert="", resolve=True):
+    """Набор имён для выпуска = ПРЕЖНИЕ имена сертификата ∪ требуемые, а не только требуемые.
+
+    Прежние имена, которые больше не указывают на эту коробку, в набор НЕ попадают:
+    проверка по мёртвому имени рвёт выпуск целиком, значит лишнее имя стоит дороже
+    потерянного. Такие имена возвращаются в `dropped` — порядок обязан их показать, а не
+    молча снять. Если своих адресов определить не удалось, имя не удаляется: решение
+    «это имя уже ничьё» без данных принимать нельзя. `resolve=False` — тот же ответ без
+    единственного сетевого запроса (для морды, которой внешние обращения на критическом
+    пути запрещены): там имена помечаются непроверенными, а решение примет выпуск.
+    """
+    d0 = (domain or "").strip().lower().rstrip(".")
+    want = [d0] if d0 else []
+    for e in (extras or []):
+        e = (e or "").strip().lower().rstrip(".")
+        if e and e not in want:
+            want.append(e)
+    cert = cert if cert else _cert_lineage_cert(d0)
+    have = [n.lower() for n in (_cert_dns_names(cert) if cert else [])]
+    ours = _our_ips() if (resolve and ours is None) else (ours or set())
+    keep, dropped = [], []
+    for n0 in ([d0] if d0 else []) + have + want:
+        if n0 in keep or n0 in dropped:
+            continue
+        if n0 in want:
+            keep.append(n0)
+            continue
+        if not resolve or not ours or (_resolve_ips(n0) & ours):
+            keep.append(n0)
+        else:
+            dropped.append(n0)
+    return {"keep": keep, "dropped": dropped, "had": len(have), "have": have,
+            "cert": cert or "", "added": [n for n in want if n not in have],
+            "checked": bool(resolve), "over_limit": len(keep) > _SAN_MAX_NAMES}
+
+
+def _le_budget(domain=None, now=None, archive=""):
+    """Сколько сертификатов на этот зарегистрированный домен выпустила КОРОБКА за неделю.
+
+    Число — нижняя граница: чужие выпуски того же домена отсюда не видны, а лимит
+    считается по всем. Нулевой выпуск линейки (`cert1.pem`) тоже считается: для лимита
+    это новый сертификат. Пустой домен или отсутствующий архив — пустой ответ с полным
+    лимитом, а не ноль: «не знаю» не должно выглядеть как «исчерпано»."""
+    reg = _reg_domain(domain or _veil_base())
+    out = {"domain": reg, "issued": 0, "limit": _LE_CERTS_PER_DOMAIN,
+           "left": _LE_CERTS_PER_DOMAIN, "lineages": 0, "visible": False}
+    arc = archive or os.path.join(CERT_DIR, "archive")
+    if not reg or not os.path.isdir(arc):
+        return out
+    now = time.time() if now is None else now
+    try:
+        lineages = sorted(os.listdir(arc))
+    except Exception:
+        return out
+    for line in lineages:
+        d0 = os.path.join(arc, line)
+        if not os.path.isdir(d0):
+            continue
+        try:
+            files = sorted(os.listdir(d0), key=lambda x: (len(x or ""), x or ""))
+        except Exception:
+            continue
+        versions = [f for f in files if re.fullmatch(r"cert([0-9]+)\.pem", f or "")]
+        if not versions:
+            continue
+        first = os.path.join(d0, versions[0])
+        names = _cert_dns_names(first)
+        if _reg_domain((names or [""])[0]) != reg:
+            continue
+        mine = 0
+        for f in versions:
+            try:
+                if now - os.path.getmtime(os.path.join(d0, f)) <= _LE_WINDOW_S:
+                    mine += 1
+            except Exception:
+                continue
+        out["lineages"] += 1
+        out["issued"] += mine
+    out["visible"] = True
+    out["left"] = max(0, out["limit"] - out["issued"])
+    return out
+
+
 def _cert_issue(email=None, mode="auto", extra_domains=None):
     if _CERT_STATE.get("busy"):
         raise RuntimeError("выпуск сертификата уже идёт")
@@ -18767,6 +20768,30 @@ def _cert_issue(email=None, mode="auto", extra_domains=None):
         if not point:
             raise RuntimeError("домен " + domain + " сейчас не указывает на этот сервер (" +
                                cur + ") — сначала DDNS / A-запись")
+    # Порядок #175: выпуск обязан НЕСТИ прежние имена, а не перечислять только новые.
+    uni = _cert_san_union(domain, names[1:])
+    if uni["over_limit"]:
+        raise RuntimeError("имён получилось %d, а сервиса выдачи сертификатов позволяет "
+                           "%d в одном сертификате — убери лишние имена" %
+                           (len(uni["keep"]), _SAN_MAX_NAMES))
+    _CERT_STATE["san_dropped"] = uni["dropped"]
+    if uni["have"] and set(uni["keep"]) == set(uni["have"]):
+        exp = _cert_expire(uni["cert"]) if uni["cert"] else None
+        if exp and exp > time.time() + 14 * 86400:
+            # Ничего нового, сертификат свежий: второй выпуск за тем же набором — это
+            # расход недельного лимита без всякого смысла.
+            _CERT_STATE["san"] = uni["keep"]
+            return {"ok": True, "domain": domain, "cert": uni["cert"],
+                    "skipped": "набор имён не изменился, сертификат свежий — выпуск пропущен",
+                    "names": uni["keep"], "dropped": uni["dropped"]}
+    bud = _le_budget(domain)
+    if bud["visible"] and bud["left"] <= 0:
+        raise RuntimeError("лимит выпуска на домен %s исчерпан этой коробкой (%d из %d за "
+                           "неделю) — жди окна или выпускай вручную" %
+                           (bud["domain"], bud["issued"], bud["limit"]))
+    names = uni["keep"]
+    _CERT_STATE["san"] = names
+    _CERT_STATE["budget"] = bud
     os.makedirs(CERT_DIR, exist_ok=True)
     live = f"{CERT_DIR}/live/veil-{domain}"
     certp = f"{live}/fullchain.pem"; keyp = f"{live}/privkey.pem"
@@ -18776,8 +20801,11 @@ def _cert_issue(email=None, mode="auto", extra_domains=None):
         dargs = []
         for n in names:
             dargs += ["-d", n]
-        # --expand нужен, когда сертификат с этим cert-name УЖЕ есть и набор имён меняется
-        expand = len(names) > 1 and os.path.exists(f"{CERT_DIR}/renewal/veil-{domain}.conf")
+        # `--expand` нужен, когда связка с этим именем УЖЕ есть и набор имён меняется;
+        # набор мы передаём полный (прежние ∪ новые), поэтому замена множества безопасна
+        lineage_conf = "%s/renewal/veil-%s.conf" % (CERT_DIR, domain)
+        expand = os.path.exists(lineage_conf) and \
+            [n.lower() for n in names] != [h.lower() for h in uni["have"]]
         if mode == "http01":
             args = ["certbot", "certonly", "--standalone", "--preferred-challenges", "http"]
         else:
@@ -18802,7 +20830,7 @@ def _cert_issue(email=None, mode="auto", extra_domains=None):
             raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
         _cert_tree_perms()
         if not (os.path.exists(certp) and os.path.exists(keyp)):
-            raise RuntimeError("certbot завершился, но no fullchain/privkey")
+            raise RuntimeError("certbot завершился, но fullchain/privkey не найдены")
         if email:
             CFG_CACHE["cert_email"] = email
         CFG_CACHE["cert"] = certp; CFG_CACHE["cert_key"] = keyp
@@ -18924,14 +20952,19 @@ def _veil_name_status(name, ours):
         return "ours", sorted(ips)
     return "foreign", sorted(ips)
 
-def _veil_name_plan(base=None, provider=None):
+def _veil_name_plan(base=None, provider=None, labels=None):
     base = (base or _veil_base()).strip().lower()
     if not base or re.fullmatch(r"[0-9.]+", base) or ":" in base or "*" in base:
         return {"ok": False, "error": "не задан корректный домен панели (база)", "base": base}
     prov = (provider or _veil_provider(base)).strip().lower()
     ours = _our_ips()
+    want_labels = list(_VEIL_LABELS)
+    for l in (labels or []):
+        l = (l or "").strip().lower()
+        if l and l not in want_labels:
+            want_labels.append(l)
     plan, names = [], {"base": base}
-    for label in _VEIL_LABELS:
+    for label in want_labels:
         want = label + "." + base
         status, ips = _veil_name_status(want, ours)
         final = want
@@ -18947,7 +20980,8 @@ def _veil_name_plan(base=None, provider=None):
         names[label] = final
         plan.append({"label": label, "want": want, "final": final, "status": status, "ips": ips})
     return {"ok": True, "base": base, "provider": prov, "names": names, "plan": plan,
-            "san": [base, names["tg"], names["vpn"]],
+            "labels": want_labels,
+            "san": [base] + [names[l] for l in want_labels],
             "renumbered": any(p["final"] != p["want"] for p in plan)}
 
 def _port80_holder():
@@ -19006,11 +21040,12 @@ def _veil_cert_ready(want, min_days=14):
     return bool(exp and exp > time.time() + min_days * 86400)
 
 
-def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base=None):
-    """DNS-записи → ожидание резолва → выпуск SAN-серта (метод по провайдеру) → раздача TLS."""
+def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base=None, labels=None):
+    """DNS-записи → ожидание резолва → выпуск SAN-серта (метод по провайдеру) → раздача TLS.
+    labels — доп. метки поддоменов к tg/vpn (выбранные галочками протоколы)."""
     if not confirm:
         raise RuntimeError("нужно подтверждение (confirm): изменятся DNS-записи и сертификат")
-    plan = _veil_name_plan(base, provider)
+    plan = _veil_name_plan(base, provider, labels)
     if not plan.get("ok"):
         raise RuntimeError(plan.get("error") or "нет плана имён")
     base, prov, names = plan["base"], plan["provider"], plan["names"]
@@ -19019,7 +21054,7 @@ def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base
     ours = _our_ips()
     ip4 = next((i for i in ours if ":" not in i), "")
     ip6 = next((i for i in ours if ":" in i), "")
-    targets = [names["tg"], names["vpn"]]
+    targets = [names[l] for l in plan.get("labels") or list(_VEIL_LABELS)]
     report = []
     if prov == "dynv6":
         for nm in targets:
@@ -19069,6 +21104,352 @@ def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base
     _audit("veil_ensure", provider=prov, names=",".join(targets))
     return {"ok": True, "base": base, "provider": prov, "names": names, "plan": plan["plan"],
             "report": report, "cert": certp}
+
+
+# ───────────────────── хранитель выпушенных имён ─────────────────────
+# Панель выпускает поддомены одним нажатием, но держит их только периодический
+# контур обновления адреса — и тот отвечает за базу и `wg`. Записи `vpn` и меток
+# протоколов не касался никто: провайдер счистит одну, снесут её руками, потеряют
+# при переезде — и ссылки молча переезжают обратно на базу, а «Выпустить» требует
+# повторного нажатия. Здесь та же схема, что уже спасает `wg`: смотрим имена
+# применённого мюкса и возвращаем те, что перестали резолвиться вовсе. Чужое имя
+# не трогаем: спорить с соседом по зоне дороже, чем остаться на базе.
+_VEIL_GUARD = {"checked": 0, "lost": "", "foreign": "", "restored": "",
+               "skipped": "", "error": "", "ts": None}
+
+
+def _veil_names_wanted():
+    """Имена, которые выпустил применённый мюкс: `vpn`, `tg` и метки переводимых
+    входов. Взяты из снимка применения, а не из плана имён: план переименовывает
+    занятое имя, и хранитель вместо потерянной записи начал бы выпускать дубль."""
+    ms = _load(_MUX_STATE, {}) or {}
+    if not ms.get("applied"):
+        return []
+    base = (ms.get("web_domain") or _veil_base() or "").strip().lower().rstrip(".")
+    if not base:
+        return []
+    got = [ms.get("vpn_domain") or ("vpn." + base), ms.get("tg_domain"),
+           (ms.get("mp_domain") if ms.get("mp") else "")]
+    got += [(e or {}).get("domain") for e in (ms.get("entries") or [])
+            if isinstance(e, dict)]
+    out = []
+    for d in got:
+        d = (d or "").strip().lower().rstrip(".")
+        if d and d != base and d.endswith("." + base) and d not in out:
+            out.append(d)
+    return out
+
+
+def _veil_names_guard():
+    """Присмотр за выпушенными именами. Возвращает список возвращённых."""
+    _VEIL_GUARD.update(ts=time.time(), checked=0, lost="", foreign="", restored="",
+                       error="", skipped="")
+    if _mv_locked():
+        _VEIL_GUARD["skipped"] = "переезд: самопроизвольные правки DNS приостановлены"
+        return []
+    base = _veil_base()
+    if _veil_provider(base) != "dynv6" or not _dynv6_conf()["token"]:
+        _VEIL_GUARD["skipped"] = "dynv6-зона не настроена"
+        return []
+    names = _veil_names_wanted()
+    if not names:
+        _VEIL_GUARD["skipped"] = "развилка не применена — держать нечего"
+        return []
+    # Свои адреса — те, что только что опубликовало обновление базы: клиент резолвит
+    # именно их, и сверка с внешним эхом лишь удваивала бы расход на каждый проход.
+    ours = {v for v in ((_DDNS.get("ipv4") or ""), (_DDNS.get("ipv6") or "")) if v}
+    if not ours:
+        ours = _our_ips()
+    ip4 = next((i for i in sorted(ours) if ":" not in i), "")
+    ip6 = next((i for i in sorted(ours) if ":" in i), "")
+    if not ip4 and not ip6:
+        _VEIL_GUARD["skipped"] = "нет публичного адреса"
+        return []
+    lost, foreign = [], []
+    for nm in names:
+        ips = _resolve_ips(nm)
+        if ips & ours:
+            continue
+        (foreign if ips else lost).append(nm)
+    _VEIL_GUARD["checked"] = len(names)
+    _VEIL_GUARD["lost"] = ",".join(lost)
+    _VEIL_GUARD["foreign"] = ",".join(foreign)
+    fixed = []
+    for nm in lost:
+        try:
+            if _dynv6_ensure_host(nm, ip4, ip6):
+                fixed.append(nm)
+        except Exception as e:
+            _VEIL_GUARD["error"] = str(e)[:120]
+    _VEIL_GUARD["restored"] = ",".join(fixed)
+    if fixed or foreign or _VEIL_GUARD["error"]:
+        _audit("veil_names_guard", checked=len(names), lost=",".join(lost),
+               foreign=",".join(foreign), restored=",".join(fixed),
+               error=_VEIL_GUARD["error"])
+    return fixed
+
+
+# ─────────────────────────── #160: автонастройка галочками ───────────────────────────
+# Модель (решение хозяина): три галочки — «поддомены», «сертификат», «общий :443».
+# Прогон идёт строго `dns` → сертификат → развилка, дотягивая пропущенную зависимость,
+# если без неё поздний шаг физически не работает, и не трогая то, что уже готово:
+# лимиты выпуска и живая связка подписчиков дороже одного лишнего нажатия.
+_SETUP_CAPS = {"dns": "DNS-записи поддоменов", "cert": "SAN-сертификат на все имена",
+               "mux": "SNI-развилка на :443"}
+_SETUP_ROLLBACK = {
+    "dns": "нет — выпущенные записи панель не отзывает: их снимают вручную у провайдера",
+    "cert": "нет — выпущенный сертификат не отзывается; при отказе он остаётся на диске и "
+            "будет переиспользован следующим прогоном",
+    "mux": "отказ применения откатывает развилку сама проваленная `apply`: снимок "
+           "`nginx`-файлов до прогона, `nginx -t` и перезагрузка",
+}
+
+
+def _setup_sel_protos(protos=None):
+    """Входы, идущие за развилку. Главный вход всегда в списке (его метка `vpn`, живые
+    ссылки не переименовываем); порядок — как прислали."""
+    sel = []
+    for p in (protos or []):
+        p = str(p or "").strip().lower()
+        if p and p not in sel:
+            sel.append(p)
+    if _MUX_INBOUND not in sel:
+        sel.insert(0, _MUX_INBOUND)
+    return sel
+
+
+def _setup_labels_of(protos):
+    """Метки поддоменов этих входов сверх базовых `tg`/`vpn`: план имён базовые добавляет
+    сам, в `labels` идут только новые (иначе выпуск попросил бы имя дважды)."""
+    known = {}
+    for e in (_mux_relocatable(_load(STATE, {}) or {}) or []):
+        if isinstance(e, dict) and e.get("proto"):
+            known[str(e["proto"])] = (e.get("label") or "").strip().lower()
+    out = []
+    for p in protos:
+        lab = known.get(str(p or "").strip().lower()) or _mux_sni_label(p)
+        if lab and lab not in _VEIL_LABELS and lab not in out:
+            out.append(lab)
+    return out
+
+
+def _setup_scan(dns=False, cert=False, mux=False, protos=None, base=None, provider=None,
+                landscape=False):
+    """Один разбор на двоих: `_setup_auto_plan` его показывает, `_setup_auto` по нему идёт.
+    Писателей не трогает — только план имён, покрытие сертификата и состояние развилки.
+    `landscape` — тот же план на ВСЕ переводимые входы: превью обязано честно назвать
+    занятое чужим имя, даже если галочкой этот вход не выбирали.
+    Возвращает (разбор, ошибка)."""
+    base = (base or _veil_base() or (CFG_CACHE.get("panel_domain") or "")).strip().lower()
+    if not base or re.fullmatch(r"[0-9.]+", base or "") or "*" in base:
+        return None, "не задан домен панели (база) — укажите его во вкладке «Сайт»"
+    sel = _setup_sel_protos(protos)
+    extras = _setup_labels_of(sel)
+    plan = _veil_name_plan(base, provider, extras)
+    if not plan.get("ok"):
+        return None, plan.get("error") or "нет плана имён"
+    rows = [r for r in (plan.get("plan") or []) if isinstance(r, dict)]
+    base_dom = plan.get("base") or base
+    want = [base_dom] + [r.get("final") for r in rows
+                         if r.get("final") and r.get("final") != base_dom]
+    names_ok = bool(rows) and all(r.get("status") == "ours" for r in rows)
+    try:
+        cert_ok = bool(_veil_cert_ready(want))
+    except Exception:
+        cert_ok = False
+    ms = _mux_status() or {}
+    moved = [str(p) for p in (ms.get("protos") or [])]
+    mux_ok = bool(ms.get("applied")) and bool(sel) and all(p in moved for p in sel)
+    # Развилка без сертификата, покрывающего все имена, не работает: рукопожатие на новом
+    # имени падает. Поэтому выпуск дотягивается автоматически, даже когда галочку не ставили.
+    do_cert = bool(cert) or (bool(mux) and not cert_ok)
+    land = []
+    if landscape:
+        allp = [e.get("proto") for e in (_mux_relocatable(_load(STATE, {}) or {}) or [])
+                if isinstance(e, dict) and e.get("proto")]
+        lp = _veil_name_plan(base, provider, _setup_labels_of(allp))
+        land = [r for r in (lp.get("plan") or []) if isinstance(r, dict)]
+    return {"base": base_dom, "provider": plan.get("provider"), "plan": plan, "rows": rows,
+            "landscape": land, "names": plan.get("names") or {}, "want": want,
+            "sel": sel, "extras": extras, "dns": bool(dns) or do_cert, "cert": do_cert,
+            "mux": bool(mux), "names_ok": names_ok, "cert_ok": cert_ok, "mux_ok": mux_ok,
+            "moved": moved,
+            "foreign": [r for r in rows if r.get("status") == "foreign"],
+            "unresolved": [r.get("final") for r in rows if r.get("status") != "ours"]}, None
+
+
+def _setup_step(ctx, name, state, detail=""):
+    return {"name": name, "caption": _SETUP_CAPS.get(name, name), "state": state,
+            "detail": detail, "requested": bool(ctx.get(name)),
+            "rollback": _SETUP_ROLLBACK.get(name, "")}
+
+
+def _setup_auto(dns=False, cert=False, mux=False, protos=None, base=None, provider=None,
+                confirm=False):
+    """Автонастройка галочками: `dns` → сертификат → развилка одним прогоном.
+    Шаг либо сделан (`done`), либо дотянут автоматически (`auto`), либо пропущен, потому что
+    уже готов (`skipped`). Писатели вызываются только с `confirm`. Провал раннего шага не
+    подпускает к позднему, сделанное не зачёркивается, а отзыва сертификата и записей нет —
+    поле `rollback` говорит это словами. Отзыв развилки делает проваленное применение."""
+    ctx, err = _setup_scan(dns=dns, cert=cert, mux=mux, protos=protos, base=base,
+                           provider=provider)
+    if ctx is None:
+        return {"ok": False, "error": err, "steps": [], "protos": _setup_sel_protos(protos)}
+    ctx["dns_wanted"], ctx["cert_wanted"], ctx["mux_wanted"] = dns, cert, mux
+    if not confirm:
+        return {"ok": False, "steps": [], "base": ctx["base"], "protos": ctx["sel"],
+                "names": ctx["names"],
+                "error": "нужно подтверждение (confirm): прогон меняет DNS-записи, "
+                         "выпускает сертификат и перестраивает конфигурацию развилки"}
+    steps, report = [], []
+    # `ensure` — один писатель на оба ранних шага: он и записи, и выпуск, и раздача TLS.
+    # Зовём его, пока чего-то не хватает; готовую коробку не трогаем вовсе.
+    write_dns = ctx["dns"] and not (ctx["names_ok"] and ctx["cert_ok"])
+    write_cert = ctx["cert"] and not ctx["cert_ok"]
+    certp = ""
+    if write_dns or write_cert:
+        try:
+            res = _veil_ensure(base=ctx["base"], provider=ctx["provider"],
+                               issue_cert=write_cert, confirm=True, labels=ctx["extras"]) or {}
+        except Exception as e:
+            dst = "failed" if write_dns else ("skipped" if not ctx["dns"] else "auto")
+            steps.append(_setup_step(ctx, "dns", dst, "отказ выпуска: " + str(e)[:300]))
+            steps.append(_setup_step(ctx, "cert", "failed" if write_cert else "skipped",
+                                     "не дошло: " + str(e)[:300]))
+            steps.append(_setup_step(ctx, "mux", "skipped", "не тронут: ранний шаг отказал"))
+            _audit("setup_auto", base=ctx["base"], ok=False, err=str(e)[:160])
+            return {"ok": False, "error": str(e), "base": ctx["base"], "protos": ctx["sel"],
+                    "names": ctx["names"], "steps": steps, "report": report}
+        report += [str(x) for x in (res.get("report") or [])]
+        certp = res.get("cert") or ""
+        ctx["names"] = res.get("names") or ctx["names"]
+    else:
+        report.append("записи и сертификат не тронуты: " +
+                      ("имена ведут сюда, сертификат свежий — выпускать нечего"
+                       if (ctx["dns"] or ctx["cert"]) else "галочки не стояли"))
+    for nm in ("dns", "cert"):
+        if nm == "dns":
+            if not ctx["dns"]:
+                st, det = "skipped", "галочка не стояла — записи не трогали"
+            elif write_dns:
+                st = "done" if dns else "auto"
+                det = ("выпущены" if dns else "дотянуты по дороге к развилке") + ": " + \
+                      ", ".join(str(v) for v in ctx["names"].values())
+            elif ctx["names_ok"]:
+                st, det = "skipped", "все имена уже ведут сюда — выпускать нечего"
+            else:
+                st, det = "skipped", "выпуск не запрошен; сюда ещё не ведут: " + \
+                                    ", ".join(str(x) for x in ctx["unresolved"])
+        else:
+            if not ctx["cert"]:
+                st, det = "skipped", "галочка не стояла — сертификат не трогали"
+            elif write_cert:
+                st = "done" if cert else "auto"
+                det = ("выпущен" if cert else "дотянут по дороге к развилке") + \
+                      (" — " + certp if certp else "")
+            else:
+                st, det = "skipped", "уже покрывает нужные имена и не скоро истекает: " \
+                                     "повторный выпуск пропущен (бережём лимиты выдачи " \
+                                     "сертификатов)"
+        steps.append(_setup_step(ctx, nm, st, det))
+
+    if not ctx["mux"]:
+        steps.append(_setup_step(ctx, "mux", "skipped",
+                                 "галочка не стояла — развилку не трогали"))
+    elif ctx["mux_ok"]:
+        steps.append(_setup_step(ctx, "mux", "skipped",
+                                 "все выбранные входы уже за :443 — применять нечего"))
+    else:
+        try:
+            pv = _mux_preview(None, None, ctx["sel"]) or {}
+        except Exception as e:
+            pv = {"can_apply": False, "blockers": [str(e)[:200]]}
+        blockers = [str(x) for x in (pv.get("blockers") or [])]
+        if not pv.get("can_apply"):
+            steps.append(_setup_step(ctx, "mux", "failed",
+                                     "нельзя применить: " + ("; ".join(blockers) or "неизвестно")))
+            _audit("setup_auto", base=ctx["base"], ok=False, err="preview")
+            return {"ok": False, "error": "развилка не применяется: " +
+                          ("; ".join(blockers) or "неизвестно"),
+                    "base": ctx["base"], "protos": ctx["sel"], "names": ctx["names"],
+                    "steps": steps, "report": report}
+        try:
+            ar = _mux_apply(confirm=True, protos=ctx["sel"]) or {}
+        except Exception as e:
+            steps.append(_setup_step(ctx, "mux", "failed",
+                                     "отказ применения: " + str(e)[:300]))
+            _audit("setup_auto", base=ctx["base"], ok=False, err=str(e)[:160])
+            return {"ok": False, "error": str(e), "base": ctx["base"], "protos": ctx["sel"],
+                    "names": ctx["names"], "steps": steps, "report": report}
+        report += [str(x) for x in (ar.get("report") or [])]
+        mv = ", ".join(str((x or {}).get("label") or (x or {}).get("proto"))
+                       for x in (ar.get("moved") or []) if isinstance(x, dict))
+        steps.append(_setup_step(ctx, "mux", "done",
+                                 "за общий :443 ведут: " + (mv or ", ".join(ctx["sel"]))))
+    ok = not any(s["state"] == "failed" for s in steps)
+    _audit("setup_auto", base=ctx["base"], ok=ok,
+           steps=",".join("%s:%s" % (s["name"], s["state"]) for s in steps))
+    out = {"ok": ok, "base": ctx["base"], "provider": ctx["provider"], "protos": ctx["sel"],
+           "names": ctx["names"], "steps": steps, "report": report,
+           "cert": certp, "mux_applied": ctx["moved"]}
+    if not ok:
+        out["error"] = "; ".join(str(s["detail"]) for s in steps if s["state"] == "failed")
+    return out
+
+
+def _setup_auto_plan(dns=False, cert=False, mux=False, protos=None, base=None, provider=None,
+                     confirm=False):
+    """Превью автонастройки: те же три шага и те же решения, что у `_setup_auto`, но без
+    единой записи. Показывает прогноз по словам, а не одну галку «готово», и называет
+    неразрешённое или занятое чужим имя."""
+    ctx, err = _setup_scan(dns=dns, cert=cert, mux=mux, protos=protos, base=base,
+                           provider=provider, landscape=True)
+    if ctx is None:
+        return {"ok": False, "error": err, "steps": [], "protos": _setup_sel_protos(protos)}
+    ctx["dns_wanted"], ctx["cert_wanted"], ctx["mux_wanted"] = dns, cert, mux
+    steps = []
+    for nm in ("dns", "cert", "mux"):
+        if nm == "dns":
+            if not ctx["dns"]:
+                st, det = "skipped", "галочка не стояла — записи не трогали"
+            elif ctx["names_ok"]:
+                st, det = "skipped", "все имена уже ведут сюда"
+            else:
+                st, det = "todo", "проверить и выпустить: " + ", ".join(
+                    str(r.get("final")) for r in ctx["rows"] if r.get("status") != "ours")
+        elif nm == "cert":
+            if not ctx["cert"]:
+                st, det = "skipped", "галочка не стояла — сертификат не трогали"
+            elif ctx["cert_ok"]:
+                st, det = "skipped", "уже покрывает нужные имена (бережём лимиты выдачи)"
+            else:
+                st, det = "todo", "выпустить на " + ", ".join(str(x) for x in ctx["want"])
+        else:
+            if not ctx["mux"]:
+                st, det = "skipped", "галочка не стояла — развилку не трогали"
+            elif ctx["mux_ok"]:
+                st, det = "skipped", "все выбранные входы уже за :443"
+            else:
+                st, det = "todo", "перевести на общий порт: " + ", ".join(ctx["sel"])
+        steps.append(_setup_step(ctx, nm, st, det))
+    pv, blockers = {}, []
+    if ctx["mux"]:
+        try:
+            pv = _mux_preview(None, None, ctx["sel"]) or {}
+        except Exception as e:
+            pv = {"can_apply": False, "blockers": [str(e)[:200]]}
+        blockers = [str(x) for x in (pv.get("blockers") or [])]
+    for r in (ctx["landscape"] or []):
+        if r.get("status") == "foreign":
+            blockers.append("имя занято чужим и не переименовалось: " + str(r.get("final")))
+    return {"ok": not blockers, "base": ctx["base"], "provider": ctx["provider"],
+            "protos": ctx["sel"], "names": ctx["names"], "names_detail": ctx["rows"],
+            "names_landscape": ctx["landscape"], "steps": steps,
+            "can_apply": bool(pv.get("can_apply", True)) and not blockers,
+            "blockers": blockers, "will_write": any(s["state"] == "todo" for s in steps),
+            "cert_ready": ctx["cert_ok"], "names_ready": ctx["names_ok"],
+            "mux_applied": ctx["moved"], "unresolved": ctx["unresolved"]}
+
 
 def _cert_maybe_renew():
     if not CFG_CACHE.get("cert_auto", True):
@@ -19129,6 +21510,21 @@ def _ddns_loop():
             _dynv6_update()
     except Exception as e:
         _DDNS.update(configured=bool(_dynv6_conf()["host"]), error=str(e))
+    # Выпущенные поддомены живут в той же зоне, но их никто не держал:
+    # потерянная запись молча уносила ссылки на базу. Держать их надо сразу,
+    # а не с первого тика — после перезапуска панель стояла бы без имён десять минут.
+    try:
+        _veil_names_guard()
+    except Exception as e:
+        _VEIL_GUARD["error"] = str(e)[:120]
+    # Источник настоящей TLS-формы живёт в telemt.toml, а теряет его любой, кто
+    # переложил файл целиком (снимок, переустановка пакета). Молчит эта потеря не
+    # в журнале панели, а в маске имени прокси: telemt начинает снимать форму сам
+    # с себя. Держать обязан не тот, кто потерял, — поэтому сверка тоже с первого прохода.
+    try:
+        _tg_mask_front_guard()
+    except Exception as e:
+        _MASK_FRONT_GUARD["error"] = str(e)[:120]
     last_day = ""
     while True:
         time.sleep(600)
@@ -19137,6 +21533,16 @@ def _ddns_loop():
                 _dynv6_update()
         except Exception as e:
             _DDNS["error"] = str(e)
+        # Выпущенные поддомены живут в той же зоне, но их никто не держал:
+        # потерянная запись молча уносила ссылки на базу.
+        try:
+            _veil_names_guard()
+        except Exception as e:
+            _VEIL_GUARD["error"] = str(e)[:120]
+        try:
+            _tg_mask_front_guard()
+        except Exception as e:
+            _MASK_FRONT_GUARD["error"] = str(e)[:120]
         day = datetime.date.today().isoformat()
         if day != last_day:
             last_day = day
@@ -19152,10 +21558,12 @@ def _limits_loop():
             # Сначала то, что state.json не трогает. Под замком их держать нельзя:
             # `_addr_watch_tick` ходит в DNS, `_synfix_tick` — в командную строку,
             # и «оператор нажал кнопку» превратилось бы в «ждёт, пока страховка
-            # сходит наружу».
+            # сходит наружу». `_tg_dc_loss_tick` мерит подъём к узлам Telegram:
+            # тоже наружу, тоже по несколько метров на адрес.
             for _fn, _tag in ((_bans_cleanup, "f2b"), (_ssh_sweep, "ssh-ban"),
                               (_synfix_tick, "synfix"),
-                              (_addr_watch_tick, "addr")):
+                              (_addr_watch_tick, "addr"),
+                              (_tg_dc_loss_tick, "dc-loss")):
                 try:
                     _fn()
                 except Exception as e:
@@ -19799,7 +22207,7 @@ _MV_PRIVATE = {"config.json", "state.json", "sessions.json", "sessions_meta.json
                "passkeys.json", "payments.json", "nodes.json", "hops.json", "bans.json",
                "sub_devices.json", "sub_prefs.json", "proto_activity.json", "bot_langs.json",
                "mux_state.json", "tg_mp_port.json", "mv_state.json", "github.token",
-               "FIRST-LOGIN.txt", "audit.json", "login_history.json"}
+               "FIRST-LOGIN.txt", "audit.json", "login_history.json", "tg_manual_links.json"}
 _MV_SINGLE = "/tmp/veil-mv.tar.gz"
 
 
@@ -22250,7 +24658,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         xprof = None
                 if use_sb:
-                    payload = json.dumps([sb_objs[k] for k in _ord if k in sb_objs],
+                    payload = json.dumps(_sb_stealth_sort([sb_objs[k] for k in _ord if k in sb_objs]),
                                          ensure_ascii=False).replace(r'\/', '/')
                     b = payload.encode("utf-8")
                     ctype = "application/json; charset=utf-8"
@@ -22261,11 +24669,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     # vless-ссылку такому ядру нельзя, поэтому в подписку INCY
                     # plaintext-VLESS ноды не попадают: за WebSocket берёт
                     # соседняя нода «VLESS + WebSocket + TLS» (тот же uuid).
-                    payload = "\n".join(list(tg_links) + [
-                                        inc_links[k] for k in _ord
-                                        if k in inc_links and not (
-                                            inc_links[k].startswith("vless://") and
-                                            "security=none" in inc_links[k])])
+                    _nodes = [inc_links[k] for k in _ord
+                              if k in inc_links and not (
+                                  inc_links[k].startswith("vless://") and
+                                  "security=none" in inc_links[k])]
+                    payload = "\n".join(_sub_stealth_sort(list(tg_links) + _nodes))
                     if xprof:
                         # Incy понимает routing-профиль только диплинк-формой
                         # incy://routing/onadd/{b64} (схема обязательна, как happ:// у
@@ -22287,9 +24695,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     links = links + list(node_links.values()) + tg_links
                     # Однострочные ссылки сначала, многострочные WG/AmneziaWG-блоки в конец:
                     # парсеры, спотыкающиеся о [Interface], всё равно импортируют остальное.
-                    one = [l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "tg://"))]
-                    if len(one) < len(links):
-                        links = one + [l for l in links if l not in one]
+                    # Внутри однострочной части — от незаметных к заметным (#167): клиент
+                    # видит сверху то, что с обычного HTTPS не отличить.
+                    one = _sub_stealth_sort([l for l in links if l.startswith(("vless://", "vmess://", "trojan://", "ss://", "hy2://", "tg://"))])
+                    links = one + [l for l in links if l not in one]
                     # Happ (Xray-ядро) понимает профиль маршрутизации, приложенный
                     # к подписке строкой happ://routing/onadd/{base64} — тогда
                     # обход РФ включается сам, без «полного конфига» (который Happ
@@ -22913,7 +25322,7 @@ class H(http.server.BaseHTTPRequestHandler):
             # а публика страницы подписки (она вообще без авторизации) успевала
             # сохраниться СРАЗУ после того, как морда добавила подписчика, — и
             # новый клиент исчезал из файла, живя в xray дальше.
-            stamp = time.strftime("%Y%m%d-%H%M")
+            stamp = _ldate("%Y%m%d-%H%M")
             if fmt == "links":
                 b = _subs_export_links(st).encode("utf-8")
                 ctype, fname = "text/plain; charset=utf-8", "veil-subs-" + stamp + ".txt"
@@ -23018,7 +25427,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"host": conf["host"], "configured": bool(conf["host"] and conf["token"]),
                                     "updated": _DDNS.get("updated"), "error": _DDNS.get("error"),
                                     "response": _DDNS.get("response"), "ipv4": _DDNS.get("ipv4"),
-                                    "ipv6": _DDNS.get("ipv6")})
+                                    "ipv6": _DDNS.get("ipv6"), "veil": dict(_VEIL_GUARD)})
         if p == "/api/cert/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _cert_status())
@@ -23169,6 +25578,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             st = _load(STATE, {}) or {}
+            sfp = _synfix_ports()
             sni = ""
             sni_list = []
             ports = []
@@ -23202,6 +25612,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, out)
         if p == "/api/network/settings":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            sfp = _synfix_ports()
             return self._send(200, {
                 "ru_bypass": bool(CFG_CACHE.get("ru_bypass")),
                 "bind": CFG_CACHE.get("panel_bind", ""),
@@ -23216,7 +25627,15 @@ class H(http.server.BaseHTTPRequestHandler):
                 "f2b_ssh_ignore": CFG_CACHE.get("f2b_ssh_ignore", ""),
                 "ssh_ban_live": dict(_SSH_STAT, users=len(_SSH_STAT.get("users") or {})),
                 "synfix_enabled": bool(CFG_CACHE.get("synfix_enabled", True)),
-                "synfix_port_live": _synfix_live()[0],
+                # #170: портов стало несколько. `synfix_port_live` оставлено одиночным
+                # числом — старые читатели (диагностика, морда до #170) не должны начать
+                # печатать список вместо порта; полный набор — в `synfix_ports_*`.
+                "synfix_port_live": (_synfix_live()[0] or (0,))[0],
+                "synfix_ports_live": list(_synfix_live()[0]),
+                "synfix_ports_auto": sfp["auto"],
+                "synfix_ports_extra": sfp["extra"],
+                "synfix_ports": ", ".join(str(x) for x in sfp["extra"]),
+                "synfix_ports_want": sfp["want"],
                 "metrics_token": CFG_CACHE.get("metrics_token", ""),
                 "split_tunnel": CFG_CACHE.get("split_tunnel", "off"),
                 "ui_style": (CFG_CACHE.get("ui_style") or "new").strip().lower(),
@@ -23365,12 +25784,33 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/webmux/preview":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(200, _mux_preview((q.get("vpn_domain") or [""])[0] or None))
+            _pr = (q.get("protos") or [""])[0]
+            protos = [x.strip() for x in _pr.split(",") if x.strip()] or None
+            tg = (q.get("tg_domain") or [""])[0] or None
+            _mp = (q.get("mp") or [""])[0].strip().lower()
+            return self._send(200, _mux_preview((q.get("vpn_domain") or [""])[0] or None, tg, protos,
+                                                mp_domain=(q.get("mp_domain") or [""])[0] or None,
+                                                mp=(None if _mp in ("", "auto")
+                                                    else _mp in ("1", "true", "on", "yes"))))
         if p == "/api/veil/names":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             prov = (q.get("provider") or [""])[0] or None
-            return self._send(200, _veil_name_plan((q.get("base") or [""])[0] or None, prov))
+            _lb = (q.get("labels") or [""])[0]
+            labels = [x.strip() for x in _lb.split(",") if x.strip()] or None
+            return self._send(200, _veil_name_plan((q.get("base") or [""])[0] or None, prov, labels))
+        if p == "/api/setup/plan":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            _off = ("0", "false", "no", "")
+            _dn = (q.get("dns") or ["1"])[0].strip().lower() not in _off
+            _ct = (q.get("cert") or ["1"])[0].strip().lower() not in _off
+            _mx = (q.get("mux") or ["1"])[0].strip().lower() not in _off
+            _pl = (q.get("protos") or [""])[0]
+            protos = [x.strip() for x in _pl.split(",") if x.strip()] or None
+            return self._send(200, _setup_auto_plan(dns=_dn, cert=_ct, mux=_mx, protos=protos,
+                                                    base=(q.get("base") or [""])[0] or None,
+                                                    provider=(q.get("provider") or [""])[0] or None))
         if p == "/api/tg/mtproto/preview":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_mp_preview())
@@ -25501,24 +27941,42 @@ class H(http.server.BaseHTTPRequestHandler):
             if p == "/api/webmux/apply":
                 try:
                     b = self._body() or {}
+                    protos = [str(x).strip() for x in (b.get("protos") or []) if str(x or "").strip()] or None
                     return self._send(200, _mux_apply(b.get("vpn_domain"),
                                                       tg_domain=b.get("tg_domain"),
                                                       confirm=bool(b.get("confirm")),
-                                                      force=bool(b.get("force"))))
+                                                      force=bool(b.get("force")),
+                                                      protos=protos,
+                                                      mp_domain=b.get("mp_domain"),
+                                                      mp=b.get("mp")))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/veil/ensure":
                 try:
                     b = self._body() or {}
+                    labels = [str(x).strip().lower() for x in (b.get("labels") or []) if str(x or "").strip()] or None
                     return self._send(200, _veil_ensure(b.get("names"), b.get("provider"),
                                                        bool(b.get("issue_cert", True)),
-                                                       bool(b.get("confirm")), b.get("base")))
+                                                       bool(b.get("confirm")), b.get("base"), labels))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/webmux/revert":
                 try:
                     b = self._body() or {}
                     return self._send(200, _mux_revert(bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/setup/auto":
+                try:
+                    b = self._body() or {}
+                    protos = [str(x).strip().lower() for x in (b.get("protos") or [])
+                              if str(x or "").strip()] or None
+                    return self._send(200, _setup_auto(dns=bool(b.get("dns")),
+                                                       cert=bool(b.get("cert")),
+                                                       mux=bool(b.get("mux")), protos=protos,
+                                                       base=b.get("base"),
+                                                       provider=b.get("provider"),
+                                                       confirm=bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/tg/mtproto/apply":
@@ -26141,6 +28599,19 @@ class H(http.server.BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._send(500, {"error": "synfix: " + str(e)})
                     f2b_changed = True
+                if "synfix_ports" in body:
+                    # #170 (слово хозяина): порты можно добавлять. Ручной список — только
+                    # добавка к авто: живые входы прокси панель берёт сама и держать их
+                    # руками смысла нет (порт уедет — список протухнет).
+                    got, errp = _synfix_ports_accept(body.get("synfix_ports"))
+                    if errp:
+                        return self._send(400, {"error": errp})
+                    CFG_CACHE["synfix_ports"] = list(got)
+                    try:
+                        _synfix_apply()
+                    except Exception as e:
+                        return self._send(500, {"error": "synfix: " + str(e)})
+                    f2b_changed = True
                 if "metrics_token" in body:
                     mt = (body["metrics_token"] or "").strip()
                     if mt and not re.fullmatch(_CRED_SHAPE, mt):
@@ -26292,6 +28763,21 @@ class H(http.server.BaseHTTPRequestHandler):
                     res = _tg_rotate_secret(b.get("username", ""), b.get("secret", ""))
                     _audit("tg_rotate", username=res["username"])
                     return self._send(200, {"ok": True, "user": res})
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/manual/preview":
+                b = self._body()
+                try:
+                    return self._send(200, _tg_manual_preview(b.get("link", ""),
+                                                              b.get("username", "")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/tg/manual/apply":
+                b = self._body()
+                try:
+                    return self._send(200, _tg_manual_apply(b.get("link", ""),
+                                                            b.get("username", ""),
+                                                            bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/subscription/settings":
