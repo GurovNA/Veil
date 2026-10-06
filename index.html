@@ -374,7 +374,7 @@ body.ui-new .mstat{max-width:none}
 body.ui-new .dash-top{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:16px;margin-bottom:16px}
 body.ui-new .dash-mid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:16px;align-items:stretch}
 body.ui-new .dash-bot{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:16px;align-items:stretch}
-body.ui-new .dash-top>.card,body.ui-new .dash-mid>.card,body.ui-new .dash-bot>.card{margin-bottom:0}
+body.ui-new .dash-top>.card,body.ui-new .dash-mid>.card,body.ui-new .dash-bot>.card{margin-bottom:0;min-width:0}
 body.ui-new .dash-status{display:flex;align-items:center;gap:14px}
 body.ui-new .dash-status.on{border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
 body.ui-new .dash-status.bad{border-color:color-mix(in srgb,var(--err) 45%,transparent)}
@@ -765,6 +765,27 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </p>
     </div>
 
+    <div class="card" id=autoSetupCard>
+      <h2>⚡ Автонастройка <span class=mut style="font-weight:400;font-size:12px">(отметь галочками — панель пройдёт по порядку)</span></h2>
+      <p class=mut>Три шага по порядку: DNS-записи поддоменов, единый сертификат на все имена, развилка на общий порт 443. Готовое панель пропускает, недостающее дотягивает сама — без свежего сертификата развилка не работает, поэтому сертификат будет выпущен, даже если галочку «сертификат» не ставили.</p>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем порядок.</b> Имя домена должно вести на этот сервер, прежде чем на него выпустят сертификат; сертификат должен покрывать имя, прежде чем развилка начнёт по нему разводить соединения. Пропустить ступеньку нельзя — панель сама подставит недостающую.</p>
+        <p><b>Про бережливость.</b> У выпуска сертификатов есть суточные лимиты, а у живой связки подписчиков — привычка. Поэтому всё, что уже готово, не переделывается: шаг будет помечен как пропущенный, а не сделанный заново.</p>
+        <p><b>Про откат.</b> Выпущенные записи и сертификат панель <b>не отзывает</b>: их снимают вручную у провайдера имён. Развилку откатывает кнопка «⟲ Откатить мюкс» во вкладке «Сайт», а проваленное применение откатывает её само.</p>
+      </div></details>
+      <div class="row" style="gap:14px;flex-wrap:wrap;margin:10px 0">
+        <label class=mut style="font-size:13px"><input type=checkbox id=audns checked> поддомены (имена <code>vpn.</code> и <code>tg.</code> + выбранные входы)</label>
+        <label class=mut style="font-size:13px"><input type=checkbox id=aucert checked> сертификат на все имена</label>
+        <label class=mut style="font-size:13px"><input type=checkbox id=aumux checked> развилка на общий :443</label>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="tiny sec" onclick=setupPlan()>🔍 План (ничего не меняет)</button>
+        <button class=sec onclick=setupAuto()>▶ Настроить</button>
+      </div>
+      <div id=setupPlanBox class=mut style="font-size:13px;line-height:1.6;margin-top:8px"></div>
+      <div class=msg id=setupMsg></div>
+    </div>
+
     <div class="mini-stats">
       <div class="mstat m-up">
         <div class="m-ico">🚀</div>
@@ -1006,6 +1027,65 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div id=tgMpStatus class="msg" style="margin:6px 0"></div>
     <div id=tgMpFix></div>
     <div id=tgMainCard style="display:none;margin:12px 0;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ok,#2ea043) 55%,transparent);border-radius:12px;background:color-mix(in srgb,var(--ok,#2ea043) 8%,transparent)"></div>
+    <div id=mp443Card style="margin:12px 0;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0">
+        <b>🟣 MTProto-прокси на :443</b>
+        <span class=mut id=mp443Badge style="font-size:12px">—</span>
+        <button class="tiny sec" onclick=loadMp443()>⟳ Обновить состояние</button>
+      </div>
+      <details class=expl style="margin-top:6px"><summary>Объяснить простым языком</summary><div>
+        <p><b>Что это?</b> Обычный MTProto-прокси слышен на своём порту (например <code>:7443</code>) — такой порт реже, но всё- видно. Эта настройка ставит его на <b>тот же :443</b>, что и веб-прокси: наружу это выглядит как обычный HTTPS.</p>
+        <p><b>Почему нужен отдельный поддомен?</b> Развилка по SNI кладёт ОДНО имя ровно на ОДНУ дорожку. Значит у веб-прокси (<code>твойдомен</code>), у сайт-маски (<code>tg.…</code>) и у MTProto-прокси (<code>mp.…</code>) должны быть РАЗНЫЕ имена. Двум прокси на :443 называться одинаково нельзя — панель не даст.</p>
+        <p><b>Что ещё делает панель?</b> Выпускает имя <code>mp.&lt;база&gt;</code> и DNS-запись к нему, добавляет его в список имён рабочего сертификата, поднимает для него <b>свою</b> заглушку-сайт на внутреннем порту и переключает прокси прятаться за неё. Настоящую «форму» ответа прокси панель берёт с локального фронта, а не с публичного :443: на коробке с включённым мюксом иначе прокси снимал бы форму сам с себя.</p>
+        <p><b>Ссылки.</b> Когда маршрут включён, карточки клиентов и подписки зовут на <code>mp.&lt;база&gt;:443</code>, а «Главная ссылка Telegram» на этой странице становится именно этой ссылкой — отдельно переключать её не надо. Имя прокси и сертификат к нему панель выпустит сама при применении, кнопки «Выпустить» отдельно не требуется. Снятая галочка возвращает всё назад: прежний порт, прежний фасад, прежняя форма — ссылки, розданные ранее, не отваливаются.</p>
+        <p><b>Почему на рабочем компьютере MTProto на :443 может молчать, а на отдельном порту работать?</b> Секрет такого прокси спрятан не в сессии, а в самом первом рукопожатии: прокси подглядывает в него, сам его не завершая. Антивирус или корпоративная защита, которые расшифровывают HTTPS, разбирают это рукопожатие и собирают своё — секрет не доезжает, и сервер вежливо отдаёт страницу-заглушку вместо прокси. Проверить просто: открыть в браузере той же сети адрес прокси и посмотреть, кто выдал сертификат. Если вместо Let's Encrypt стоит эмитент антивируса — расшифровка есть, и на :443 такой прокси работать не будет ни одной настройкой сервера. Этому компьютеру нужен вход на отдельном порту: он живёт рядом и включается снятием этой галочки, а ссылки, розданные ранее, продолжают работать.</p>
+      </div></details>
+      <div id=mp443Box class=mut style="margin-top:8px;font-size:13px;line-height:1.6"></div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <label class=fldlbl style="margin:0"><input type=checkbox id=mpOn443 onchange=mp443Preview()> вести MTProto на общий :443</label>
+        <input id=mpDomain placeholder="имя прокси, напр. mp.example.com" style="max-width:280px" autocomplete=off>
+        <button class="tiny sec" onclick=mp443Preview()>🔍 Предпросмотр</button>
+        <button class="tiny sec" onclick=mp443Issue()>🌐 Выпустить имя и сертификат</button>
+        <button class="tiny" onclick=mp443Apply()>▶ Применить</button>
+      </div>
+      <div id=mp443Prev class=mut style="margin-top:8px;font-size:13px;line-height:1.6"></div>
+      <div class=msg id=mp443Msg></div>
+      <div style="margin:14px 0 4px;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
+        <div class=row style="align-items:center;gap:8px;flex-wrap:wrap"><b>🏠 Сайт-маска (свой фронт TLS-F)</b><span class=mut id=frontBadge style="font-size:12px">—</span></div>
+        <p class=mut style="font-size:12.5px;margin:6px 0 8px;line-height:1.6">Прячет прокси за <b>твоим же</b> доменом с настоящим сертификатом Let's Encrypt, вместо чужого <code>www.microsoft.com</code>. Так сложнее отличить прокси от обычного сайта, и не грузить чужие CDN.</p>
+        <details class=expl style="margin:0 0 8px"><summary>Объяснить простым языком</summary><div>
+          <p><b>Зачем?</b> MTProto-прокси прикидывается обычным HTTPS-сайтом: при первом рукопожатии он «шепчет» имя домена (SNI) и показывает его сертификат. По умолчанию он притворяется <code>www.microsoft.com</code> — доменом Microsoft. Это работает, но Microsoft не наш сервер: проверка может сравнить «отпечаток» и заметить подмену, а ещё мы дёргаем чужие дата-центры.</p>
+          <p><b>Что делает эта кнопка?</b> Панель берёт твой домен (из Cloudflare-зоны), выпускает на него настоящий сертификат Let's Encrypt, поднимает на :443 безобидную заглушку-сайт и настраивает прокси прятаться за ним. Снаружи видно: «кто-то просто ходит на твой же сайт по HTTPS» — обычно и скучно.</p>
+          <p><b>Что нужно заранее?</b> Cloudflare-токен (Zone → DNS:Edit) и чтобы зона была подключена во вкладке «Сайт». Домен фронта обязан быть в этой зоне — тогда панель сама заведёт A/AAAA-записи и выпустит сертификат без свободного порта 80.</p>
+          <p><b>А старые клиенты отвалятся?</b> Нет. Прежний фронт остаётся в списке <code>tls_domains</code>, поэтому уже розданные <code>tg://</code>-ссылки продолжают работать. Новые подписки уже несут новый фронт — так можно тихо переводить людей: кто обновился — тот перешёл, кто нет — сидит как сидел.</p>
+          <p><b>Как пользоваться?</b></p>
+          <ol>
+            <li>Впиши поддомен, например <code>webproxy.твойдомен.рф</code>, и нажми <b>«Настроить сайт-маску»</b>.</li>
+            <li>Панель сама: создаст DNS-записи → выпустит сертификат → поднимет заглушку → переключит прокси → обновит ссылки.</li>
+            <li>Готово: старые ссылки клиентов продолжают работать, а свежие выдачи подписок (/p, /sub, карточки клиентов) уже несут новый фронт — перевода руками не требуется.</li>
+          </ol>
+          <p><b>Не путать имя прокси и имя маски.</b> Когда MTProto ведётся на :443, у него своё имя <code>mp.&lt;база&gt;</code> — по нему клиенты доходят до прокси. Сайт-маска — это то, за что прокси прячется (фронт). Если маска и прокси называются одинаково, развилка не сможет различить два разных направления, а ссылка соврёт: панель этого не допустит.</p>
+        </div></details>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <input id=frontDomain placeholder="напр. webproxy.example.com" style="max-width:280px" autocomplete=off>
+          <button class="tiny sec" id=frontApplyBtn onclick=applyFront()>Настроить сайт-маску</button>
+          <button class="tiny sec" onclick=provisionFrontTg()>🌐 Выпустить tg и сертификат</button>
+          <button class="tiny sec" onclick=loadFront()>⟳ Статус</button>
+        </div>
+        <div class=msg id=frontMsg></div>
+      </div>
+      <details class=expl style="margin:14px 0 0"><summary>🎯 Вручную: SNI-домены прокси (эксперт)</summary><div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 4px">
+        <b>Маскировка прокси (SNI)</b>
+        <input id=tgSniMain placeholder="домен, напр. my.aeza.ru" style="max-width:260px">
+        <button class="tiny sec" onclick=saveTgSni()>Применить</button>
+        <span class=mut id=tgSniPq style="font-size:12px"></span>
+      </div>
+      <textarea id=tgSniExtra rows=2 placeholder="дополнительные домены, по одному в строку" style="width:100%"></textarea>
+      <p class=mut style="font-size:12px;margin:6px 0 0">Обычно здесь ничего менять не нужно: после «Настроить сайт-маску» панель сама держит твой домен в <code>censorship.tls_domain</code> (а старые домены остаются в <code>tls_domains</code>, чтобы выданные ссылки не отвалились). Ручная смена домена ломает ранее выданные ссылки — клиентам надо выдать новые. Значение пишется в <code>censorship.tls_domain</code> / <code>tls_domains</code> telemt (hot-reload).</p>
+      <div class=msg id=tgSniMsg></div>
+      </div></details>
+    </div>
     <div id=mpStCard style="margin:10px 0;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent);display:none">
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0">
         <b>🧪 Самопроверка «MTProto под VPN»</b>
@@ -1074,6 +1154,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div class=row><b>Смена секрета</b><button class=tiny onclick=hideTgEdit()>Отмена</button></div>
       <p class=mut style="font-size:12px;margin:4px 0 8px">Секрет меняется, старая ссылка перестает работать — нужно выдать клиенту новую (и MTProto, и веб-прокси).</p>
       <input id=tgRotName readonly style="margin-bottom:8px">
+      <p class=mut style="font-size:12px;margin:0 0 6px">Оставь пустым — панель придумает новый секрет сама. Если вписываешь свой: ровно 32 hex-символа, это тот самый секрет, который клиент вводит при ручном подключении прокси. Целиком ссылку сюда не нужно — для готовой ссылки есть блок «Настроить по своей ссылке».</p>
       <input id=tgRotVal placeholder="новый секрет, 32 hex (или пусто — сгенерировать)" maxlength=32 spellcheck=false>
       <button onclick=doTgRotate()>Сменить секрет</button>
       <div class=msg id=tgRotMsg></div>
@@ -1081,8 +1162,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=tgMsg></div>
     <hr>
-    <div class=row style="margin-top:12px"><h3 style=margin:0>Веб-прокси (https:// → :443)</h3><span class=mut id=webStatus>—</span></div>
-    <p class=mut style="margin:0 0 10px">Альтернативный доступ к Telegram на ПК (Desktop) и Android через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
+    <div id=web443Card style="margin:12px 0;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0">
+        <b>🌐 Веб-прокси на :443</b>
+        <span class=mut id=webStatus style="font-size:12px">—</span>
+      </div>
+    <p class=mut style="margin:8px 0 10px">Альтернативный доступ к Telegram на ПК (Desktop) и Android через обычный HTTPS 443 (nginx TLS → telemt web). Ссылка вида <code>tg://webproxy?server=…&amp;secret=dd…</code>.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
       <p><b>Зачем это нужно?</b> Обычный MTProto-прокси иногда блокируют, потому что он «говорит» на нестандартном языке. Веб-прокси притворяется обычным сайтом: трафик идёт по HTTPS на порту 443 — тому самому, по которому работает весь интернет. Отличить его от посещения сайта почти невозможно.</p>
       <p><b>Минус:</b> такой прокси понимают не все клиенты Telegram — официально он поддерживается в приложениях для ПК (Telegram Desktop) и Android, а для iOS релиза с веб-прокси пока нет; и ему нужен рабочий nginx с сертификатом на 443.</p>
@@ -1111,40 +1196,56 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=wpMsg></div>
     <div class=msg id=webMsg></div>
-    <div style="margin:14px 0 4px;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
-      <div class=row style="align-items:center;gap:8px;flex-wrap:wrap"><b>🏠 Сайт-маска (свой фронт TLS-F)</b><span class=mut id=frontBadge style="font-size:12px">—</span></div>
-      <p class=mut style="font-size:12.5px;margin:6px 0 8px;line-height:1.6">Прячет прокси за <b>твоим же</b> доменом с настоящим сертификатом Let's Encrypt, вместо чужого <code>www.microsoft.com</code>. Так сложнее отличить прокси от обычного сайта, и не грузить чужие CDN.</p>
-      <details class=expl style="margin:0 0 8px"><summary>Объяснить простым языком</summary><div>
-        <p><b>Зачем?</b> MTProto-прокси прикидывается обычным HTTPS-сайтом: при первом рукопожатии он «шепчет» имя домена (SNI) и показывает его сертификат. По умолчанию он притворяется <code>www.microsoft.com</code> — доменом Microsoft. Это работает, но Microsoft не наш сервер: проверка может сравнить «отпечаток» и заметить подмену, а ещё мы дёргаем чужие дата-центры.</p>
-        <p><b>Что делает эта кнопка?</b> Панель берёт твой домен (из Cloudflare-зоны), выпускает на него настоящий сертификат Let's Encrypt, поднимает на :443 безобидную заглушку-сайт и настраивает прокси прятаться за ним. Снаружи видно: «кто-то просто ходит на твой же сайт по HTTPS» — обычно и скучно.</p>
-        <p><b>Что нужно заранее?</b> Cloudflare-токен (Zone → DNS:Edit) и чтобы зона была подключена во вкладке «Сайт». Домен фронта обязан быть в этой зоне — тогда панель сама заведёт A/AAAA-записи и выпустит сертификат без свободного порта 80.</p>
-        <p><b>А старые клиенты отвалятся?</b> Нет. Прежний фронт остаётся в списке <code>tls_domains</code>, поэтому уже розданные <code>tg://</code>-ссылки продолжают работать. Новые подписки уже несут новый фронт — так можно тихо переводить людей: кто обновился — тот перешёл, кто нет — сидит как сидел.</p>
-        <p><b>Как пользоваться?</b></p>
-        <ol>
-          <li>Впиши поддомен, например <code>webproxy.твойдомен.рф</code>, и нажми <b>«Настроить сайт-маску»</b>.</li>
-          <li>Панель сама: создаст DNS-записи → выпустит сертификат → поднимет заглушку → переключит прокси → обновит ссылки.</li>
-          <li>Готово: старые ссылки клиентов продолжают работать, а свежие выдачи подписок (/p, /sub, карточки клиентов) уже несут новый фронт — перевода руками не требуется.</li>
-        </ol>
-      </div></details>
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-        <input id=frontDomain placeholder="напр. webproxy.example.com" style="max-width:280px" autocomplete=off>
-        <button class="tiny sec" id=frontApplyBtn onclick=applyFront()>Настроить сайт-маску</button>
-        <button class="tiny sec" onclick=provisionFrontTg()>🌐 Выпустить tg и сертификат</button>
-        <button class="tiny sec" onclick=loadFront()>⟳ Статус</button>
+    </div>
+    <div id=tgManualCard style="margin:12px 0;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0">
+        <b>🔗 Настроить по своей ссылке</b>
+        <span class=mut style="font-size:12px">под уже розданную tg://-ссылку</span>
       </div>
-      <div class=msg id=frontMsg></div>
+      <details class=expl style="margin-top:6px"><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем?</b> По рукам уже ходит ссылка <code>tg://proxy?server=…</code> — например, с прошлого сервера. Панель подстроит прокси под неё, и клиентам не придётся менять ссылку: они просто продолжат работать здесь.</p>
+        <p><b>Что читается из ссылки?</b> Адрес, порт и секрет. Внутри секрета зашит ещё и фронт (сайт, за которым прячется прокси), поэтому одной вставленной ссылки достаточно — панель узнаёт из неё всё нужное.</p>
+        <p><b>А если бот дал только ключ?</b> Бот выдаёт секрет голыми 32 <code>hex</code>-символами — без <code>ee</code> и без имени фронта, и по такой ссылке клиент идёт на порт прямым протоколом, а там у нас фасад, поэтому рукопожатие не складывается. Вставьте сюда хоть весь текст бота, хоть одни <code>hex</code>: панель сама достроит <code>ee</code> и имя фронта — свой публичный адрес и порт, если в ссылке их нет. Спонсорский канал на ссылку не влияет, он ставится кнопкой «Рекламный канал» у клиента.</p>
+        <p><b>Чем отличается от «＋ Клиент MTProto»?</b> Там панель выпускает <i>новую</i> ссылку. Тут ссылка уже выпущена раньше, и задача — сделать рабочей именно её.</p>
+        <p><b>Это безопасно?</b> Ничего не переносится и не удаляется: панель добавит клиента (или привяжет ключ к выбранному), допишет фронт в список и слушателя на порт из ссылки. Перед применением покажет список действий и спросит подтверждение.</p>
+      </div></details>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <input id=tgManualLink placeholder="ссылка tg://proxy целиком — или только секрет-hex из бота" style="flex:1;min-width:260px">
+        <input id=tgManualName placeholder="клиент (необязательно)" style="width:190px">
+        <button class="tiny sec" onclick=tgManualCheck()>Проверить</button>
+        <button class="tiny" onclick=tgManualApply()>Настроить</button>
+      </div>
+      <div id=tgManualPrev class=mut style="margin-top:8px;font-size:13px"></div>
+      <div class=msg id=tgManualMsg></div>
+      <div id=tgManualList style="margin-top:8px"></div>
     </div>
-    <details class=expl style="margin:14px 0 0"><summary>🎯 Вручную: SNI-домены прокси (эксперт)</summary><div>
-    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 4px">
-      <b>Маскировка прокси (SNI)</b>
-      <input id=tgSniMain placeholder="домен, напр. my.aeza.ru" style="max-width:260px">
-      <button class="tiny sec" onclick=saveTgSni()>Применить</button>
-      <span class=mut id=tgSniPq style="font-size:12px"></span>
+    <div id=manCard style="margin:12px 0;padding:10px 12px;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 40%,transparent)">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0">
+        <b>🛠 Ручная настройка: маска, секрет, порт</b>
+        <span class=mut style="font-size:12px">собрать ссылку с нуля</span>
+      </div>
+      <details class=expl style="margin-top:6px"><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем?</b> Здесь панель сама собирает <i>новую</i> ссылку по вашим частям: своя сайт-маска (фронт), свой или сгенерированный секрет и выбранный порт. Подходит, когда фронт уже живёт на этом сервере, но ссылку хочется задать вручную — например, сохранить старый порт.</p>
+        <p><b>Как устроен секрет?</b> Клиенту нужен не только ключ (32 hex-символа), но и имя фронта — он зашит в секрет следом. Поэтому «ee» + ключ + фронт в hex — это одна строка, и панель склеивает её сама: ошибиться в длине hex не получится.</p>
+        <p><b>Что панель сделает?</b> Тем же движком, что и «по ссылке»: добавит клиента с этим ключом (или привяжет ключ к уже заведённому), допишет фронт в список и откроет слушателя на выбранном порту. Сначала — предпросмотр и подтверждение.</p>
+      </div></details>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <input id=manServer placeholder="адрес сервера (по умолчанию этот)" style="flex:1;min-width:200px">
+        <input id=manFront placeholder="сайт-маска, напр. cdn.example.com" style="flex:1;min-width:200px">
+        <input id=manPort type=number min=1 max=65535 placeholder="порт (напр. 443)" style="width:120px">
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <input id=manKey placeholder="секрет: 32 hex (или пусто — сгенерировать)" maxlength=32 spellcheck=false style="flex:1;min-width:260px">
+        <button class="tiny sec" onclick=genManKey()>🎲 Секрет</button>
+        <input id=manName placeholder="клиент (необязательно)" style="width:190px">
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="tiny sec" onclick=manCheck()>Проверить</button>
+        <button class="tiny" onclick=manApply()>Настроить</button>
+      </div>
+      <div id=manPrev class=mut style="margin-top:8px;font-size:13px"></div>
+      <div class=msg id=manMsg></div>
     </div>
-    <textarea id=tgSniExtra rows=2 placeholder="дополнительные домены, по одному в строку" style="width:100%"></textarea>
-    <p class=mut style="font-size:12px;margin:6px 0 0">Обычно здесь ничего менять не нужно: после «Настроить сайт-маску» панель сама держит твой домен в <code>censorship.tls_domain</code> (а старые домены остаются в <code>tls_domains</code>, чтобы выданные ссылки не отвалились). Ручная смена домена ломает ранее выданные ссылки — клиентам надо выдать новые. Значение пишется в <code>censorship.tls_domain</code> / <code>tls_domains</code> telemt (hot-reload).</p>
-    <div class=msg id=tgSniMsg></div>
-    </div></details>
     <hr>
     <h3 style="margin:0 0 8px">Telemt: обновление и откат</h3>
     <p class=mut style="margin:0 0 10px">Проверка новой версии прокси-движка telemt и откат на прошлую. Текущий бинарь перед сменой сохраняется.</p>
@@ -1292,6 +1393,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
     <p class=mut style="margin:0 0 10px">Реальный сертификат для домена. Панель сама выберет способ: если порт 80 свободен — HTTP-01; если занят — DNS-01 через Cloudflare (нужен API-токен Zone→DNS:Edit во вкладке «Настройки»/DDNS). dynv6 DNS-01 не поддерживает — при занятом :80 освободите порт или настройте Cloudflare. Сертификат автоматически подключается к TLS-протоколам (ws/grpc/xhttp). Автопродление раз в сутки (для DNS-01 работает и при занятом :80).</p>
     <div class=mut>Статус: <b id=certStatus>—</b></div>
+    <div class=mut id=certSan style="margin-top:4px"></div>
     <label class=mut style="display:block;margin-top:8px">Email для Let&rsquo;s Encrypt (уведомления об истечении, необязательно):
       <input id=certEmail type=email maxlength=120 style="margin-top:4px" placeholder="you@example.com"></label>
     <label class=mut style="display:block;margin-top:8px"><input id=certAuto type=checkbox> Автопродление за 30 дней до истечения</label>
@@ -1316,6 +1418,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <p><b>Зачем это продвинутым?</b> Порт 443 — «золотой»: это порт обычного HTTPS, открыт почти везде. Но по умолчанию он один, и заняв его VPN-протоколом, туда уже ничего не поставить. SNI-мюкс — умная развилка: по имени домена, которое клиент шепчет в начале handshake (SNI), nginx понимает, куда отправить соединение — на веб-фронт, на прокси или на VPN. Несколько сервисов на одном 443.</p>
       <p><b>Новичку:</b> это не обязательная и довольно тонкая настройка. Если всё работает на разных портах — можешь пропустить. Reality (твой основной защищённый протокол) тут не участвует и останется на своём порту.</p>
       <p><b>Кнопка «Предпросмотр»</b> ничего не меняет — просто показывает, что произойдёт. Жми её смело. «Применить» уже правит nginx и xray (с бэкапом и авто-откатом, если конфиг не пройдёт проверку).</p>
+      <p><b>Галочки.</b> После предпросмотра появляется список протоколов: отметь те, что должны встать за общий 443. У каждого своё имя-поддомен и свой внутренний порт. Снятая галочка возвращает вход на прежний порт, а выпущенное имя и сертификат остаются — галочкой назад можно встать в любой момент.</p>
     </div></details>
     <div style="margin-bottom:10px"><button class="tiny sec" onclick=loadWebmux()>&#x27F3; Обновить диагностику</button></div>
     <div id=webmuxBox class=mut style="font-size:13px;line-height:1.6"></div>
@@ -1331,6 +1434,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         </select>
         <button class="tiny sec" onclick=muxPreview()>🔍 Предпросмотр (без изменений)</button>
       </div>
+      <div id=muxProtoBox class=mut style="font-size:13px;line-height:1.7;margin:0 0 6px"><span class=mut style="font-size:12px">Список входов с галочками появится после «Предпросмотра» — им и задаётся, что встанет за общий порт.</span></div>
       <div id=muxPreviewBox class=mut style="font-size:13px;line-height:1.6;margin-bottom:8px"></div>
       <p class=mut style="font-size:12px;margin:0 0 8px;color:var(--warn)">⚠ Применение меняет <code>/etc/nginx/nginx.conf</code> и конфиг xray: веб-фронт переводится на внутренний порт, cert-TLS inbound — на loopback, на :443 поднимается nginx-stream. Делаются бэкапы, <code>nginx -t</code> и авто-откат при ошибке. Кнопка «Откатить» возвращает всё как было.</p>
       <div class="row" style="gap:8px;flex-wrap:wrap">
@@ -1502,11 +1606,19 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div id=bansList style="margin-top:8px;font-size:12px"></div>
     </div>
     <div style="margin:12px 0">
-      <label><input type=checkbox id=synfixEnabled> SYN-защита MTProto-порта (nftables) — порт от ботов, iOS не ломается <span class=mut id=synfixState style="font-size:12px"></span></label>
+      <label><input type=checkbox id=synfixEnabled> SYN-защита MTProto-портов (nftables) — порты от ботов, iOS не ломается <span class=mut id=synfixState style="font-size:12px"></span></label>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label for=synfixPorts style="font-size:12px">Дополнительно защищать порты</label>
+        <input id=synfixPorts type=text placeholder="например: 8443, 50000" style="flex:1;min-width:180px;font-size:12px">
+        <button class="tiny sec" onclick=synfixTakeLive()>Взять живые порты прокси</button>
+      </div>
+      <p class=mut style="margin:6px 0 0;font-size:12px" id=synfixHelp>Порты прокси панель берёт сама и дописывать их сюда не нужно: этот список — только то, что вы хотите добавить сверх прокси.</p>
       <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Проблема:</b> MTProto-прокси «торчат» в интернет открытыми портами, и боты-сканеры круглосуточно стучатся в них тысячами запросов. Хочешь прикрыть дверь лимитом на все входящие — и первым делом ломаешь iPhone: приложение Telegram на iOS переподключается к прокси агрессивно, шлёт повторные запросы быстрее любого лимита.</p>
-        <p><b>Что делает эта функция:</b> панель различает запросы по «отпечатку»: iPhone пропускается всегда без ограничений, всем остальным — 54 новых соединения в минуту с одного адреса (реальному клиенту хватает с огромным запасом), а кто стучится чаще — получает «хост недоступен», и сканер теряет интерес.</p>
-        <p><b>Безопасно ли?</b> Да: правило вешается только на MTProto-порт (обычно 7443), сайт-заглушка, VPN-протоколы и вход в панель не затрагиваются. Панель сама перепроверяет порт раз в минуту и чинит правило, если тот поменялся или правило исчезло после перезагрузки сервера.</p>
+        <p><b>Что делает эта функция:</b> панель различает запросы по «отпечатку»: iPhone пропускается всегда без ограничений, всем остальным — до 600 новых соединений в минуту с одного адреса (с всплеском в 40: реальный клиент, который переподключается пачкой, проходит спокойно), а кто стучится чаще — получает «хост недоступен», и сканер теряет интерес. Прежний бюджет (54 в минуту, всплеск 1) снимается как замеренная душега: приложение на компьютере поднимает соединение несколько раз подряд при старте и попадало под собственную защиту.</p>
+        <p><b>Какие порты под защитой.</b> Список собирается сам из живых входов прокси: его публичный слушатель (обычно 7443) и общий порт 443, когда включён маршрут MTProto на :443 — тогда клиенты с новых ссылок стучатся именно туда. Сюда же можно дописать свои порты, если на узле висит что-то ещё, что вы хотите закрыть от сканеров.</p>
+        <p><b>Осторожно с 443.</b> Общий порт 443 служит не только прокси: через него же идут сайт и веб-прокси. Лимит считается на адрес источника, поэтому у посетителей из одной большой сети (мобильный оператор, офисный NAT, общедомовой роутер) суммарные новые соединения могут упереться в 600 в минуту. Панель снимает 443 из-под защиты, как только маршрут MTProto выключен, — если сайт начал жаловаться на «хост недоступен», галочку маршрута или этот порт надо убрать.</p>
+        <p><b>Безопасно ли?</b> Да: правила не трогают вход в панель, VPN-протоколы и сайт-заглушку на других портах, а свои адреса (включая loopback и собственные IP сервера) проходят всегда — иначе панель проверяла бы сама себя и попадала под лимит. Панель пересобирает правила при смене портов, при включении и снятии маршрута прокси и раз в минуту, если таблица исчезла (например после перезагрузки сервера).</p>
       </div></details>
     </div>
     <div style="margin:12px 0">
@@ -2986,7 +3098,7 @@ function renderMv(){
   if(mvTimer){clearInterval(mvTimer);mvTimer=null;}
   if(!mvData){ box.innerHTML='<span class=mut>не удалось загрузить состояние переезда</span>'; if(form)form.innerHTML=''; return; }
   const mv=mvData.mv||{}, step=mv.step||'';
-  const fmt=function(ts){return ts?new Date(ts*1000).toLocaleString():'—'};
+  const fmt=function(ts){return fmtZ(ts,'dt')};
   if(step==='arrived'){
     box.innerHTML='<div style="border:1px solid rgba(46,160,67,.4);border-radius:10px;padding:12px;background:rgba(46,160,67,.08)">'
       +'<div style="font-weight:600;margin-bottom:6px">🏠 Этот хост — новый. Данные перенесены с '+(esc(mv.from||'?'))+' ('+fmt(mv.arrived)+')</div>'
@@ -3052,7 +3164,7 @@ function mvLogHtml(mv){
   if(!log.length) return '';
   return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12.5px;color:var(--acc)">журнал переезда ('+log.length+')</summary>'
     +'<div style="font-size:12.5px;line-height:1.7;margin-top:4px">'+log.map(function(e){
-      return '<div class=mut>'+new Date(e.ts*1000).toLocaleString()+' — '+esc(e.msg)+'</div>';}).join('')+'</div></details>';
+      return '<div class=mut>'+fmtZ(e.ts,'dt')+' — '+esc(e.msg)+'</div>';}).join('')+'</div></details>';
 }
 function renderMvJob(){
   const jb=$('mvJobBox'); if(!jb) return;
@@ -3109,7 +3221,7 @@ async function mvSchedBtn(v){
   if(v!==0){ const el=$('mvSched'); if(!el||!el.value){ setMsg('mvMsg','выбери дату и время переключения','err'); return; }
     ts=Math.floor(new Date(el.value).getTime()/1000); }
   try{ const d=await api('/api/migrate/schedule',{method:'POST',body:JSON.stringify({scheduled_ts:ts,auto_retire:!!($('mvSchedR')&&$('mvSchedR').checked)})});
-    setMsg('mvMsg', d.scheduled_ts?('DNS переключится '+new Date(d.scheduled_ts*1000).toLocaleString()):'расписание снято','ok',true);
+    setMsg('mvMsg', d.scheduled_ts?('DNS переключится '+fmtZ(d.scheduled_ts,'dt')):'расписание снято','ok',true);
   }catch(e){ setMsg('mvMsg',e.message,'err',true); }
   await loadMv();
 }
@@ -3165,7 +3277,7 @@ function renderHop(){
     +(cur?'<button class=sec onclick=\'hopSetPublic("")\'>Сбросить</button>':'')
     +'</div>'
     +((hopData.addr_changed&&(Date.now()/1000-hopData.addr_changed<30*86400))
-      ?('<div class=mut style="font-size:12.5px;margin-top:8px">🔔 Адрес в ссылках менялся '+new Date(hopData.addr_changed*1000).toLocaleString()
+      ?('<div class=mut style="font-size:12.5px;margin-top:8px">🔔 Адрес в ссылках менялся '+fmtZ(hopData.addr_changed,'dt')
         +(hopData.addr_prev?(' (был '+esc(hopData.addr_prev)+')'):'')
         +' — панель сама уведомила подписчиков в боте, а на страницах /p висит подсказка 7 дней.</div>')
       :('<div class=mut style="font-size:12.5px;margin-top:8px">Если адрес сменится сам (переезд, DDNS, хоп) — панель заметит, уведомит подписчиков в боте и покажет подсказку на их страницах /p.</div>'))
@@ -3177,7 +3289,7 @@ function renderHop(){
   } else {
     h='<div style="font-weight:600;margin-top:14px;margin-bottom:4px">Фронты</div>';
     h+=hops.map(x=>{
-      const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">TCP-проба '+new Date(x.last_check.ts*1000).toLocaleTimeString()+': открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+'</div>'):'';
+      const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">TCP-проба '+fmtZ(x.last_check.ts,'t')+': открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+'</div>'):'';
       return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
         +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
         +'<b>'+esc(x.name||'Фронт')+'</b><code style="font-size:13px">'+esc(x.front_ip)+'</code>'
@@ -3345,7 +3457,7 @@ async function loadNodeTokens(){
     box.innerHTML = toks.map(t=>
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 10px;border:1px solid var(--brd);border-radius:8px;margin-top:8px">' +
       '<div><strong>'+esc(t.label)+'</strong> <span class=mut style="font-size:11px">'+(t.scopes||[]).map(s=>s==='write'?'запись':'чтение').join(' + ')+'</span>' +
-      '<div class=mut style="font-size:11.5px">id '+esc(t.id)+' · создан '+new Date((t.created||0)*1000).toLocaleDateString()+(t.last_used?(' · использован '+new Date(t.last_used*1000).toLocaleString()):' · ещё не использовался')+'</div></div>' +
+      '<div class=mut style="font-size:11.5px">id '+esc(t.id)+' · создан '+fmtZ(t.created,'d')+(t.last_used?(' · использован '+fmtZ(t.last_used,'dt')):' · ещё не использовался')+'</div></div>' +
       '<button class=tiny onclick="doRevokeNodeToken(\''+jsStr(t.id)+'\',\''+jsStr(t.label)+'\')">Отозвать</button></div>'
     ).join('');
   }catch(e){ box.textContent='не удалось загрузить токены'; }
@@ -3449,7 +3561,7 @@ async function loadAutoBk(){
     _bkFiles=d.files||[];
     if(!_bkFiles.length){$('bkList').innerHTML='<span class=mut>Готовых автоматических копий пока нет — нажми «Создать сейчас» или включи расписание.</span>';return;}
     $('bkList').innerHTML=collapseHtml(_bkFiles.map((f,i)=>{
-      const dt=new Date(f.ts*1000).toLocaleString();
+      const dt=fmtZ(f.ts,'dt');
       return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;border-bottom:1px solid rgba(128,128,128,.15)">'+
         '<span style="min-width:210px">'+dt+'</span><span class=mut>'+fmtBytes(f.size)+'</span>'+
         '<button class="tiny sec" onclick=bkDownload('+i+')>Скачать</button>'+
@@ -3494,7 +3606,7 @@ async function bkDownload(i){
 }
 async function bkRestore(i){
   const f=_bkFiles[i];if(!f)return;
-  if(!confirm('Восстановить панель из копии от '+new Date(f.ts*1000).toLocaleString()+'? Текущие клиенты и настройки будут заменены содержимым копии.'))return;
+  if(!confirm('Восстановить панель из копии от '+fmtZ(f.ts,'dt')+'? Текущие клиенты и настройки будут заменены содержимым копии.'))return;
   setMsg('bkMsg','Восстанавливаю...');
   try{
     const r=await api('/api/backups/restore',{method:'POST',body:JSON.stringify({name:f.name})});
@@ -3505,7 +3617,7 @@ async function bkRestore(i){
 }
 async function bkDelete(i){
   const f=_bkFiles[i];if(!f)return;
-  if(!confirm('Удалить копию от '+new Date(f.ts*1000).toLocaleString()+'?'))return;
+  if(!confirm('Удалить копию от '+fmtZ(f.ts,'dt')+'?'))return;
   try{
     await api('/api/backups/delete',{method:'POST',body:JSON.stringify({name:f.name})});
     await loadAutoBk();
@@ -4117,7 +4229,7 @@ async function runGlobalpingCheck(){
     const resultsData=await pollGlobalpingResults(data.id);
     displayGlobalpingResults(resultsData);
     results.style.display='block';
-    lastRun.textContent='Последнее обновление: '+new Date().toLocaleString();
+    lastRun.textContent='Последнее обновление: '+fmtZ(Date.now(),'dt');
     status.textContent='✅ Готово';
     gpLastStats={ok:(resultsData.results||[]).filter(gpProbeOk).length,total:(resultsData.results||[]).length,at:Date.now()};
     updateGpStat();
@@ -4208,7 +4320,7 @@ async function loadGlobalpingHistory(){
       return `
       <div style="padding:8px;border-bottom:1px solid var(--br);font-size:12px">
         <div style="display:flex;justify-content:space-between;gap:8px">
-          <span>${new Date(h.created_at).toLocaleString()}</span>
+          <span>${fmtZ(h.created_at,'dt')}</span>
           <span>${icon} ${ok}/${total} зондов</span>
         </div>
         <div style="font-size:11px;color:var(--mut2);margin-top:4px">
@@ -4238,7 +4350,7 @@ function updateGpStat(){
     el.innerHTML=gpLastStats.ok+'/'+gpLastStats.total+' · <b>'+pct+'%</b>';
     el.style.color=pct>=90?'var(--ok)':(pct>=60?'var(--warn)':'var(--err)');
     if(at){
-      at.textContent=gpLastStats.at?('проверка: '+new Date(gpLastStats.at).toLocaleString()):'проверок ещё не было';
+      at.textContent=gpLastStats.at?('проверка: '+fmtZ(gpLastStats.at,'dt')):'проверок ещё не было';
     }
   }else{
     el.innerHTML='—';
@@ -4527,20 +4639,31 @@ async function savePanelPort(){
   }catch(e){setMsg('pnlPortMsg',e.message,'err');}
 }
 // Даты в морде — в поясе, которое задал оператор (карточка «Часовой пояс»).
-// Без пояса `timeZone` не передаём и браузер показывает своё — ровно как было
-// до функции; с поясом таблица operator'а и страница подписки перестают спорить.
-function fmtLocal(ts,dhm){
-  if(!ts) return '—';
+// `v` принимает секунды, миллисекунды и строку `ISO`: часы в морде приходят из
+// разных ответов, и на каждом месте пересчитывать разряд нельзя — ровно это и
+// давало дыру: форматирование без пояса показывало машину гостя.
+// `mode`: 'd' — только дата, 't' — только время, остальное — дата и время.
+// Пояс берётся у сервера: с именем он идёт через `timeZone` (и потому прав
+// переходно), без имени, с нераспознанным именем или с именем, которого нет в
+// браузере, — через `offset`, который считает тот же `_ltime`, что печатает
+// серверные строки. Формат закреплён: часы панели не должны меняться от языка
+// браузера.
+function fmtZ(v,mode){
+  if(!v) return '—';
   const st=window._tzState||{};
-  const z=(st.tz&&st.ok!==false)?st.tz:undefined;
-  try{
-    const o={timeZone:z,day:'2-digit',month:'2-digit',year:'numeric'};
-    if(dhm){o.hour='2-digit';o.minute='2-digit';}
-    return new Date(ts*1000).toLocaleString(undefined,o);
-  }catch(e){
-    try{ return new Date(ts*1000).toLocaleString(); }catch(e2){ return '—'; }
+  const p={hour12:false};
+  if(mode==='t'){p.hour='2-digit';p.minute='2-digit';}
+  else{
+    p.day='2-digit';p.month='2-digit';p.year='numeric';
+    if(mode!=='d'){p.hour='2-digit';p.minute='2-digit';}
   }
+  const d=new Date(typeof v==='number'?(v<1e11?v*1000:v):v);
+  if(st.tz&&st.ok!==false){
+    try{return d.toLocaleString('ru-RU',Object.assign({timeZone:st.tz},p));}catch(e){}
+  }
+  return new Date(d.getTime()+(+st.offset||0)*1000).toLocaleString('ru-RU',Object.assign({timeZone:'UTC'},p));
 }
+function fmtLocal(ts,dhm){return fmtZ(ts,dhm?'dt':'d')}
 
 async function loadTz(){
   try{
@@ -4691,7 +4814,7 @@ function addRotIp(ip){
   const cur=ta.value.split(/\s+/).filter(Boolean);
   if(!cur.includes(ip)){ cur.push(ip); ta.value=cur.join('\n'); }
 }
-function _rotFmtTs(t){ try{ return t? new Date(t*1000).toLocaleString('ru-RU') : '—'; }catch(e){ return '—'; } }
+function _rotFmtTs(t){ return fmtZ(t,'dt'); }
 function renderRotateStatus(s){
   const box=$('rotStatus'); if(!box||!s)return;
   const c=s.conf||{};
@@ -4814,12 +4937,17 @@ async function refresh(){
     $('loginCard').classList.add('hidden');
     $('panel').style.display='';
     applyState(s);
-    // 15 независимых запросов: последовательное ожидание давало 15×RTT и на
+    // Пояс читаем ПЕРВЫМ и до остального: часы рисуются тем, что лежит в
+    // `window._tzState`, и загрузчик, выигравший гонку у `/api/settings/timezone`,
+    // печатал бы время машины гостя — ровно та пара, что снимали на вкладке
+    // «Настройки»: карточка пояса говорит «18:40», список копий рядом — «15:40».
+    await loadTz();
+    // 14 независимых запросов: последовательное ожидание давало 15×RTT и на
     // мобильной сети превращало загрузку панели в 10-15 секунд
     await Promise.allSettled([
       loadProtocols(), loadClients(), loadSub(), loadTg(), loadFix(),
       loadTgVerInfo(), loadStats(), loadSettings(), loadDynv6(), loadCert(),
-      loadXrayInfo(), loadAutoBk(), loadVersions(), loadTheme(), loadTz(),
+      loadXrayInfo(), loadAutoBk(), loadVersions(), loadTheme(),
     ]);
     if(!window._veilTabRestored){window._veilTabRestored=true;restoreTab();}
     if(document.body.classList.contains('ui-new'))loadDashboard();
@@ -5307,7 +5435,7 @@ async function loadDynv6(){
     $('dvHost').value=d.host||'';
     if(!d.configured){setMsg('dvMsg','не настроен','');$('dvMsg').textContent='dynv6 пока не настроен.';return;}
     let h='Статус: '+($('dvHost').value||'-');
-    if(d.updated)h+='<br>Обновлено: '+new Date(d.updated*1000).toLocaleString();
+    if(d.updated)h+='<br>Обновлено: '+fmtZ(d.updated,'dt');
     if(d.ipv4||d.ipv6)h+='<br>IPv4: '+(d.ipv4||'—')+' · IPv6: '+(d.ipv6||'—');
     if(d.response)h+='<br>Ответ dynv6: '+d.response;
     if(d.error)h+='<br>Ошибка: '+d.error;
@@ -5359,10 +5487,20 @@ async function loadCert(cfg){
   try{
     if(!cfg)cfg=await api('/api/cert/status');
     const el=$('certStatus');
-    if(cfg.cert){el.textContent=cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():'')+(cfg.auto?' · автопродление вкл':' · автопродление выкл');el.className='';}
+    if(cfg.cert){el.textContent=cfg.domain+(cfg.expire?' · истекает '+fmtZ(cfg.expire,'d'):'')+(cfg.auto?' · автопродление вкл':' · автопродление выкл');el.className='';}
     else{el.textContent='нет сертификата'+(cfg.auto?' · автопродление вкл':' · автопродление выкл');}
     $('certEmail').value=cfg.email||'';
     $('certAuto').checked=!!cfg.auto;
+    var cs=$('certSan');
+    if(cs){
+      var san=cfg.san||[], nxt=cfg.san_next||[], b=cfg.budget||{};
+      var t='Имён в сертификате: <b>'+san.length+'</b>';
+      if(san.length){ t+= nxt.length>=san.length ? (' · после выпуска станет <b>'+nxt.length+'</b>'+(nxt.length===san.length?' (набор не изменится — пустой выпуск бережётся)':' (+ '+(nxt.length-san.length)+' новых)')) : (' · после выпуска станет <b>'+nxt.length+'</b>'); }
+      else if(nxt.length){ t='Сертификата ещё нет · имён будет <b>'+nxt.length+'</b>'; }
+      if(b.domain){ t+=' · выпусков на домен '+esc(b.domain)+' за неделю этой коробкой: <b>'+b.issued+'</b> из '+b.limit+' (лимит считается на весь домен, чужих выпусков не видно)'; }
+      cs.innerHTML=t; cs.className='mut';
+      if(b.domain && b.left<=0){ cs.className='mut err'; cs.innerHTML=t+' · <b>лимит исчерпан — выпуск будет отклонён</b>'; }
+    }
     var va=$('certVeilAll'), vh=$('certVeilHint');
     if(va){
       if(!cfg.cert){ va.checked=true; if(vh) vh.textContent='При первой установке сразу предлагаем выпустить поддомены tg и vpn единым сертификатом — снимите галку, если нужно только основное имя.'; }
@@ -5384,7 +5522,7 @@ async function renewCert(){
   $('renBtn').disabled=true;
   try{
     const cfg=await api('/api/cert/renew',{method:'POST',body:'{}'});
-    setMsg('certMsg','Сертификат продлён: '+cfg.domain+(cfg.expire?' · истекает '+new Date(cfg.expire*1000).toLocaleDateString():''),'ok');
+    setMsg('certMsg','Сертификат продлён: '+cfg.domain+(cfg.expire?' · истекает '+fmtZ(cfg.expire,'d'):''),'ok');
     loadCert(cfg);
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('renBtn').disabled=false;}
 }
@@ -5603,17 +5741,38 @@ async function loadTgDcs(){
     const el=$('dcThr'); if(el && document.activeElement!==el) el.value=thr;
     const t=d.totals||{};
     $('dcTotal').textContent=(typeof t.coverage==='number'?t.coverage+'%':'—');
+    // Потерю подъёма меряем сами, сериями повторов: «адрес отвечает» и «адрес не теряет»
+    // — разные вещи, а покрытие писателей первого не различает.
+    const L=(d.loss&&d.loss.rows)||[];
+    const byDc={};
+    L.forEach(x=>{ if(!x.stale){ const k=String(x.dc); (byDc[k]=byDc[k]||[]).push(x); } });
     box.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="color:var(--mut2);text-align:left">'
-      +'<th style="padding:6px 8px">DC</th><th style="padding:6px 8px">RTT</th><th style="padding:6px 8px">Писатели</th><th style="padding:6px 8px;text-align:right">Покрытие</th></tr></thead><tbody>'
+      +'<th style="padding:6px 8px">DC</th><th style="padding:6px 8px">RTT</th><th style="padding:6px 8px">Писатели</th><th style="padding:6px 8px">Подъём</th><th style="padding:6px 8px;text-align:right">Покрытие</th></tr></thead><tbody>'
       + rows.map(r=>{
         const col=r.coverage>=100?'#4ade80':(r.coverage>=thr?'#fbbf24':'#f87171');
+        const cc=byDc[String(r.dc)]||[];
+        let up='—', uc='var(--mut2)';
+        if(cc.length){
+          const w=cc.reduce((a,b)=>((b.loss||0)>(a.loss||0)?b:a), cc[0]);
+          up=(w.total?(w.fail??'—')+'/'+w.total:'—');
+          if(w.loss===0){up='0'; uc='#4ade80';}
+          else if((w.loss||0)>=20){ uc='#f87171'; }
+          else { uc='#fbbf24'; }
+        }
         return '<tr style="border-top:1px solid var(--br)">'
         +'<td style="padding:6px 8px"><span style="color:'+col+'">●</span> DC '+r.dc+'</td>'
         +'<td style="padding:6px 8px">'+(r.rtt?(Math.round(r.rtt)+' мс'):'—')+'</td>'
         +'<td style="padding:6px 8px">'+r.alive+' / '+r.required+'</td>'
+        +'<td style="padding:6px 8px;color:'+uc+'">'+up+'</td>'
         +'<td style="padding:6px 8px;text-align:right;color:'+col+'">'+r.coverage+'%</td></tr>'}).join('')
       +'</tbody></table>';
-    $('dcNote').textContent='В зачёт покрытия '+(t.counted??'—')+' из '+(t.required??'—')+'; живых всего '+(t.alive??'—')+'. Это связь движка с Telegram, а не доступность прокси для клиентов.';
+    const los=(d.loss&&d.loss.lossy)||[];
+    let ups;
+    if(!L.length){ ups='Замер подъёма ещё не накоплен — хранитель мерит по одному адресу в минуту.'; }
+    else if(los.length){ ups='Теряем подъём: '+los.map(x=>esc(x)).join(', ')+'.'; }
+    else { ups='Подъём соединений до узлов Telegram в норме: '+(((d.loss&&d.loss.healthy)||[]).map(x=>esc(x)).join(', ')||'нет свежих замеров')+'.'; }
+    $('dcNote').textContent='В зачёт покрытия '+(t.counted??'—')+' из '+(t.required??'—')+'; живых всего '+(t.alive??'—')+'. Это связь движка с Telegram, а не доступность прокси для клиентов. '
+      +'Подъём — доля неподнявшихся соединений из '+(((d.loss&&d.loss.tries)||6))+' попыток на адрес: '+ups;
   }catch(e){ box.innerHTML='<p class=mut>нет данных ('+esc((e&&e.message)||'')+')'; }
 }
 async function saveDcThreshold(){
@@ -5638,13 +5797,16 @@ async function loadTg(){
     }
     tgUsers = d.users || [];
     window.tgMp = d.mtproto || null;
+    window.tgManual = d.manual || [];
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTgMp();
     renderTg();
+    renderTgManual();
     renderWeb(d.web);
     renderTgSni(d.sni);
     loadWp();
     loadFront();
+    loadMp443();
   }catch(e){
     setMsg('tgMsg',e.message,'err');
   }
@@ -6249,11 +6411,64 @@ async function aiAsk(){
 
 
 
+let _muxProtoSel=null;   // proto -> отмечен; живёт между перерисовками сетки
+let _muxPrevData=null;   // последний ответ предпросмотра: по нему строим сетку и выбор
+
+// Пустой список = «пользователь ещё ничего не выбирал» (сетки нет): не шлём protos,
+// движок держит прежний смысл — только vpn.
+function _muxSelProtos(){
+  const rl=(_muxPrevData&&_muxPrevData.relocatable)||[];
+  if(!rl.length||!_muxProtoSel) return null;
+  return rl.filter(x=>_muxProtoSel[x.proto]).map(x=>x.proto);
+}
+
+function _muxPrevUrl(ps,vd){
+  let q=(vd?('?vpn_domain='+encodeURIComponent(vd)):'');
+  if(ps&&ps.length) q+=(q?'&':'?')+'protos='+encodeURIComponent(ps.join(','));
+  return '/api/webmux/preview'+q;
+}
+
+function _muxProtoGrid(d){
+  const box=$('muxProtoBox'); if(!box) return;
+  const rl=d.relocatable||[];
+  if(!rl.length){
+    box.innerHTML='<span class=mut>Нет входов с сертификатом на своём домене: мюксить нечего '
+      +'(Reality и UDP-протоколы через развилку по SNI не ведутся).</span>';
+    return;
+  }
+  const e=d.effect||{}, sel={};
+  for(const s of (d.sel||[])) sel[s.proto]=s;
+  if(!_muxProtoSel){
+    _muxProtoSel={};
+    const live=(e.applied&&e.muxed_nodes&&e.muxed_nodes.length)?e.muxed_nodes.map(x=>x.name):null;
+    for(const x of rl) _muxProtoSel[x.proto]=live?(live.indexOf(x.proto)>=0):true;
+  }
+  box.innerHTML='<div class=mut style="font-size:12px;margin-bottom:3px">Кто встаёт за общий :443 — '
+    +'отмеченные галочками; у каждого своё SNI-имя и свой порт внутри xray. Снятая галочка '
+    +'возвращает вход на прежний публичный порт, но выпущенное имя и сертификат остаются.</div>'
+    +rl.map(function(x){
+      const s=sel[x.proto]||{}, on=!!_muxProtoSel[x.proto];
+      const tag=x.label==='vpn'?' <span class=mut style="font-size:11px">(живые ссылки)</span>':'';
+      const dn=s.domain?('<span class=mut style="font-size:12px">'+esc(s.domain)+'</span>'):'';
+      const nb=on&&(s.domain&&!s.dns_ok)
+        ?' <span class=mut style="font-size:11px;color:var(--warn)">⚠ имя ещё не ведёт на сервер</span>':'';
+      return '<label style="display:block"><input type=checkbox value="'+esc(x.proto)+'"'
+        +(on?' checked':'')+' onchange=_muxProtoToggle(this)> <b>'+esc(x.label)+'</b>'+tag+' '+dn+nb+'</label>';
+    }).join('');
+}
+
+function _muxProtoToggle(cb){
+  if(!_muxProtoSel) _muxProtoSel={};
+  _muxProtoSel[cb.value]=cb.checked;
+  muxPreview();
+}
+
 function _muxRenderPrev(d){
   const box=$('muxPreviewBox'); if(!box) return;
+  if(!d){ box.innerHTML=''; return; }
+  _muxPrevData=d; _muxProtoGrid(d);
   const okc='var(--ok)', errc='var(--err)', mutc='var(--mut)', wnc='var(--warn)';
   const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
-  if(!d){ box.innerHTML=''; return; }
   let h='';
   h+='<div>Веб-SNI: '+(d.web_domain?esc(d.web_domain):'<span class=mut>не задан</span>')
     +' · VPN-SNI: '+(d.vpn_domain?esc(d.vpn_domain):'<span class=mut>—</span>')
@@ -6285,8 +6500,11 @@ function _muxRenderPrev(d){
   if(e.applied){
     h+='<div style="margin-top:6px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:12px">';
     h+='<b>Что стоит сейчас</b>'+(e.applied_ts?' <span class=mut>(' +esc(String(e.applied_ts))+')</span>':'')+'<ul style="margin:4px 0 0 18px;padding:0">';
-    if(e.muxed_node)
-      h+='<li>По общему <b>:443</b> идёт узел «'+esc(e.muxed_node)+'» — его ссылка наружу кончается на <b>:443</b>.</li>';
+    const nodes=(e.muxed_nodes&&e.muxed_nodes.length)?e.muxed_nodes
+      :(e.muxed_node?[{name:e.muxed_node,domain:''}]:[]);
+    if(nodes.length)
+      h+='<li>По общему <b>:443</b> идут '+nodes.map(x=>'«'+esc(x.name)+'»'
+        +(x.domain?' ('+esc(x.domain)+')':'')).join(', ')+' — ссылка каждого наружу кончается на <b>:443</b>.</li>';
     if(e.dedicated_tls&&e.dedicated_tls.length)
       h+='<li>Остальные TLS-узлы — каждый на своём порту: '+e.dedicated_tls.map(x=>esc(x.name)+':'+esc(String(x.port))).join(', ')+'. По одному SNI развилка ведёт на один бэкенд, поэтому все сразу на :443 не встают.</li>';
     h+='<li>Сайт-маска и фасад tg-прокси ведутся на <b>'+esc(d.tg_domain||'tg.<база>')+'</b>; MTProto-слушатель telemt остаётся на своём порту :7443 — развилка по SNI обслуживает человекочитаемую маску на :443.</li>';
@@ -6301,59 +6519,151 @@ function _muxRenderPrev(d){
   box.innerHTML=h;
 }
 
+// Сетка построена по первому ответу (движок без protos ведёт прежний смысл — только vpn),
+// поэтому предпросмотр всегда пересчитывается второй раз уже по галочкам: человек видит то же,
+// что получит применение. Галочки переключают быстро: ответ прошлого прогона может
+// вернуться позже нового и перерисовать морду устаревшим, поэтому держим порядковый номер
+// гонки — рисует только последний.
+let _muxSeq=0;
+async function _muxPrev(){
+  const me=++_muxSeq, vd=($('muxVpnSni').value||'').trim();
+  if(!_muxPrevData){
+    const r=await api(_muxPrevUrl(null,vd));
+    if(me!==_muxSeq) return null;
+    _muxRenderPrev(r);
+  }
+  const ps=_muxSelProtos();
+  if(!ps||!ps.length){
+    if(me!==_muxSeq) return null;
+    const box=$('muxPreviewBox');
+    if(box) box.innerHTML='<span class=mut>Не отмечен ни один вход — применять нечего. '
+      +'Отметьте галочками, что должно вести на общий :443.</span>';
+    return null;
+  }
+  const d=await api(_muxPrevUrl(ps,vd));
+  if(me!==_muxSeq) return null;
+  _muxRenderPrev(d); return d;
+}
+let _setupPlanData=null;
+function _setupTicks(s){
+  const m={done:'✅',auto:'⤵',skipped:'⏭',todo:'⏳',failed:'❌'};
+  return m[s]||'•';
+}
+function _setupStepsHtml(r){
+  const st=(r&&r.steps)||[];
+  if(!st.length) return '<span class=mut>Шагов нет — ' +esc((r&&r.error)||'пусто')+'</span>';
+  let h=st.map(function(s){
+    return '<div><b>'+_setupTicks(s.state)+' '+esc(s.caption||s.name)+'</b> '
+      +'<span class=mut>'+esc(s.detail||'')+'</span></div>'
+      +'<div class=mut style="font-size:12px;margin-left:1.2em">отзыв: '+esc(s.rollback||'—')+'</div>';
+  }).join('');
+  if(r.blockers&&r.blockers.length)
+    h+='<div style="color:var(--warn)">Блокировки: '+r.blockers.map(esc).join('; ')+'</div>';
+  if(r.names_detail&&r.names_detail.length)
+    h+='<div class=mut style="font-size:12px">имена: '+r.names_detail.map(function(n){
+        return esc(n.final)+' — '+esc(n.status);}).join(', ')+'</div>';
+  return h;
+}
+function _setupFlags(){
+  return {dns:!!($('audns')&&$('audns').checked),
+          cert:!!($('aucert')&&$('aucert').checked),
+          mux:!!($('aumux')&&$('aumux').checked),
+          protos:(typeof _muxSelProtos==='function'?_muxSelProtos():null)};
+}
+async function setupPlan(){
+  const box=$('setupPlanBox'); if(!box) return;
+  const f=_setupFlags();
+  box.innerHTML='<span class=mut>Считаю план…</span>';
+  let q='?dns='+(f.dns?1:0)+'&cert='+(f.cert?1:0)+'&mux='+(f.mux?1:0);
+  if(f.protos&&f.protos.length) q+='&protos='+encodeURIComponent(f.protos.join(','));
+  try{
+    const r=await api('/api/setup/plan'+q);
+    _setupPlanData=r; box.innerHTML=_setupStepsHtml(r);
+  }catch(e){ box.innerHTML='<span style="color:var(--err)">'+esc(e.message)+'</span>'; }
+}
+async function setupAuto(){
+  const f=_setupFlags(), ps=f.protos||[];
+  if(!f.dns&&!f.cert&&!f.mux){ setMsg('setupMsg','Отметь хотя бы одну галочку — делать нечего.','err'); return; }
+  if(f.mux&&!ps.length&&_muxPrevData){ setMsg('setupMsg','Во вкладке «Сайт» не отмечен ни один вход — применять нечего.','err'); return; }
+  const what=[]; if(f.dns) what.push('поддомены'); if(f.cert) what.push('сертификат'); if(f.mux) what.push('развилка на :443');
+  if(!confirm('Автонастройка: '+what.join(' → ')+'.\n\nГотовое будет пропущено, недостающее выпущено или применено.\nВыпущенные записи и сертификат отзывы не имеют — откатится только развилка.\n\nПродолжить?')) return;
+  setMsg('setupMsg','Прогон: '+what.join(' → ')+'… (может занять пару минут — ждём резолва имён)','');
+  try{
+    const r=await api('/api/setup/auto',{method:'POST',body:JSON.stringify({dns:f.dns,cert:f.cert,mux:f.mux,protos:ps.length?ps:null,confirm:true})});
+    const box=$('setupPlanBox'); if(box) box.innerHTML=_setupStepsHtml(r);
+    setMsg('setupMsg', (r.ok?'Готово. ':'Остановлено. ')
+      +((r.steps||[]).map(function(s){return (s.caption||s.name)+': '+(s.state==='done'?'сделано':s.state==='auto'?'дотянуто':s.state==='skipped'?'уже готово':'не вышло');}).join(', ')
+      +((r.report&&r.report.length)?('\n\n'+r.report.join('\n')):'')),r.ok?'':'err',true);
+    try{ loadWebmux(); }catch(e){}
+  }catch(e){ setMsg('setupMsg','Сбой прогона: '+e.message,'err',true); }
+}
+
 async function muxPreview(){
   const box=$('muxPreviewBox'); box.innerHTML='<span class=mut>Считаю предпросмотр…</span>';
-  const vd=($('muxVpnSni').value||'').trim();
-  try{ const d=await api('/api/webmux/preview'+(vd?('?vpn_domain='+encodeURIComponent(vd)):'')); _muxRenderPrev(d); }
+  try{ await _muxPrev(); }
   catch(e){ box.innerHTML='<span style="color:var(--err)">'+esc(e.message)+'</span>'; }
 }
 
 async function muxApply(){
-  const vd=($('muxVpnSni').value||'').trim();
-  const box=$('muxPreviewBox');
-  let d; try{ d=await api('/api/webmux/preview'+(vd?('?vpn_domain='+encodeURIComponent(vd)):'')); }
+  let d; try{ d=await _muxPrev(); }
   catch(e){ setMsg('muxMsg',e.message,'err'); return; }
-  _muxRenderPrev(d);
+  const ps=_muxSelProtos(), vd=($('muxVpnSni').value||'').trim();
+  if(!d||!ps||!ps.length){ setMsg('muxMsg','Отметьте галочкой хотя бы один вход — иначе применять нечего.','err'); return; }
   if(!d.can_apply){ setMsg('muxMsg','Есть блокировки — см. предпросмотр.','err'); return; }
+  const chosen=(d.sel||[]).map(s=>s.label+' → '+s.domain+(s.dns_ok?'':' (имя ещё не ведёт сюда)')).join('\n  ');
   const warn = d.foreign443 ? ('\n\n❗ На :443 чужой процесс ('+(d.foreign443.proc||'?')+'). Он будет ОСТАНОВЛЕН (с бэкапом unit). Veil не отвечает за его работу после.') : '';
-  if(!confirm('Применить SNI-мюкс :443?\n\nВеб-SNI: '+(d.web_domain||'—')+'\nVPN-SNI: '+(d.vpn_domain||'—')
+  if(!confirm('Применить SNI-мюкс :443?\n\nЗа общий порт встанут:\n  '+chosen
+              +'\n\nВеб-SNI: '+(d.web_domain||'—')+'\nVPN-SNI: '+(d.vpn_domain||'—')
               +'\nМаска + фасад tg: '+(d.tg_domain||'—')+(d.mask_port?(' → loopback :'+d.mask_port):'')
               +(d.tg_dns_ok&&(d.tg_domain!=d.web_domain)?'\nФасад telemt переедет на '+d.tg_domain:'')
               +warn+
               '\n\nnginx.conf, xray и фасад telemt будут изменены (с бэкапами и авто-откатом при ошибке nginx -t / xray -test).')) return;
   setMsg('muxMsg','Применяю… (nginx -t, xray -test, рестарт telemt)','');
   try{
-    const r=await api('/api/webmux/apply',{method:'POST',body:JSON.stringify({vpn_domain:vd||null,tg_domain:(d.tg_domain||null),confirm:true,force:!!d.foreign443})});
-    const e=r.effect||{};
+    const r=await api('/api/webmux/apply',{method:'POST',body:JSON.stringify({vpn_domain:vd||null,tg_domain:(d.tg_domain||null),protos:ps,confirm:true,force:!!d.foreign443})});
+    const mv=r.moved||[];
     let rep=(r.reapplied?'Повторное нажатие: конфигурация уже такая — ничего не изменилось. ':'Мюкс применён. ');
-    rep+='Наружу по :443 теперь идёт узел «'+(e.muxed_node||r.inbound||'—')+'» (внутри xray на :'+String(r.tls_port)+'), веб-фронт на :'+String(r.web_port)+', сертификат: '+(r.cert_kind||'—')+'. ';
-    if(r.tg_domain) rep+='Сайт-маска'+(r.facade_on_tg?' и фасад tg-прокси':'')+' — на '+r.tg_domain+(r.mask_port?(' (loopback :'+r.mask_port+')'):'')+'. ';
-    rep+=r.link_host?('Ссылки VPN звонятся на '+r.link_host+':443. '):'Ссылки VPN остаются на базе (vpn-имя ещё не резолвится). ';
-    rep+='Остальные TLS-узлы — каждый на своём порту.';
+    rep+='За общий :443 ведут: '+(mv.length?mv.map(x=>'«'+esc(x.label)+'» ('+esc(x.domain||'—')+') внутри на :'+String(x.port)+(x.dns_ok?'':' — имя ещё не резолвится')).join(', '):'—')+'. ';
+    rep+='Веб-фронт на :'+String(r.web_port)+', сертификат: '+esc(r.cert_kind||'—')+'. ';
+    if(r.tg_domain) rep+='Сайт-маска'+(r.facade_on_tg?' и фасад tg-прокси':'')+' — на '+esc(r.tg_domain)+(r.mask_port?(' (loopback :'+r.mask_port+')'):'')+'. ';
+    rep+=(r.link_host?('Ссылки VPN звонятся на '+esc(r.link_host)+':443. '):'Ссылки VPN остаются на базе (vpn-имя ещё не резолвится). ');
+    if(r.released&&r.released.length)
+      rep+='Снятые галочки вернулись на прежние публичные порты: '+r.released.map(x=>esc(x)).join(', ')+'. ';
+    else rep+='Остальные TLS-узлы — каждый на своём порту.';
     setMsg('muxMsg',rep,'ok',false);
     loadWebmux(); muxPreview();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
 }
 
 async function muxProvision(){
-  const vd=($('muxVpnSni').value||'').trim();
-  const prov=($('muxProvider')||{}).value||'';
-  let d; try{ d=await api('/api/webmux/preview'+(vd?('?vpn_domain='+encodeURIComponent(vd)):'')); }
+  let d; try{ d=await _muxPrev(); }
   catch(e){ setMsg('muxMsg',e.message,'err'); return; }
-  _muxRenderPrev(d);
+  if(!d){ setMsg('muxMsg','Отметьте галочкой хотя бы один вход — выпускать имена под пустой выбор незачем.','err'); return; }
   if(!d.can_provision){ setMsg('muxMsg','Выпуск недоступен: нет провайдера DNS — настройте dynv6 или Cloudflare во вкладке «Сайт».','err'); return; }
   const v=d.veil||{}, nm=v.names||{}, base=v.base||d.web_domain||'';
-  const pr=prov||d.dns_provider||'';
+  const pr=(($('muxProvider')||{}).value||'')||d.dns_provider||'';
+  const ex=_muxExtraLabels(d);
   if(!confirm('Выпустить поддомены и SAN-сертификат?\n\nБаза: '+(base||'—')+'\ntg: '+(nm.tg||'—')+'\nvpn: '+(nm.vpn||'—')
+              +(ex.length?'\nотмеченные входы: '+ex.join(', '):'')
               +'\nПровайдер: '+(pr||'—')+(pr==='dynv6'?'\n\n⚠ порт :80 будет кратковременно освобождён (HTTP-01)':'')
               +'\n\nПанель создаст DNS-записи и выпустит один сертификат на все имена. Это может занять до пары минут.')) return;
   setMsg('muxMsg','Выпускаю DNS + сертификат… (до пары минут)','');
   try{
-    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:base||null,provider:prov||null,issue_cert:true,confirm:true})});
+    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:base||null,provider:(($('muxProvider')||{}).value||null),issue_cert:true,confirm:true,labels:(ex.length?ex:null)})});
     const rn=r.names||{};
     setMsg('muxMsg','✅ Выпущено. tg='+esc(rn.tg||'—')+', vpn='+esc(rn.vpn||'—')+'. '+esc((r.report||[]).join(' | ')),'ok');
     muxPreview();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
+}
+
+// Выпущенное имя нужно каждому отмеченному входу, кроме vpn (его имя движок уже ведёт) и tg
+// (оно в плане всегда) — метки = то, что просит /api/veil/ensure в labels.
+function _muxExtraLabels(d){
+  const out=[];
+  for(const s of ((d&&d.sel)||[])){
+    if(s.label&&s.label!=='vpn'&&s.label!=='tg'&&out.indexOf(s.label)<0) out.push(s.label);
+  }
+  return out;
 }
 
 async function muxRevert(){
@@ -6361,8 +6671,177 @@ async function muxRevert(){
   setMsg('muxMsg','Откатываю…','');
   try{
     const r=await api('/api/webmux/revert',{method:'POST',body:JSON.stringify({confirm:true})});
+    _muxProtoSel=null; _muxPrevData=null;   // мюкс снят — сетка заново, выбор по новой реальности
     setMsg('muxMsg','✅ '+(r.message||'Откачено'),'ok'); loadWebmux();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
+}
+
+// #168: MTProto на общий :443. Движок тот же, что на вкладке «Мюкс»: развилка по SNI кладёт
+// ОДНО имя ровно на ОДН дорожку, поэтому у прокси своё имя `mp.<база>` — не маска `tg.<база>`
+// и не база веб-прокси.
+let _mp443Prev = null;
+
+function _mp443StateHtml(mp){
+  const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
+  const src=mp.source||{};
+  let h='';
+  h+='<div>Маршрут на общий :443: '+(mp.applied?bd('включён','var(--ok)'):bd('выключён — прокси на своём порту','var(--mut)'))+'</div>';
+  h+='<div>Имя прокси: <b>'+esc(mp.domain||'—')+'</b> '+(mp.ours?bd('ведёт на этот сервер','var(--ok)'):bd('не резолвится сюда','var(--warn)'))+'</div>';
+  h+='<div>Слушатель telemt: '+(mp.listener_port?('порт '+mp.listener_port+' '+(mp.listener_up?bd('онлайн','var(--ok)'):bd('не отвечает','var(--err)'))):'—')+'</div>';
+  h+='<div>Свой фронт имени прокси: '+(mp.front_installed?bd('поднят','var(--ok)'):bd('не установлен','var(--mut)'))+(mp.mask_port?(' (внутри на :'+mp.mask_port+')'):'')+'</div>';
+  h+='<div>Источник формы: '+esc(src.mask_host||'—')+':'+(src.mask_port||'—')+(mp.source_local?(' '+bd('локальный — верно','var(--ok)')):(' '+bd('публичный: на замуксованной коробке прокси снимал бы форму сам с себя','var(--warn)')));
+  h+='</div>';
+  const sg=mp.source_guard||{}, sgNote=sg.error||sg.skipped||sg.fixed||'';
+  if(sgNote) h+='<div>Присмотр источника формы: '+esc(sgNote)+'</div>';
+  return h;
+}
+
+async function loadMp443(){
+  const box=$('mp443Box'), badge=$('mp443Badge'); if(!box) return;
+  try{
+    const d=await api('/api/webmux');
+    const mp=d.mp||{};
+    box.innerHTML=_mp443StateHtml(mp);
+    const cb=$('mpOn443'); if(cb && document.activeElement!==cb) cb.checked=!!mp.applied;
+    const di=$('mpDomain'); if(di && !di.value) di.value=mp.domain||'';
+    if(badge){
+      badge.textContent = mp.applied ? 'ведётся на :443' : 'на своём порту';
+      badge.style.color = mp.applied ? 'var(--ok)' : 'var(--mut)';
+    }
+  }catch(e){ box.innerHTML='<span style="color:var(--err)">Ошибка: '+esc(e.message)+'</span>'; }
+}
+
+function _mp443PrevHtml(d){
+  const mpd=d.mp_domain||'—';
+  let h='<div>Имя прокси: <b>'+esc(mpd)+'</b> '+(d.mp_dns_ok?'<span style="color:var(--ok)">ведёт сюда</span>':'<span style="color:var(--warn)">имя ещё не резолвится — нужен «Выпустить»</span>')+'</div>';
+  h+='<div>Маска (фронт) отдельным именем: '+esc(d.tg_domain||'—')+' · веб-прокси: '+esc(d.web_domain||'—')+(d.mp?('<div>Форма прокси внутри: петлевой фронт :'+(d.mp_mask_port||'—')+' · порт прокси внутри :'+(d.mp_port||'—')+'</div>'):'')+'</div>';
+  if(d.mp) h+='<div class=mut style="margin-top:4px">Галочка снята — прокси вернётся на прежний публичный порт, розданные ссылки не отвалятся.</div>';
+  if((d.blockers||[]).length)
+    h+='<div style="margin-top:6px;color:var(--err)">'+d.blockers.map(x=>'❌ '+esc(x)).join('<br>')+'</div>';
+  if((d.warnings||[]).length)
+    h+='<div style="margin-top:6px;color:var(--warn)">'+d.warnings.map(x=>'⚠ '+esc(x)).join('<br>')+'</div>';
+  if(!d.blockers||!d.blockers.length)
+    h+='<div style="margin-top:6px;color:var(--ok)">✅ Препятствий нет — можно применять.</div>';
+  return h;
+}
+
+async function mp443Preview(){
+  const prev=$('mp443Prev'); if(!prev) return;
+  prev.innerHTML='<span class=mut>Считаю предпросмотр…</span>'; _mp443Prev=null;
+  const on=$('mpOn443').checked, md=($('mpDomain').value||'').trim();
+  let q='?mp='+(on?'1':'0'); if(md) q+='&mp_domain='+encodeURIComponent(md);
+  try{ const d=await api('/api/webmux/preview'+q); _mp443Prev=d; prev.innerHTML=_mp443PrevHtml(d); }
+  catch(e){ prev.innerHTML='<span style="color:var(--err)">'+esc(e.message)+'</span>'; }
+}
+
+async function mp443Apply(){
+  const cb=$('mpOn443'), on=cb.checked;
+  let d=_mp443Prev;
+  if(!d){ await mp443Preview(); d=_mp443Prev; }
+  if(!d){ setMsg('mp443Msg','Предпросмотр не получился — см. выше.','err'); return; }
+  if(!d.can_apply){ setMsg('mp443Msg','Есть блокировки — см. предпросмотр.','err'); return; }
+  const md=d.mp_domain||'—';
+  if(!confirm((on?'Вести MTProto-прокси на общий :443?':'Снять MTProto с общего :443?')+
+      '\n\nИмя прокси: '+md+'\nИмя маски: '+(d.tg_domain||'—')+'\nБаза (веб-прокси): '+(d.web_domain||'—')+
+      (on&&(!d.mp_dns_ok||!d.cert_ready)?
+        ('\n\nИмени ещё нет в DNS или в сертификате — панель выпустит его сама (до пары минут), потом применит.'):'')+
+      '\n\nnginx stream, фасад telemt и его источник формы будут изменены (с бэкапами и авто-откатом при ошибке).')) return;
+  setMsg('mp443Msg','Применяю… (nginx -t, рестарт telemt)','');
+  try{
+    const r=await api('/api/webmux/apply',{method:'POST',body:JSON.stringify({mp:on, mp_domain:(($('mpDomain').value||'').trim()||null), tg_domain:(d.tg_domain||null), confirm:true, force:!!d.foreign443})});
+    setMsg('mp443Msg','✅ '+(on?('MTProto ведётся на :443 через '+esc(r.mp_domain||md)+'. '):'MTProto снят с общего :443, прежний порт цел. ')+(r.mp_mask_port?('Форма — с петлевого фронта :'+r.mp_mask_port+'. '):'')+esc((r.note||'')),'ok',false);
+    loadMp443(); mp443Preview();
+  }catch(e){ setMsg('mp443Msg','Ошибка: '+esc(e.message),'err'); }
+}
+
+async function mp443Issue(){
+  let d=_mp443Prev;
+  if(!d){ await mp443Preview(); d=_mp443Prev; }
+  if(!d){ setMsg('mp443Msg','Предпросмотр не получился — см. выше.','err'); return; }
+  if(!d.can_provision){ setMsg('mp443Msg','Выпуск недоступен: нет провайдера DNS — настройте dynv6 или Cloudflare во вкладке «Сайт».','err'); return; }
+  const v=d.veil||{}, base=v.base||d.web_domain||'', mpd=d.mp_domain||'—';
+  if(!confirm('Выпустить имя '+mpd+' и добавить его в SAN-сертификат?\n\nБаза: '+(base||'—')+'\nПанель создаст A/AAAA-запись и перевыпустит один сертификат на все имена (до пары минут).')) return;
+  setMsg('mp443Msg','Выпускаю DNS + сертификат… (до пары минут)','');
+  try{
+    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:(base||null),provider:(d.dns_provider||null),issue_cert:true,confirm:true,labels:['mp']})});
+    const rn=r.names||{};
+    setMsg('mp443Msg','✅ Выпущено. mp='+esc(rn.mp||'—')+'. '+esc((r.report||[]).join(' | ')),'ok');
+    mp443Preview();
+  }catch(e){ setMsg('mp443Msg','Ошибка: '+esc(e.message),'err'); }
+}
+
+// #168: ручная настройка с нуля — своя сайт-маска, секрет и порт. Ссылка собирается здесь же
+// («ee» + 32 hex ключа + hex имени фронта), дальше идёт тем же движком, что и «по своей ссылке».
+let _manPlan = null;
+
+function _manHex(s){
+  let o='';
+  for(let i=0;i<s.length;i++){
+    const n=s.charCodeAt(i);
+    if(n>127) throw new Error('имя сайта-маски должно быть латиницей (ASCII)');
+    o+=(n<16?'0':'')+n.toString(16);
+  }
+  return o;
+}
+
+function genManKey(){
+  const a=new Uint8Array(16); crypto.getRandomValues(a);
+  let o=''; for(let i=0;i<16;i++){ const x=a[i].toString(16); o+=(x.length<2?'0':'')+x; }
+  $('manKey').value=o;
+}
+
+function _manBuildLink(){
+  const server=($('manServer').value||'').trim()||location.hostname||'';
+  const front=($('manFront').value||'').trim().toLowerCase();
+  const port=($('manPort').value||'').trim();
+  let key=($('manKey').value||'').trim().toLowerCase();
+  if(!server) return {err:'укажи адрес сервера'};
+  if(!front||front.indexOf('.')<0) return {err:'укажи сайт-маску — домен, за которым прячется прокси'};
+  if(!/^[0-9]{1,5}$/.test(port)||+port<1||+port>65535) return {err:'порт — число 1…65535'};
+  if(!key){ genManKey(); key=$('manKey').value; }
+  if(!/^[0-9a-f]{32}$/.test(key)) return {err:'секрет — ровно 32 hex-символа (или пусто — сгенерирую сам)'};
+  let fh; try{ fh=_manHex(front); }catch(e){ return {err:e.message}; }
+  return {link:'tg://proxy?server='+encodeURIComponent(server)+'&port='+port+'&secret=ee'+key+fh};
+}
+
+async function manCheck(){
+  const prev=$('manPrev'); _manPlan=null; if(!prev) return;
+  const b=_manBuildLink();
+  if(b.err){ setMsg('manMsg','❌ '+b.err,'err'); prev.innerHTML=''; return; }
+  const name=($('manName').value||'').trim();
+  setMsg('manMsg','Читаю собранную ссылку…','');
+  let d;
+  try{ d=await api('/api/tg/manual/preview',{method:'POST',body:JSON.stringify({link:b.link,username:name})}); }
+  catch(e){ setMsg('manMsg','❌ '+e.message,'err'); prev.innerHTML=''; return; }
+  if(d.error){ setMsg('manMsg','❌ '+d.error,'err'); prev.innerHTML=''; return; }
+  _manPlan=d;
+  const li=(d.actions||[]).map(x=>'«'+esc(x)+'»').join('; ')||'—';
+  let h='<div>Собрано: <code style="font-size:12px">'+esc(b.link)+'</code></div>'
+    +'<div>Фронт: <b>'+esc(d.front||'—')+'</b> · порт <b>:'+(d.port||'?')+'</b> · клиент <b>'+esc(d.username||'—')+'</b></div>'
+    +'<div class=mut style="margin-top:4px">Панель соберётся сделать: '+li+'</div>';
+  if((d.blockers||[]).length)
+    h+='<div style="margin-top:6px;color:var(--err)">'+d.blockers.map(x=>'❌ '+esc(x)).join('<br>')+'</div>';
+  if((d.warnings||[]).length)
+    h+='<div style="margin-top:6px;color:var(--warn)">'+d.warnings.map(x=>'⚠ '+esc(x)).join('<br>')+'</div>';
+  if(d.already) h+='<div style="margin-top:6px;color:var(--ok)">✅ Такая ссылка уже настроена.</div>';
+  prev.innerHTML=h;
+  setMsg('manMsg', d.can_apply?'Можно применять.':'Есть препятствия — см. выше.', d.can_apply?'':'err');
+}
+
+async function manApply(){
+  const d=_manPlan;
+  if(!d){ setMsg('manMsg','Сначала «Проверить».','err'); return; }
+  if(!d.can_apply){ setMsg('manMsg','Есть препятствия — применять нельзя.','err'); return; }
+  const li=(d.actions||[]).map(x=>'• '+x).join('\n')||'• ничего не потребуется';
+  if(!confirm('Настроить прокси по собранной ссылке?\n\n'+li+'\n\nTelemt перезапустится.')) return;
+  setMsg('manMsg','Применяю…','');
+  try{
+    const r=await api('/api/tg/manual/apply',{method:'POST',body:JSON.stringify({link:d.parsed.link,username:d.username,confirm:true})});
+    if(r.error){ setMsg('manMsg','❌ '+r.error,'err'); return; }
+    setMsg('manMsg','✅ '+(r.note||'ссылка настроена'),'ok');
+    _manPlan=null; $('manPrev').innerHTML='';
+    await loadTg();
+  }catch(e){ setMsg('manMsg','❌ '+e,'err'); }
 }
 
 
@@ -6617,6 +7096,70 @@ async function tgMpIpv6(on){
   await loadTgMpFix();
 }
 
+// #158: ручная подгонка под уже розданную ссылку
+let tgManualPlan = null;
+
+function renderTgManual(){
+  const f = document.getElementById('tgManualList'); if(!f) return;
+  const man = window.tgManual || [];
+  if(!man.length){ f.innerHTML=''; return; }
+  const bd = (t,c)=>'<span class="badge" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:'+c+'">'+t+'</span>';
+  let h = '<div class=mut style="font-size:12px;margin-bottom:4px">Розданные ссылки, которые панель держит побайтно:</div>';
+  man.forEach(function(m){
+    h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0;border-top:1px solid var(--br);font-size:13px">'
+      + (m.ok ? bd('держится','rgba(46,160,67,.15)') : bd('сбой','rgba(248,81,73,.15)'))
+      + '<b>'+esc(m.username||'—')+'</b>'
+      + '<code style="font-size:12px">'+esc(m.link||'')+'</code>'
+      + (m.front?'<span class=mut style="font-size:12px">фронт '+esc(m.front)+'</span>':'')
+      + (m.detail?'<span style="color:var(--err);font-size:12px">'+esc(m.detail)+'</span>':'')
+      + '</div>';
+  });
+  f.innerHTML = h;
+}
+
+async function tgManualCheck(){
+  const link = (document.getElementById('tgManualLink').value||'').trim();
+  const name = (document.getElementById('tgManualName').value||'').trim();
+  const prev = document.getElementById('tgManualPrev');
+  tgManualPlan = null;
+  if(!link){ setMsg('tgManualMsg','Вставь ссылку целиком.','err'); prev.innerHTML=''; return; }
+  setMsg('tgManualMsg','Читаю ссылку…','');
+  let d;
+  try { d = await api('/api/tg/manual/preview',{method:'POST',body:JSON.stringify({link:link,username:name})}); }
+  catch(e){ setMsg('tgManualMsg','❌ '+e.message,'err'); prev.innerHTML=''; return; }
+  if(d.error){ setMsg('tgManualMsg','❌ '+d.error,'err'); prev.innerHTML=''; return; }
+  tgManualPlan = d;
+  const li = (d.actions||[]).map(x=>'«'+esc(x)+'»').join('; ')||'—';
+  let h = '<div>Фронт из ссылки: <b>'+esc(d.front||'—')+'</b> · порт <b>:'+(d.port||'?')+'</b> · клиент <b>'+esc(d.username||'—')+'</b></div>';
+  if(d.parsed&&d.parsed.composed)
+    h += '<div style="margin-top:4px">Ссылка, которую панель настроит: <code style="font-size:12px">'+esc(d.parsed.link)+'</code></div>';
+  h += '<div class=mut style="margin-top:4px">Панель соберётся сделать: '+li+'</div>';
+  if((d.blockers||[]).length)
+    h += '<div style="margin-top:6px;color:var(--err)">'+d.blockers.map(x=>'❌ '+esc(x)).join('<br>')+'</div>';
+  if((d.warnings||[]).length)
+    h += '<div style="margin-top:6px;color:var(--warn)">'+d.warnings.map(x=>'⚠ '+esc(x)).join('<br>')+'</div>';
+  if(d.already) h += '<div style="margin-top:6px;color:var(--ok)">✅ Ссылка уже настроена — telemt выдаёт её побайтно.</div>';
+  prev.innerHTML = h;
+  setMsg('tgManualMsg', d.can_apply ? 'Можно применять.' : 'Есть препятствия — см. выше.', d.can_apply?'':'err');
+}
+
+async function tgManualApply(){
+  const d = tgManualPlan;
+  if(!d){ setMsg('tgManualMsg','Сначала «Проверить».','err'); return; }
+  if(!d.can_apply){ setMsg('tgManualMsg','Есть препятствия — применять нельзя.','err'); return; }
+  const li = (d.actions||[]).map(x=>'• '+x).join('\n')||'• ничего не потребуется';
+  if(!confirm('Подогнать прокси под розданную ссылку?\n\n'+li+'\n\nКлиенты этой ссылки продолжат работать без изменения ссылки. Telemt перезапустится.')) return;
+  setMsg('tgManualMsg','Применяю…','');
+  try{
+    const r = await api('/api/tg/manual/apply',{method:'POST',body:JSON.stringify({link:d.parsed.link,username:d.username,confirm:true})});
+    if(r.error){ setMsg('tgManualMsg','❌ '+r.error,'err'); return; }
+    setMsg('tgManualMsg','✅ '+(r.note||'ссылка настроена'),'ok');
+    document.getElementById('tgManualLink').value='';
+    tgManualPlan=null; document.getElementById('tgManualPrev').innerHTML='';
+    await loadTg();
+  }catch(e){ setMsg('tgManualMsg','❌ '+e,'err'); }
+}
+
 function renderTg(){
   const box = document.getElementById('tgList');
   box.innerHTML = '';
@@ -6658,14 +7201,21 @@ function renderTg(){
     div.querySelector('.name').textContent = u.username + (u.ad_tag ? '  🏷' : '');
     const lf = linkFrontDomain(u.link||"");
     const fr = window.tgFront || {};
-    if (lf && fr.domain){
+    const main = fr.main_front || fr.domain;
+    if (lf && main){
       const s = document.createElement('span');
       s.className = 'nchip';
-      const own = (lf === fr.domain);
+      // #180: на маршруте `mp` на общий :443 главным фронтом стало имя прокси, а не маска.
+      // Сверка с fr.domain врала в обе стороны: свежую mp-ссылку чип звал чужой, а ссылку
+      // прежнего фронта — своей. Теперь дорожку берём у панели (`u.on443`).
+      const own = fr.mp_on443 ? !!u.on443 : (lf === main);
       s.textContent = own ? '🏠 свой фронт' : ('фронт: ' + lf);
       s.style.color = own ? 'var(--ok)' : 'var(--mut2)';
-      s.title = own ? ('Ссылка прячется за твоим сайтом-маской ' + fr.domain)
-                   : ('Ссылка использует прежний фронт ' + lf + ' — она продолжает работать');
+      s.title = own ? (fr.mp_on443 ? ('Ссылка едет на общий :443 под именем ' + main)
+                                   : ('Ссылка прячется за твоим сайтом-маской ' + main))
+                   : ('Ссылка использует прежний фронт ' + lf
+                      + (fr.mp_on443 ? ' — на общий :443 она не едет, ей остаётся порт из ссылки'
+                                     : ' — она продолжает работать'));
       div.querySelector('.name').appendChild(s);
     }
     const conns = u.connections || 0;
@@ -6872,7 +7422,7 @@ async function loadFront(){
     if (inp && !inp.value && d.domain) inp.value = d.domain;
     if (bd){
       if (!d.domain){ bd.textContent = 'не настроено (сейчас фронт: '+(d.tls_domain||'—')+')'; bd.style.color='var(--mut)'; }
-      else if (d.active && d.cert_ok && d.nginx_ok && d.https_ok){ bd.textContent = 'активен: '+d.domain+' · сертификат до '+new Date(d.expire*1000).toLocaleDateString(); bd.style.color='var(--ok)'; }
+      else if (d.active && d.cert_ok && d.nginx_ok && d.https_ok){ bd.textContent = 'активен: '+d.domain+' · сертификат до '+fmtZ(d.expire,'d'); bd.style.color='var(--ok)'; }
       else { bd.textContent = d.domain+': '+(d.active?'фронт включён':'tls_domain не совпадает')+', cert:'+(d.cert_ok?'ок':'нет')+', nginx:'+(d.nginx_ok?'ок':'нет')+', проверка:'+(d.https_ok?'ок':'нет'); bd.style.color='var(--warn)'; }
       // маску может убить чужой occupant на :443 (nginx -t конфликта портов не видит) — сказать сразу
       if (d.blocker443){ bd.textContent = '⚠ ' + d.blocker443; bd.style.color='var(--warn)'; }
@@ -6903,14 +7453,18 @@ function renderTgMain(){
   if(!card) return;
   const fr = window.tgFront || {};
   const users = (typeof tgUsers !== 'undefined' && tgUsers) || [];
-  if(!users.length && !fr.domain){ card.style.display='none'; card.innerHTML=''; return; }
-  const fresh = fr.domain ? users.filter(function(u){ return linkFrontDomain(u.link) === fr.domain; }) : [];
+  // #168: свежая ссылка несёт тот фронт, который сейчас ФАСАД (при маршруте MTProto на
+  // :443 это `mp.<база>`), а не обязательно имя сайт-маски — сверяться надо с ним.
+  const inForce = fr.main_front || fr.domain || '';
+  if(!users.length && !inForce){ card.style.display='none'; card.innerHTML=''; return; }
+  const fresh = inForce ? users.filter(function(u){ return linkFrontDomain(u.link) === inForce; }) : [];
   const chip = function(txt,color,title){ return '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid '+color+';color:'+color+'"'+(title?' title="'+esc(title)+'"':'')+'>'+txt+'</span>'; };
   let h = '';
-  if(fr.domain && fresh.length){
+  if(inForce && fresh.length){
     const u = fresh[0];
     h += '<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0"><b>🌟 Главная ссылка Telegram</b>'
-      + chip('со своим сайтом-маской: '+esc(fr.domain), 'var(--ok)')
+      + chip('со своим сайтом-маской: '+esc(inForce), 'var(--ok)')
+      + (fr.mp_on443 ? chip('MTProto на :443', 'var(--ok)') : '')
       + '<span class=mut style="font-size:12px">клиент «'+esc(u.username)+'»</span></div>';
     h += '<div class="link-row" style="margin-top:8px"><code style="display:block;background:color-mix(in srgb,var(--bg) 72%,transparent);border:1px solid var(--br);border-radius:9px;padding:9px;font-size:11px;word-break:break-all;max-height:none">'+esc(u.link)+'</code></div>';
     h += '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'
@@ -6919,11 +7473,13 @@ function renderTgMain(){
       + '<button class="tiny sec" onclick="openProxyInTg(\''+jsStr(u.link)+'\')">📱 Открыть в Telegram</button>';
     if(fresh.length > 1) h += '<span class=mut style="font-size:12px">и ещё '+(fresh.length-1)+' клиентов(а) с этим же фронтом — ниже</span>';
     h += '</div>';
-    h += '<p class=mut style="font-size:12px;margin:8px 0 0;line-height:1.55">Это самая «молочная» ссылка: прокси прячется за <b>твоим</b> доменом с настоящим сертификатом. Раздавай её новым людям. Старые ссылки с прежним фронтом не отвалятся — прежние домены остаются в списке <code>tls_domains</code>.</p>';
-  } else if(fr.domain){
+    h += '<p class=mut style="font-size:12px;margin:8px 0 0;line-height:1.55">Это самая «молочная» ссылка: прокси прячется за <b>твоим</b> доменом с настоящим сертификатом.'
+      + (fr.mp_on443 ? ' Маршрут ведёт её на общий <b>:443</b> — снаружи это обычный HTTPS.' : '')
+      + ' Раздавай её новым людям. Старые ссылки с прежним фронтом не отвалятся — прежние домены остаются в списке <code>tls_domains</code>.</p>';
+  } else if(inForce){
     h += '<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0"><b>🌟 Сайт-маска настроена</b>'
-      + chip(fr.domain, 'var(--ok)') + '</div>';
-    h += '<p class=mut style="font-size:12.5px;margin:6px 0 0;line-height:1.55">Ни одна ссылка клиента пока не несёт этот фронт — нажми «🔑 Новый секрет» у клиента (в карточке, кнопка «⋯»), и свежая ссылка будет спрятана за <b>'+esc(fr.domain)+'</b>. Ссылки подписок (/p, /sub) уже несут её автоматически.</p>';
+      + chip(inForce, 'var(--ok)') + (fr.mp_on443 ? chip('MTProto на :443', 'var(--ok)') : '') + '</div>';
+    h += '<p class=mut style="font-size:12.5px;margin:6px 0 0;line-height:1.55">Ни одна ссылка клиента пока не несёт этот фронт — нажми «🔑 Новый секрет» у клиента (в карточке, кнопка «⋯»), и свежая ссылка будет спрятана за <b>'+esc(inForce)+'</b>. Ссылки подписок (/p, /sub) уже несут её автоматически.</p>';
   } else {
     h += '<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin:0"><b>🏠 Ссылка со своим сайтом-маской</b>'
       + chip('не настроено', 'var(--mut)')
@@ -7214,6 +7770,34 @@ function drawDashChart(days){
   if(rng)rng.textContent=days[0][0]+' — '+days[n-1][0];
   if(mx)mx.textContent='макс. сутки: '+fmtBytes(max);
 }
+function dashDelta(el,today,yest,days){
+  // Отношение печатается только на достоверной базе: тихий вчерашний день разгоняет
+  // процент до пяти знаков (замерено: +11455% на вчерашнем 1,2 МиБ). Типичный день —
+  // медиана ненулевых суток без сегодня и вчерашнего.
+  const v=(days||[]).map(p=>+(Array.isArray(p)?p[1]:p)||0);
+  const hist=v.slice(0,Math.max(0,v.length-2)).filter(x=>x>0).sort((a,b)=>a-b);
+  const ref=hist.length?(hist.length%2?hist[(hist.length-1)/2]
+    :Math.round((hist[hist.length/2-1]+hist[hist.length/2])/2)):0;
+  const d=today-yest;
+  const sign=d>0?'+':(d<0?'-':'');
+  const ok=yest>=1048576&&(!ref||yest*5>=ref);
+  let t,c;
+  if(!ok){
+    t=d===0?'без изменений':sign+fmtBytes(Math.abs(d));
+    c=d>0?'up':(d<0?'down':'flat');
+    el.title='Вчера '+fmtBytes(yest)+(ref?' · типичный день '+fmtBytes(ref):'')
+      +' — база тихая, поэтому показываем прибавку в байтах, а не отношение';
+  }else if(d===0){
+    t='без изменений';c='flat';
+    el.title='Сегодня столько же, сколько вчера: '+fmtBytes(yest);
+  }else{
+    const pc=Math.round(d/yest*100);
+    if(pc>=1000){t='×'+Math.max(1,Math.round(today/yest));c='up';}
+    else{t=(pc>0?'+':'')+pc+'%';c=pc>0?'up':(pc<0?'down':'flat');}
+    el.title='Прибавка '+sign+fmtBytes(Math.abs(d))+' к вчерашнему '+fmtBytes(yest);
+  }
+  el.textContent=t;el.className='kpi-delta '+c;
+}
 function fmtUptime(s){
   s=Math.max(0,Math.floor(Number(s)||0));
   const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
@@ -7239,13 +7823,7 @@ async function loadDashboard(){
       $('dOnlineTot').textContent='/ '+d.clients;
       $('dToday').textContent=fmtBytes(d.today||0);
       const dl=$('dTodayDelta');
-      if(dl){
-        if(d.yesterday>0){
-          const pc=Math.round(((d.today-d.yesterday)/d.yesterday)*100);
-          dl.textContent=(pc>0?'+':'')+pc+'%';
-          dl.className='kpi-delta '+(pc>0?'up':(pc<0?'down':'flat'));
-        }else{dl.textContent='';dl.className='kpi-delta';}
-      }
+      if(dl){dashDelta(dl,d.today||0,d.yesterday||0,d.days||[]);}
       $('dTodaySub').textContent='неделя: '+fmtBytes(d.week||0)+' · месяц: '+fmtBytes(d.month||0)+(d.bans?' · банов: '+d.bans:'');
       renderDashProtos(d.protos||[]);
       drawDashChart(d.days||[]);
@@ -7289,7 +7867,7 @@ function renderPay(){
     '<div style="display:flex;gap:10px;align-items:center;padding:6px 2px;border-bottom:1px solid rgba(128,128,128,.15)"><b>'+escapeHtml(p.title)+'</b><span class=mut style="font-size:12px">'+(p.days>0?p.days+' дн.':'')+(p.days>0&&p.gb>0?' · ':'')+(p.gb>0?p.gb+' ГБ':'безлимит')+(p.reset?' · сброс трафика':'')+(p.shop?' · 🛒 витрина':' · не в витрине')+'</span><span style="margin-left:auto;font-weight:700;white-space:nowrap">'+p.price+' '+escapeHtml(p.currency)+'</span><button class="tiny danger" onclick="payPlanDel(\''+jsStr(p.id)+'\')">✕</button></div>').join('')
     :'<p class=mut>Тарифов пока нет — добавь первый ниже.</p>';
   $('payPlanSel').innerHTML=d.plans.map(p=>'<option value="'+escapeHtml(p.id)+'">'+escapeHtml(p.title)+' — '+p.price+' '+escapeHtml(p.currency)+'</option>').join('')||'<option>—</option>';
-  $('paySubSel').innerHTML=(d.subs||[]).map(s=>'<option value="'+escapeHtml(s.token)+'">'+escapeHtml(s.name||'без имени')+' · '+(s.expiry?new Date(s.expiry*1000).toLocaleDateString():'бессрочно')+'</option>').join('')||'<option value="">нет клиентов</option>';
+  $('paySubSel').innerHTML=(d.subs||[]).map(s=>'<option value="'+escapeHtml(s.token)+'">'+escapeHtml(s.name||'без имени')+' · '+(s.expiry?fmtZ(s.expiry,'d'):'бессрочно')+'</option>').join('')||'<option value="">нет клиентов</option>';
   renderPayInvs();
 }
 function renderPayInvs(){
@@ -7297,7 +7875,7 @@ function renderPayInvs(){
   if(!d.invoices.length){el.innerHTML='<p class=mut>Счетов ещё не было.</p>';return;}
   el.innerHTML=d.invoices.map(v=>{
     const st=v.applied?'✅ оплачено':(v.status==='paid'?'⚠️ не применено':'⏳ ожидает');
-    const dt=v.created?new Date(v.created*1000).toLocaleString():'';
+    const dt=v.created?fmtZ(v.created,'dt'):'';
     let btns='<a class="tiny sec" style="text-decoration:none;padding:3px 8px;border-radius:6px;border:1px solid rgba(128,128,128,.4)" target=_blank href="/pay/i/'+v.id+'">Открыть</a> ';
     if(!v.applied)btns+='<button class="tiny sec" onclick="payConfirm(\''+jsStr(v.id)+'\')">Подтвердить</button> ';
     if(!v.applied&&(v.provider==='cryptobot'||v.provider==='yookassa'))btns+='<button class="tiny sec" onclick="payCheck(\''+jsStr(v.id)+'\')">Проверить</button>';
@@ -7598,6 +8176,19 @@ async function deleteLogo(){
   await loadTheme();
   toast('Логотип удалён','ok');
 }
+// #170: живые порты прокси, которые панель берёт сама. Кнопка подставляет их в поле,
+// чтобы оператор видел, что уже под защитой, и дописывал только своё.
+let _synfixAuto=[];
+function synfixTakeLive(){
+  const el=$('synfixPorts'); if(!el) return;
+  if(!_synfixAuto.length){el.value='';$('netMsg')&&($('netMsg').textContent=
+    'Живых портов прокси сейчас нет — слушатель MTProto не поднят, а маршрут на :443 выключен');
+    return;}
+  const have=(el.value||'').split(/[,;\s]+/).filter(x=>x);
+  el.value=_synfixAuto.filter(p=>have.indexOf(String(p))<0).concat(have).join(', ');
+  $('netMsg')&&($('netMsg').textContent='Подставлены живые порты прокси: '+_synfixAuto.join(', ')+
+    '. Не забудьте «Сохранить»');
+}
 async function loadNetworkSettings(){
   try{
     const r=await api('/api/network/settings');
@@ -7617,12 +8208,21 @@ async function loadNetworkSettings(){
     if(r.f2b_window_min)$('f2bWindow').value=r.f2b_window_min;
     if(r.f2b_ban_hours)$('f2bBanHrs').value=r.f2b_ban_hours;
     if(r.synfix_enabled!==undefined)$('synfixEnabled').checked=!!r.synfix_enabled;
+    if(r.synfix_ports!==undefined&&$('synfixPorts'))$('synfixPorts').value=r.synfix_ports||'';
+    _synfixAuto=r.synfix_ports_auto||[];
     const sf=$('synfixState');
-    if(sf)sf.textContent=r.synfix_port_live?('· сейчас защищён :'+r.synfix_port_live):(r.synfix_enabled===false?'· выключена':'· нет публичного MTProto-порта');
+    if(sf){
+      const live=(r.synfix_ports_live||[]).length?(r.synfix_ports_live):
+                 (r.synfix_port_live?[r.synfix_port_live]:[]);
+      sf.textContent=live.length?('· защищаются :'+live.join(', ')+
+        (r.synfix_ports_want&&r.synfix_ports_want.join(',')!==live.join(',')?
+          ' · панель пересоберёт на :'+r.synfix_ports_want.join(','):''))
+        :(r.synfix_enabled===false?'· выключена':'· нет живых портов прокси');
+    }
     if(r.metrics_token!==undefined)$('metricsToken').value=r.metrics_token;
     const rs=r.rulesets||{};
     let _rs='rule-sets: ';
-    if(rs.updated)_rs+='обновлены '+new Date(rs.updated*1000).toLocaleDateString('ru-RU')+' (ru '+(rs.tag_ru||'?')+', ir '+(rs.tag_ir||'?')+')';
+    if(rs.updated)_rs+='обновлены '+fmtZ(rs.updated,'d')+' (ru '+(rs.tag_ru||'?')+', ir '+(rs.tag_ir||'?')+')';
     else _rs+='ещё не загружены (первая загрузка до ~1 мин после старта)';
     if(rs.error)_rs+=' · ошибка: '+rs.error;
     $('rsState').textContent=_rs;
@@ -7633,7 +8233,7 @@ async function loadNetworkSettings(){
       Object.keys(gf).forEach(k=>{const v=gf[k]||{};age.push(k.replace('.dat','')+': '+(v.age_days!=null?v.age_days+' дн.':'нет файла'));});
       let _g='базы Xray — '+(age.join(' · ')||'?');
       if(g.tag)_g+=' · свежий релиз '+g.tag;
-      if(g.updated)_g+=' · проверка '+new Date(g.updated*1000).toLocaleDateString('ru-RU');
+      if(g.updated)_g+=' · проверка '+fmtZ(g.updated,'d');
       if(g.reloaded===false)_g+=' · Xray их ещё не перечитал (нужен перезапуск)';
       if(g.error)_g+=' · ошибка: '+g.error;
       $('geoState').textContent=_g;
@@ -7729,6 +8329,10 @@ async function saveNetworkSettings(){
     // Не отправляй поле, если чекбокса на странице нет: false вместо «ничего»
     // молча выключало обход РФ и перезапускало Xray после любого «Сохранить».
     if(rb) body.ru_bypass = rb.checked;
+    // Пустая строка означает «ручных портов нет», поэтому поле отправляем всегда,
+    // если оно есть на странице.
+    const sfpEl = $('synfixPorts');
+    if (sfpEl) body.synfix_ports = sfpEl.value.trim();
     const r=await api('/api/network/settings',{method:'POST',body:JSON.stringify(body)});
     if(r.ok){
       if(r.restarting){
@@ -7999,8 +8603,8 @@ function renderLoginHist(items,rows){
 function renderSessionsList(items,rows){
   rows.innerHTML = (items||[]).map(s=>{
     const cur=s.current?' (текущая)':'';
-    const createdStr = s.created ? new Date(s.created).toLocaleString('ru-RU') : '';
-    const expStr = s.expires ? new Date(s.expires*1000).toLocaleDateString('ru-RU') : '';
+    const createdStr = s.created ? fmtZ(s.created,'dt') : '';
+    const expStr = s.expires ? fmtZ(s.expires,'d') : '';
     return `<tr><td style=word-break:break-all>${escapeHtml((s.sid||s.token||'').slice(0,12))}${cur?`<b style=color:var(--ok)>${cur}</b>`:''}</td>`+
       `<td>${escapeHtml(s.ip||'')}</td>`+
       `<td title="${escapeHtml(s.ua||'')}">${escapeHtml((s.ua||'').slice(0,50))}</td>`+
