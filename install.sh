@@ -306,12 +306,22 @@ import json, hashlib, os, secrets, sys
 CFG = "/opt/vpnpanel/config.json"
 LOG = "/opt/vpnpanel/FIRST-LOGIN.txt"
 panel_port = int(sys.argv[1])
-login = "admin"
+login = (os.environ.get("VEIL_PANEL_LOGIN") or "").strip() or "admin"
 salt  = secrets.token_hex(16)
 pw    = secrets.token_urlsafe(12)
 h     = "pbkdf2_sha256$300000$" + hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 300000).hex()
+cfg = {"login": login, "salt": salt, "pass_hash": h, "panel_port": panel_port}
+# VEIL_DOMAIN и VEIL_EMAIL — необязательные подсказки оператора: домен панели и почта
+# для выпуска сертификата. Секретов здесь нет и быть не должно: токены dns и пароли
+# панель берёт из своих полей настроек, а не из окружения.
+dom = (os.environ.get("VEIL_DOMAIN") or "").strip().lower().strip(".")
+if dom and "." in dom:
+    cfg["panel_domain"] = dom
+mail = (os.environ.get("VEIL_EMAIL") or "").strip()
+if "@" in mail:
+    cfg["cert_email"] = mail
 with open(CFG, "w") as f:
-    json.dump({"login": login, "salt": salt, "pass_hash": h, "panel_port": panel_port}, f, indent=2)
+    json.dump(cfg, f, indent=2)
 os.chmod(CFG, 0o600)
 with open(LOG, "w") as f:
     f.write(f"login:    {login}\npassword: {pw}\n")
@@ -342,7 +352,7 @@ step_6_finish() {
 }
 
 show_panel_info_internal() {
-  local ip
+  local ip _d
   ip="${SERVER_IP:-$(curl -fsSL --max-time 5 "$IPIFY" 2>/dev/null || echo 'SERVER_IP')}"
   
   if [ -f /opt/vpnpanel/config.json ]; then
@@ -364,6 +374,11 @@ show_panel_info_internal() {
   echo -e "${C_B}  Veil v${_pv} - $(T "информация о панели" "panel information")${C_N}"
   echo -e "${C_B}================================================================${C_N}"
   echo -e "  $(T "Адрес панели (URL)" "Panel URL"):  ${C_B}http://${ip}:${PANEL_PORT}${C_N}"
+  _d="$(python3 -c 'import json;print(json.load(open("/opt/vpnpanel/config.json")).get("panel_domain",""))' 2>/dev/null)"
+  if [ -n "$_d" ]; then
+    echo -e "  $(T "Домен (из VEIL_DOMAIN)" "Domain (from VEIL_DOMAIN)"):  ${C_G}${_d}${C_N}"
+  fi
+  echo -e "  $(T "Дальше: откройте панель и нажмите «⚡ Автонастройку» — она выпустит поддомены, сертификат и переведёт входы на порт 443" "Next: open the panel and press Auto-setup — it issues subdomains, a certificate and moves entries to port 443")"
   echo
   if [ -f /opt/vpnpanel/FIRST-LOGIN.txt ]; then
     local _L _P
