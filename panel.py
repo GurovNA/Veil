@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.1"
+VERSION = "2.17.2"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -3032,9 +3032,10 @@ def _inbound(proto, inb):
             for c in cs], "decryption": "none"}
     elif proto.startswith("vmess"):
         ib["protocol"] = "vmess"
+        # #239: вторая запись на общем идентификаторе — не второй клиент ядра
         ib["settings"] = {"clients": [
             {"id": c["uuid"], "alterId": 0, "email": c["uuid"]}
-            for c in cs]}
+            for c in _uniq_uuid(cs)], "decryption": "none"}
     else:
         ib["protocol"] = "vless"
         if "flow" in inb:
@@ -3043,7 +3044,7 @@ def _inbound(proto, inb):
             flow = "xtls-rprx-vision" if proto == "reality" else ""
         ib["settings"] = {"clients": [
             {"id": c["uuid"], "flow": flow, "email": c["uuid"]}
-            for c in cs],
+            for c in _uniq_uuid(cs)],
             "decryption": "none"}
     ib["streamSettings"] = _stream_settings(proto, inb)
     return _deep_merge(ib, inb.get("_adv_ib"))
@@ -3051,6 +3052,23 @@ def _inbound(proto, inb):
 _INBOUND_EDIT_KEYS = ("sni", "snis", "dest", "sid", "sids", "path", "host",
                       "service", "mode", "alpn", "sniff", "flow", "mtu",
                       "_adv", "_adv_ib")
+
+
+def _uniq_uuid(cs):
+    """Записи с одним идентификатором — один раз (#239).
+
+    Вторая `vless`-конфигурация того же человека несёт тот же ключ: ядру она
+    не нужна дважды, различие живёт на стороне ссылки (адрес входа). Для
+    протоколов с собственным ключом на запись (`trojan`, `hysteria2`, туннели)
+    это не применяется — там записи различаются самим ядром."""
+    seen = set()
+    out = []
+    for c in cs:
+        if c["uuid"] in seen:
+            continue
+        seen.add(c["uuid"])
+        out.append(c)
+    return out
 
 def _inbound_public(proto, inb):
     """Безопасное для UI представление точечных настроек inbound (без приватных ключей)."""
@@ -4319,6 +4337,11 @@ def _subs_summary(st, for_display=False):
                     u["links"][proto] = _link(inb, host, c, proto)
                 except Exception:
                     pass
+                # сколько конфигураций этого протокола у человека (#239): вторая
+                # запись `wireguard` — не опечатка состояния, а второй туннель,
+                # и личная страница обязана дать кнопку скачивания каждой
+                cn = u.setdefault("conf_n", {})
+                cn[proto] = cn.get(proto, 0) + 1
                 if proto == "wireguard":
                     u["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{key}"
                 if proto == "amneziawg":
@@ -4575,14 +4598,27 @@ def _link(inb, host, client, proto, std=False):
     исторический формат, который понимают Happ/Shadowrocket/v2rayNG."""
     meta = _proto_meta(proto)
     host = _pub_host(inb, host, proto)
+    # #239: вторая запись на общем ключе несёт свой адрес входа. Ссылка строится
+    # на него, а sni остаётся доменным — сертификат и политика SNI у входа одна
+    # на все адреса, различается только сетевой путь.
+    _dom = host
+    _port = _pub_port(inb)
+    _ep = str(client.get("ep_host") or "").strip()
+    if _ep:
+        host = _ep
+        _bare = _ep.strip("[]")
+        _tail = "IPv6" if ":" in _bare else ("IPv4" if re.fullmatch(r"[0-9.]+", _bare) else _ep)
+    _ep_port = client.get("ep_port")
+    if _ep_port:
+        _port = int(_ep_port)
     fp = _fp()
     _base = client.get("name") or "Veil"
-    name = f"{_base} · {meta['label']}"
+    name = f"{_base} · {meta['label']}" + (f" · {_tail}" if _ep else "")
     if proto == "hysteria2":
         dom = (CFG_CACHE.get("panel_domain") or "").strip() or host
         auth = client.get("auth") or client["uuid"]
         q = urllib.parse.urlencode({"sni": dom})
-        return f"hy2://{auth}@{host}:{_pub_port(inb)}/?{q}#{urllib.parse.quote(name)}"
+        return f"hy2://{auth}@{host}:{_port}/?{q}#{urllib.parse.quote(name)}"
     if proto == "amneziawg":
         jk = AWG_JUNK
         cli_junk = ("\n"
@@ -4624,18 +4660,18 @@ def _link(inb, host, client, proto, std=False):
     if proto.startswith("shadowsocks"):
         cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
         raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
-        return f"ss://{raw}@{host}:{inb['port']}#{urllib.parse.quote(name)}"
+        return f"ss://{raw}@{host}:{_port}#{urllib.parse.quote(name)}"
     if proto.startswith("vmess"):
         add = host.strip("[]")
         if std:
-            p = {"v": "2", "ps": name, "add": add, "port": _pub_port(inb),
+            p = {"v": "2", "ps": name, "add": add, "port": _port,
                  "id": client["uuid"], "aid": "0", "scy": "auto",
                  "net": meta["net"], "type": "none", "host": inb.get("host") or "",
                  "path": (inb.get("path") or "/veil") if meta["net"] == "ws"
                          else ((inb.get("service") or "veil") if meta["net"] == "grpc" else ""),
                  "tls": "tls" if meta["tls"] else ""}
             if meta["tls"]:
-                p["sni"] = host; p["fp"] = fp
+                p["sni"] = _dom; p["fp"] = fp
             if meta["net"] == "grpc":
                 # gRPC говорит по HTTP/2; без явного alpn=h2 свежие ядра приложений
                 # могут согласовать http/1.1 и молча не открыть соединение.
@@ -4645,7 +4681,7 @@ def _link(inb, host, client, proto, std=False):
          # транспорт: путь/хост/сервис берём настоящие из входа, иначе после
          # правки path подписчик на обычном/base64-импорте молча получает 404,
          # тогда как INCY и sing-box у него работают (и вина кажется случайной).
-        p = {"v": "2", "ps": name, "add": add, "port": int(_pub_port(inb)), "id": client["uuid"],
+        p = {"v": "2", "ps": name, "add": add, "port": _port, "id": client["uuid"],
              "aid": "0", "scy": "auto", "net": meta["net"], "type": "none",
              "host": inb.get("host") or "",
              "path": (inb.get("path") or "/veil") if meta["net"] == "ws"
@@ -4654,7 +4690,7 @@ def _link(inb, host, client, proto, std=False):
         # allowInsecure НЕ добавляем: сертификат валидный LE, а свежие ядра
         # (Happ 5.9+, INCY) удалили флаг и роняют весь vmess-JSON при его виде.
         if meta["tls"]:
-            p["sni"] = host; p["fp"] = fp
+            p["sni"] = _dom; p["fp"] = fp
         if meta["net"] == "grpc":
             p["alpn"] = "h2"
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
@@ -4692,13 +4728,13 @@ def _link(inb, host, client, proto, std=False):
     elif meta["tls"]:
         # allowInsecure нигде не ставим: сертификат валидный LE, а свежие ядра
         # Xray (Happ 5.9+ и INCY) удалили флаг и отвергают ссылку целиком.
-        qparts.update({"security": "tls", "sni": host, "fp": fp})
+        qparts.update({"security": "tls", "sni": _dom, "fp": fp})
         if meta["net"] in ("xhttp", "splithttp"):
             qparts["alpn"] = "h2,http/1.1"
     else:
         qparts["security"] = "none"
     q = urllib.parse.urlencode(qparts)
-    return f"{scheme}{host}:{_pub_port(inb)}?{q}#{urllib.parse.quote(name)}"
+    return f"{scheme}{host}:{_port}?{q}#{urllib.parse.quote(name)}"
 
 # ---------- экспорт / импорт подписчиков (B2) ----------
 # Два формата обмена между панелями:
@@ -5614,14 +5650,24 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
         # что AmneziaWG ниже: для sing-box узла просто нет.
         return None
     host = _pub_host(inb, host, proto)
+    # #239: адрес входа из самой записи — тот же смысл, что в `_link`: соединение
+    # идёт на литерал, а домен остаётся в `server_name`.
+    _dom = host
+    _ep = str(c.get("ep_host") or "").strip()
+    if _ep:
+        host = _ep
     fp = _fp()
     base = c.get("name") or "Veil"
     tag = f"{base} · {meta['label']}"
-    port = int(_pub_port(inb))
+    if _ep:
+        _bare = _ep.strip("[]")
+        _tail = "IPv6" if ":" in _bare else ("IPv4" if re.fullmatch(r"[0-9.]+", _bare) else _ep)
+        tag += " · " + _tail
+    port = int(c.get("ep_port") or _pub_port(inb))
     def _tls():
         if not meta["tls"]:
             return {"enabled": False}
-        return {"enabled": True, "server_name": host,
+        return {"enabled": True, "server_name": _dom,
                 "utls": {"enabled": True, "fingerprint": fp}}
     def _transport():
         if meta["net"] == "ws":
@@ -6997,14 +7043,23 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     wg_url = f"{_pb(host, panel_port)}/api/wgconf/{tok}"
     awg_url = f"{_pb(host, panel_port)}/api/awgconf/{tok}"
     conf_blocks = []
-    if wg_conf:
-        conf_blocks.append('<a class="btn-conf" href="' + _esc(wg_url) + '" download>'
-                           '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
-                           'WireGuard · .conf</a>')
-    if awg_conf:
-        conf_blocks.append('<a class="btn-conf" href="' + _esc(awg_url) + '" download>'
-                           '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'
-                           'AmneziaWG · .conf</a>')
+    # по кнопке скачивания на каждую конфигурацию туннеля (#239): оператор завёл
+    # человеку два `wireguard` — на странице их тоже два, а не «первая, остальные молча»
+    _cn = u.get("conf_n") or {}
+    for _pr, _url, _lab, _svg in (
+            ("wireguard", wg_url, "WireGuard · .conf",
+             '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>'),
+            ("amneziawg", awg_url, "AmneziaWG · .conf",
+             '<svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>')):
+        _k = int(_cn.get(_pr) or 0)
+        for i in range(1, _k + 1):
+            conf_blocks.append('<a class="btn-conf" href="' + _esc(_url + ("" if i == 1 else "/" + str(i)))
+                               + '" download>' + _svg
+                               + (_lab if i == 1 else _lab.replace(" ·", " %d ·" % i)) + '</a>')
+        if not _k and links.get(_pr):
+            # конфигурацию видят по ссылке, а счётчик промолчал — не терять кнопку
+            conf_blocks.append('<a class="btn-conf" href="' + _esc(_url) + '" download>'
+                               + _svg + _lab + '</a>')
     if u.get("sb_url"):
         conf_blocks.append('<a class="btn-conf" href="' + _esc(u["sb_url"]) + '">'
                            '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg>'
@@ -7873,6 +7928,95 @@ def _client_name_input(raw):
     if len(nm) > _NAME_MAX:
         raise _BodyError("имя подписчика длиннее %d символов" % _NAME_MAX)
     return nm
+
+
+_ADD_N_MAX = 8    # сколько конфигураций одного протокола за раз и всего на человека
+_ADD_CALL_MAX = 16  # записей за один вызов — предел против случайного «8 × все 17»
+
+
+def _proto_dup(pr):
+    """Чем вторая запись протокола отличается от первой: `cred` — собственным
+    ключом записи, `ep` — точкой входа (адресом ссылки).
+
+    Продолжение дефекта #228 (#239): у человека уже есть `wireguard`, и ему нужен
+    второй туннель — на другом телефоне, для другой задачи. У туннельных протоколов
+    пара ключей, у `trojan` — пароль, у `hysteria2` — строка авторизации: всё это
+    лежит в самой записи, поэтому вторая запись даёт вторую ОТДЕЛЬНУЮ ссылку.
+    У `vless`/`vmess`/`reality` ссылку несёт идентификатор подписчика, у `shadowsocks`
+    — общий пароль входа: там вторая запись обязана нести ДРУГОЙ АДРЕС входа
+    (`ep_host`), иначе она повторила бы первую ссылку байт в байт. Входов, где
+    нельзя ни того ни другого, панель не множит — отказ называется на месте правки."""
+    p = str(pr or "")
+    if p in ("wireguard", "amneziawg", "hysteria2") or p.startswith("trojan"):
+        return "cred"
+    if (p.startswith("vless") or p.startswith("vmess") or p == "reality"
+            or p.startswith("shadowsocks")):
+        return "ep"
+    return ""
+
+
+def _proto_multi(pr):
+    return bool(_proto_dup(pr))
+
+
+def _is_pub4(s):
+    """Наружный ли IPv4. Петлевой, частных сетей и туннельных интерфейсов
+    (`awg0`, `veilwg`, `tgw0`) в ссылке быть не может: клиент поедет в свою
+    собственную подсеть и молча не поднимет соединение."""
+    try:
+        o = [int(x) for x in str(s or "").split(".")]
+    except ValueError:
+        return False
+    if len(o) != 4 or not all(0 <= x <= 255 for x in o):
+        return False
+    a, b = o[0], o[1]
+    return not (a in (0, 10, 127) or a >= 224 or (a == 172 and 16 <= b <= 31)
+               or (a == 192 and b == 168))
+
+
+def _ep_variants(inb):
+    """Различные адреса одного входа — чем вторая `vless`-ссылка отличается от первой.
+
+    Первый вариант — обычный адрес ссылки (в записи пометы нет). Дальше — прямые
+    IPv6 и IPv4 машины на том же порту: узел слушает оба стека и на портах входов,
+    и на :443, а TLS-политика входа при адресе-литерале не меняется: `_link`
+    кладёт в sni обычный домен, а не литерал — соединение различается только
+    сетевым путём. Маску `vpn.<база>` отдельным адресом не кладём: для
+    переведённого входа это и есть обычный адрес, а для обычного база и маска
+    резолвятся в те же литералы. Второй ПОРТ для того же входа на этом узле
+    не открывается (вход слушает ровно свой порт), поэтому порты различаются
+    между протоколами, а внутри протокола — адрес."""
+    out = [("", 0)]
+    port = _pub_port(inb)
+    v6 = (_my_ipv6() or "").strip()
+    v4 = (_my_ip() or "").strip()
+    if v6:
+        out.append(("[" + v6 + "]", port))
+    if v4 and _is_pub4(v4):
+        out.append((v4, port))
+    return out
+
+
+def _rec_mark(proto, c):
+    """Различник записей внутри одного протокола — по собственному ключу записи,
+    а где ключ общий — по точке входа.
+
+    Сборщик подписки раньше клал ссылки в словарь по протоколу: «у клиента на
+    каждый протокол одна ссылка» (#228). С второй конфигурацией `wireguard` та
+    мера молча выбросила бы её из выдачи — телефон получил бы один туннель там,
+    где оператор завёл два. Различник выбирает то, что отличает записи ДЕЙСТВИТЕЛЬНО:
+    публичный ключ туннеля, пароль, строку авторизации; где ключ общий — адрес
+    входа из `ep_host`; за неимением и его — идентификатор."""
+    ep = str(c.get("ep_host") or "").strip()
+    if proto in ("wireguard", "amneziawg"):
+        m = str(c.get("client_public_key") or c.get("uuid") or "")
+    elif str(proto or "").startswith("trojan"):
+        m = str(c.get("password") or c.get("uuid") or "")
+    elif proto == "hysteria2":
+        m = str(c.get("auth") or c.get("uuid") or "")
+    else:
+        m = str(c.get("uuid") or "")
+    return m + ("|" + ep if ep else "")
 
 
 def _new_client(name, proto=None, inb=None, **kw):
@@ -10585,6 +10729,203 @@ def _tail_lines(path, count):
         ls = ls[1:]
     return ls[-count:]
 
+# ============ Остаток credential-форм на НОСИТЕЛЕ журнала (#229) ============
+# Ручка «Логи» сворачивает credential при ЧТЕНИИ (в стоке `/api/logs`:
+# `_audit_redact` со строгим разделителем), а `LogFilterPatterns` (#217) стоит на
+# конвейере systemd и не даёт НОВЫМ строкам лечь ни в journald, ни в копию rsyslog. Про строки, которые
+# уже лежат на диске, он не делает ничего. Замер 07.10 на этой машине:
+# `journalctl -u telemt` за всё окно (9932 строк) — `0` форм, а `/var/log/syslog` —
+# `1374` (04.10 — `706`, 05.10 — `498`, 06.10 — `170`, сегодня `0`) плюс `218` в
+# `syslog.1.gz`; писатель `100`% — `telemt` (баннер `MAESTRO`). То есть «фильтр
+# стоит» и «на носителе лежат чужие ключи» были неразличимы: панель молчала, а
+# молчание читалось как ноль.
+#
+# Мера считает ровно то, что панель умеет сворачивать: строка засчитана, если её
+# меняет одним из трёх сворачиваний стока — строгим шаблоном `_LOG_SECRET_RE`,
+# credential до `@` в ссылке подписчика из `_AUDIT_URL_RE` и путь-credential
+# (`/p/<tok>`) из `_AUDIT_TOK_PATH_RE`. Значения не печатаются нигде — только число
+# строк, число строк носителя и имя писателя из третьего поля (формат rsyslog
+# `ISO-8601 хост процесс[пид]:`).
+#
+# Охват совпадает с маской читателя намеренно: мерить двумя сворачиваниями из трёх
+# значило бы назвать чистым носитель, на котором лежат подписочные токены, свёрнутые
+# пока только в окне чтения. Замер 07.10 по всему носителю: путь-credential даёт `0`
+# строк из `1593` — это снятое число, а не молчание.
+#
+# У одного критерия есть цена, и она названа, а не замалчивается: проза вида
+# `key = os.path.join(root, dom, "privkey.pem")` маска сворачивает так же, как чужой
+# ключ, — это тот же класс, что #216 судил по строгости шаблона. На живом носителе
+# этой коробки это `1` строка из `1593`, и её отдаёт писатель: `telemt (1592)`,
+# `python3 (1)`. Делать второй критерий «похоже на ключ или нет» — значит мерить
+# догадкой; число остаётся числом маски, а классы разделяются тем, кто писал строку.
+#
+# Границы меры названы, а не умолчаны: носитель мерится вместе с ротациями
+# (`syslog.N`, `syslog.N.gz`), файл больше `cap` не читается вовсе (`skipped`), а
+# скан, упёршийся в `deadline`, отдаёт `partial` — и по числу прочитанных строк
+# против размера файла видно, что замер частичный, а не что журнал чист. Файлы без
+# полного вердикта собраны в `unread` по именам: `0` при непустом `unread` — это
+# «не прочитано», а не «чисто».
+_LOG_CRED_URL_RE = _AUDIT_URL_RE
+_LOG_CRED_SEP_RE = _LOG_SECRET_RE
+_LOG_CRED_PATH_RE = _AUDIT_TOK_PATH_RE
+_LOG_RESIDUE_TTL = 900.0        # чаще этого носитель не перечитывать: живой опрос вкладки «Логи» идёт каждые 3 с
+_LOG_RESIDUE_CAP = 400 * 1024 * 1024   # файл больше этого не сканируется — это граница меры, а не «чисто»
+# Потолок скана всего носителя снят замером, а не взят «на глазок»: полный проход по
+# живому носителю этой коробки (одно ядро) — `67` с на трёх файлах (`syslog` `11.9` с
+# на `85.6` Мб, `syslog.1.gz` `26.0` с на `6.8` Мб, `syslog.2.gz` `28.6` с на `7.7` Мб).
+# Прежние `60` с резали носитель пополам, и `partial` на последней ротации читался как
+# «пусто». Двойной запас остаётся потолком: упёрся — вердикт `partial`, а не ноль.
+_LOG_RESIDUE_DEADLINE = 120.0
+_LOG_RESIDUE_CACHE = {}
+_LOG_RESIDUE_LOCK = threading.Lock()
+
+
+def _log_carrier(path):
+    """Носитель и его ротации: `/var/log/syslog` + `syslog.N` / `syslog.N.gz`."""
+    out = [path]
+    try:
+        d, b = os.path.dirname(path) or ".", os.path.basename(path)
+        for f in sorted(os.listdir(d)):
+            if f.startswith(b + ".") and (f.endswith(".gz") or
+                                          f[len(b) + 1:].isdigit()):
+                out.append(os.path.join(d, f))
+    except Exception:
+        pass
+    return out
+
+
+def _log_cred_line(line):
+    """Бьёт ли по этой строке то же сворачивание, что стоит в стоке: строгий
+    разделитель, credential до `@` в ссылке подписчика и путь-credential
+    (`/p/<tok>`). Критерий меры совпадает с маской читателя, а не с догадкой о том,
+    что «похоже на ключ»: иначе мера назвала бы чистым носитель, на котором лежит
+    форма, сворачиваемая только в окне чтения."""
+    return (bool(_LOG_CRED_SEP_RE.search(line) or _LOG_CRED_URL_RE.search(line))
+            or bool(_LOG_CRED_PATH_RE.search(line)))
+
+
+def _log_writer(line):
+    """Имя писателя из третьего поля rsyslog (`… процесс[пид]:`), без содержания строки.
+
+    Имя обязано быть стабильным: по нему нога судит, кто пишет. Поэтому снимаются
+    и скобки с pid, и двоеточие — одним шаблоном, а не по очереди с хвоста."""
+    p = line.split(None, 3)
+    if len(p) < 3:
+        return "?"
+    return re.sub(r"(\[[0-9]+\])?:$", "", p[2])[:40] or "?"
+
+
+def _log_residue_scan_one(path, deadline):
+    """Потоковый счётчик по одному файлу: формы, строки, писатели. Нечитаемый файл —
+    `error`, а не `0`: молчание и пустой носитель различаются числом."""
+    st = {"path": path, "forms": 0, "lines": 0, "bytes": 0, "writers": {}, "sec": 0.0,
+          "partial": False, "skipped": False, "error": ""}
+    try:
+        sz = os.path.getsize(path)
+    except Exception as e:
+        st["error"] = type(e).__name__
+        return st
+    st["bytes"] = sz
+    if sz > _LOG_RESIDUE_CAP:
+        st["skipped"] = True
+        return st
+    opener = (lambda: gzip.open(path, "rt", errors="replace")) \
+        if path.endswith(".gz") else (lambda: open(path, "rt", errors="replace"))
+    try:
+        started = time.time()
+        with opener() as f:
+            for line in f:
+                st["lines"] += 1
+                if _log_cred_line(line):
+                    st["forms"] += 1
+                    w = _log_writer(line)
+                    st["writers"][w] = st["writers"].get(w, 0) + 1
+                if time.time() - started > deadline:
+                    st["partial"] = True
+                    break
+    except Exception as e:
+        st["error"] = type(e).__name__
+    return st
+
+
+def _log_residue_scan(path, files, sig):
+    """Скан носителя: складывает счётчики по файлам и складывает результат в кэш.
+    В потоке запроса не вызывается никогда — см. `_log_residue`.
+
+    Остаток бюджета делится поровну между файлами, которые ещё не читались, а не
+    по их размеру: размер про работу не говорит — развёрнутый `syslog` стоит
+    `0.14` с на Мб, а сжатая ротация `3.8` с на Мб, то есть в `27` раз дороже.
+    Доля по байтам отдавала бы почти всё живому файлу и резала ротации."""
+    res = {"files": [], "forms": 0, "lines": 0, "writers": {}, "measured": int(time.time()),
+           "partial": False, "skipped": False, "error": "", "measuring": False,
+           "elapsed_s": 0.0, "unread": []}
+    started = time.time()
+    for i, p in enumerate(files):
+        left = _LOG_RESIDUE_DEADLINE - (time.time() - started)
+        one_t0 = time.time()
+        one = _log_residue_scan_one(p, max(0.5, left / (len(files) - i)))
+        one["sec"] = round(time.time() - one_t0, 1)
+        res["files"].append(one)
+        res["forms"] += one["forms"]
+        res["lines"] += one["lines"]
+        for w, n in one["writers"].items():
+            res["writers"][w] = res["writers"].get(w, 0) + n
+        res["partial"] = res["partial"] or one["partial"]
+        res["skipped"] = res["skipped"] or one["skipped"]
+        if one["error"]:
+            res["error"] = (res["error"] + " " + one["error"]).strip()
+        # файл без полного вердикта не даёт сказать «чисто»: он не прочитан
+        if one["partial"] or one["skipped"] or one["error"]:
+            res["unread"].append(os.path.basename(p))
+        if time.time() - started >= _LOG_RESIDUE_DEADLINE:
+            res["partial"] = True
+            break
+    res["elapsed_s"] = round(time.time() - started, 1)
+    with _LOG_RESIDUE_LOCK:
+        _LOG_RESIDUE_CACHE[path] = {"ts": time.time(), "sig": sig, "res": res, "busy": False}
+
+
+def _log_residue(path):
+    """Остаток credential-форм на носителе: {'forms': N, 'lines': N, 'writers': {имя: N},
+    'files': [...], 'unread': [имя файла], 'measured': ts, 'elapsed_s': N,
+    'partial': bool, 'skipped': bool, 'error': str, 'measuring': bool,
+    'stale': bool, 'age_s': N}.
+
+    Скан идёт в отдельном потоке и никогда в потоке запроса: живой носитель этой
+    коробки — `90` Мб, и мерка, снятая в запросе за `4` с, дочитывала `5` % и
+    называлась `partial`, то есть отвечала на вопрос оператора нечислом. Первый
+    вызов поэтому ничего не знает и честно говорит `measuring` с `forms=None`:
+    молчание и «ноль» — разные вердикты, а не одно состояние. Дальше работает `TTL`:
+    вкладка «Логи» опрашивается каждые `3` с, а носитель за это время успевает
+    вырасти, и перечитывать его на каждый опрос — значит мерить глазами одна и та
+    же строку."""
+    files = _log_carrier(path)
+    try:
+        sig = tuple((p, os.path.getsize(p), int(os.path.getmtime(p))) for p in files)
+    except Exception:
+        sig = tuple(files)
+    now = time.time()
+    with _LOG_RESIDUE_LOCK:
+        ent = _LOG_RESIDUE_CACHE.get(path)
+        if ent:
+            out = dict(ent["res"])
+            out.update(stale=(ent["sig"] != sig), age_s=int(now - ent["ts"]),
+                       busy=bool(ent.get("busy")))
+            if ent.get("busy") or now - ent["ts"] < _LOG_RESIDUE_TTL:
+                return out
+            known, ts, old_sig = ent["res"], ent["ts"], ent["sig"]
+        else:
+            known = {"files": [], "forms": None, "lines": 0, "writers": {},
+                     "measured": 0, "partial": False, "skipped": False,
+                     "error": "", "measuring": True, "unread": [], "elapsed_s": 0.0}
+            ts, old_sig = now, sig
+        _LOG_RESIDUE_CACHE[path] = {"ts": ts, "sig": old_sig, "res": known, "busy": True}
+    threading.Thread(target=_log_residue_scan, args=(path, files, sig), daemon=True).start()
+    out = dict(known)
+    out.update(stale=(old_sig != sig), age_s=0, busy=True)
+    return out
+
+
 # ================= Passkeys (WebAuthn): Face ID / Touch ID =================
 # Самодостаточная реализация без внешних зависимостей: минимальный декодер CBOR
 # и проверка ECDSA P-256 (ES256) на чистом Python. Регистрация — TOFU: ключ
@@ -11002,6 +11343,8 @@ def _perm_for(p, m):
     if p.startswith("/api/ssh/port"):
         return ["owner"]
     if p.startswith("/api/ai"):
+        return ["owner"]
+    if p.startswith("/api/flux"):
         return ["owner"]
     if p.startswith("/api/pay"):
         return ["pay"]
@@ -11432,6 +11775,27 @@ def _scrub(text, *secrets):
             out = out.replace(s, "[скрыто]")
     return out
 
+def _boot_askpass_sweep(keep_seconds=600):
+    """Убрать заглушки за убитыми прогонами. Живёт ровно время запуска `ssh`; процесс,
+    у которого отняли жизнь по бюджету, удалить её не может. На этой коробке замерено
+    `94` таких файла и `0` держателей. Свой файл свежее границы, поэтому не чинится."""
+    gone = 0
+    try:
+        now = time.time()
+        with os.scandir(tempfile.gettempdir()) as it:
+            for e in it:
+                if not e.name.startswith(".vpw"):
+                    continue
+                try:
+                    if e.is_file(follow_symlinks=False) and now - e.stat().st_mtime > keep_seconds:
+                        os.unlink(e.path)
+                        gone += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return gone
+
 def _boot_askpass_run(password, argv, timeout=60):
     """Запуск ssh/ssh-copy-id с вводом пароля через SSH_ASKPASS (пароль — только в env)."""
     fd, script = tempfile.mkstemp(prefix=".vpw")
@@ -11440,6 +11804,7 @@ def _boot_askpass_run(password, argv, timeout=60):
     finally:
         os.close(fd)
     os.chmod(script, 0o700)
+    _boot_askpass_sweep()
     env = dict(os.environ)
     env.update(VP_SSH_PASS=password, SSH_ASKPASS=script, SSH_ASKPASS_REQUIRE="force",
                TMPDIR=os.path.dirname(script))
@@ -12467,6 +12832,8 @@ def _tg_dc_complaints(mins=10):
 _TG_DC_TRIES = 6
 _TG_DC_TIMEOUT = 2.0
 _TG_DC_TTL = 900.0
+# Медиа-узел отделяется от основного величиной номера, а не знаком: см. `_tg_dc_media`.
+_TG_MEDIA_DC = 100
 # Потерю подъёма мерим СНАРЯДА, а не в ответе на запрос морды: шесть попыток по два метра
 # на адрес — это секунды, а `/api/tg/dcs` открывается на каждом обновлении вкладки.
 _tg_dc_loss = {"rows": {}, "error": ""}
@@ -12474,18 +12841,39 @@ _tg_dc_loss_lock = threading.Lock()
 
 
 def _tg_dc_endpoints():
-    """Адреса узлов Telegram, с которыми движок работает сам, — из его статистики.
+    """Адреса узлов Telegram, с которыми движок работает сам, — из его статистики и из
+    его же действующего конфига.
 
     Вбитый список запрещён тем же, чем он запрещён для жалоб: адреса Telegram меняются, а
     мерить надо ровно тот путь, которым идёт наша сессия. Исключение — наверх, его читает
-    тик и красит ошибку в снимке, а не в морде."""
+    тик и красит ошибку в снимке, а не в морде.
+
+    Статистика называет тот адрес, который движок использует СЕЙЧАС, и молчит про путь,
+    который он собирается использовать, когда ME не готов: `dc_overrides` живёт в
+    действующем конфиге и в статистику не попадает. Замер 07.10: движок сам SYN-ил на
+    адрес из `dc_overrides` `7` раз подряд без ответа, а панель знала только адрес
+    ME-прокси, — то есть туннель накрывал путь, который не работает, и не накрывал тот,
+    который режется. Конфиг читается у того же живого движка, поэтому список не становится
+    вбитым; ошибка чтения — не авария: мера остаётся по статистике."""
     d = _tg_api("GET", "/v1/stats/dcs").get("data") or {}
     out = []
+    seen = set()
     for x in (d.get("dcs") or []):
         for ep in (x.get("endpoints") or []):
             ep = str(ep).strip()
-            if ep:
+            if ep and (x.get("dc"), ep) not in seen:
+                seen.add((x.get("dc"), ep))
                 out.append((x.get("dc"), ep))
+    try:
+        ov = ((_tg_api("GET", "/v1/config").get("data") or {}).get("dc_overrides") or {})
+    except Exception:
+        ov = {}
+    for dc, eps in (ov.items() if isinstance(ov, dict) else []):
+        for ep in (eps if isinstance(eps, (list, tuple)) else [eps]):
+            ep = str(ep).strip()
+            if ep and (dc, ep) not in seen:
+                seen.add((dc, ep))
+                out.append((dc, ep))
     return out
 
 
@@ -12519,7 +12907,16 @@ def _tg_dc_probe(ep):
 
 
 def _tg_dc_loss_tick():
-    """Один адрес за тик: попыток много, тик общий со страховками, и гнать их вразнобой нельзя."""
+    """Один адрес за тик: попыток много, тик общий со страховками, и гнать их вразнобой нельзя.
+
+    Очередь берёт того, чей замер устарел давнее всех, а не первого по порядку списка
+    движка. Живой замер 07.10: адресов `25`, тик раз в `60` с, срок жизни замера `900` с —
+    это `15` тиков, а полный круг стоит `25` мин. Голова списка устаревает раньше, чем
+    очередь доходит до хвоста, и первый по порядку мерится снова: хвост из `10` адресов за
+    `28` мин не получил ни одного замера, поэтому потеря по резервному пути медиа-кластера
+    оставалась немереной (#222 не подтверждался именно поэтому). Скидку «медиа первыми»
+    эта же фикстура забраковала числом: круг от неё не закрывался, а теряющий адрес из
+    хвоста ждал дольше срока жизни замера."""
     try:
         eps = _tg_dc_endpoints()
     except Exception as e:
@@ -12529,12 +12926,16 @@ def _tg_dc_loss_tick():
     now = time.time()
     with _tg_dc_loss_lock:
         rows = _tg_dc_loss["rows"]
-        stale = [(dc, ep) for dc, ep in eps
-                 if now - float((rows.get(ep) or {}).get("at") or 0) > _TG_DC_TTL]
+        due = []
+        for dc, ep in eps:
+            at = float((rows.get(ep) or {}).get("at") or 0)
+            if now - at > _TG_DC_TTL:
+                due.append((at, dc, ep))
         _tg_dc_loss["error"] = ""
-    if not stale:
+    if not due:
         return
-    dc, ep = stale[0]
+    # ключ один и числовой: номер узла приходит и целым, и строкой, а сравнивать их нельзя
+    _at, dc, ep = min(due, key=lambda t: t[0])
     ok, fail, best = _tg_dc_probe(ep)
     total = ok + fail
     with _tg_dc_loss_lock:
@@ -12542,6 +12943,37 @@ def _tg_dc_loss_tick():
                                    "total": total,
                                    "loss": (round(100.0 * fail / total) if total else None),
                                    "best_ms": best, "at": int(now)}
+
+
+def _tg_dc_num(dc):
+    """Номер узла как число. Строковой порядок (`"-203" < "-5"`) путает медиа с основным."""
+    try:
+        return int(dc)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tg_dc_media(dc):
+    """Медиа-узел или основной. Знак для этого не мерка: у живого движка медиа-узел
+    приходит и под `203`, и под `-203`, а `-1…-5` — семейство основных узлов. Замер
+    07.10: |dc| = 1, 2, 3, 4, 5 и 203 — разрыв измерен, медиа начинаются за `100`.
+    Положительный медиа-узел, отброшенный по знаку, панелью просто не мерился."""
+    n = _tg_dc_num(dc)
+    return n < 0 or abs(n) >= _TG_MEDIA_DC
+
+
+def _tg_dc_size(v):
+    """Сколько элементов в значении строки `/v1/stats/dcs`.
+
+    Форма у движка разная: `endpoints` — список адресов, `available_endpoints` — число.
+    Живой промер 06.10: `int()` на списке ронял всю карту в пустоту, и диагностика
+    врала про «режим не прочитан» там, где движок был совершенно здоров."""
+    if isinstance(v, (list, tuple)):
+        return len(v)
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _tg_dc_loss_view():
@@ -12552,12 +12984,721 @@ def _tg_dc_loss_view():
         err = _tg_dc_loss.get("error") or ""
     for r in rows:
         r["stale"] = (now - float(r.get("at") or 0)) > 2 * _TG_DC_TTL
-    rows.sort(key=lambda r: (str(r.get("dc")), r.get("ep") or ""))
+        r["media"] = _tg_dc_media(r.get("dc"))
+    rows.sort(key=lambda r: (0 if r["media"] else 1, _tg_dc_num(r.get("dc")), r.get("ep") or ""))
     live = [r for r in rows if not r["stale"]]
+    lossy = [r for r in live if (r.get("loss") or 0) >= 20]
     return {"rows": rows,
-            "lossy": [r["ep"] for r in live if (r.get("loss") or 0) >= 20],
+            "lossy": [r["ep"] for r in lossy],
+            "media_lossy": [r["ep"] for r in lossy if r["media"]],
             "healthy": [r["ep"] for r in live if r.get("loss") == 0],
             "error": err, "tries": _TG_DC_TRIES, "ttl": int(_TG_DC_TTL)}
+
+
+# ---------- Медиа-путь: подъём соединений к медиа-узлам через туннель WG ----------
+# Узел Telegram теряет подъём соединений (#183), а медиа-адрес теряет их сильнее всего:
+# живой замер 06.10 — напрямую доходит `19` подъёмов из `40` (медиана `50` мс), через
+# туннель до WARP — `40` из `40` (медиана `36` мс). Вбитый список набора не меняет:
+# адреса берутся из живых замеров тика, а не из-под пера.
+# Таблица маршрутизации своя, правило без селектора: падение звена ядро разворачивает
+# напрямую само (замерено — маршруты гибнут вместе с падением линка, правило переживает
+# его, и трафик уходит как шло). Дефолтный маршрут и DNS коробки не тронуты ни на байт.
+_MR_IF = "tgw0"
+_MR_TBL = "203"
+_MR_PRIO_BASE = 100
+_MR_DIR = "/var/lib/veil-media-route"
+_MR_REG = _MR_DIR + "/reg.json"
+_MR_STATE = f"{BASE}/media_route.json"
+_MR_MTU = "1280"
+_MR_KEEP = "25"
+_MR_ROT = 900.0      # как часто меняем молчаливый аккаунт WARP: облако считает `POST /reg`
+_MR_MAX = 8            # потолок адресов в туннеле: и разумность правил, и бюджет звена
+_MR_LOSS = 20.0        # потеря подъёма, с которой адрес — кандидат (тот же порог, что у измерителя)
+_MR_GIVEUP = 50.0      # потеря УЖЕ в туннеле: туннель не помог, адрес откатываем
+_MR_COOL = 3600.0      # сколько секунд адрес после отката не претендует на туннель
+# Подъём соединения — средство, а не цель: цель — писатели, которые движок ставит на
+# адрес. Живой замер 07.10 (#221): адрес в туннеле отвечал на `6` подъёмов из `6`
+# (`7.4` мс, потеря `0`%), а движок при этом не имел ни одного писателя (`0` из `3`) и
+# считал сам адрес недоступным (`0` из `1`). Как только адрес отдали напрямую, писатели
+# родились за `10` с, а покрытие выросло с `86.0` до `100.0` и держалось. Прежний
+# критерий такой туннель считал удачным и не отбраковывал никогда.
+_MR_STARVE = 3         # сколько тиков подряд узел требует писателей и не получает ни одного
+_MR_STARVE_BAN = 86400.0  # на столько секунд (сутки) адрес уходит напрямую после приговора
+                          # туннелю: возвращать его каждый час — значит обнулять медиа каждые
+                          # минуты
+_MR_REG_URL = "https://api.cloudflareclient.com/v0a2223/reg"
+_MR_UA = "wireguard-go-rs"
+_MR_ERR = ""
+# когда в последний раз меняли молчаливый аккаунт: глобал обязан рождаться с нулём, иначе
+# первая же ротация читает несуществующее имя и роняет весь тик до записи состояния
+_MR_ROTATE = 0.0
+
+
+def _mr_want():
+    """Желание оператора: вести медиа-трафик через туннель. Тот же конфиг, что у остальных переключателей."""
+    return bool(CFG_CACHE.get("tg_media_route"))
+
+
+def _mr_cmd(*a, **kw):
+    """Один вызов командной строки без право-левого разбора: (код возврата, вывод, ошибка)."""
+    r = subprocess.run(list(a), capture_output=True, text=True, timeout=15, **kw)
+    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+
+
+def _mr_registered():
+    """Снимок аккаунта WARP. Приватный ключ наружу не печатается нигде: файл `0600` вне репозитория."""
+    reg = _load(_MR_REG) or {}
+    need = ("private_key", "peer_public_key", "tunnel_v4", "endpoint", "endpoint_port")
+    return reg if all(reg.get(k) for k in need) else None
+
+
+def _mr_register():
+    """Заводим бесплатный аккаунт WARP ровно один раз и запоминаем его.
+
+    Вторым вызовом API тот же публичный ключ не принимается, а приватную часть он не
+    отдаёт, поэтому ключ и ответ пишутся в файл до любой новой пробы. Форма тела и
+    заголовок проверены на живой коробке: на другой форме облако отказывает.
+    Рабочий адрес пиера отдаёт ответ, а не имя из присланной конфигурации: имя резолвится
+    в узел, который на рукопожатие молчит. Возвращает (аккаунт, причина отказа)."""
+    rc, priv, err = _mr_cmd("wg", "genkey")
+    if rc != 0 or not priv:
+        return None, "ключ не выпущен"
+    # `text=True` обязывает `input` быть строкой: байты на Python 3.14 вызывают
+    # `'bytes' object has no attribute 'encode'` внутри `subprocess` (живая находка
+    # этого цикла — офлайн-фикстура этого не видела)
+    p = subprocess.run(["wg", "pubkey"], input=priv, capture_output=True,
+                       text=True, timeout=10)
+    pub = (p.stdout or "").strip()
+    if p.returncode != 0 or not pub:
+        return None, "публичный ключ не вычислен"
+    zero = "00000000-0000-0000-0000-000000000000"
+    body = json.dumps({"key": pub, "install_id": "0", "token": zero, "type": "free",
+                       "license": "", "waitlist": False, "version": "20211018.1",
+                       "fingerprint": zero, "fp": zero}).encode()
+    req = urllib.request.Request(_MR_REG_URL, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": _MR_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as f:
+            d = json.loads(f.read().decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        # под лимитом облако отвечает `429` с `retry-after` — причину обязан увидеть
+        # оператор, а не общую строку «аккаунта нет»
+        return None, "регистрация не прошла: " + str(e)[:90]
+    cfg = d.get("config") or {}
+    iface = cfg.get("interface") or {}
+    peer = (cfg.get("peers") or [{}])[0]
+    ep = peer.get("endpoint") or {}
+    # `v4` приходит в форме «адрес:порт» с нулевым портом, а настоящий порт — списком в
+    # `ports`; приватной части в ответе нет вовсе (замерено на сохранённом снимке)
+    v4 = str(ep.get("v4") or "").split(":")[0]
+    ports = ep.get("ports") or []
+    reg = {"private_key": d.get("private_key") or iface.get("private_key") or priv,
+           "peer_public_key": peer.get("public_key") or "",
+           "tunnel_v4": ((iface.get("addresses") or {}).get("v4") or "").split("/")[0],
+           "endpoint": v4 or ep.get("host") or "",
+           "endpoint_port": str(ports[0] if ports else (ep.get("port") or "2408")),
+           "at": int(time.time())}
+    if not all(reg[k] for k in ("private_key", "peer_public_key", "tunnel_v4", "endpoint")):
+        return None, "ответ облака не полный"
+    try:
+        os.makedirs(_MR_DIR, mode=0o700, exist_ok=True)
+        _save(_MR_REG, reg, 0o600)
+    except Exception as e:
+        return None, "аккаунт не сохранён: " + str(e)[:90]
+    return reg, ""
+
+
+def _mr_retire(reason):
+    """Мёртвый аккаунт WARP в расход: новый ключ облако принимает, молчаливый — нет.
+
+    Живая находка цикла: звено собрано безупречно (интерфейс вверх, ключ стоит, адрес
+    пиера из ответа, сторожевой пакет 25 с), исходящая инициация уходит на net0, а
+    ответных байтов нет — `latest-handshakes` держится нул. За цикл на коробке
+    нарезано несколько бесплатных аккаунтов, и облако имеет право молчать старому.
+    Проверено пробой: тот же способ сборки со СВЕЖИМ аккаунтом донёс медиа-адрес за
+    `30` мс. Поэтому молчание чиним не пересборкой того же ключа каждый тик, а
+    заменой аккаунта — но редко: `POST /reg` на один адрес считается облаком и может
+    ответить `429`."""
+    global _MR_ROTATE
+    now = time.time()
+    if now - _MR_ROTATE < _MR_ROT:
+        return reason + "; новый аккаунт не раньше чем через %d с" % int(
+            _MR_ROT - (now - _MR_ROTATE))
+    _MR_ROTATE = now
+    try:
+        os.remove(_MR_REG)
+    except OSError:
+        return reason + "; аккаунт не снять"
+    return reason
+
+
+def _mr_live_eps():
+    """Медиа-адреса из замеров тика: [(хост, потеря %, когда измерено)]. Только свежие строки снимка."""
+    now = time.time()
+    out = []
+    with _tg_dc_loss_lock:
+        rows = [dict(v) for v in _tg_dc_loss["rows"].values()]
+    for r in rows:
+        at = float(r.get("at") or 0)
+        if now - at > 2 * _TG_DC_TTL:
+            continue
+        if not _tg_dc_media(r.get("dc")):
+            continue
+        host = str(r.get("ep") or "").rpartition(":")[0].strip("[]")
+        if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$", host or ""):
+            out.append((host, float(r.get("loss") or 0), at))
+    return out
+
+
+def _mr_writers(tun):
+    """Писатели тех медиа-узлов, которые туннель может объяснить один: {хост: (живо, требуется)}.
+
+    Движок считает писателей УЗЛОМ, а не адресом, поэтому приговор адресу подписываем
+    только когда ВСЕ зарегистрированные адреса узла идут через туннель: иначе ноль
+    принадлежал бы прямому адресу, а виноват был бы туннель. Движок молчит или ошибается —
+    меры нет, а отсутствие меры — не приговор (тот же порядок, что с `ping` в `_mr_carries`).
+    Узел, который писателей не требует (`0` в поле), судить нечем: он их и не терял."""
+    if not tun:
+        return {}
+    try:
+        dcs = ((_tg_api("GET", "/v1/stats/dcs").get("data") or {}).get("dcs")) or []
+    except Exception:
+        return {}
+    out = {}
+    for x in dcs:
+        if not _tg_dc_media(x.get("dc")):
+            continue
+        req = int(x.get("required_writers") or 0)
+        alive = int(x.get("alive_writers") or 0)
+        hosts = set(str(ep).rpartition(":")[0].strip("[]") for ep in (x.get("endpoints") or []))
+        hosts = set(h for h in hosts if h)
+        if req <= 0 or not hosts or not hosts <= set(tun):
+            continue
+        for h in hosts:
+            out[h] = (alive, req)
+    return out
+
+
+def _mr_want_eps():
+    """Какие адреса обязаны идти через туннель прямо сейчас.
+
+    Кандидат — медиа-адрес, у которого замерена потеря подъёма. У адреса, уже сидящего в
+    туннеле, два приговора: потеря подъёма (`_MR_GIVEUP`) и отсутствие писателей
+    (`_MR_STARVE`). Оставляли бы только первый — и туннель, который не даёт грузить медиа,
+    выглядел бы образцово: он поднимает соединение, а рукопожатие медиа-узла за ним
+    обрывается (#221, замер в шапке секции)."""
+    st = _load(_MR_STATE, {}) or {}
+    cur = st.get("targets") or {}
+    now = time.time()
+    live = _mr_live_eps()
+    # откат судим только замеру, сделанному после того, как звено поднялось: молчащее
+    # звено мерит адрес напрямую, и «туннель не помог» оказалось бы выводом из замера,
+    # в котором туннеля не было вовсе (живая находка этого цикла)
+    since = float(st.get("up_since") or 0)
+    tun = set(h for h, e in cur.items() if (e or {}).get("mode") == "tunnel")
+    writers = _mr_writers(tun)
+    want = []
+    for host, loss, at in live:
+        ent = dict(cur.get(host) or {})
+        if ent.get("mode") == "tunnel":
+            w = writers.get(host)
+            if w and w[0]:
+                # писатели есть — счётчик голода обнуляем, туннель их даёт
+                ent["starve"] = 0
+            elif w and since > 0:
+                ent["starve"] = int(ent.get("starve") or 0) + 1
+                ent["writers"] = "0 из %d" % w[1]
+            if since > 0 and at >= since and loss >= _MR_GIVEUP:
+                ent.update({"mode": "direct", "banned_until": now + _MR_COOL})
+            elif int(ent.get("starve") or 0) >= _MR_STARVE:
+                ent.update({"mode": "direct", "banned_until": now + _MR_STARVE_BAN,
+                            "why": "writers"})
+            else:
+                want.append(host)
+        elif (float(ent.get("banned_until") or 0) <= now and loss >= _MR_LOSS
+              and len(want) < _MR_MAX):
+            ent.update({"mode": "tunnel", "starve": 0})
+            ent.pop("why", None)
+            want.append(host)
+        if ent:
+            cur[host] = ent
+    # запись не обязана переживать адрес: цель — список на сейчас, а не архив измерений
+    seen = set(h for h, _loss, _at in live)
+    cur = dict((h, e) for h, e in cur.items()
+               if h in seen or float((e or {}).get("banned_until") or 0) > now)
+    return sorted(want)[:_MR_MAX], cur
+
+
+def _mr_flush_rules():
+    """Снять НАШИ правила. Маршруты умирают вместе со связью сами, а правило — нет:
+    после удаления интерфейса оно остаётся смотреть в пустую таблицу и молча копится."""
+    for prio, _net in _mr_rules():
+        _mr_cmd("ip", "rule", "del", "priority", str(prio))
+
+
+def _mr_rules():
+    """Наши правила: [(приоритет, сеть)]. Судим только правило, ведущее в нашу таблицу.
+
+    Хостовое правило ядро печатает БЕЗ маски: `to 91.105.192.110 lookup 203`, а не
+    `.../32` — тот же дефект, что и в разборе маршрутов, из-за него живое правило не
+    узнавалось, `ip rule add` отвечал `File exists`, а звено казалось не готовым."""
+    rc, out, _ = _mr_cmd("ip", "-o", "rule", "show")
+    if rc != 0:
+        return []
+    got = []
+    for line in out.splitlines():
+        if ("lookup " + _MR_TBL) not in line:
+            continue
+        prio = line.split(":", 1)[0].strip()
+        m = re.search(r"to\s+([0-9a-fA-F.:]+)(?:/([0-9]+))?", line)
+        if m and prio.isdigit():
+            net, mask = m.group(1), m.group(2)
+            net = net + (("/128" if ":" in net else "/32") if mask is None else "/" + mask)
+            got.append((int(prio), net))
+    return got
+
+
+def _mr_routes():
+    """Наши маршруты в таблице: {сеть: интерфейс}.
+
+    Хостовый маршрут ядро печатает БЕЗ маски: `91.105.192.110 dev tgw0`, а не `.../32`.
+    Прежний разбор требовал слэш с цифрой, из-за чего полностью собранное звено казалось
+    пустым и пересобиралось каждый тик (живая находка этого цикла)."""
+    rc, out, _ = _mr_cmd("ip", "-o", "route", "show", "table", _MR_TBL)
+    if rc != 0:
+        return {}
+    got = {}
+    for line in out.splitlines():
+        m = re.match(r"^(?:v6\s+)?([0-9a-fA-F.:]+)(?:/([0-9]+))?\s+dev\s+(\S+)", line)
+        if not m:
+            continue
+        net, mask = m.group(1), m.group(2)
+        net = net + (("/128" if ":" in net else "/32") if mask is None else "/" + mask)
+        got[net] = m.group(3)
+    return got
+
+
+def _mr_sync_cidrs(cidrs, reg):
+    """Сводим правила, маршруты и набор адресов пиера к одному списку сетей.
+
+    Разрешённые сети — это не только «куда слать», но и «что пускать обратно»: сузишь до
+    одного адреса — и ответный трафик с прочих адресов тот же пиер погасит. Поэтому
+    набор обновляем одной операцией вместе с маршрутами."""
+    nets = [c + "/32" for c in cidrs]
+    cur_rules = _mr_rules()
+    have = set(n for _, n in cur_rules)
+    used = set(p for p, _ in cur_rules)
+    for prio, net in cur_rules:
+        if net not in nets:
+            _mr_cmd("ip", "rule", "del", "priority", str(prio))
+            # освобождённый приоритет возвращается в оборот: иначе каждое изменение
+            # набора целей уводит новое правило на шаг вверх и приоритеты ползут
+            used.discard(prio)
+    for net in nets:
+        if net in have:
+            continue
+        prio = _MR_PRIO_BASE
+        while prio in used:
+            prio += 1
+        rc, _, err = _mr_cmd("ip", "rule", "add", "priority", str(prio), "to", net,
+                             "lookup", _MR_TBL)
+        if rc != 0:
+            return "правило не поставлено: " + err[:90]
+        used.add(prio)
+    rt = _mr_routes()
+    for net in nets:
+        if rt.get(net) != _MR_IF:
+            # `replace`, а не `add`: маршрут умер вместе с падением линка, а правило
+            # его пережило — без этой операции адрес навсегда остаётся напрямую.
+            # Отказ молча гасить нельзя: на опущенном интерфейсе ядро отвечает
+            # «сеть недоступна», и правило остаётся смотреть в пустую таблицу
+            rc, _, err = _mr_cmd("ip", "route", "replace", net, "dev", _MR_IF,
+                                 "src", reg["tunnel_v4"], "table", _MR_TBL)
+            if rc != 0:
+                return "маршрут не поставлен: " + err[:90]
+    for net, dev in rt.items():
+        if net not in nets and dev == _MR_IF:
+            _mr_cmd("ip", "route", "del", net, "dev", _MR_IF, "table", _MR_TBL)
+    if nets:
+        rc, _, err = _mr_cmd("wg", "set", _MR_IF, "peer", reg["peer_public_key"],
+                             "allowed-ips", ",".join(nets))
+        if rc != 0:
+            return err[:120]
+    return ""
+
+
+def _mr_link_ready(cidrs):
+    """Поднято ли звено НА САНОМ ДЕЛЕ: интерфейс вверх, ключ стоит, пиру известен адрес
+    облака, маршруты ведут в него.
+
+    `ip link show` отвечает «есть» и на полуразобранное звено: после отказа `wg set`
+    интерфейс остаётся созданным, но без ключа и без адреса пиера, а прежний код принимал
+    такое за поднятое — медиа шло мимо туннеля, а панель рапортовала туннель (живая
+    находка этого цикла)."""
+    rc, out, _ = _mr_cmd("ip", "-o", "link", "show", _MR_IF)
+    if rc != 0:
+        return False
+    if "UP" not in out.partition("<")[2].partition(">")[0].split(","):
+        return False
+    rc, out, _ = _mr_cmd("wg", "show", _MR_IF, "public-key")
+    if rc != 0 or out.strip() in ("", "(none)"):
+        return False
+    rc, out, _ = _mr_cmd("wg", "show", _MR_IF, "endpoints")
+    if rc != 0 or not out.strip() or "(none)" in out:
+        return False
+    rt = _mr_routes()
+    return all(rt.get(c + "/32") == _MR_IF for c in cidrs)
+
+
+def _mr_link_up(reg, cidrs):
+    """Поднимаем интерфейс, вешаем пира, ключ отдаём на стандартный ввод.
+
+    `/usr/bin/wg` в этом выпуске системы закрыт профилем ограничения доступа, и читать
+    ему разрешено файлы только из `@{etc_rw}/wireguard`: любой другой путь — и отдельный
+    файл, и дескриптор `/proc/self/fd/N` — отвечает «отказано в праве» (живая находка
+    этого цикла; прежний код спотыкался именно здесь, а офлайн-фикстура этого не видела).
+    Ключ из трубки не остаётся на диске и не виден в аргументах, которые читают чужие
+    процессы."""
+    rc, _, err = _mr_cmd("ip", "link", "add", _MR_IF, "type", "wireguard")
+    if rc != 0 and "File exists" not in err:
+        return "связь не создана: " + err[:90]
+    _mr_cmd("ip", "-4", "addr", "replace", reg["tunnel_v4"] + "/32", "dev", _MR_IF)
+    rc, _, err = _mr_cmd("wg", "set", _MR_IF, "private-key", "/dev/stdin",
+                         "peer", reg["peer_public_key"],
+                         "endpoint", "%s:%s" % (reg["endpoint"], reg["endpoint_port"]),
+                         "allowed-ips", ",".join(c + "/32" for c in cidrs),
+                         "persistent-keepalive", _MR_KEEP,
+                         input=reg["private_key"] + "\n")
+    if rc != 0:
+        return "веер не настроен: " + err[:90]
+    rc, _, err = _mr_cmd("ip", "link", "set", _MR_IF, "up", "mtu", _MR_MTU)
+    if rc != 0:
+        return "связь не поднята: " + err[:90]
+    return _mr_sync_cidrs(cidrs, reg)
+
+
+def _mr_handshake_age():
+    """Сколько секунд назад было последнее рукопожатие (или нет, если звена нет).
+
+    Пиер отвечает на сторожевой пакет, поэтому свежее рукопожатие значит «до облака
+    достучаться можно», а не «до Telegram достучаться можно»: второе судим по подъёмам.
+    Единочное число в `wg show` облако не принимает — живой ответ требует множественное
+    `latest-handshakes` и отдаёт построчно «ключ пиера <TAB> метка времени»."""
+    rc, out, _ = _mr_cmd("wg", "show", _MR_IF, "latest-handshakes")
+    if rc != 0:
+        return None
+    ts = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            ts = max(ts, int(parts[-1]))
+        except ValueError:
+            continue
+    return int(max(0, time.time() - ts)) if ts > 0 else None
+
+
+def _mr_carries(addr):
+    """Несёт ли звено: один пакет до адреса, который обязан идти через туннель.
+
+    Нулевого рукопожатия для приговора мало: `wg` сам шлёт инициацию только когда
+    появится трафик или сторожевой пакет, поэтому молчание проверяем пакетом. Цена —
+    до `2` секунд в тике и только когда рукопожатие не свежее. Мерить нечем (нет `ping`)
+    — это не доказательство молчания: звено остаётся там, где его поставили."""
+    try:
+        rc, _, err = _mr_cmd("ping", "-c1", "-W2", "-I", _MR_IF, addr)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if rc == 127 or "not found" in err:
+        return True
+    return rc == 0
+
+
+def _mr_tick():
+    """Страховка медиа-пути: один шаг за тик, вне замка состояния (ходит в командную строку).
+
+    Порядок обязан быть таким: без желания оператора — разобрать; без аккаунта — завести;
+    с молчащим звеном — снять правила и уйти напрямую, иначе адреса останутся в правилах,
+    которые никуда не ведут."""
+    global _MR_ERR
+    if SBX:
+        return
+    st = _load(_MR_STATE, {}) or {}
+    if not _mr_want():
+        if st.get("targets") or st.get("up") or st.get("enabled"):
+            _mr_flush_rules()
+            _mr_cmd("ip", "link", "del", _MR_IF)
+            _save(_MR_STATE, {"enabled": False, "targets": {}, "up": False,
+                              "ts": _now_iso()}, 0o600)
+        return
+    cidrs, cur = _mr_want_eps()
+    reg, why = _mr_registered(), ""
+    if not reg:
+        reg, why = _mr_register()
+    if not reg or not cidrs:
+        # нечего вести, или аккаунта нет: связи нет вовсе — ни правил, ни сторожевых пакетов
+        _mr_flush_rules()
+        _mr_cmd("ip", "link", "del", _MR_IF)
+        err = "" if reg else (why or "аккаунта нет")
+        _MR_ERR = err
+        _save(_MR_STATE, {"enabled": True, "targets": cur, "up": False, "count": 0,
+                          "handshake_age": None, "error": err, "ts": _now_iso()}, 0o600)
+        return
+    rc, _, _ = _mr_cmd("ip", "link", "show", _MR_IF)
+    age = _mr_handshake_age()
+    # звено пересобирается, если оно не просто существует, а НЕ готово нести: после
+    # любого отказа `wg set` интерфейс остаётся полусобранным, и прежний код считал его
+    # поднятым (живая находка этого цикла)
+    rebuilt = (rc != 0 or not _mr_link_ready(cidrs))
+    if rebuilt:
+        err = _mr_link_up(reg, cidrs)
+        age = _mr_handshake_age()
+    else:
+        err = _mr_sync_cidrs(cidrs, reg)
+    if err == "" and (age is None or age > 4 * int(_MR_KEEP)) and not _mr_carries(cidrs[0]):
+        # молчание судим пакетом, а не отсутствием рукопожатия: сам `wg` шлёт инициацию,
+        # только когда появится трафик или сторожевой пакет (замерено: живой пиер
+        # отвечает на первый же пакет через tgw0, мёртвый не отвечает ни на один)
+        _mr_flush_rules()
+        _mr_cmd("ip", "link", "del", _MR_IF)
+        err, age = "звено молчит: до облака нет ответа", None
+        rebuilt = True
+        err = _mr_retire(err)
+    up = (err == "")
+    now = time.time()
+    # момент, с которого звено несёт трафик: раньше него замер сделан напрямую, и сравнить
+    # его с «потерей в туннеле» нельзя — это и был ложный откат на живой коробке. Пересборка
+    # звена отодвигает этот момент вперёд: замеры к прежнему туннелю не относятся
+    since = (now if (up and (rebuilt or not st.get("up")))
+             else (float(st.get("up_since") or 0) if up else 0))
+    _MR_ERR = err
+    _save(_MR_STATE, {"enabled": True, "targets": cur, "up": up, "handshake_age": age,
+                      "up_since": since,
+                      "tunnel_v4": (reg["tunnel_v4"] if up else ""),
+                      "count": (len(cidrs) if up else 0), "error": err,
+                      "ts": _now_iso()}, 0o600)
+
+
+def _mr_view():
+    """Снимок для морды и ноги самопроверки: только чтение, ничего не поднимает."""
+    st = _load(_MR_STATE, {}) or {}
+    rc, _, _ = _mr_cmd("ip", "link", "show", _MR_IF)
+    tg = st.get("targets") or {}
+    now = time.time()
+    tun = sorted(h for h, e in tg.items() if (e or {}).get("mode") == "tunnel")
+    # отбракованные писателями адреса называем их меркой: без числа строка выглядела бы
+    # как «туннель не поднят», а это решение замера, а не авария
+    ret = sorted((h, str((e or {}).get("writers") or "")) for h, e in tg.items()
+                 if (e or {}).get("why") == "writers"
+                 and float((e or {}).get("banned_until") or 0) > now)
+    return {"want": _mr_want(), "account": bool(_mr_registered()), "link": rc == 0,
+            "ready": _mr_link_ready(tun),
+            "up": bool(st.get("up")), "targets": sorted(tg.keys()),
+            "tunneled": tun,
+            "retired": [h for h, _w in ret],
+            "retired_writers": ", ".join(w for _h, w in ret if w),
+            "starve_ticks": _MR_STARVE,
+            "starve_ban_h": int(_MR_STARVE_BAN // 3600),
+            "count": int(st.get("count") or 0), "handshake_age": st.get("handshake_age"),
+            "error": st.get("error") or _MR_ERR, "ts": st.get("ts"),
+            "max": _MR_MAX, "loss_pct": int(_MR_LOSS), "giveup_pct": int(_MR_GIVEUP)}
+
+
+# ---------- ME: вход в сеть Telegram и его аварийные пути (#218) ----------
+# ME (`middle proxy`) — не «ещё один протокол», а входная точка, через которую движок
+# добирается до сети Telegram: у неё больше адресов и лучше разгрузка, чем у прямого
+# пути к дата-центру. Медиа-узлы живут в подписанных списках ME отдельными группами
+# (у них отрицательный номер DC); прямой путь их не знает: `direct_relay/routing.rs`
+# ищет оверрайд по строке `-203`, не находит и с предупреждением съедает запрос на
+# «кластер по умолчанию». Отсюда #193: текст ходит, картинки и видео — нет.
+# Ключей три: `use_middle_proxy` — сам вход, `me2dc_fallback` — разрешение уехать на
+# прямой DC, `me2dc_fast` — бюджет быстрых попыток; по коду движка он активен ТОЛЬКО
+# вместе с fallback (`admission.rs:42`), то есть один он не значит ничего. Важное, чего
+# по ключам не видно: при включённом fallback движок СТАРТУЕТ в Direct и добирает ME в
+# фоне (`runtime_build.rs:131`), поэтому «ME включён» ещё не значит «сессии идут через
+# ME» — это отдельный факт, и движок сам его отдаёт на `/v1/runtime/gates`.
+# Замер в песочнице (06.10, варианты A0–A3, живую службу не трогали): `/v1/config`
+# отдаёт 142 ЭФФЕКТИВНЫХ ключа `general` — отсутствующий в файле приходит как дефолт
+# движка, а все три дефолта `true`. Значит «кто выключил» судит текст файла, а «чем
+# живёт сейчас» — только API. Пустой `/v1/stats/dcs` в первые секунды — прогрев: карта
+# появилась на замере через 8 с, а при `use_middle_proxy = false` не появилась вовсе.
+# Границу прогрева меряем не на глаз: у движка `STARTUP_FALLBACK_AFTER = 80 с` до
+# первого ready и `RUNTIME_FALLBACK_AFTER = 6 с` после (`admission.rs:13-14`).
+_TG_ME_KEYS = ("use_middle_proxy", "me2dc_fallback", "me2dc_fast")
+_TG_ME_GRACE = 80.0
+# Ключи, которые движок разбирает, но в рантайме не читает: проверка по всей коробке —
+# упоминания только в `src/config` (объявление, дефолт, список известных ключей). В
+# нашем `telemt.toml` они написаны (`true` и `2`), и полагаться на них как на защиту
+# нельзя: настоящим съездом на Direct правят `me2dc_fallback`/`me2dc_fast` в
+# `admission.rs`.
+_TG_ME_DECOR = ("auto_degradation_enabled", "degradation_min_unavailable_dc_groups")
+
+
+def _telemt_start_ts():
+    """Epoch-время подъёма процесса telemt (0 — не известно).
+
+    Monotonic-часы ядра и `/proc/uptime` берутся вместе, как в `_xray_start_ts`: у
+    отметки systemd нет часового пояса, и на сервере с не-UTC поясом она врёт на часы —
+    ровно на столько, чтобы спутать прогрев с аварией."""
+    try:
+        r = subprocess.run(["systemctl", "show", "telemt",
+                            "-p", "ExecMainStartTimestampMonotonic", "--value"],
+                           capture_output=True, text=True, timeout=10)
+        mono = int((r.stdout or "0").strip()) / 1e6
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        if mono <= 0:
+            return 0.0
+        return time.time() - (up - mono)
+    except Exception:
+        return 0.0
+
+
+def _tg_general_file_values(keys):
+    """Значения ключей, БУКВАЛЬНО написанных в `[general]` файла telemt.toml.
+
+    Нужен именно файл: API доподставляет дефолты, и по нему не отличить «оператор
+    включил» от «оператор не трогал». Ключ вне `[general]` не считается — движок читает
+    их только там. Отдаём строку как есть: значения бывают и булевы, и числа —
+    `degradation_min_unavailable_dc_groups = 2` живой файл тоже задаёт."""
+    try:
+        text = _tg_manual_read_toml()
+    except Exception:
+        return {}
+    out, sect = {}, ""
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            sect = s.strip("[]").strip().strip('"').strip().lower()
+            continue
+        if sect != "general" or "=" not in s or s.startswith("#"):
+            continue
+        k, _, v = s.partition("=")
+        k = k.strip().strip('"').lower()
+        if k in keys:
+            out[k] = v.split("#", 1)[0].strip().strip('"')
+    return out
+
+
+def _tg_me_file_values():
+    """Три ME-ключа из файла как `True`/`False`; `None` — написано не булево.
+
+    Ключа в файле нет — его здесь тоже нет, то есть живёт на дефолте движка."""
+    out = {}
+    for k, v in _tg_general_file_values(_TG_ME_KEYS).items():
+        low = v.lower()
+        out[k] = (low == "true") if low in ("true", "false") else None
+    return out
+
+
+def _tg_me_state():
+    """Сводка про ME для диагностики: включён ли вход, чем движок ведёт сессии сейчас.
+
+    Ничего не переключает и не «починяет» молча: явный `false` — выбор оператора, и
+    панель обязана его назвать, а не переписать. Поля: три ключа (`file` — что написано
+    в файле, `None` — ключа нет и живёт на дефолте движка), `off_by` (кто выключил),
+    `fast_inert` (быстрые попытки есть, а резервного пути нет), `gates` (ответ
+    `/v1/runtime/gates`: режим маршрутизации, готовность пула, стадия старта), `map`
+    (карта `/v1/stats/dcs`, разделённая на медиа-узлы с отрицательным номером и
+    основные), `age`/`warm` (возраст юнита и порог прогрева), `direct` (вход включён,
+    а новые сессии идут мимо ME), `silent` (вход включён, карты нет, прогрев прошёл),
+    `decor` (ключи, которые движок разбирает, но не читает) и `note` — вердикт короткой
+    строкой, чтобы влез в самопроверку."""
+    st = {"error": "", "map": {}, "gates": {}, "file": {}, "decor": []}
+    try:
+        g = (_tg_api("GET", "/v1/config").get("data") or {}).get("general") or {}
+    except Exception as e:
+        g = {}
+        st["error"] = str(e)[:120]
+    fv = _tg_me_file_values()
+    st["file"] = {k: fv.get(k) for k in _TG_ME_KEYS}
+    off_by = ""
+    for k in _TG_ME_KEYS:
+        eff = g.get(k)
+        st[k] = bool(eff) if eff is not None else bool(fv.get(k, True))
+        if fv.get(k) is False:
+            off_by = off_by or "файл telemt.toml"
+        elif eff is False:
+            off_by = off_by or "рантайм движка (в файле этого нет)"
+    st["off_by"] = off_by
+    st["fast_inert"] = bool(st["me2dc_fast"] and not st["me2dc_fallback"])
+    dfv = _tg_general_file_values(_TG_ME_DECOR)
+    st["decor"] = ["%s = %s" % (k, dfv[k]) for k in _TG_ME_DECOR if k in dfv]
+    try:
+        gt = _tg_api("GET", "/v1/runtime/gates").get("data") or {}
+        st["gates"] = {"route": str(gt.get("route_mode") or ""),
+                       "reroute": bool(gt.get("reroute_active")),
+                       "reason": str(gt.get("reroute_reason") or ""),
+                       "ready": bool(gt.get("me_runtime_ready")),
+                       "fast_live": bool(gt.get("me2dc_fast_enabled")),
+                       "startup": str(gt.get("startup_status") or ""),
+                       "progress": round(float(gt.get("startup_progress_pct") or 0.0), 1),
+                       "accepting": bool(gt.get("accepting_new_connections")),
+                       "since": int(gt.get("reroute_to_direct_at_epoch_secs") or 0)}
+    except Exception as e:
+        # Старый движок без `/v1/runtime/gates` — не авария, а отсутствие меры: тогда
+        # про режим судим по карте и ключам, и говорим это прямо.
+        if not st["error"]:
+            st["error"] = str(e)[:120]
+    try:
+        d = _tg_api("GET", "/v1/stats/dcs").get("data") or {}
+        dcs = d.get("dcs") or []
+        media = [x for x in dcs if _tg_dc_media(x.get("dc"))]
+        main = [x for x in dcs if not _tg_dc_media(x.get("dc"))]
+
+        def _cnt(xs, key):
+            return sum(_tg_dc_size(x.get(key)) for x in xs)
+
+        # Живые писатели против требуемых — то, о чём движок сам предупреждает
+        # «ME init incomplete: no live writers for DC groups»: узел есть в карте, а
+        # поднимать соединения ему некому. Считаем только медиа-узлы: их потеря и есть #193.
+        st["map"] = {"enabled": bool(d.get("middle_proxy_enabled")),
+                     "rows": len(dcs),
+                     "media_rows": len(media), "media_eps": _cnt(media, "endpoints"),
+                     "media_avail": _cnt(media, "available_endpoints"),
+                     "media_short": sum(1 for x in media if _tg_dc_size(x.get("alive_writers"))
+                                        < _tg_dc_size(x.get("required_writers"))),
+                     "main_rows": len(main), "main_eps": _cnt(main, "endpoints"),
+                     "main_avail": _cnt(main, "available_endpoints"),
+                     "generated": int(d.get("generated_at_epoch_secs") or 0)}
+    except Exception as e:
+        if not st["error"]:
+            st["error"] = str(e)[:120]
+    ts = _telemt_start_ts()
+    st["age"] = int(time.time() - ts) if ts else None
+    gt = st["gates"]
+    if gt:
+        st["warm"] = bool(gt.get("startup") != "ready" and ts
+                          and (time.time() - ts) < _TG_ME_GRACE)
+    else:
+        st["warm"] = bool(ts and (time.time() - ts) < _TG_ME_GRACE)
+    st["direct"] = bool(st["use_middle_proxy"] and gt.get("reroute"))
+    # Пустая карта по причине «API не ответил» — это не «пул не собран»: врать про
+    # движок, когда нечем мерить, дороже молчания.
+    st["silent"] = bool(st["use_middle_proxy"] and st["map"]
+                        and not st["map"].get("media_rows") and not st["warm"])
+    m = st["map"]
+    if not st["use_middle_proxy"]:
+        st["note"] = "вход в сеть Telegram (ME) выключен — %s" % (off_by or "чем-то")
+    elif st["direct"]:
+        st["note"] = "ME включён, но новые сессии идут напрямую (%s)" % (gt.get("reason") or "причина не названа")
+    elif st["silent"]:
+        st["note"] = "ME включён, но ни одного адреса сети Telegram движок не раздаёт"
+    elif m.get("media_short"):
+        st["note"] = "под медиа-узлов %d из %d живых писателей меньше, чем движок требует" % (
+            m["media_short"], m.get("media_rows"))
+    elif m.get("media_eps") and m.get("media_avail") is not None \
+            and m["media_avail"] < m["media_eps"]:
+        st["note"] = "вход держится, но медиа-адресов доступно %d из %d" % (
+            m["media_avail"], m["media_eps"])
+    elif m.get("media_rows"):
+        st["note"] = "вход держится: через ME %d медиа-узлов, %d адресов" % (
+            m.get("media_rows"), m.get("media_eps"))
+    else:
+        st["note"] = "режим не прочитан: %s" % (st["error"] or "ответ пустой")
+    return st
 
 
 def _tg_mp_selftest(force=False):
@@ -12702,6 +13843,80 @@ def _tg_mp_selftest(force=False):
                 ("все под %s" % mp), warn=True)
     except Exception as e:
         add("mp_front", "Клиенты едут под именем маршрута", False, str(e)[:160], warn=True)
+    # #218: ME — вход в сеть Telegram, а не «ещё один узел». Без него клиент держит
+    # сессию и читает текст, а фото, видео и истории не грузятся: тяжёлый трафик идёт
+    # через ME к медиа-узлам, у них отрицательный номер DC. Панель вход ни гасит, ни
+    # включает молча — она обязана назвать, кто его выключил, и жив ли аварийный путь.
+    try:
+        ms = _tg_me_state()
+        mmap = ms.get("map") or {}
+        gt = ms.get("gates") or {}
+        parts = []
+        if not ms["use_middle_proxy"]:
+            parts.append("вход выключен — %s; медиа не будут грузиться"
+                         % (ms.get("off_by") or "чем-то"))
+        elif ms["direct"]:
+            parts.append("новые сессии идут мимо ME (%s): текст ходит, картинки и видео — нет"
+                         % (gt.get("reason") or "причина не названа"))
+        elif ms["silent"]:
+            parts.append("движок не раздаёт ни одного адреса сети Telegram")
+        elif mmap.get("media_short"):
+            parts.append("у %d медиа-узлов живых писателей меньше, чем требует движок"
+                         % mmap["media_short"])
+        elif mmap.get("media_eps") and mmap.get("media_avail") is not None \
+                and mmap["media_avail"] < mmap["media_eps"]:
+            parts.append("медиа-адресов доступно %d из %d"
+                         % (mmap["media_avail"], mmap["media_eps"]))
+        if ms["warm"] and not mmap.get("media_rows"):
+            parts.append("старт %d с назад, ME инициализирован на %d%%"
+                         % (ms.get("age") or 0, gt.get("progress") or 0))
+        if ms.get("fast_inert"):
+            parts.append("быстрые попытки включены, а резервного пути нет — они ничего не дают")
+        elif not ms["me2dc_fallback"]:
+            parts.append("резервного пути нет — при отказе ME клиент не получит даже текст")
+        if ms.get("error") and not mmap:
+            parts.append("карту не прочитали: %s" % ms["error"])
+        if ms.get("decor"):
+            parts.append("на %s как на защиту полагаться нельзя: движок их разбирает и не читает"
+                         % ", ".join(ms["decor"]))
+        ok = bool(ms["use_middle_proxy"] and not ms["direct"] and not ms["silent"])
+        add("me", "Вход в сеть Telegram (ME) и аварийные пути", ok,
+            "; ".join(parts) if parts else (ms.get("note") or ""), warn=ok and bool(parts))
+    except Exception as e:
+        add("me", "Вход в сеть Telegram (ME) и аварийные пути", False, str(e)[:160], warn=True)
+    try:
+        # #193: медиа может идти и через туннель, и напрямую. Гаснет туннель — трафик
+        # уходит напрямую сам, и это не авария; авария — когда оператор просил туннель,
+        # а медиа идёт мимо него.
+        mv = _mr_view()
+        if not mv["want"]:
+            add("media_route", "Медиа-путь к узлам Telegram через туннель", True,
+                "выключен — медиа идёт напрямую", warn=True)
+        elif mv.get("retired") and not mv["tunneled"]:
+            # Туннель отбракован замером писателей: это не авария звена, а решение, и
+            # краснеть тут не за чем. Но без числа оператор увидел бы либо молчание,
+            # либо «туннель не поднят» там, где его отключил сам замер (#221).
+            add("media_route", "Медиа-путь к узлам Telegram через туннель", True,
+                "туннель отбракован писателями: %s — %d адрес(ов) идут напрямую, медиа "
+                "грузится" % (mv.get("retired_writers") or "ни одного писателя",
+                              len(mv["retired"])), warn=True)
+        else:
+            bits = []
+            if mv["up"] and mv["ready"]:
+                bits.append("%d адрес(ов) в туннеле, рукопожатие %s с назад"
+                            % (len(mv["tunneled"]), mv.get("handshake_age")))
+            elif mv["up"]:
+                bits.append("звено собрано неполностью: маршрутов или ключа нет")
+            else:
+                bits.append(mv.get("error") or "туннель не поднят")
+            if not mv["account"] and not any("аккаунт" in x for x in bits):
+                bits.append("аккаунта облака нет")
+            add("media_route", "Медиа-путь к узлам Telegram через туннель",
+                bool(mv["up"] and mv["ready"]),
+                "; ".join(bits), warn=bool(mv["up"]) and bool(mv.get("error")))
+    except Exception as e:
+        add("media_route", "Медиа-путь к узлам Telegram через туннель", False,
+            str(e)[:160], warn=True)
     # #180: TCP от клиента проходит весь путь — :443, развилка по SNI, слушатель, — и сессии
     # всё равно нет: узел сам не дотягивается до адресов Telegram. Это не поломка прокси, и
     # называть её поломкой прокси значит гонять хозяина по неверному следу. Жалобы берём у
@@ -12711,7 +13926,11 @@ def _tg_mp_selftest(force=False):
         bad, err = _tg_dc_complaints()
         lv = _tg_dc_loss_view()
         lossy = [r for r in lv["rows"] if not r["stale"] and (r.get("loss") or 0) >= 20]
-        lost = ", ".join("%s — %d из %d подъёмов не дошли" % (r["ep"], r["fail"], r["total"])
+        # Медиа-узел называем отдельно: с ним не доходит именно тяжёлый трафик,
+        # и «прокси работает, а картинки нет» (#193) иначе выглядит противоречием.
+        lost = ", ".join("%s%s — %d из %d подъёмов не дошли"
+                         % ("медиа-адрес " if r.get("media") else "",
+                            r["ep"], r["fail"], r["total"])
                          for r in lossy[:2])
         dead = []
         for (h, p), n in bad[:2]:
@@ -13194,7 +14413,10 @@ def _tg_set_adtag(username, tag):
     _tg_api("PATCH", "/v1/users/" + urllib.parse.quote(name), {"user_ad_tag": tag or None})
     warn = ""
     if tag and not _tg_middle_proxy_on():
-        warn = "нужен general.use_middle_proxy = true в telemt — включи и перезапусти telemt"
+        warn = ("телеметрик-тег подставляет ME, а вход в сеть Telegram "
+                "(general.use_middle_proxy) выключен — %s; включи и перезапусти telemt, "
+                "иначе медиа у клиентов грузиться перестанут вовсе"
+                % (_tg_me_state().get("off_by") or "чем-то"))
     return {"username": name, "ad_tag": tag or None, "warning": warn}
 
 def _tg_set_max_ips(username, n):
@@ -13216,11 +14438,10 @@ def _tg_set_max_ips(username, n):
     return {"username": name, "max_ips": n}
 
 def _tg_middle_proxy_on():
-    try:
-        g = _tg_api("GET", "/v1/config").get("data", {}).get("general") or {}
-    except Exception:
-        return True
-    return bool(g.get("use_middle_proxy", True))
+    # Один источник правды с диагностикой (#218): по рантайму, а не по догадке. При
+    # молчании API `_tg_me_state` откатывается к файлу и к дефолту движка (`true`), то
+    # есть мертвоподнявшийся telemt не превращает предупреждение в запрет.
+    return bool(_tg_me_state().get("use_middle_proxy", True))
 
 def _tg_rotate_secret(username, secret=""):
     """Смена секрета пользователя: ссылка меняется, telemt сам обновляет [access.users]."""
@@ -14483,8 +15704,16 @@ def _tg_dcs():
             "coverage": round(float(x.get("coverage_pct") or 0), 1),
             "fresh": round(float(x.get("fresh_coverage_pct") or 0), 1),
             "endpoints": int(x.get("available_endpoints") or 0),
+            # Один и тот же красный цвет значал «недобор писателей» и «узел не отвечает
+            # вовсе». Движок различает это сам: у него есть список зарегистрированных
+            # адресов и число доступных. Без второго первое читается как ноль из нуля.
+            "endpoint_total": len(x.get("endpoints") or []),
             "endpoints_pct": round(float(x.get("available_pct") or 0), 1)})
     req = sum(r["required"] for r in rows)
+    # Медиа-узлы — отдельная половина картины: без них грузится текст, а фото и
+    # видео нет. Строковой порядок их прятал: `-203` шёл раньше `-5`, и глаз не находил
+    # медиа-блок как блок.
+    rows.sort(key=lambda r: (0 if _tg_dc_media(r["dc"]) else 1, _tg_dc_num(r["dc"])))
     counted = sum(min(r["alive"], r["required"]) for r in rows)
     alive = sum(r["alive"] for r in rows)
     thr = None
@@ -14496,7 +15725,8 @@ def _tg_dcs():
     return {"dcs": rows, "generated": int(d.get("generated_at_epoch_secs") or 0),
             "totals": {"required": req, "counted": counted, "alive": alive,
                        "coverage": round(counted / req * 100, 1) if req else 0.0},
-            "threshold": thr, "loss": _tg_dc_loss_view()}
+            "threshold": thr, "loss": _tg_dc_loss_view(), "me": _tg_me_state(),
+            "media_route": _mr_view()}
 
 def _tg_set_fresh_ratio(pct):
     pct = float(pct)
@@ -17869,6 +19099,54 @@ def _ensure_logrotate():
     except Exception as e:
         print("logrotate: " + str(e), flush=True)
 
+_TELEMT_LOG_DROPIN = "/etc/systemd/system/telemt.service.d/veil-logfilter.conf"
+_TELEMT_LOG_DROPIN_BODY = (
+    "# ВЕИЛ: баннер telemt печатает ссылки подписчиков вместе с их ключами и делает это\n"
+    "# в stdout независимо от `log_level` (в 3.5.14 ключ `show_link` конфигурацию не ломает,\n"
+    "# но на баннер не влияет — мерялось на копии живой конфигурации с подставными ключами).\n"
+    "# Фильтр стоит на конвейере systemd: строка отсекается ДО попадания в журнал, поэтому её\n"
+    "# не видит ни `journalctl`, ни `/var/log/syslog`, куда её дописывает rsyslog. Диагностику\n"
+    "# (`Connection timeout to …`, на неё опирается `_tg_dc_complaints`) фильтр не трогает.\n"
+    "[Service]\n"
+    "LogFilterPatterns=~tg://\n"
+    "LogFilterPatterns=~secret=\n")
+
+
+def _ensure_telemt_log_filter():
+    """Запретить баннеру telemt класть ключи подписчиков в живой журнал.
+
+    Возвращает True, если юнит пришлось перезапускать (файл изменился), иначе False.
+    Перезапуск обязателен: `LogFilterPatterns` применяется при старте сервиса. Результат
+    сверяется по эффективному свойству юнита, а не по факту записи файла — старый systemd
+    молча игнорирует неизвестную директиву, и тогда дыра осталась бы открытой."""
+    try:
+        try:
+            with open(_TELEMT_LOG_DROPIN, encoding="utf-8") as f:
+                cur = f.read()
+        except OSError:
+            cur = ""
+        if cur == _TELEMT_LOG_DROPIN_BODY:
+            return False
+        os.makedirs(os.path.dirname(_TELEMT_LOG_DROPIN), exist_ok=True)
+        with open(_TELEMT_LOG_DROPIN, "w", encoding="utf-8") as f:
+            f.write(_TELEMT_LOG_DROPIN_BODY)
+        for cmd in (["systemctl", "daemon-reload"], ["systemctl", "restart", "telemt"]):
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                print("telemt logfilter: %s rc=%s %s"
+                      % (cmd[-1], r.returncode, (r.stderr or r.stdout)[-120:]), flush=True)
+        eff = subprocess.run(["systemctl", "show", "telemt", "-p", "LogFilterPatterns",
+                              "--value"], capture_output=True, text=True, timeout=10)
+        if "tg://" not in (eff.stdout or ""):
+            print("telemt logfilter: systemd не принял директиву (%s) — ключи по-прежнему "
+                  "пишутся в журнал" % (eff.stdout or "").strip()[:60], flush=True)
+            return True
+        _audit("telemt_logfilter_on")
+        return True
+    except Exception as e:
+        print("telemt logfilter: " + str(e)[:120], flush=True)
+        return False
+
 # ---------- P6: зеркалирование rule-set'ов RU/IR + полный sing-box конфиг ----------
 # Панель скачивает свежие rule-set'ы из upstream-релизов и раздаёт их с себя
 # (/rulesets/<файл>): клиенту не нужен доступ к GitHub из-под VPN.
@@ -18397,8 +19675,18 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
                 ob = _singbox_outbound(proto, inb, c, host, modern)
             except Exception:
                 continue
-            if not ob or ob["tag"] in tags:
+            if not ob:
                 continue
+            # метка исходящего — имя+протокол (#239): прежний пропуск «метка уже есть»
+            # молча съедал ВТОРУЮ конфигурацию того же протокола — человек качал
+            # полный конфиг и получал один туннель там, где оператор завёл два.
+            # Коллизию теперь перенумеровываем, а не выбрасываем.
+            _t0 = str(ob["tag"])
+            _rep = 1
+            while _t0 in tags:
+                _rep += 1
+                _t0 = "%s ·%d" % (str(ob["tag"]), _rep)
+            ob["tag"] = _t0
             # приоритет WG-туннелю: он стабильнее TCP-протоколов на мобильных
             if proto == "wireguard":
                 (eps if modern else outs).insert(0, ob)
@@ -21559,11 +22847,13 @@ def _limits_loop():
             # `_addr_watch_tick` ходит в DNS, `_synfix_tick` — в командную строку,
             # и «оператор нажал кнопку» превратилось бы в «ждёт, пока страховка
             # сходит наружу». `_tg_dc_loss_tick` мерит подъём к узлам Telegram:
-            # тоже наружу, тоже по несколько метров на адрес.
+            # тоже наружу, тоже по несколько метров на адрес. `_mr_tick` ставит
+            # и снимает правила маршрутизации — тоже в командную строку.
             for _fn, _tag in ((_bans_cleanup, "f2b"), (_ssh_sweep, "ssh-ban"),
                               (_synfix_tick, "synfix"),
                               (_addr_watch_tick, "addr"),
-                              (_tg_dc_loss_tick, "dc-loss")):
+                              (_tg_dc_loss_tick, "dc-loss"),
+                              (_mr_tick, "media-route")):
                 try:
                     _fn()
                 except Exception as e:
@@ -21901,7 +23191,8 @@ _BK_FILES = {"hops.json": HOPS_FILE, "nodes.json": NODES_CONFIG_FILE,
              "passkeys.json": PASSKEYS_FILE, "bans.json": BANS_FILE,
              "sub_prefs.json": _SUBPREF_FILE, "sub_devices.json": _SUBDEV_FILE,
              "proto_activity.json": _PROTOACT_FILE, "mux_state.json": _MUX_STATE,
-             "tg_mp_port.json": _TGBP_STATE, "bot_langs.json": BOT_LANGS}
+             "tg_mp_port.json": _TGBP_STATE, "bot_langs.json": BOT_LANGS,
+             "media_route.json": _MR_STATE}
 _FRONT_DOM = re.compile(r"^veil-[a-z0-9._-]{1,180}$")
 _FRONT_CERT_RE = re.compile(r"^veil-[a-z0-9._-]{1,180}/(?:fullchain|privkey|chain|cert|key)\.pem$")
 _RENEW_RE = re.compile(r"^renewal/veil-[a-z0-9._-]{1,180}\.conf$")
@@ -23706,6 +24997,684 @@ def _ai_key_check(ov=None):
                 "msg": "до эндпоинта не достучались: " + str(e)[:160]}
 
 
+# ---------- `flux`: узел `openflux`, ведомый панелью ----------
+
+# Ядро берётся с официальной выдачи закреплённым выпуском и проверяется гашением
+# дважды: о закреплённое число панели и о `SHA256SUMS.txt` той же выдачи. Панель
+# ядро не изменяет — она только скачивает, кладёт и запускает штатными флагами,
+# поэтому GPL-3.0 обязывает нас назвать источник, а не отдавать исходники: это
+# делает `flux/CREDITS`.
+FLUX_VER = "v0.4.1"
+FLUX_ASSET = "openflux-linux-amd64"
+FLUX_SHA = "428f5b2a1dbaf06778dc3274c1dbb3fd70d9e6caecce6440146cd53c3998611a"
+FLUX_DL = ("https://github.com/p1neappleXpress/OpenFlux/releases/download/"
+           + FLUX_VER + "/" + FLUX_ASSET)
+FLUX_SUMS_DL = ("https://github.com/p1neappleXpress/OpenFlux/releases/download/"
+                + FLUX_VER + "/SHA256SUMS.txt")
+FLUX_REPO = "https://github.com/p1neappleXpress/OpenFlux"
+FLUX_BIN = "/usr/local/bin/openflux"
+FLUX_DIR = f"{BASE}/flux"
+FLUX_STATE = f"{BASE}/flux.json"
+FLUX_SECRET = f"{FLUX_DIR}/secret.key"
+FLUX_UNIT = "openflux-exit"
+FLUX_UNIT_PATH = f"/etc/systemd/system/{FLUX_UNIT}.service"
+# 28 МБ ядра + место под Cookie-жар и запись: на исходе диска установка обрывается
+# на середине боевого пути, поэтому порог назван числом, а не «немного осталось»
+FLUX_MIN_FREE = 96 * 1024 * 1024
+FLUX_CTX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+FLUX_MODES = ("l4", "l3")
+FLUX_DEFAULT_PORT = 8446
+FLUX_LOCK = threading.Lock()
+
+# Носители белых списков. Смысл узла не в `direct`, а в том, чтобы туннель ехал
+# поверх сервиса, который у оператора остаётся открытым и в режим белого списка.
+# Приоритеты и точные формы ссылок взяты не отсюда, а из самого ядра —
+# `provision/transports.go`: `vyandex` стоит 100, `mailru` 90, а `direct` там
+# сознательно опущен до 50 и служит запасным, а не главным. Ссылка обязана нести
+# те же числа: по ним клиент выбирает, чем ехать.
+FLUX_DIRECT_PRI = 50
+FLUX_CARRIERS = (
+    {"type": "vyandex", "pri": 100, "flag": "--vyandex-url",
+     "name": "Яндекс",
+     "hint": "https://docs.yandex.ru/edit/d/…",
+     "re": re.compile(r"https://(?:docs|disk)\.yandex\.(?:ru|com|by|kz|uz)"
+                      r"/edit/d/[A-Za-z0-9_-]{16,200}")},
+    {"type": "mailru", "pri": 90, "flag": "--mailru-url",
+     "name": "Mail.ru",
+     "hint": "https://cloud.mail.ru/public/…/…",
+     "re": re.compile(r"https://cloud\.mail\.ru/public/[A-Za-z0-9_-]{2,64}"
+                      r"/[A-Za-z0-9_-]{2,128}")},
+    # `cupsonline` — комната собеседования cups.online. Панель ставит ей 70:
+    # номер не из ядрового списка, а отсюда, и он ниже документовых носителей,
+    # которых судит ядро. Смысл отдельный: комнату сервис выдаёт анонимно, без
+    # входа и без телефона, — в отличие от Яндекса и Mail.ru, где нужен аккаунт.
+    # Адрес комнаты живёт в запросе (`?room=`), поэтому у строки стоит
+    # `keep_query`: обычный разрез по `?` убил бы саму комнату.
+    {"type": "cupsonline", "pri": 70, "flag": "--cupsonline-url",
+     "name": "Cups.online", "keep_query": True,
+     "hint": "https://interview.cups.online/live-coding/?room=…",
+     "re": re.compile(r"https://interview\.cups\.online/live-coding/"
+                      r"\?room=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                      r"[0-9a-f]{4}-[0-9a-f]{12}")},
+)
+FLUX_CARRIER_BY = {c["type"]: c for c in FLUX_CARRIERS}
+
+
+def _flux_state():
+    st = _load(FLUX_STATE, {})
+    if not isinstance(st, dict):
+        st = {}
+    st.setdefault("port", FLUX_DEFAULT_PORT)
+    st.setdefault("mode", "l4")
+    st.setdefault("ctx", "veil.flux")
+    st.setdefault("carriers", [])
+    return st
+
+
+def _flux_save(st):
+    _save(FLUX_STATE, st, 0o600)
+
+
+def _flux_enabled():
+    # Включено по умолчанию — выключено: морда не спрашивает, юнит не ставится,
+    # пока владелец сам не поднимет рубильник в самой вкладке.
+    return bool(CFG_CACHE.get("flux_enabled"))
+
+
+def _flux_ctx_ok(ctx):
+    return bool(FLUX_CTX_RE.fullmatch(str(ctx or "")))
+
+
+def _flux_port_ok(port):
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    return port if 1024 <= port <= 65535 else None
+
+
+def _flux_clean_link(url, keep_query=False):
+    """Ссылка носителя очищается ровно так, как это делает ядро в `cleanLink()`:
+    без `?`, без `#` и без хвостовой косой черты. У носителя, помеченного
+    `keep_query`, запрос остаётся: у комнаты адрес живёт именно в нём, и разрез
+    по `?` стёр бы комнату. Панель чистит первой, потому что
+    клиент потом читает то, что записано в ссылке, а `--make-link` форму не
+    проверяет и пропускает мусор."""
+    u = str(url or "").strip()
+    cuts = ("#",) if keep_query else ("?", "#")
+    for cut in cuts:
+        u = u.split(cut, 1)[0]
+    return u.rstrip("/")
+
+
+def _flux_carriers_ok(raw):
+    """Носители белых списков: принимаем только те типы, чью форму мы умеем
+    собрать в юнит, и судим ссылку тем же правилом, которым ядро судит ноду
+    (`CheckTransports`). Возвращает (принятые по убыванию приоритета, отказы).
+    Отказ называет носителя, а не молчит: «транспорт выбран неверно» и «ссылка
+    не той формы» — разные причины, и чинить их надо разными действиями."""
+    items = raw if isinstance(raw, list) else []
+    seen, out, bad = set(), [], []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        t = str(it.get("type") or "").strip()
+        if not t:
+            continue
+        c = FLUX_CARRIER_BY.get(t)
+        if c is None:
+            bad.append(f"транспорт `{t}` нельзя выбрать для ноды")
+            continue
+        if t in seen:
+            bad.append(f"транспорт `{t}` выбран дважды")
+            continue
+        url = _flux_clean_link(it.get("url"), keep_query=bool(c.get("keep_query")))
+        if not url:
+            bad.append(f"{c['name']}: ссылка пуста")
+            continue
+        if not c["re"].fullmatch(url):
+            bad.append(f"{c['name']}: нужна ссылка вида {c['hint']}")
+            continue
+        seen.add(t)
+        out.append({k: c[k] for k in ("type", "pri", "flag", "name", "hint")} | {"url": url})
+    out.sort(key=lambda x: -x["pri"])
+    return out, bad
+
+
+def _flux_carriers_state(raw):
+    """В состоянии живёт минимальная форма — только тип и ссылка. Приоритет, флаг
+    и имя берутся из таблицы при каждой сборке, чтобы правка приоритета не
+    застряла в уже записанном состоянии."""
+    cars, _bad = _flux_carriers_ok(raw)
+    return [{"type": c["type"], "url": c["url"]} for c in cars]
+
+
+def _flux_port_busy(port):
+    """Чем занят порт: имя держателя из `ss`, или пусто, если порт свободен.
+
+    `-p` здесь обязателен: `ss -H -ltn` печатает строку слушателя, но имя
+    процесса не показывает никогда, то есть без этого флага функция возвращала
+    пустоту и на занятом порту — проверка «порт свободен» была пустой и
+    пропускала чужой порт. Имя берётся из `users:(("xray",pid=..))`.
+    """
+    try:
+        r = subprocess.run(["ss", "-H", "-ltnp", f"sport = :{int(port)}"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    owner = ""
+    for ln in (r.stdout or "").splitlines():
+        m = re.search(r'\(\("([^"]+)"', ln)
+        if m:
+            owner = m.group(1)
+            break
+    return owner
+
+
+def _flux_port_blocker(port):
+    """Держатель порта, который мешает: чужой процесс. Свой `openflux` не
+    мешает — применение делает `systemctl restart`, который освободит порт и
+    займёт его заново, иначе узел нельзя было бы переприменить никогда."""
+    owner = _flux_port_busy(port)
+    if not owner:
+        return ""
+    if owner == os.path.basename(FLUX_BIN) and _unit_active(FLUX_UNIT):
+        return ""
+    return owner
+
+
+def _flux_unit_enabled():
+    """Стоит ли служба в автозапуске. Отдельно от «поднята прямо сейчас»:
+    узел может быть запущен и снят с автозапуска, и наоборот — после
+    перезагрузки коробки он не вернётся, а владелец будет думать, что вернётся."""
+    try:
+        return subprocess.run(["systemctl", "is-enabled", FLUX_UNIT],
+                              capture_output=True, timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+def _flux_sums_expect(text, asset):
+    """Гашение нужного файла из общей сводки: в `SHA256SUMS.txt` восемь строк, и
+    первая из них — чужой платформы файл. Взять «первую» значит отвергнуть свой."""
+    for ln in str(text or "").splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and parts[-1] == asset:
+            h = parts[0].lower()
+            if re.fullmatch(r"[0-9a-f]{64}", h):
+                return h
+    return ""
+
+
+def _flux_bin_info():
+    """Что лежит на диске под именем ядра — есть ли, чьё, целое ли. Гашение
+    считается по месту (28 МБ — десятые доли секунды), а не берётся на веру из
+    прошлого снимка: файл могли подменить в обход панели."""
+    out = {"present": False, "size": 0, "digest": "", "digest_ok": False,
+           "ver": _flux_state().get("installed_ver") or ""}
+    try:
+        out["size"] = os.path.getsize(FLUX_BIN)
+        out["present"] = True
+    except OSError:
+        return out
+    try:
+        out["digest"] = _sha256_file(FLUX_BIN)[:64]
+    except Exception as e:
+        out["err"] = type(e).__name__
+        return out
+    out["digest_ok"] = (out["digest"] == FLUX_SHA)
+    return out
+
+
+def _flux_unit_body(st):
+    port = _flux_port_ok(st.get("port")) or FLUX_DEFAULT_PORT
+    mode = st.get("mode") if st.get("mode") in FLUX_MODES else "l4"
+    ctx = st.get("ctx") if _flux_ctx_ok(st.get("ctx")) else "veil.flux"
+    # `direct` всегда в списке и всегда последним: когда носитель не поднялся
+    # (документ требуют капчи, ссылка живёт на другом аккаунте), выход обязан
+    # остаться доступным, а не молча умереть вместе с носителем.
+    cars, _bad = _flux_carriers_ok(st.get("carriers"))
+    tl = ",".join([f'{c["type"]}:{c["pri"]}' for c in cars]
+                  + [f"direct:{FLUX_DIRECT_PRI}"])
+    urls = "".join(f' {c["flag"]}="{c["url"]}"' for c in cars)
+    extra = ""
+    if mode == "l3":
+        # сырые сокеты и таблицы маршрутов: без этих прав `l3` падает на старте
+        extra = ("AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n"
+                 "CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n")
+    return (
+        "[Unit]\n"
+        "Description=OpenFlux exit (ставит и снимает панель)\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "StartLimitIntervalSec=60\n"
+        "StartLimitBurst=5\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={FLUX_DIR}\n"
+        f"ExecStart={FLUX_BIN} --role=exit --mode={mode} --negotiate"
+        f" --transports={tl}{urls} --direct-listen=0.0.0.0:{port}"
+        f" --encryption-key-file={FLUX_SECRET} --session-context={ctx}"
+        f" --cookie-store={FLUX_DIR}/cookies.json\n"
+        "Restart=always\n"
+        "RestartSec=3\n"
+        "LimitNOFILE=65536\n"
+        "NoNewPrivileges=yes\n"
+        "PrivateTmp=yes\n"
+        "ProtectHome=yes\n"
+        "ProtectSystem=strict\n"
+        f"ReadWritePaths={FLUX_DIR}\n"
+        + extra +
+        "\n[Install]\nWantedBy=multi-user.target\n"
+    )
+
+
+def _flux_secret_ensure():
+    """Ключ живёт отдельным файлом 0600 и НИКОГДА не уезжает в состояние, в
+    журнал или в ответ морды: в состоянии лежит только путь к нему."""
+    if os.path.exists(FLUX_SECRET) and os.path.getsize(FLUX_SECRET) >= 32:
+        return "есть"
+    _mkdir_private(FLUX_DIR)
+    fd = os.open(FLUX_SECRET, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(secrets.token_hex(32) + "\n")
+    return "создан"
+
+
+def _flux_install():
+    """Скачать, сверить гашение, положить. Порядок важен: проверка стоит ДО
+    боевого пути, а не после — иначе на диске остаётся подменённое ядро, с
+    которого юнит и стартует."""
+    with FLUX_LOCK:
+        free = _free_bytes("/usr/local/bin")
+        if free >= 0 and free < FLUX_MIN_FREE:
+            raise RuntimeError(f"свободно {free // 1048576} МиБ, нужно не меньше "
+                               f"{FLUX_MIN_FREE // 1048576} МиБ — не ставим")
+        tmp = tempfile.mkstemp(prefix=".flux-", dir="/tmp")[1]
+        sums = tmp + ".sums"
+        try:
+            _dl(FLUX_SUMS_DL, sums)
+            with open(sums, encoding="utf-8", errors="replace") as f:
+                exp_sums = _flux_sums_expect(f.read(), FLUX_ASSET)
+            if not exp_sums:
+                raise RuntimeError("в сводке выдачи нет строки для "
+                                   f"{FLUX_ASSET} — не ставим вслепую")
+            if exp_sums != FLUX_SHA:
+                raise RuntimeError(f"сводка выдачи ({exp_sums[:12]}…) не совпала с "
+                                   f"закреплённым числом панели ({FLUX_SHA[:12]}…) — "
+                                   "выпуск переснят, число нужно закрепить заново")
+            _dl(FLUX_DL, tmp)
+            got = _sha256_file(tmp)
+            if got != FLUX_SHA:
+                raise RuntimeError(f"sha256 скачанного не совпал ({got[:12]}… вместо "
+                                   f"{FLUX_SHA[:12]}…) — файл отклонён")
+            _write_atomic(tmp, FLUX_BIN, 0o755)
+        finally:
+            for p in (tmp, sums):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        _flux_license()
+        st = _flux_state()
+        st["installed_ver"] = FLUX_VER
+        st["installed_sha"] = FLUX_SHA[:12]
+        _flux_save(st)
+        _audit("flux_install", ver=FLUX_VER, sha=FLUX_SHA[:12])
+        return {"ok": True, "ver": FLUX_VER, "sha": FLUX_SHA[:12],
+                "bytes": os.path.getsize(FLUX_BIN)}
+
+
+def _flux_license():
+    """Источник назван письмом рядом с ядром: выпуск, адрес, гашение, лицензия."""
+    _mkdir_private(FLUX_DIR)
+    try:
+        for name, mode in (("LICENSE", 0o644), ("NOTICE", 0o644)):
+            dst = os.path.join(FLUX_DIR, name)
+            if os.path.exists(dst):
+                continue
+            tmp = tempfile.mkstemp(prefix=".fluxlic-", dir="/tmp")[1]
+            try:
+                _dl(f"{FLUX_REPO}/raw/main/{name}", tmp)
+                _write_atomic(tmp, dst, mode)
+            except Exception:
+                pass
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+    except Exception as e:
+        print("[flux] лицензия: " + type(e).__name__, flush=True)
+    cred = os.path.join(FLUX_DIR, "CREDITS")
+    try:
+        with open(cred, "w", encoding="utf-8") as f:
+            f.write(f"openflux {FLUX_VER} — {FLUX_DL}\n"
+                    f"sha256 {FLUX_SHA}\n"
+                    f"лицензия: GPL-3.0 (ядро не изменено, панель только запускает)\n"
+                    f"проект: {FLUX_REPO}\n")
+        os.chmod(cred, 0o644)
+    except Exception:
+        pass
+
+
+def _flux_snapshot_unit():
+    """Снимок юнита ДО записи — ради отката. Нет снимка, и предыдущий файл был
+    написан руками: возврат был бы «удалили то, чего панель не ставила»."""
+    if not os.path.exists(FLUX_UNIT_PATH):
+        return None
+    dst = os.path.join(FLUX_DIR, "unit-prev.service")
+    try:
+        _mkdir_private(FLUX_DIR)
+        shutil.copy2(FLUX_UNIT_PATH, dst)
+        os.chmod(dst, 0o600)
+        return dst
+    except Exception as e:
+        print("[flux] снимок юнита: " + type(e).__name__, flush=True)
+        return None
+
+
+def _flux_rollback(snap, was_enabled):
+    """Вернуть ровно то, что было до применения: байты юнита и состояние
+    автозапуска. Молча оставить полуживой юнит хуже, чем не применить."""
+    try:
+        subprocess.run(["systemctl", "stop", FLUX_UNIT], capture_output=True, timeout=30)
+    except Exception:
+        pass
+    try:
+        if snap and os.path.exists(snap):
+            _mkdir_private(FLUX_DIR)
+            shutil.copy2(snap, FLUX_UNIT_PATH)
+            os.chmod(FLUX_UNIT_PATH, 0o644)
+        else:
+            if was_enabled:
+                subprocess.run(["systemctl", "disable", FLUX_UNIT], capture_output=True, timeout=30)
+            os.unlink(FLUX_UNIT_PATH)
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=60)
+    except Exception as e:
+        print("[flux] откат: " + type(e).__name__, flush=True)
+        return False
+    return True
+
+
+def _flux_journal_tail():
+    """Последние строки службы — для ответа владельцу, когда старт не поднялся.
+    Строка с ключом вырезается до того, как текст покидает функцию: ядро на
+    `--debug=0` ключ не печатает, но проверка стоит ровно одну строку и
+    закрывает класс «что-то изменилось в ядре». Ссылку носителя ядро печатает
+    открыто — `carrier "vyandex" ... unexpected status 404 at https://…` — а это
+    приватный адрес документа, который осел бы в журнале панели навсегда: его
+    снимаем той же строкой, что и ключ."""
+    secret = ""
+    try:
+        with open(FLUX_SECRET, encoding="utf-8") as f:
+            secret = f.read().strip()
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["journalctl", "-u", FLUX_UNIT, "-n", "12", "--no-pager", "-o", "cat"],
+                           capture_output=True, text=True, timeout=10)
+        lines = (r.stdout or "").splitlines()
+    except Exception:
+        return ""
+    keep = [ln for ln in lines
+            if not (secret and secret in ln) and "openflux://" not in ln]
+    keep = [re.sub(r"https?://\S+", "ссылку носителя", ln) for ln in keep]
+    return (" · ".join(keep[-3:]) or "")[:240]
+
+
+def _flux_apply(body):
+    st = _flux_state()
+    port = _flux_port_ok(body.get("port", st.get("port")))
+    if port is None:
+        raise RuntimeError("порт должен быть целым числом от 1024 до 65535")
+    mode = (body.get("mode") or st.get("mode") or "l4")
+    if mode not in FLUX_MODES:
+        raise RuntimeError("режим выхода — `l4` или `l3`")
+    ctx = (body.get("ctx") or st.get("ctx") or "veil.flux")
+    if not _flux_ctx_ok(ctx):
+        raise RuntimeError("контекст сессии — до 64 знаков: буквы, цифры, точка, "
+                           "двоеточие, дефис, подчёркивание")
+    # Носители принимаем только теми словами, которыми их судит ядро: кривую
+    # форму нельзя отложить на потом — выход поднимется и будет молча ретраить
+    # носитель, которого клиент никогда не дождётся.
+    if "carriers" in body:
+        _cars, bad = _flux_carriers_ok(body.get("carriers"))
+        if bad:
+            raise RuntimeError(" · ".join(bad)[:240])
+        st["carriers"] = _flux_carriers_state(body.get("carriers"))
+    else:
+        st["carriers"] = _flux_carriers_state(st.get("carriers"))
+    car_types = [c["type"] for c in _flux_carriers_ok(st["carriers"])[0]]
+    st.update(port=port, mode=mode, ctx=ctx)
+    info = _flux_bin_info()
+    if not info["present"] or not info["digest_ok"]:
+        raise RuntimeError("ядро не установлено или его гашение не совпало с "
+                           f"закреплённым ({FLUX_SHA[:12]}…) — сначала «Поставить ядро»")
+    busy = _flux_port_blocker(port)
+    if busy:
+        raise RuntimeError(f"порт :{port} уже слушается ({busy}) — выбери свободный")
+    _flux_secret_ensure()
+    _mkdir_private(FLUX_DIR)
+    snap = _flux_snapshot_unit()
+    was_enabled = False
+    try:
+        was_enabled = subprocess.run(["systemctl", "is-enabled", FLUX_UNIT],
+                                     capture_output=True, timeout=20).returncode == 0
+    except Exception:
+        pass
+    _save_ok = True
+    try:
+        tmp = os.path.join(FLUX_DIR, "unit.new.service")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(_flux_unit_body(st))
+        _write_atomic(tmp, FLUX_UNIT_PATH, 0o644)
+    except Exception as e:
+        _save_ok = False
+        raise RuntimeError("не записали юнит: " + str(e)[:160])
+    finally:
+        try:
+            os.unlink(os.path.join(FLUX_DIR, "unit.new.service"))
+        except OSError:
+            pass
+    if not _save_ok:
+        return {"ok": False}
+    try:
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=60, check=True)
+        subprocess.run(["systemctl", "enable", FLUX_UNIT], capture_output=True, timeout=60)
+        subprocess.run(["systemctl", "restart", FLUX_UNIT], capture_output=True,
+                       timeout=90, check=True)
+        if not _svc_unit_up(FLUX_UNIT):
+            raise RuntimeError("служба не поднялась"
+                               + ((" — " + _flux_journal_tail()) if _flux_journal_tail() else ""))
+    except Exception as e:
+        rolled = _flux_rollback(snap, was_enabled)
+        _flux_save(st)
+        _audit("flux_apply", ok=False, port=port, mode=mode, rolled=rolled,
+               carriers=car_types,
+               err=str(e)[:160])
+        raise
+    _flux_save(st)
+    _audit("flux_apply", ok=True, port=port, mode=mode, carriers=car_types)
+    return {"ok": True, "port": port, "mode": mode, "ctx": ctx,
+            "carriers": car_types,
+            "active": _unit_active(FLUX_UNIT)}
+
+
+def _flux_start():
+    if not _flux_enabled():
+        raise RuntimeError("узел выключен рубильником — сначала включи его")
+    if not _flux_bin_info()["digest_ok"]:
+        raise RuntimeError("ядро не установлено или его гашение не совпало")
+    subprocess.run(["systemctl", "start", FLUX_UNIT], capture_output=True, timeout=90,
+                   check=True)
+    if not _svc_unit_up(FLUX_UNIT):
+        raise RuntimeError("служба не поднялась"
+                           + ((" — " + _flux_journal_tail()) if _flux_journal_tail() else ""))
+    _audit("flux_start", port=_flux_state().get("port"))
+    return {"ok": True, "active": True}
+
+
+def _flux_stop():
+    subprocess.run(["systemctl", "stop", FLUX_UNIT], capture_output=True, timeout=60)
+    _audit("flux_stop", port=_flux_state().get("port"),
+           still=_unit_active(FLUX_UNIT))
+    return {"ok": True, "active": _unit_active(FLUX_UNIT)}
+
+
+def _flux_remove(wipe=False):
+    """Снять юнит, оставить состояние и ключ: без них ссылка клиента перестаёт
+    читаться, а «удалить службу» не значит «забыть узел». Ключ стирают только
+    `wipe`."""
+    try:
+        subprocess.run(["systemctl", "disable", FLUX_UNIT], capture_output=True, timeout=30)
+    except Exception:
+        pass
+    subprocess.run(["systemctl", "stop", FLUX_UNIT], capture_output=True, timeout=60)
+    gone = True
+    try:
+        os.unlink(FLUX_UNIT_PATH)
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=60)
+    except Exception:
+        gone = False
+    if wipe:
+        for name in ("secret.key", "unit-prev.service"):
+            try:
+                os.unlink(os.path.join(FLUX_DIR, name))
+            except OSError:
+                pass
+    _audit("flux_remove", unit=gone, wipe=bool(wipe))
+    return {"ok": bool(gone), "wipe": bool(wipe), "active": _unit_active(FLUX_UNIT)}
+
+
+def _flux_host():
+    """Место входа в ссылке: адрес СОБСТВЕННО этой коробки. Фронт двойного
+    прыжка (`hop_public_host`) для `flux` не годится: он терминирует TLS на :443 и
+    не несёт произвольный порт, а `direct` звонится ровно на тот порт, который
+    слушает выход."""
+    dom = (CFG_CACHE.get("panel_domain") or "").strip()
+    if dom and "/" not in dom and ":" not in dom:
+        return dom
+    return (_my_ip() or "").strip()
+
+
+def _flux_transports(st, host, port):
+    """Список транспортов ссылки: носители по убыванию приоритета и `direct`
+    запасным. Тот же порядок, что и в юните, — ссылка обязана обещать клиенту
+    ровно то, на чём узел стоит, иначе клиент выберет канал, которого узел не
+    поднимал."""
+    cars, _bad = _flux_carriers_ok(st.get("carriers"))
+    tl = [{"type": c["type"], "url": c["url"], "priority": c["pri"]} for c in cars]
+    tl.append({"type": "direct", "dial": f"{host}:{int(port)}",
+               "priority": FLUX_DIRECT_PRI})
+    return cars, tl
+
+
+def _flux_link():
+    """Ссылку собирает само ядро (`--make-link`), а не панель: формат
+    `openflux://` живёт в одном месте и на клиенте, и на выходе. Ссылка содержит
+    ключ — поэтому она не пишется ни в журнал, ни в ответ без явного запроса.
+    Носители едут в ней тем же списком, что и в юните, с теми же приоритетами, а
+    `direct` стоит запасным: клиент сам выбирает, чем ехать, и если белый список
+    оператора закрыл носитель, он уедет по прямому каналу."""
+    st = _flux_state()
+    if not os.path.exists(FLUX_SECRET):
+        raise RuntimeError("ключа нет — сначала «Применить и запустить»")
+    host = _flux_host()
+    if not host:
+        raise RuntimeError("не знаем публичного адреса — ссылка будет без места входа")
+    port = _flux_port_ok(st.get("port")) or FLUX_DEFAULT_PORT
+    cars, tl = _flux_transports(st, host, port)
+    payload = {"name": "veil-flux", "negotiate": True, "codec": "batched",
+               "context": st.get("ctx") or "veil.flux",
+               "transports": tl}
+    try:
+        with open(FLUX_SECRET, encoding="utf-8") as f:
+            payload["secret"] = f.read().strip()
+    except Exception as e:
+        raise RuntimeError("ключ не читается: " + type(e).__name__)
+    try:
+        r = subprocess.run([FLUX_BIN, "--make-link", "-"], input=json.dumps(payload),
+                           capture_output=True, text=True, timeout=30)
+        out = json.loads(r.stdout or "{}")
+    except Exception as e:
+        raise RuntimeError("ядро не собрало ссылку: " + (str(e)[:120]))
+    link = out.get("link") or ""
+    if not link.startswith("openflux://"):
+        code = (out.get("error") or {}).get("code") if isinstance(out.get("error"), dict) else ""
+        raise RuntimeError("ядро отказало ссылкой" + (f" (`{code}`)" if code else ""))
+    _audit("flux_link", port=port, carriers=[c["type"] for c in cars])
+    return {"link": link, "carriers": [c["type"] for c in cars],
+            "dial": f"{host}:{port}",
+            "note": "в ссылке лежит ключ: покажи её только своему клиенту"}
+
+
+def _flux_mint_room():
+    """Cups.online выдаёт комнату анонимно: сама страница несёт `data-room` со
+    свежим uuid, без входа и без телефона — в этом и смысл носителя для хозяина,
+    у которого аккаунтов документальных носителей нет. Берём только uuid и
+    возвращаем адрес ровно в той форме, какую читает ядро. Комната — место
+    встречи, а не ключ: ключ по-прежнему лежит в ссылке `openflux://`, поэтому
+    адрес комнаты не пишется ни в журнал, ни в аудит."""
+    req = urllib.request.Request("https://cups.online/live-coding/",
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            page = r.read(4194304).decode("utf-8", "replace")
+    except Exception as e:
+        raise RuntimeError("комната не выдана: " + type(e).__name__)
+    m = re.search(r'data-room="([^"]*)"', page)
+    if not m:
+        raise RuntimeError("комната не выдана — страница без `data-room`")
+    try:
+        room = json.loads(_html.unescape(m.group(1)))
+    except Exception:
+        raise RuntimeError("комната не читается")
+    uid = str(room.get("uuid") or "") if isinstance(room, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", uid):
+        raise RuntimeError("комната без uuid")
+    _audit("flux_room", ok=True)
+    return {"url": "https://interview.cups.online/live-coding/?room=" + uid}
+
+
+def _flux_view():
+    st = _flux_state()
+    info = _flux_bin_info()
+    free = _free_bytes("/usr/local/bin")
+    blockers = []
+    if not info["present"]:
+        blockers.append("ядро не поставлено")
+    elif not info["digest_ok"]:
+        blockers.append(f"гашение ядра не совпало с закреплённым ({info['digest'][:12]}… "
+                        f"вместо {FLUX_SHA[:12]}…)")
+    busy = _flux_port_blocker(st.get("port"))
+    if busy:
+        blockers.append(f"порт :{st.get('port')} занят ({busy})")
+    if free >= 0 and free < FLUX_MIN_FREE:
+        blockers.append(f"свободно {free // 1048576} МиБ, нужно {FLUX_MIN_FREE // 1048576} МиБ")
+    active = _unit_active(FLUX_UNIT)
+    host = _flux_host()
+    cars, _bad = _flux_carriers_ok(st.get("carriers"))
+    owner = _flux_port_busy(st.get("port"))
+    return {"enabled": _flux_enabled(), "ver": FLUX_VER, "sha": FLUX_SHA[:12],
+            "bin": info, "free": free, "port": st.get("port"), "mode": st.get("mode"),
+            "ctx": st.get("ctx"), "active": active,
+            "listen": bool(owner), "listen_by": owner,
+            "unit_enabled": _flux_unit_enabled(),
+            "journal": _flux_journal_tail(), "stamp": _ldate("%H:%M:%S"),
+            "host": host, "dial": (f"{host}:{st.get('port')}" if host else ""),
+            "since": (_service_active_since(FLUX_UNIT) if active else ""),
+            "secret": os.path.exists(FLUX_SECRET), "unit_file": os.path.exists(FLUX_UNIT_PATH),
+            "carriers": cars,
+            "carrier_kinds": [{k: c[k] for k in ("type", "pri", "name", "hint")}
+                              for c in FLUX_CARRIERS],
+            "direct_pri": FLUX_DIRECT_PRI,
+            "blockers": blockers,
+            "peer_note": ("узел не пишет в журнал ни подъём клиента, ни его уход: "
+                          "проверять надо на устройстве клиента"),
+            "one_client": "выход обслуживает одного активного клиента за раз"}
+
+
 class _AiBadUpstream(RuntimeError):
     """Ответ провайдера технически 200, но содержимого для ответа нет.
     Отдельный класс затем, чтобы воронка `/api/ai/chat` отвечала причину,
@@ -24495,6 +26464,11 @@ class H(http.server.BaseHTTPRequestHandler):
                                     "model": CFG_CACHE.get("ai_model") or "gpt-4o-mini",
                                     "tools": [t["function"]["name"] for t in _AI_TOOLS],
                                     "providers": AI_PROVIDERS})
+        if p == "/api/flux":
+            u = _auth_user(self)
+            if not u or not u["owner"]:
+                return self._send(403, {"error": "только владелец"})
+            return self._send(200, _flux_view())
         if p == "/api/me":
             u = _auth_user(self)
             if not u:
@@ -24552,6 +26526,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 inb_links = {}
                 inc_links = {}
                 sb_objs = {}
+                _sb_tags = {}
                 node_links = {}
                 _ensure_identities(st)
                 for proto, inb in (st.get("inbounds") or {}).items():
@@ -24581,11 +26556,15 @@ class H(http.server.BaseHTTPRequestHandler):
                                 pass
                         if not inb.get("disabled"):
                             try:
-                                # Ключ — протокол: у клиента на каждый протокол одна ссылка.
-                                # Но /sub БЕЗ токена обещает «ссылки всех подписчиков», и
-                                # тогда на один протокол их несколько — без uuid в ключе
-                                # все, кроме первого, молча терялись.
-                                lkey = proto if sub_path else proto + "|" + str(c.get("uuid"))
+                                # Ключ — протокол плюс различник записи (#239): пока
+                                # на протокол была одна копия, «одна ссылка на протокол»
+                                # была верна. Со второй конфигурацией `wireguard` прежний
+                                # ключ-протокол молча выбросил бы её из выдачи — телефон
+                                # получил бы один туннель там, где оператор завёл два.
+                                # /sub БЕЗ токена обещает «ссылки всех подписчиков»:
+                                # там различник — идентификатор человека.
+                                lkey = (proto + "|" + _rec_mark(proto, c)) if sub_path \
+                                    else proto + "|" + str(c.get("uuid"))
                                 if lkey not in inb_links:
                                     inb_links[lkey] = _link(inb, host, c, proto)
                                 if lkey not in inc_links:
@@ -24593,6 +26572,15 @@ class H(http.server.BaseHTTPRequestHandler):
                                 if lkey not in sb_objs:
                                     _ob = _singbox_outbound(proto, inb, c, host)
                                     if _ob:
+                                        # метка исходящего — имя+протокол: у двух
+                                        # конфигураций одного протокола она обязана
+                                        # различаться, иначе `check -c` бракует весь файл
+                                        _t0 = str(_ob.get("tag") or "")
+                                        if _t0 in _sb_tags:
+                                            _sb_tags[_t0] += 1
+                                            _ob["tag"] = _t0 + " ·" + str(_sb_tags[_t0])
+                                        else:
+                                            _sb_tags[_t0] = 1
                                         sb_objs[lkey] = _ob
                             except Exception:
                                 continue
@@ -24955,6 +26943,14 @@ class H(http.server.BaseHTTPRequestHandler):
             tok = p[len("/api/wgconf/"):].strip("/") or p[len("/api/awgconf/"):].strip("/")
             if not tok:
                 return self._send(404, {"error": "конфиг не найден"})
+            # /api/wgconf/<токен>/<номер> (#239): сколько конфигураций туннеля
+            # оператор завёл, столько кнопок скачивания и должно висеть — прежняя
+            # выдача молча ограничивалась первой записью.
+            tok, _, tail = tok.partition("/")
+            try:
+                want_no = max(1, int(tail)) if tail else 1
+            except ValueError:
+                want_no = 1
             st = _load(STATE, {}) or {}
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
@@ -24963,11 +26959,14 @@ class H(http.server.BaseHTTPRequestHandler):
             for proto, inb in (st.get("inbounds") or {}).items():
                 if proto != only_proto:
                     continue
+                no = 0
                 for c in inb.get("clients", []):
                     if c.get("sub_token") == tok or (c.get("uuid") and c["uuid"] == tok):
-                        conf = _link(inb, host, c, proto)
-                        name = c.get("name") or "client"
-                        break
+                        no += 1
+                        if no == want_no:
+                            conf = _link(inb, host, c, proto)
+                            name = c.get("name") or "client"
+                            break
                 if conf:
                     break
             if not conf:
@@ -25179,10 +27178,22 @@ class H(http.server.BaseHTTPRequestHandler):
             if self._refuse_unshapable(raw_st): return
             st = _state_view(raw_st)
             inbs = _inb_map(st)
+            def _cap(pid):
+                # сколько конфигураций этого протокола может лежать на одном
+                # человеке (#239): где различие по ключу — до общего предела,
+                # где по адресу входа — сколько адресов узел честно отдаёт
+                kind = _proto_dup(pid)
+                if kind == "ep":
+                    inb = inbs.get(pid)
+                    return len(_ep_variants(inb)) if inb and not inb.get("disabled") else 1
+                return _ADD_N_MAX if kind else 1
             return self._send(200, {"current": _proto_of(st),
                                     "configured": _client_count(st) > 0,
                                     "protocols": [dict(p, disabled=bool((inbs.get(p["id"]) or {}).get("disabled")),
-                                                        has_inbound=bool(inbs.get(p["id"])))
+                                                        has_inbound=bool(inbs.get(p["id"])),
+                                                        multi=_proto_multi(p["id"]),
+                                                        dup=_proto_dup(p["id"]),
+                                                        cap=_cap(p["id"]))
                                                   for p in PROTOCOLS]})
         if p == "/api/inbound/get":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -25535,13 +27546,22 @@ class H(http.server.BaseHTTPRequestHandler):
             # Порядок важен: фильтр `q=` применяется уже к вычищенному тексту, иначе
             # поиск остаётся оракулом — «строка нашлась / не нашлась» восстанавливает
             # ключ по одному символу.
-            ls = [_audit_path(_audit_redact(x, strict_sep=True)) for x in ls]
+            raw = list(ls)
+            masked = [_audit_path(_audit_redact(x, strict_sep=True)) for x in raw]
+            pairs = list(zip(raw, masked))
             if grep:
                 gl = grep.lower()
-                ls = [x for x in ls if gl in x.lower()][:lines]
+                pairs = [pb for pb in pairs if gl in pb[1].lower()][:lines]
             else:
-                ls = ls[-lines:]
-            return self._send(200, {"text": "\n".join(ls), "count": len(ls), "svc": svc})
+                pairs = pairs[-lines:]
+            ls = [pb[1] for pb in pairs]
+            # Остаток на НОСИТЕЛЕ (#229): маска выше сворачивает то, что читается
+            # сейчас, а на диске лежат и строки, написанные до фильтра. У `journal`
+            # своего файла нет — там поля нет вовсе, а не ноль.
+            res = _log_residue(src[3]) if src[2] == "file" else None
+            return self._send(200, {"text": "\n".join(ls), "count": len(ls), "svc": svc,
+                                    "masked": sum(1 for a, b in pairs if a != b),
+                                    "residue": res})
         if p == "/api/sessions":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             cur = None
@@ -25775,6 +27795,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _tg_dcs())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200], "dcs": []})
+        if p == "/api/media_route":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _mr_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
@@ -26128,6 +28154,64 @@ class H(http.server.BaseHTTPRequestHandler):
                                                          user=u.get("login")))
                 except Exception as e:
                     return self._send(400, {"error": str(e)[:200]})
+            if p == "/api/flux/switch":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                want = bool(b.get("enabled"))
+                CFG_CACHE["flux_enabled"] = want
+                _cfg_save()
+                stopped = None
+                if not want and _unit_active(FLUX_UNIT):
+                    # узел, который владелец выключил рубильником, не имеет права
+                    # дальше слушать порт: он остаётся поднятым до следующей
+                    # команды, а владелец считает, что узел погашен
+                    try:
+                        _flux_stop()
+                        stopped = True
+                    except Exception as e:
+                        stopped = False
+                        print("[flux] гашение службы: " + str(e)[:120], flush=True)
+                _audit("flux_switch", user=u.get("login"), enabled=want, stopped=stopped)
+                return self._send(200, {"enabled": want, "stopped": stopped,
+                                        "active": _unit_active(FLUX_UNIT)})
+            if p == "/api/flux/install":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                try:
+                    return self._send(200, _flux_install())
+                except Exception as e:
+                    _audit("flux_install", ok=False, err=str(e)[:160])
+                    return self._send(400, {"error": str(e)[:240]})
+            if p == "/api/flux/apply":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                try:
+                    return self._send(200, _flux_apply(b))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:280]})
+            if p in ("/api/flux/start", "/api/flux/stop", "/api/flux/remove",
+                     "/api/flux/link", "/api/flux/room"):
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                try:
+                    if p == "/api/flux/start":
+                        return self._send(200, _flux_start())
+                    if p == "/api/flux/stop":
+                        return self._send(200, _flux_stop())
+                    if p == "/api/flux/remove":
+                        return self._send(200, _flux_remove(wipe=bool(b.get("wipe"))))
+                    if p == "/api/flux/room":
+                        return self._send(200, _flux_mint_room())
+                    return self._send(200, _flux_link())
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:280]})
             if p == "/api/ai/config":
                 u = _auth_user(self)
                 if not u or not u["owner"]:
@@ -27717,6 +29801,168 @@ class H(http.server.BaseHTTPRequestHandler):
                         c["tg_proxy"] = tm
                         if tm == "personal" and not c.get("tg_user"):
                             c["tg_user"] = _tg_slug(c.get("name"), "client") + "-" + (c.get("sub_token") or "x")[:6]
+                added_protos = []
+                if b.get("add_protos"):
+                    # Дефект #228, продолжение #239: оператор выбирает протокол и
+                    # количество — панель заводит ровно столько конфигураций этому
+                    # человеку. Запись несёт общую личность: тот же идентификатор,
+                    # тот же токен подписки, тот же тариф и бан — иначе человек
+                    # получил бы вторую подписку вместо продолжения первой.
+                    # Множится только то, у чего у самой записи есть собственный ключ
+                    # (`_proto_multi`); дубликат общей ссылки панель отвергает поимённо.
+                    want = b.get("add_protos")
+                    if not isinstance(want, list) or len(want) > len(PROTOCOLS):
+                        return self._send(400, {"error": "add_protos: список протоколов"})
+                    inbs = st.get("inbounds") or {}
+                    try:
+                        tname = _client_name(group[0].get("name"))
+                    except ValueError:
+                        tname = None
+                    if tname is None:
+                        return self._send(400, {"error": "у записи нет имени — панель его не придумывает"})
+                    ttok = next((c.get("sub_token") for c in group if c.get("sub_token")), "")
+                    # один протокол в списке один раз: повторы сливаются в количество
+                    need = {}
+                    for item in want:
+                        if not isinstance(item, dict):
+                            return self._send(400, {"error": "add_protos: протокол и количество"})
+                        pr = str(item.get("proto") or "").strip()
+                        if not pr:
+                            continue
+                        try:
+                            n = int(item.get("n", 1))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "add_protos: количество — целое число"})
+                        if n < 1 or n > _ADD_N_MAX:
+                            return self._send(400, {"error": "add_protos: количество от 1 до %d" % _ADD_N_MAX})
+                        need[pr] = need.get(pr, 0) + n
+                    if sum(need.values()) > _ADD_CALL_MAX:
+                        return self._send(400, {"error": "add_protos: за раз не больше %d конфигураций" % _ADD_CALL_MAX})
+                    bad = []
+                    for pr, n in need.items():
+                        recs = [c for c in (inbs.get(pr) or {}).get("clients", [])
+                                if isinstance(c, dict) and c.get("uuid") == u]
+                        cur = len(recs)
+                        kind = _proto_dup(pr)
+                        if not kind and (cur > 0 or n > 1):
+                            bad.append(pr + " — вторая конфигурация повторила бы первую ссылку: "
+                                       "на этом протоколе записям нечем различаться")
+                            continue
+                        if cur + n > _ADD_N_MAX:
+                            bad.append(pr + (" — уже %d, больше %d конфигураций на протокол панель не заводит"
+                                             % (cur, _ADD_N_MAX)))
+                            continue
+                        if pr not in inbs:
+                            bad.append(pr + " — входа нет")
+                            continue
+                        if (inbs[pr] or {}).get("disabled"):
+                            bad.append(pr + " — выключен")
+                            continue
+                        if kind == "ep":
+                            # общий ключ: ссылки различаются адресом входа, и свободный
+                            # адрес нужен на КАЖДУЮ новую запись
+                            variants = _ep_variants(inbs[pr] or {})
+                            taken = {str(c.get("ep_host") or "").strip() for c in recs}
+                            free = [v for v in variants if v[0] not in taken]
+                            if len(free) < n:
+                                bad.append(pr + (" — различных адресов входа осталось %d, а просили %d: "
+                                                 "второго порта у входа нет, различие только по адресу"
+                                                 % (len(free), n)))
+                                continue
+                        made = 0
+                        for _k in range(n):
+                            try:
+                                c = _new_client(tname, pr, inbs[pr],
+                                                limit_gb=group[0].get("limit_gb"),
+                                                expiry=group[0].get("expiry") or 0,
+                                                reset_cycle=group[0].get("reset_cycle"),
+                                                max_devices=group[0].get("max_devices"))
+                            except ValueError:
+                                bad.append(pr + " — панель не создала запись")
+                                break
+                            c["uuid"] = u
+                            if ttok:
+                                c["sub_token"] = ttok
+                            else:
+                                ttok = c["sub_token"]
+                            if kind == "ep":
+                                h, p = free[_k]
+                                if h:
+                                    c["ep_host"] = h
+                                    if int(p or 0) != int(_pub_port(inbs[pr])):
+                                        c["ep_port"] = int(p)
+                            for k in ("tg_proxy", "tg_user"):
+                                if group[0].get(k):
+                                    c[k] = group[0][k]
+                            if group[0].get("blocked"):
+                                c["blocked"] = group[0]["blocked"]
+                                c["blocked_reason"] = group[0].get("blocked_reason") or ""
+                            inbs[pr].setdefault("clients", []).append(c)
+                            made += 1
+                        if made:
+                            added_protos.append(pr)
+                    if bad:
+                        # отказ ДО сохранения: состояние с файла перезапишется только
+                        # целым успехом, половина списка не заведётся молча
+                        return self._send(400, {"error": "протоколы не добавлены: " + "; ".join(bad)})
+                    if added_protos:
+                        for c in group:
+                            if c.get("sub_token") != ttok:
+                                c["sub_token"] = ttok
+                removed_protos = []
+                if b.get("del_protos"):
+                    # обратная сторона #239: снять у человека конфигурации —
+                    # лишние экземпляры или протокол целиком. Снимаем с конца
+                    # списка: первыми уходят последние заведённые, адресный
+                    # вариант (`ep_host`) снимается раньше ссылки по умолчанию.
+                    # Последняя запись человека не снимается: для ухода целиком
+                    # в карточке есть удаление подписчика.
+                    want = b.get("del_protos")
+                    if not isinstance(want, list) or len(want) > len(PROTOCOLS):
+                        return self._send(400, {"error": "del_protos: список протоколов"})
+                    inbs = st.get("inbounds") or {}
+                    need = {}
+                    for item in want:
+                        if not isinstance(item, dict):
+                            return self._send(400, {"error": "del_protos: протокол и количество"})
+                        pr = str(item.get("proto") or "").strip()
+                        if not pr:
+                            continue
+                        try:
+                            n = int(item.get("n", 1))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "del_protos: количество — целое число"})
+                        if n < 1 or n > _ADD_N_MAX:
+                            return self._send(400, {"error": "del_protos: количество от 1 до %d" % _ADD_N_MAX})
+                        need[pr] = need.get(pr, 0) + n
+                    if sum(need.values()) > _ADD_CALL_MAX:
+                        return self._send(400, {"error": "del_protos: за раз не больше %d конфигураций" % _ADD_CALL_MAX})
+                    have = {}
+                    for pr, inb in inbs.items():
+                        have[pr] = [c for c in ((inb or {}).get("clients") or [])
+                                    if isinstance(c, dict) and c.get("uuid") == u]
+                    if sum(len(v) for v in have.values()) - sum(need.values()) < 1:
+                        return self._send(400, {"error": "у подписчика не останется ни одной конфигурации: "
+                                                        "для ухода целиком удаляют подписчика"})
+                    bad = []
+                    plan = []
+                    for pr, n in need.items():
+                        recs = have.get(pr) or []
+                        if not recs:
+                            bad.append(pr + " — у этого человека на нём нет конфигураций")
+                            continue
+                        if n > len(recs):
+                            bad.append(pr + " — просили снять %d, а на нём %d" % (n, len(recs)))
+                            continue
+                        plan.append((pr, n, {id(c) for c in recs[-n:]}))
+                    if bad:
+                        # отказ ДО снятий: ни одна запись не убирается, пока
+                        # весь запрос не признан честным
+                        return self._send(400, {"error": "протоколы не сняты: " + "; ".join(bad)})
+                    for pr, _n, drop in plan:
+                        inbs[pr]["clients"] = [c for c in (inbs[pr].get("clients") or [])
+                                               if id(c) not in drop]
+                        removed_protos.append(pr)
                 if ("limit_gb" in b or "expiry_days" in b or "expiry_date" in b
                         or "reset_cycle" in b):
                     # зеркало тарифа на записи членов + сброс их флагов предупреждений
@@ -27738,16 +29984,31 @@ class H(http.server.BaseHTTPRequestHandler):
                         _apply_state(st)
                     except Exception as e:
                         return self._send(500, {"error": str(e)})
+                if added_protos or removed_protos:
+                    # новый транспорт живёт, пока его не применили: туннельные —
+                    # синками, остальное — общим пропуском состояния в конфиг;
+                    # снятое убирается из ядер тем же прогоном
+                    try: _awg_sync(st)
+                    except Exception: pass
+                    try: _wg_sync(st)
+                    except Exception: pass
+                    try: _apply_state(st)
+                    except Exception: pass
                 exp_now = int(group[0].get("expiry") or 0)
                 _audit("client_update", uuid=u, name=group[0].get("name"),
                        what=",".join(k for k in ("name", "limit_gb", "expiry_days",
                                                  "expiry_date", "reset_cycle",
-                                                 "max_devices", "tg_proxy", "unblock")
+                                                 "max_devices", "tg_proxy", "add_protos",
+                                                 "del_protos", "unblock")
                                     if k in b),
                        expiry=exp_now,
+                       added=",".join(added_protos),
+                       removed=",".join(removed_protos),
                        expiry_local=_ldate("%d.%m.%Y", exp_now) if exp_now else "бессрочно")
                 return self._send(200, {"ok": True, "name": group[0].get("name"),
                                         "expiry": exp_now,
+                                        "added_protos": added_protos,
+                                        "removed_protos": removed_protos,
                                         "expiry_local": (_ldate("%d.%m.%Y", exp_now)
                                                           if exp_now else "бессрочно")})
 
@@ -28850,6 +31111,18 @@ class H(http.server.BaseHTTPRequestHandler):
                 _cfg_save()
                 _audit("tg_mp_ipv6", on=CFG_CACHE["tg_mp_ipv6"])
                 return self._send(200, {"ok": True, "ipv6": "on" if _tg_mp_ipv6_want() else "off"})
+            if p == "/api/media_route":
+                b = self._body()
+                if "on" not in b:
+                    return self._send(400, {"error": "нужно поле on"})
+                CFG_CACHE["tg_media_route"] = bool(b.get("on"))
+                _cfg_save()
+                _audit("tg_media_route", on=CFG_CACHE["tg_media_route"])
+                try:
+                    _mr_tick()
+                except Exception as e:
+                    print("[media-route] " + str(e), flush=True)
+                return self._send(200, _mr_view())
             if p == "/api/front/apply":
                 b = self._body()
                 try:
@@ -29242,6 +31515,7 @@ if __name__ == "__main__":
         _bans_load()
         _f2b_bootstrap()
         _ensure_logrotate()
+        _ensure_telemt_log_filter()
     except Exception as e:
         print("f2b init: " + str(e), flush=True)
     try:
