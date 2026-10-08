@@ -679,7 +679,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <button data-tab=site>🌐 Сайт</button>
     <button data-tab=settings>⚙️ Настройки</button>
     <button data-tab=ai>🤖 Ассистент</button>
-    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🔀 Двойной прыжок</button><button data-tab=migrate>🚚 Переезд</button><button data-tab=security>🔑 Безопасность</button><button data-tab=pay>💳 Оплата</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=logs>🧾 Логи</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🔀 Двойной прыжок</button><button data-tab=migrate>🚚 Переезд</button><button data-tab=security>🔑 Безопасность</button><button data-tab=pay>💳 Оплата</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=logs>🧾 Логи</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button><button data-tab=flux style="display:none">🌀 OpenFlux</button>
   </nav>
 
   <div id=tab-dashboard class="tab-pane">
@@ -937,6 +937,17 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <option value="personal">персональная ссылка прокси</option>
         <option value="off">не добавлять</option>
       </select>
+      <div id=editProtosBlock hidden>
+      <label>Протоколы подписки — добавить или снять</label>
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+      <select id=editProtosSel onchange=editProtosMax() style="flex:1;min-width:180px"></select>
+      <label for=editProtosN class="muted">кол-во</label>
+      <input id=editProtosN type=number min=1 max=8 value=1 style="width:64px" title="сколько конфигураций завести или снять">
+      <button class="tiny" id=editProtosAddBtn onclick=doEditAddProtos()>+ добавить</button>
+      <button class="tiny" id=editProtosDelBtn onclick=doEditDelProtos()>− снять</button>
+      </div>
+      <div id=editProtos class="muted" style="min-height:18px;margin-top:4px"></div>
+      </div>
       <div id=editFam class="muted" style="margin-top:9px"></div>
       <button onclick=doEdit()>Сохранить</button>
       <div class=msg id=editMsg></div>
@@ -1106,6 +1117,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <details id=dcBox open style="margin:12px 0;border:1px solid var(--br);border-radius:10px;background:color-mix(in srgb,var(--card2) 30%,transparent)">
       <summary style="cursor:pointer;font-weight:600;padding:10px 12px;color:var(--acc)">🛰 Дата-центры Telegram — покрытие <b id=dcTotal>—</b></summary>
       <div style="padding:0 12px 12px">
+        <p class=mut id=dcMe style="font-size:12px;margin:0 0 8px"></p>
+        <p class=mut id=dcMr style="font-size:12px;margin:0 0 8px"></p>
         <div id=dcTable class=mut>Загружаю…</div>
         <p class=mut id=dcNote style="font-size:12px;margin:8px 0 0"></p>
         <div class="row" style="gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
@@ -1113,6 +1126,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <label class=fldlbl for=dcThr style="margin:0">Порог, %:</label>
           <input id=dcThr type=number min=10 max=100 step=5 value=80 style="width:84px">
           <button class=tiny onclick=saveDcThreshold()>Сохранить</button>
+          <label class=fldlbl style="margin:0"><input id=dcMrOn type=checkbox onchange=saveMediaRoute(this.checked)> медиа через туннель</label>
+          <span class=mut id=dcMrState style="font-size:11px"></span>
           <span class=mut style="font-size:11px">me_pool_min_fresh_ratio telemt: ниже порога свежие писатели не вытесняются</span>
         </div>
         <div class=msg id=dcMsg></div>
@@ -2586,6 +2601,100 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
     </div>
     <div class=msg id=diagMsg></div>
+  </div></div>
+
+  <div id=tab-flux class="tab-pane"><div class=card>
+    <h2>🌀 OpenFlux</h2>
+    <p class=mut>Узел на этом сервере: один клиент ходит в сеть через этот хост. Только владелец.</p>
+    <details class=expl><summary>Как открыть и закрыть эту вкладку</summary><div>
+      <p><b>Открыть.</b> Пять тапов подряд по логотипу в шапке панели. Пауза длиннее трёх секунд сбрасывает счёт, поэтому тапать надо сразу.</p>
+      <p><b>Закрыть.</b> Ещё пять тапов по тому же логотипу — кнопка вкладки гаснет. Если ты в это время сидишь в ней, панель вернёт тебя на вкладку VPN.</p>
+      <p><b>Обновление страницы закрывает вкладку.</b> Разблокировка живёт только в памяти текущей загрузки страницы: ни в хранилище браузера, ни на сервере она не записывается. Закрыл страницу, перезагрузил её или зашёл заново — открывай снова пятью тапами.</p>
+      <p><b>Скрыта только кнопка.</b> Сам узел, его порт и ключ живут на сервере и от тапов не зависят: вкладка ничего не «включает». Гасит узел рубильник внизу.</p>
+    </div></details>
+    <details class=expl open><summary>Как пользоваться — по шагам</summary><div>
+      <p><b>Что это.</b> Отдельная служба на этом же сервере: она принимает соединение твоего клиента и выпускает его наружу от своего имени. Обычный VPN даёт клиенту интернет, этот узел даёт интернет с адресом именно этой коробки.</p>
+      <ol style="margin:0 0 12px;padding-left:22px;line-height:1.55">
+        <li><b>Рубильник «Узел включён».</b> Пока он выключен, служба не имеет права слушать порт, а кнопки «Старт» и «Ссылка и QR» недоступны.</li>
+        <li><b>«⬇ Поставить ядро».</b> Панель скачивает закреплённую версию ядра и сверяет её отпечаток — чужой или испорченный файл не ставит. Операция разовая: при переприменении узла её повторять не нужно. Сколько она шла и что встало — строка в списке «Что сделала каждая кнопка» под кнопками.</li>
+        <li><b>Порт входа.</b> `TCP`-порт, на который позвонится клиент (по умолчанию 8446). Он должен быть не занят другой службой и открыт у провайдера: занятый панель называет по имени владельца и чужую службу не трогает.</li>
+        <li><b>Режим выхода.</b> Оставь `l4` — он работает без прав и без настройки сервера. `l3` переносит сырые пакеты: ему нужны права на сырые сокеты (панель даёт их службе) и правило на гашение ядровых `RST`, иначе ядро само рвёт туннельные соединения; это правило панель не ставит.</li>
+        <li><b>Контекст сессии.</b> Общая соль рукопожатия: из неё выводятся ключи узла. Значение обязано совпасть на узле и на клиенте, а `CLI`-клиенту его надо задать той же строкой. Приложение может принести своё значение — узел подстраивается под клиента, поэтому одно только рассогласование рукопожатие не обрывает.</li>
+        <li><b>Носители белых списков.</b> Поставь галочку на носителе и впиши ссылку. Узел поднимет туннель поверх этого сервиса, а `TCP`-порт останется запасным. Ссылку берут из <i>своего</i> публичного документа: пустой документ на `docs.yandex.ru` для Яндекса, публичная папка на `cloud.mail.ru` для Mail.ru. Для `Cups.online` аккаунт не нужен вовсе: нажми «выдать комнату» — панель попросит у сервиса анонимную комнату и впишет её адрес сама. Чужую ссылку узел не примет: форма адреса проверяется, а не принимается на веру.</li>
+        <li><b>«▶ Применить и запустить».</b> Панель пишет службу `systemd` и поднимает её. Сколько шло, поднялась ли служба и кто держит порт — видно в окне «Живое состояние» и в списке «Что сделала каждая кнопка» под кнопками.</li>
+        <li><b>«🔗 Ссылка и QR».</b> Собирает приглашение для клиента и копирует его, а в ответ дописывает адрес входа — его же можно скопировать отдельной кнопкой. В ссылке лежит общий ключ узла: кто её видел, тот может подключиться.</li>
+        <li><b>На устройстве клиента</b> открой ссылку — отсканируй `QR` или вставь строку. <b>Проверь, что приложение подставило адрес входа</b>: если поле адреса осталось пустым, впиши его вручную — адрес всегда виден в окне «Живое состояние» и копируется его кнопкой; он же дописан в ответе кнопки «Ссылка и QR». Ссылку читают приложения `OpenFlux`: на `iOS` — `TestFlight`-сборка, на `Android` — сборка из релизов, на десктопе — `OpenFluxDesktop`. У командной строки ссылки нет: там адрес входа, ключ и контекст задают флагами.</li>
+        <li><b>Проверка.</b> На клиенте открой `https://api.ipify.org` — должен вернуться адрес из строки «адрес входа», а не адрес провайдера клиента. Это единственный честный способ увидеть, что трафик пошёл через узел.</li>
+      </ol>
+      <p><b>Один клиент и захват.</b> Выход обслуживает одного активного клиента. Второй с этой же ссылкой не встанет рядом, а вытеснит первого. Значит утечка ссылки — это не только чужой трафик через твой адрес, но и обрыв твоей сессии.</p>
+      <p><b>Что доезжает в ссылке.</b> Замерено на этой коробке: панель кладёт в ссылку адрес входа, контекст и ключ, и `openflux --parse-link` возвращает прочитанные обратно все три поля — то есть ссылка полная. Дочитывает ли их приложение, зависит от сборки: живая сборка прочитала из ссылки ключ — рукопожатие прошло без ручного ввода ключа, — адрес входа оставила пустым, а контекст принесла свой. Подключение заработало, когда адрес вписали вручную. Поэтому поле адреса после вставки ссылки — предмет проверки, а не данность.</p>
+      <p><b>Окно живого состояния.</b> Под кнопками есть блок «Живое состояние»: он перечитывает узел сам, раз в пять секунд, пока вкладка открыта и страница на экране. В нём видно, поднята ли служба и с которого момента, стоит ли она в автозапуске, слушается ли порт и кто его держит, выпущен ли ключ, записан ли юнит, какие носители везут узел, адрес входа с кнопкой копирования и последние строки журнала узла. Рядом — список «Что сделала каждая кнопка»: там видно, сколько длилось нажатие и чем оно кончилось, включая отказ с его причиной. Опрос гасится, когда ты уходишь с вкладки или закрываешь её, и не оставляет следа после закрытия.</p>
+      <p><b>Ссылка и есть доступ.</b> Отдельного списка клиентов, паролей или кнопки «отключить одного» в узле нет — один узел, один общий ключ. Отозвать доступ можно только переодев ключ: «Снять службу» с подтверждением на стирание ключа → «Применить и запустить» (панель выпустит новый) → «Ссылка и QR» и отдать клиенту новую ссылку. Старая перестаёт читаться.</p>
+      <p><b>Зачем нужны носители.</b> В режим белого списка оператор оставляет открытыми считанные сервисы, и `TCP` на произвольный порт среди них нет. Поэтому узел едет поверх сервиса, который обязан пропускать и оператора клиента, и оператора узла: документ Яндекса или публичная папка `Mail.ru`. Узел и клиент звонятся в один и тот же документ, туннель идёт внутри его трафика, а для оператора это обычный просмотр документа. Приоритеты у носителей разные (Яндекс выше), `direct` стоит запасным: не поднялся носитель — клиент уходит по прямому каналу, если оператор его пропускает.</p>
+      <p><b>Откуда взять ссылку.</b> Создай пустой публичный документ на `docs.yandex.ru` (или `disk.yandex.ru`) и скопируй адрес вида `https://docs.yandex.ru/edit/d/…`; для `Mail.ru` — публичную папку на `cloud.mail.ru` и её адрес вида `https://cloud.mail.ru/public/…/…`. Бери документ, который не жалко: адрес носителя уезжает в ссылке клиента, и любой, кто увидит ссылку, узнает адрес документа. Не клади в него ничего, кроме служебного содержимого туннеля, и заведи под это отдельный аккаунт.</p>
+      <p><b>Что делать при капче.</b> Яндекс время от времени проверяет, кто смотрит документ. Простую проверку (`proof-of-work`) ядро проходит само. Если встанет `SmartCaptcha` или просьба войти, приложение на клиенте откроет страницу и передаст узлу печенье сессии (`cookies`) — проверка проходит с адреса узла. Поэтому носителю нужен аккаунт, в который ты можешь войти с устройства клиента.</p>
+      <p><b>Носителей не обязано быть.</b> Без носителей остаётся только прямой канал: он работает, где порт открыт, и молча не работает там, где включён белый список. Панель отличает «носителей нет» от «носитель не поднялся»: первое видно по строке состояния узла, второе — по тому, что клиент по прямому каналу всё-таки ходит.</p>
+      <p><b>Переносится `IPv4`.</b> `IPv6` узел не несёт: приложение на клиенте само переводит такие подключения на `IPv4`, но сайты и сервисы, у которых только `IPv6`, остаются вне туннеля.</p>
+      <p><b>Что именно идёт через узел.</b> Приложение на телефоне или десктопе забирает трафик устройства само. `CLI`-клиент по умолчанию поднимает локальный `SOCKS5`, и через узел едут только те программы, которым ты этот прокси укажешь; полный туннель там отдельным флагом и с правами на интерфейсы.</p>
+      <p><b>Узел молчит о клиенте.</b> Ни подъём клиента, ни его уход в журнале узла не пишутся — по журналу нельзя ни подтвердить подключение, ни заметить чужое. Судить надо проверкой из последнего шага.</p>
+      <p><b>Снять или выключить.</b> Рубильник гасит службу, оставляя порт, ключ и ссылку в силе — включить обратно можно в любой момент. «Снять службу» убирает только службу с сервера; состояние и ключ при этом остаются, узел можно применить заново.</p>
+    </div></details>
+    <div style="display:grid;gap:10px;max-width:560px">
+      <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=fluxEnabled onchange=fluxSwitch(this.checked)> Узел включён (рубильник)</label>
+      <div id=fluxState class=mut style="font-size:13px">—</div>
+      <div id=fluxBin class=mut style="font-size:13px">—</div>
+      <div id=fluxBlockers style="font-size:13px;line-height:1.5"></div>
+      <div id=fluxDial class=mut style="font-size:13px">—</div>
+      <div><span class=mut style="font-size:12px">Порт входа</span><input id=fluxPort class=in style="width:100%" inputmode=numeric placeholder="8446"></div>
+      <div><span class=mut style="font-size:12px">Режим выхода</span><select id=fluxMode class=in style="width:100%"><option value=l4>l4 — через прокси (по умолчанию)</option><option value=l3>l3 — сырой перенос пакетов</option></select></div>
+      <div><span class=mut style="font-size:12px">Контекст сессии</span><input id=fluxCtx class=in style="width:100%" placeholder="veil.flux"></div>
+      <div style="border-top:1px solid var(--line,#2a2f3a);padding-top:8px">
+        <span class=mut style="font-size:12px">Носители белых списков — чем узел едет поверх разрешённого сервиса</span>
+        <div style="display:grid;gap:8px;margin-top:6px">
+          <div>
+            <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=fluxCkVyandex onchange="$('fluxUrlVyandex').disabled=!this.checked"> Яндекс — публичный документ (приоритет 100)</label>
+            <input id=fluxUrlVyandex class=in style="width:100%;margin-top:4px" disabled placeholder="https://docs.yandex.ru/edit/d/…">
+          </div>
+          <div>
+            <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=fluxCkMailru onchange="$('fluxUrlMailru').disabled=!this.checked"> Mail.ru — публичная папка (приоритет 90)</label>
+            <input id=fluxUrlMailru class=in style="width:100%;margin-top:4px" disabled placeholder="https://cloud.mail.ru/public/…/…">
+          </div>
+          <div>
+            <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=fluxCkCupsonline onchange="$('fluxUrlCupsonline').disabled=!this.checked"> Cups.online — комната собеседования (приоритет 70)</label>
+            <div style="display:flex;gap:6px;margin-top:4px">
+              <input id=fluxUrlCupsonline class=in style="flex:1;min-width:0" disabled placeholder="https://interview.cups.online/live-coding/?room=…">
+              <button id=fluxRoomBtn class="tiny sec" onclick=fluxRoom()>выдать комнату</button>
+            </div>
+          </div>
+          <div id=fluxDirect class=mut style="font-size:12px"></div>
+          <div id=fluxCarState style="font-size:12px"></div>
+        </div>
+      </div>
+      <div id=fluxOne class=mut style="font-size:12px"></div>
+      <div id=fluxPeer class=mut style="font-size:12px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id=fluxInstallBtn class=sec onclick=fluxInstall()>⬇ Поставить ядро</button>
+        <button id=fluxApplyBtn class=sec onclick=fluxApply()>▶ Применить и запустить</button>
+        <button id=fluxStartBtn class="tiny sec" onclick=fluxStart()>Старт</button>
+        <button id=fluxStopBtn class="tiny sec" onclick=fluxStop()>Стоп</button>
+        <button id=fluxLinkBtn class="tiny sec" onclick=fluxLink()>🔗 Ссылка и QR</button>
+        <button id=fluxRemoveBtn class="tiny sec" onclick=fluxRemove()>Снять службу</button>
+      </div>
+      <div style="border:1px solid var(--line,#2a2f3a);border-radius:8px;padding:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class=mut style="font-size:12px">Живое состояние</span>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type=checkbox id=fluxLiveOn onchange=fluxLiveSwitch(this.checked)> смотреть каждые 5 секунд</label>
+          <button class="tiny sec" onclick=fluxRefresh()>обновить сейчас</button>
+          <span id=fluxLiveAt class=mut style="font-size:12px">—</span>
+        </div>
+        <div id=fluxLiveRows style="font-size:12px;line-height:1.6;margin-top:6px"></div>
+        <div id=fluxActs style="font-size:12px;line-height:1.6;margin-top:6px"></div>
+        <details style="margin-top:6px"><summary class=mut style="font-size:12px">журнал узла</summary>
+          <div id=fluxJournal class=mut style="font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-top:4px"></div>
+        </details>
+      </div>
+    </div>
+    <div class=msg id=fluxMsg></div>
   </div></div>
 
 </div>
@@ -5036,6 +5145,7 @@ function showEdit(c){
     }
   }
   editExpShown();
+  editProtoFill(c);
   const fam=$('editFam');
   if(fam){
     if(editFamOf){
@@ -5061,6 +5171,98 @@ function editExpShown(){
   const d=$('editExpDate'), n=$('editExpDays');
   if(d)d.hidden=(m.value!=='date');
   if(n)n.hidden=(m.value!=='days');
+}
+let editProtosCand=null;
+async function editProtoFill(c){
+  // #228 → #239: не галочки, а строка действия — выбрать протокол, количество
+  // и нажать «+ добавить». Множится всё, чему есть чем различиться: запись с
+  // собственным ключом (туннели, `trojan`, `hysteria2`) сама по себе, а протокол
+  // с общим ключом (`vless`, `vmess`, `reality`, `shadowsocks`) различается
+  // адресом входа — панель сама кладёт следующей записи домен, IPv6 и IPv4
+  // узла. `cap` — сколько таких записей влезает на одного человека.
+  const blk=$('editProtosBlock'), box=$('editProtos');
+  if(!blk||!box)return;
+  box.innerHTML=''; blk.hidden=true; editProtosCand=null;
+  let ps=[];
+  try{ const d=await api('/api/vpn/protocols'); ps=d.protocols||[]; }
+  catch(e){ return; }
+  const cnt={};
+  clients.filter(x=>x.uuid===c.uuid).forEach(x=>{cnt[x.proto]=(cnt[x.proto]||0)+1;});
+  const cand=ps.filter(p=>p.has_inbound&&!p.disabled)
+               .map(p=>{p.have=cnt[p.id]||0; p.free=Math.max(0,(p.cap||1)-p.have); return p;});
+  editProtosCand=cand;
+  if(!cand.length)return;
+  blk.hidden=false;
+  const sel=$('editProtosSel'); if(!sel)return;
+  sel.innerHTML='';
+  cand.forEach(p=>{
+    const o=document.createElement('option');
+    o.value=p.id;
+    const word=p.have?(p.have===1?'конфигурация':(p.have<5?'конфигурации':'конфигураций')):'нет конфигураций';
+    o.textContent=(p.label||protoLabels[p.id]||p.id)
+      +' — у этого '+(p.have?p.have+' '+word:word)
+      +(p.free?(' · можно ещё '+p.free):' · предел')
+      +(p.have?(' · снять можно '+p.have):'');
+    o.disabled=!p.free&&!p.have;
+    o.dataset.dup=p.dup||''; o.dataset.free=p.free;
+    if(!p.free&&!p.have)o.title=p.dup==='ep'?'все различные адреса входа заняты':'протокол множится до предела';
+    sel.appendChild(o);
+  });
+  sel.value=(cand.find(p=>p.free)||cand.find(p=>p.have)||{}).id||'';
+  editProtosMax();
+}
+function editProtosMax(){
+  const sel=$('editProtosSel'), n=$('editProtosN'), box=$('editProtos');
+  if(!sel||!n||!box)return;
+  const p=(editProtosCand||[]).find(x=>x.id===sel.value)||{};
+  const free=+p.free||0, have=+p.have||0;
+  const ab=$('editProtosAddBtn'), db=$('editProtosDelBtn');
+  if(ab)ab.disabled=!free;
+  if(db)db.disabled=!have;
+  n.max=Math.max(1,Math.max(free,have));
+  if(!(parseInt(n.value,10)>=1)||parseInt(n.value,10)>n.max)n.value=Math.max(1,Math.min(free||have||1,n.max));
+  box.className='muted';
+  box.textContent=!sel.value?'':
+    p.dup==='cred'?'вторая запись несёт собственный ключ — ссылки будут разные; снимаются последние, '+have+' можно снять':
+    p.dup==='ep'?'общий ключ: конфигурации различаются адресом входа (домен, IPv6, IPv4) — добавить можно '+free+', снять '+have:
+    have?('протокол можно снять целиком: у человека на нём '+have+' конфигураций'):
+    'протокол добавляется только если у человека его ещё нет';
+}
+async function doEditAddProtos(){
+  const sel=$('editProtosSel'); if(!sel||!sel.value)return;
+  const p=(editProtosCand||[]).find(x=>x.id===sel.value)||{};
+  const n=Math.min(p.cap||8,Math.max(1,parseInt($('editProtosN').value,10)||1));
+  $('editMsg').textContent='';$('editMsg').className='msg';
+  try{
+    await api('/api/clients/update',{method:'POST',
+      body:JSON.stringify({uuid:editUuid,add_protos:[{proto:sel.value,n}]})});
+    await refresh();
+    const c=clients.find(x=>x.uuid===editUuid);
+    if(c) editProtoFill(c);
+    $('editMsg').textContent='добавлено: '+n+' × '+(p.label||protoLabels[sel.value]||sel.value);
+    $('editMsg').className='msg ok';
+    toast('добавлено: '+n+' × '+(p.label||protoLabels[sel.value]||sel.value),'ok');
+  }catch(e){
+    $('editMsg').textContent=e.message;$('editMsg').className='msg err';
+  }
+}
+async function doEditDelProtos(){
+  const sel=$('editProtosSel'); if(!sel||!sel.value)return;
+  const p=(editProtosCand||[]).find(x=>x.id===sel.value)||{};
+  const n=Math.max(1,Math.min(+p.have||1,parseInt($('editProtosN').value,10)||1));
+  $('editMsg').textContent='';$('editMsg').className='msg';
+  try{
+    await api('/api/clients/update',{method:'POST',
+      body:JSON.stringify({uuid:editUuid,del_protos:[{proto:sel.value,n}]})});
+    await refresh();
+    const c=clients.find(x=>x.uuid===editUuid);
+    if(c) editProtoFill(c);
+    $('editMsg').textContent='снято: '+n+' × '+(p.label||protoLabels[sel.value]||sel.value);
+    $('editMsg').className='msg ok';
+    toast('снято: '+n+' × '+(p.label||protoLabels[sel.value]||sel.value),'ok');
+  }catch(e){
+    $('editMsg').textContent=e.message;$('editMsg').className='msg err';
+  }
 }
 async function editAdoptFill(){
   const sel=$('editAdoptSel'); if(!sel)return;
@@ -5121,7 +5323,10 @@ async function doEdit(){
     const r=await api('/api/clients/update',{method:'POST',body:JSON.stringify(body)});
     hideEdit();
     await refresh();
-    toast('Настройки сохранены'+(r&&r.expiry_local?(' · срок до '+r.expiry_local):''),'ok');
+    const got=(r&&r.added_protos)||[];
+    toast('Настройки сохранены'
+      +(got.length?(' · в подписку добавлены протоколы: '+got.map(p=>protoLabels[p]||p).join(', ')):'')
+      +(r&&r.expiry_local?(' · срок до '+r.expiry_local):''),'ok');
   }catch(e){
     $('editMsg').textContent=e.message;$('editMsg').className='msg err';
   }
@@ -5735,8 +5940,41 @@ async function loadTgDcs(){
   try{
     const d=await api('/api/tg/dcs');
     const rows=d.dcs||[];
+    const ME=d.me||{}, MM=ME.map||{};
+    const meEl=$('dcMe');
+    if(meEl){
+      if(!ME.use_middle_proxy){
+        meEl.innerHTML='⛔ <b>Вход в сеть Telegram (ME) выключен</b> — '+esc(ME.off_by||'чем-то')
+          +'. Клиент держит сессию и читает текст, но фото, видео и истории грузятся через ME: без него они встанут.';
+      } else {
+        const GT=ME.gates||{};
+        const way=GT.reroute
+          ?'<b style="color:var(--warn)">напрямую, мимо ME</b> ('+esc(GT.reason||'причина не названа')+') — текст ходит, фото и видео нет'
+          :(GT.route?'через ME':'не прочитан');
+        let t='↔ <b>ME</b> — вход в сеть Telegram; новые сессии идут '+way+'. '
+          +'Медиа-адресов '+esc(MM.media_avail??'—')+' из '+esc(MM.media_eps??'—')
+          +', основных '+esc(MM.main_avail??'—')+' из '+esc(MM.main_eps??'—')+'. '
+          +'Резервный путь (me2dc_fallback) '+(ME.me2dc_fallback?'включён':'<b>выключен — при отказе ME пойдём напрямую</b>')
+          +', быстрые попытки (me2dc_fast) '+(ME.me2dc_fast?(ME.fast_inert?'включены, но без резервного пути ничего не дают':'включены'):'выключены')+'.';
+        if(ME.silent) t+=' <b style="color:var(--warn)">Пул ME не собран: адресов сети Telegram движок не раздаёт.</b>';
+        if((MM.media_short||0)>0) t+=' <b style="color:var(--warn)">У '+MM.media_short+' медиа-узлов живых писателей меньше, чем требует движок.</b>';
+        if((ME.decor||[]).length) t+=' <span class=mut>На '+ME.decor.map(esc).join(', ')+' как на защиту полагаться нельзя: движок их разбирает и не читает.</span>';
+        meEl.innerHTML=t;
+      }
+    }
+    const MR=d.media_route||{};
+    const mrEl=$('dcMr'), mrOn=$('dcMrOn'), mrSt=$('dcMrState');
+    if(mrOn) mrOn.checked=!!MR.want;
+    if(mrSt) mrSt.textContent=MR.want?(MR.account?"аккаунт есть":"аккаунта нет"):"";
+    if(mrEl){
+      if(!MR.want) mrEl.innerHTML='';
+      else if((MR.retired||[]).length && !MR.tunneled.length) mrEl.innerHTML='⇄ <b>Медиа-путь</b> — <b style="color:var(--warn)">туннель отбракован писателями</b>'+(MR.retired_writers?' ('+esc(MR.retired_writers)+')':'')+'. Подъём через него есть, а медиа не грузится, поэтому '+MR.retired.length+' адрес(ов) идут напрямую. Вернём не раньше чем через '+(MR.starve_ban_h||24)+' ч.';
+      else if(MR.up&&MR.ready) mrEl.innerHTML='⇄ <b>Медиа-путь</b> — '+MR.tunneled.length +' адрес(ов) через туннель'+(typeof MR.handshake_age==='number' ?', рукопожатие '+MR.handshake_age+' с назад':', рукопожатия ещё нет')+'. Оставляем, пока писатели есть; нет их '+(MR.starve_ticks||3)+' тика подряд — отбраковываем.';
+      else if(MR.up) mrEl.innerHTML='⇄ <b>Медиа-путь</b> — звено собрано неполностью, ждём следующего шага.';
+      else mrEl.innerHTML='⇄ <b>Медиа-путь включён, но не идёт</b> — '+esc(MR.error||'адресов без потер не видно')+'. Трафик уходит напрямую.';
+    }
     if(d.error && !rows.length){ box.innerHTML='<p class=mut>Нет данных от telemt: '+esc(d.error)+'</p>'; $('dcNote').textContent=''; $('dcTotal').textContent='—'; return; }
-    if(!rows.length){ box.innerHTML='<p class=mut>ME-pool пуст — движок ещё не соединился с дата-центрами Telegram.</p>'; return; }
+    if(!rows.length){ box.innerHTML='<p class=mut>'+(ME.warm?'ME ещё прогревается (юнит поднят '+(ME.age??'—')+' с назад) — карта придёт сама.':'ME-pool пуст — движок ещё не соединился с дата-центрами Telegram.')+'</p>'; return; }
     const thr=(typeof d.threshold==='number')?d.threshold:80;
     const el=$('dcThr'); if(el && document.activeElement!==el) el.value=thr;
     const t=d.totals||{};
@@ -5747,10 +5985,20 @@ async function loadTgDcs(){
     const byDc={};
     L.forEach(x=>{ if(!x.stale){ const k=String(x.dc); (byDc[k]=byDc[k]||[]).push(x); } });
     box.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="color:var(--mut2);text-align:left">'
-      +'<th style="padding:6px 8px">DC</th><th style="padding:6px 8px">RTT</th><th style="padding:6px 8px">Писатели</th><th style="padding:6px 8px">Подъём</th><th style="padding:6px 8px;text-align:right">Покрытие</th></tr></thead><tbody>'
+      +'<th style="padding:6px 8px">DC</th><th style="padding:6px 8px">RTT</th><th style="padding:6px 8px">Писатели</th><th style="padding:6px 8px">Адреса</th><th style="padding:6px 8px">Подъём</th><th style="padding:6px 8px;text-align:right">Покрытие</th></tr></thead><tbody>'
       + rows.map(r=>{
-        const col=r.coverage>=100?'#4ade80':(r.coverage>=thr?'#fbbf24':'#f87171');
+        // Порог — доля пола, а пол держится целыми писателями. Сравнивать порог с
+        // процентом нельзя: при поле в 3 писателя покрытие бывает только 0/33.3/66.7/100,
+        // жёлтая полоса 80–100 пуста, и один потерянный писатель краснеет наравне с
+        // нулём (замер 07.10: 11 строк из 12 с полем 3).
+        const need=Math.max(r.alive>0?1:0,Math.floor(r.required*thr/100));
+        const col=r.coverage>=100?'#4ade80':(r.alive>=need?'#fbbf24':'#f87171');
         const cc=byDc[String(r.dc)]||[];
+        // Красный от недобора писателей и красный от недоступного адреса — разные
+        // аварии: во второй движку некуда ставить писателя вовсе, и без этой колонки
+        // «0 из 3» и «0 доступных адресов» выглядят одинаково.
+        const at=!r.endpoint_total?'var(--mut2)':(r.endpoints===0?'#f87171':(r.endpoints<r.endpoint_total?'#fbbf24':'#4ade80'));
+        const av=r.endpoint_total?(r.endpoints+' / '+r.endpoint_total):'—';
         let up='—', uc='var(--mut2)';
         if(cc.length){
           const w=cc.reduce((a,b)=>((b.loss||0)>(a.loss||0)?b:a), cc[0]);
@@ -5760,9 +6008,10 @@ async function loadTgDcs(){
           else { uc='#fbbf24'; }
         }
         return '<tr style="border-top:1px solid var(--br)">'
-        +'<td style="padding:6px 8px"><span style="color:'+col+'">●</span> DC '+r.dc+'</td>'
+        +'<td style="padding:6px 8px"><span style="color:'+col+'">●</span> DC '+r.dc+(r.dc<0?' <span class=mut style="font-size:11px">· медиа</span>':'')+'</td>'
         +'<td style="padding:6px 8px">'+(r.rtt?(Math.round(r.rtt)+' мс'):'—')+'</td>'
         +'<td style="padding:6px 8px">'+r.alive+' / '+r.required+'</td>'
+        +'<td style="padding:6px 8px;color:'+at+'">'+av+'</td>'
         +'<td style="padding:6px 8px;color:'+uc+'">'+up+'</td>'
         +'<td style="padding:6px 8px;text-align:right;color:'+col+'">'+r.coverage+'%</td></tr>'}).join('')
       +'</tbody></table>';
@@ -5772,9 +6021,20 @@ async function loadTgDcs(){
     else if(los.length){ ups='Теряем подъём: '+los.map(x=>esc(x)).join(', ')+'.'; }
     else { ups='Подъём соединений до узлов Telegram в норме: '+(((d.loss&&d.loss.healthy)||[]).map(x=>esc(x)).join(', ')||'нет свежих замеров')+'.'; }
     $('dcNote').textContent='В зачёт покрытия '+(t.counted??'—')+' из '+(t.required??'—')+'; живых всего '+(t.alive??'—')+'. Это связь движка с Telegram, а не доступность прокси для клиентов. '
+      +'Цвет строки считается недостающими писателями: зелёный — пол цел, жёлтый — не хватает, но держится порога, красный — провал ниже порога. '
+      +'В колонке «Адреса» краснеет узел, у которого не доступен ни один зарегистрированный адрес, — это авария узла, а не нехватка писателей. '
       +'Подъём — доля неподнявшихся соединений из '+(((d.loss&&d.loss.tries)||6))+' попыток на адрес: '+ups;
   }catch(e){ box.innerHTML='<p class=mut>нет данных ('+esc((e&&e.message)||'')+')'; }
 }
+async function saveMediaRoute(on){
+  const m=$('dcMsg');
+  try{
+    const d=await api('/api/media_route',{method:'POST',body:JSON.stringify({on:!!on})});
+    if(m){ m.textContent = on ? (d.up?'туннель поднят':'включено, ждём тик') : 'выключено, идёт напрямую'; }
+    loadTgDcs();
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+}
+
 async function saveDcThreshold(){
   const v=parseInt($('dcThr').value,10);
   const m=$('dcMsg');
@@ -7642,7 +7902,9 @@ document.querySelectorAll('.tabs button').forEach(b=>{
        if(b.dataset.tab==='hop')loadHop();
        if(b.dataset.tab==='migrate')loadMv();
        if(b.dataset.tab==='diagnostics')loadDiagnostics();
-       if(b.dataset.tab==='dashboard')loadDashboard();
+       if(b.dataset.tab==='flux')loadFlux();
+      if(b.dataset.tab!=='flux'&&typeof fluxLiveStop==='function')fluxLiveStop();
+      if(b.dataset.tab==='dashboard')loadDashboard();
 
   });
 });
@@ -7941,6 +8203,8 @@ async function blockUser(lg,dis){try{await api('/api/users/update',{method:'POST
 async function delUser(lg){if(!confirm(tr('Удалить оператора %s?').replace('%s',lg)))return;try{await api('/api/users/delete',{method:'POST',body:JSON.stringify({login:lg})});setMsg('usersMsg',tr('Оператор %s удалён').replace('%s',lg),'ok');loadUsers()}catch(e){setMsg('usersMsg',e.message,'err')}}
 function applyPerms(){
 document.querySelectorAll('.tabs button[data-tab]').forEach(function(b){b.style.display=''});
+var fxb=document.querySelector('.tabs button[data-tab=flux]');
+if(fxb)fxb.style.display=(ME.owner&&veilFluxUnlocked())?'':'none';
 Object.keys(SETBLOCK_PERM).forEach(function(id){var el=document.getElementById(id);if(el)el.style.display=''});
 document.querySelectorAll('#tab-settings .tiny.sec').forEach(function(ch){ch.style.display=''});
 var su=$('setUsers');if(su)su.style.display=ME.owner?'':'none';
@@ -7966,6 +8230,303 @@ function quickAddClient(){
   setTimeout(()=>{try{showAdd(dashActiveProto);}catch(e){}},150);
 }
 function quickRestartXray(){restartXray();}
+let _fluxN=0,_fluxAt=0,_fluxOpen=false;
+function veilFluxUnlocked(){return _fluxOpen}
+function veilFluxSet(open){
+  _fluxOpen=!!open;
+  const b=document.querySelector('.tabs button[data-tab=flux]');
+  if(b)b.style.display=_fluxOpen?'':'none';
+  if(_fluxOpen)return;
+  fluxLiveStop();
+  _fluxLog=[];
+  ['fluxActs','fluxLiveRows','fluxJournal','fluxLiveAt'].forEach(function(id){
+    const el=$(id);if(el)el.textContent='';});
+  const a=document.querySelector('.tabs button.active');
+  if(a&&a.dataset.tab==='flux'){const back=document.querySelector('.tabs button[data-tab=vpn]');if(back)back.click();}
+}
+function veilFluxTaps(){
+  if(!ME||!ME.owner)return;
+  const now=Date.now();
+  _fluxN=(now-_fluxAt>3000)?1:_fluxN+1;
+  _fluxAt=now;
+  if(_fluxN<5)return;
+  _fluxN=0;
+  veilFluxSet(!_fluxOpen);
+  toast(_fluxOpen?'🌀 вкладка открыта':'🌀 вкладка закрыта',_fluxOpen?'ok':'');
+}
+document.addEventListener('click',function(e){if(e.target&&e.target.id==='headerLogo')veilFluxTaps()});
+const FLUX_CAR_ROWS=[['vyandex','fluxCkVyandex','fluxUrlVyandex'],
+                     ['mailru','fluxCkMailru','fluxUrlMailru'],
+                     ['cupsonline','fluxCkCupsonline','fluxUrlCupsonline']];
+let _fluxCarDirty=false;
+function fluxCarDirty(){_fluxCarDirty=true}
+FLUX_CAR_ROWS.forEach(function(r){
+  const ck=$(r[1]),u=$(r[2]);
+  if(ck)ck.addEventListener('change',fluxCarDirty);
+  if(u)u.addEventListener('input',fluxCarDirty);
+});
+function fluxCarriers(){
+  // Отдаём только отмеченные строки: снять галочку — это отказ от носителя,
+  // а не пустая ссылка, и пустую ссылку панель обязана отвергнуть по имени.
+  const out=[];
+  FLUX_CAR_ROWS.forEach(function(r){
+    const ck=$(r[1]), u=$(r[2]);
+    if(ck&&ck.checked)out.push({type:r[0], url:((u&&u.value)||'').trim()});
+  });
+  return out;
+}
+function fluxRender(d){
+  const en=$('fluxEnabled');if(en)en.checked=!!d.enabled;
+  const st=$('fluxState');
+  if(st)st.textContent=(d.active?'служба запущена':'служба остановлена')
+    +(d.since?' · с '+d.since:'')+(d.enabled?'':' · рубильник выключен');
+  const bi=$('fluxBin');
+  if(bi){
+    if(d.bin&&d.bin.present){
+      bi.innerHTML='ядро '+escapeHtml(String(d.ver||''))+' · гашение '
+        +(d.bin.digest_ok?'<span class=ok>совпало</span>':'<span class=err>НЕ совпало</span>')
+        +' · '+escapeHtml(String(d.sha||''));
+    }else bi.innerHTML='<span class=mut>ядро не поставлено</span>';
+  }
+  const bl=$('fluxBlockers');
+  if(bl)bl.innerHTML=(d.blockers||[]).map(function(x){
+    return '<div class=err>⚠ '+escapeHtml(String(x))+'</div>'}).join('')
+    ||'<div class=ok>✓ препятствий нет</div>';
+  const dl=$('fluxDial');
+  if(dl)dl.innerHTML=d.dial
+    ?'адрес входа <b>'+escapeHtml(String(d.dial))+'</b> · на него звонится клиент '
+     +'<button class="tiny sec" onclick=fluxCopyDial()>копировать</button>'
+     +' · если приложение не подставило его из ссылки — впиши вручную'
+    :'<span class=err>адрес входа не определён — ссылка соберётся без места входа</span>';
+  const pn=$('fluxPeer');
+  if(pn)pn.textContent=d.peer_note||'';
+  const p=$('fluxPort');if(p&&document.activeElement!==p)p.value=(d.port!=null?d.port:'');
+  const m=$('fluxMode');if(m)m.value=(d.mode==='l3'?'l3':'l4');
+  const c=$('fluxCtx');if(c&&document.activeElement!==c)c.value=d.ctx||'';
+  const cars=d.carriers||[];
+  const byUrl={};cars.forEach(function(x){if(x&&x.type)byUrl[x.type]=x.url||''});
+  // Пока владелец не применил вписанное (или выданную комнату), живой опрос
+  // не трогает строки носителей: иначе он стёр бы и галочку, и ссылку раньше,
+  // чем владелец добрался бы до кнопки «Применить».
+  if(!_fluxCarDirty){
+    FLUX_CAR_ROWS.forEach(function(r){
+      const ck=$(r[1]), u=$(r[2]);if(!ck||!u)return;
+      const on=Object.prototype.hasOwnProperty.call(byUrl,r[0]);
+      ck.checked=on;u.disabled=!on;
+      if(document.activeElement!==u)u.value=byUrl[r[0]]||'';
+    });
+  }
+  const dp=(d.direct_pri!=null?d.direct_pri:50);
+  const dc=$('fluxDirect');
+  if(dc)dc.textContent='Прямой канал — запасной, приоритет '+dp
+    +': когда носитель не поднялся, клиент уходит по нему';
+  const cs=$('fluxCarState');
+  if(cs){
+    const kinds=d.carrier_kinds||[];
+    const miss=kinds.filter(function(x){
+      return !FLUX_CAR_ROWS.some(function(r){return r[0]===x.type;});});
+    cs.innerHTML=(cars.length
+      ?'узел везут: '+cars.map(function(x){
+          return escapeHtml(String(x.type))+' ('+escapeHtml(String(x.pri))+')'}).join(' · ')
+        +' · прямой запасной ('+escapeHtml(String(dp))+')'
+      :'<span class=err>носителей нет: узел едет только прямым каналом, а его белый список гасит</span>')
+      +(miss.length?' <span class=err>для '+miss.map(function(x){
+          return escapeHtml(String(x.type));}).join(', ')+' строки нет</span>':'');
+  }
+  const one=$('fluxOne');if(one)one.textContent=d.one_client||'';
+  const sb=$('fluxStartBtn');if(sb)sb.disabled=!d.enabled;
+  const lb=$('fluxLinkBtn');if(lb)lb.disabled=!d.secret;
+}
+function fluxCopyDial(){
+  let b=document.querySelector('#fluxDial b');
+  if(!b||!String(b.textContent||'').trim())b=document.querySelector('#fluxLiveDial b');
+  const v=b?String(b.textContent||''):'';
+  if(!v){setMsg('fluxMsg','адрес входа не определён — копировать нечего','err');return;}
+  const fail=function(){setMsg('fluxMsg','не скопировалось — выдели адрес вручную','err');};
+  const ok=function(){setMsg('fluxMsg','адрес входа скопирован: '+v,'ok',true);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(v).then(ok,fail);
+  }else{
+    const t=document.createElement('textarea');t.value=v;document.body.appendChild(t);
+    t.select();try{document.execCommand('copy');ok();}catch(e){fail();}
+    document.body.removeChild(t);
+  }
+}
+async function loadFlux(){
+  try{const d=await api('/api/flux');fluxRender(d);fluxLive(d);}
+  catch(e){setMsg('fluxMsg',e.message,'err')}
+  const cb=$('fluxLiveOn');
+  if(cb&&cb.checked)fluxLiveStart();
+}
+const FLUX_LIVE_MS=5000,FLUX_LOG_MAX=8;
+let _fluxLiveTimer=null,_fluxLog=[];
+function fluxLogAdd(name,ok,detail){
+  const t=new Date(),p=function(n){return (n<10?'0':'')+n};
+  _fluxLog.unshift({t:p(t.getHours())+':'+p(t.getMinutes())+':'+p(t.getSeconds()),
+                    name:name,ok:!!ok,detail:String(detail||'').slice(0,180)});
+  if(_fluxLog.length>FLUX_LOG_MAX)_fluxLog.length=FLUX_LOG_MAX;
+  const el=$('fluxActs');
+  if(el)el.innerHTML=_fluxLog.map(function(x){
+    return '<div><span class=mut>'+escapeHtml(x.t)+'</span> · <b>'
+      +escapeHtml(x.name)+'</b> — '+(x.ok?'<span class=ok>готово</span>'
+        :'<span class=err>отказ</span>')
+      +(x.detail?' · '+escapeHtml(x.detail):'')+'</div>'}).join('');
+}
+function fluxYesNo(v,da,net){
+  return v?'<span class=ok>'+da+'</span>':'<span class=err>'+net+'</span>';
+}
+function fluxLive(d){
+  const at=$('fluxLiveAt');
+  if(at)at.textContent='замер '+escapeHtml(String(d.stamp||''))+' · опрос каждые '
+    +(FLUX_LIVE_MS/1000)+' с';
+  const rows=$('fluxLiveRows');
+  if(rows){
+    const listen=d.listen
+      ?'<span class=ok>слушается</span> · держатель '+escapeHtml(String(d.listen_by||'—'))
+      :'<span class=err>не слушается</span>';
+    rows.innerHTML=[
+      '<div>служба: '+fluxYesNo(d.active,'поднята','погашена')
+        +(d.since?' · с '+escapeHtml(String(d.since)):'')
+        +' · автозапуск '+fluxYesNo(d.unit_enabled,'есть','нет')+'</div>',
+      '<div>порт :'+escapeHtml(String(d.port||'—'))+' — '+listen+'</div>',
+      '<div>ключ: '+fluxYesNo(d.secret,'выпущен','нет')
+        +' · юнит: '+fluxYesNo(d.unit_file,'записан','не записан')
+        +' · рубильник '+fluxYesNo(d.enabled,'включён','выключен')+'</div>',
+      '<div>носители: '+escapeHtml(((d.carriers||[]).map(function(x){
+        return x.type+' ('+x.pri+')'})
+        .join(' · '))||'нет')+'</div>',
+      '<div id=fluxLiveDial>адрес входа '
+        +(d.dial?'<b>'+escapeHtml(String(d.dial))+'</b> · '
+          +'<button class="tiny sec" onclick=fluxCopyDial()>копировать адрес</button>'
+          :'—')+'</div>',
+      '<div>журнал узла: '+(d.journal?escapeHtml(String(d.journal)):'<span class=mut>пусто</span>')+'</div>'
+    ].join('');
+  }
+}
+function fluxLiveStop(){if(_fluxLiveTimer){clearInterval(_fluxLiveTimer);_fluxLiveTimer=null;}}
+function fluxLiveStart(){
+  fluxLiveStop();
+  _fluxLiveTimer=setInterval(function(){
+    if(document.hidden||!veilFluxUnlocked()){fluxLiveStop();return;}
+    const a=document.querySelector('.tabs button.active');
+    if(!a||a.dataset.tab!=='flux'){fluxLiveStop();return;}
+    fluxRefresh();
+  },FLUX_LIVE_MS);
+}
+async function fluxRefresh(){
+  try{const d=await api('/api/flux');fluxRender(d);fluxLive(d);}
+  catch(e){setMsg('fluxMsg','состояние не прочитано: '+e.message,'err')}
+}
+function fluxLiveSwitch(on){
+  const cb=$('fluxLiveOn');if(cb)cb.checked=!!on;
+  if(on){fluxLiveStart();return;}
+  fluxLiveStop();
+  const at=$('fluxLiveAt');if(at)at.textContent='опрос выключен';
+}
+const FLUX_ACT_NAMES={'/api/flux/switch':'рубильник','/api/flux/install':'поставить ядро',
+  '/api/flux/apply':'применить и запустить','/api/flux/start':'старт','/api/flux/stop':'стоп',
+  '/api/flux/remove':'снять службу','/api/flux/link':'ссылка и QR',
+  '/api/flux/room':'выдать комнату'};
+function fluxActDetail(p,r){
+  r=r||{};
+  if(p==='/api/flux/install')return 'ядро '+String(r.ver||'')+' · '
+    +Math.round((r.bytes||0)/1048576)+' МиБ';
+  if(p==='/api/flux/apply')return 'порт '+String(r.port||'')+' · режим '+String(r.mode||'')
+    +' · носители '+((r.carriers||[]).join(', ')||'нет')+' · служба '
+    +(r.active?'поднята':'не поднялась');
+  if(p==='/api/flux/switch')return (r.enabled?'включён':'выключен')
+    +(r.stopped===true?' · служба погашена':(r.stopped===false?' · гасить было нечего':''));
+  if(p==='/api/flux/remove')return 'юнит '+(r.ok?'снят':'не снят')
+    +' · ключ '+(r.wipe?'стёрт':'остался')+' · служба '+(r.active?'ещё поднята':'погашена');
+  if(p==='/api/flux/start'||p==='/api/flux/stop')return 'служба '+(r.active?'поднята':'погашена');
+  return '';
+}
+async function fluxAct(p,body,btn){
+  const name=FLUX_ACT_NAMES[p]||p,b=btn?$(btn):null;
+  if(b)b.disabled=true;
+  fluxLogAdd(name+' · идёт',true,'');
+  setMsg('fluxMsg',name+': идёт…','mut',false);
+  const t0=Date.now();
+  let r=null,err='';
+  try{r=await api(p,{method:'POST',body:JSON.stringify(body||{})});}
+  catch(e){err=String((e&&e.message)||e);}
+  const sec=Math.round((Date.now()-t0)/1000);
+  const det=err?err:fluxActDetail(p,r);
+  fluxLogAdd(name+(sec?' · '+sec+' с':''),!err,det);
+  setMsg('fluxMsg',name+': '+(err?('отказ — '+err):('готово'+(det?' · '+det:''))),err?'err':'ok');
+  if(b)b.disabled=false;
+  try{const d=await api('/api/flux');fluxRender(d);fluxLive(d);}catch(e){}
+  return {err:err,r:r};
+}
+function fluxSwitch(on){fluxAct('/api/flux/switch',{enabled:!!on})}
+function fluxInstall(){fluxAct('/api/flux/install',null,'fluxInstallBtn')}
+function fluxApply(){
+  fluxAct('/api/flux/apply',{
+    port:parseInt(($('fluxPort')||{}).value,10)||0,
+    mode:($('fluxMode')||{}).value||'l4',
+    ctx:($('fluxCtx')||{}).value||'',
+    carriers:fluxCarriers()},'fluxApplyBtn').then(function(res){
+      if(res&&!res.err)_fluxCarDirty=false;});
+}
+function fluxStart(){fluxAct('/api/flux/start',null,'fluxStartBtn')}
+function fluxStop(){fluxAct('/api/flux/stop',null,'fluxStopBtn')}
+function fluxRemove(){
+  if(!confirm('Снять службу с сервера?\n\nСостояние и ключ останутся — узел можно применить заново.'))return;
+  var wipe=confirm('Стереть и ключ узла?\n\nНажми «ОК», чтобы забыть ключ: старая ссылка клиента перестанет читаться, а «Применить и запустить» выпустит новый. Нажми «Отмена» — снять только службу.');
+  fluxAct('/api/flux/remove',{wipe:wipe},'fluxRemoveBtn');
+}
+async function fluxLink(){
+  const b=$('fluxLinkBtn');if(b)b.disabled=true;
+  fluxLogAdd('ссылка и QR · идёт',true,'');
+  const t0=Date.now();
+  try{
+    const d=await api('/api/flux/link',{method:'POST',body:'{}'});
+    const sec=Math.round((Date.now()-t0)/1000);
+    if(d&&d.link){
+      showQR(d.link,'OpenFlux — приглашение');
+      copyText(d.link);
+      const ad=String(d.dial||'');
+      fluxLogAdd('ссылка и QR'+(sec?' · '+sec+' с':''),true,
+        'ссылка '+(String(d.link).length)+' знаков · адрес '+(ad||'не определён'));
+      setMsg('fluxMsg','ссылка скопирована — открой её в приложении OpenFlux на устройстве клиента'
+        +(ad?('; адрес входа в ссылке есть, но сборка клиента может его не подставить — впиши вручную: '
+            +ad+' · адрес можно скопировать кнопкой в окне «Живое состояние»')
+            :'; адрес входа не определён'),'ok',true);
+      if(!ad){try{const s=await api('/api/flux');fluxLive(s);}catch(e){}}
+    }else{fluxLogAdd('ссылка и QR',false,'ссылка не получена');setMsg('fluxMsg','ссылка не получена','err');}
+  }catch(e){
+    fluxLogAdd('ссылка и QR',false,String((e&&e.message)||e));
+    setMsg('fluxMsg',e.message,'err');
+  }
+  if(b)b.disabled=false;
+}
+async function fluxRoom(){
+  const b=$('fluxRoomBtn');if(b)b.disabled=true;
+  fluxLogAdd('выдать комнату · идёт',true,'');
+  const t0=Date.now();
+  try{
+    const d=await api('/api/flux/room',{method:'POST',body:'{}'});
+    const sec=Math.round((Date.now()-t0)/1000);
+    const u=String((d&&d.url)||'');
+    if(u){
+      const ck=$('fluxCkCupsonline'),inp=$('fluxUrlCupsonline');
+      if(ck)ck.checked=true;
+      if(inp){inp.disabled=false;inp.value=u;}
+      _fluxCarDirty=true;
+      fluxLogAdd('выдать комнату'+(sec?' · '+sec+' с':''),true,'адрес вписан, носитель отмечен');
+      setMsg('fluxMsg','комната выдана и уже вписана в строку Cups.online — '
+        +'нажми «▶ Применить и запустить», затем «🔗 Ссылка и QR». '
+        +'Аккаунт и телефон для этого носителя не нужны.','ok',true);
+    }else{
+      fluxLogAdd('выдать комнату',false,'сервис вернул пустой адрес');
+      setMsg('fluxMsg','комната не выдана — сервис вернул пустой адрес','err');
+    }
+  }catch(e){
+    fluxLogAdd('выдать комнату',false,String((e&&e.message)||e));
+    setMsg('fluxMsg','комната не выдана: '+e.message,'err');
+  }
+  if(b)b.disabled=false;
+}
 setInterval(function(){
   if(document.body.classList.contains('ui-new')&&!document.hidden){
     const b=document.querySelector('.tabs button[data-tab=dashboard]');
@@ -8548,6 +9109,37 @@ async function loadJournal(){
   updateJournalTabCounts();
 }
 var _logTimer=null,_logText='',_logSvcLoaded=false;
+// Остаток credential-форм на НОСИТЕЛЕ (#229). Маска в панели сворачивает то, что
+// читается сейчас, а на диске могут лежать строки, написанные до фильтра. «Ноль»,
+// «не мерялось» и «мерка частична» — три разных вердикта, и морда обязана различать
+// их словами: с цикла #225 и #226 двузначная полоса уже стоила выпуска.
+function logResidueNote(r){
+  var RD=r&&r.residue;
+  if(!RD||RD.forms===undefined)return '';
+  if(RD.forms===null)return ' · '+tr('остаток носителя измеряется');
+  if(RD.error&&!RD.lines)return ' · '+tr('остаток носителя не измерен')+': '+esc(RD.error);
+  var w=Object.keys(RD.writers||{}).slice(0,4).map(function(x){return esc(x)+' ('+(RD.writers[x]|0)+')'}).join(', ');
+  var un=(RD.unread||[]).slice(0,4).map(function(x){return esc(x)}).join(', ');
+  var stale=RD.stale?' · '+tr('мерка устарела: носителю %s с').replace('%s',RD.age_s|0):'';
+  var ed=(RD.error?' · '+tr('часть носителя не прочитана')+': '
+        +(un?un+(RD.error?' — ':'')+esc(RD.error):esc(RD.error)):'')
+        +(RD.partial?' · '+tr('мерка частична, не прочитано до конца')+': '+(un||tr('носитель')):'')
+        +(RD.skipped?' · '+tr('часть файлов слишком крупная — не мерилась')+': '+(un||tr('файлы')):'')
+        +stale;
+  if((RD.forms|0)>0)return ' · <b style="color:var(--warn)">'+tr('на носителе строк, которые закрывает строгая маска')
+    +': '+(RD.forms|0)+(w?' ('+tr('писатели')+' '+w+')':'')+ed+'</b>';
+  // «Чисто» говорится только целиком прочитанному носителю. Замер 07.10 поймал
+  // ветку, где этого не было: ротация с голым текстом под именем `.gz` даёт
+  // `BadGzipFile` при нуле прочитанных там строк, то есть `forms=0` по всему
+  // носителю и непустой `unread` — прежняя ветка звала такое «носитель чист».
+  // Эта ветка была поймана тем же замером уже в другом месте: она называла одну
+  // причину одним словом для `error`, `partial` и `skipped`, то есть три разных
+  // «не прочитано» сходились в одну фразу — ровно та двузначная полоса, из-за
+  // которой нога за ногой краснеют с #225. Причины несет `ed`, он обязателен.
+  if(RD.error||RD.partial||RD.skipped)
+    return ' · '+tr('прочитанное чисто, но носитель прочитан не весь')+ed;
+  return ' · '+tr('носитель чист: строгая маска не бьёт ни по одной строке')+stale;
+}
 async function loadLogServices(){
   try{
     var r=await api('/api/logs/services');
@@ -8567,7 +9159,7 @@ async function fetchLogs(){
     _logText=r.text||'';
     var out=$('logOut'); out.style.display='';
     out.textContent=_logText||(q?tr('Нет строк по фильтру.'):tr('Лог пуст.'));
-    setMsg('logsMsg',tr('Показано строк: %s').replace('%s',r.count||0)+(q?' '+tr('(по фильтру)'):''),'ok');
+    setMsg('logsMsg',tr('Показано строк: %s').replace('%s',r.count||0)+(q?' '+tr('(по фильтру)'):'')+logResidueNote(r),'ok');
   }catch(e){setMsg('logsMsg',e.message,'err')}
 }
 function toggleLogLive(){
