@@ -1,0 +1,13 @@
+[Unit]
+Description=Veil witness: кто трогает /etc/telemt (долг #176, цикл #258)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/vpnpanel/teleconf_witness.py
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

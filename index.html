@@ -318,7 +318,7 @@ body.layout-desk .client .actions{margin-left:auto}
    перехода остаётся во всю ширину. */
 body.layout-desk #tab-settings.tab-pane.active{column-count:2;column-gap:16px}
 body.layout-desk #tab-settings>.card:first-child{column-span:all;-webkit-column-span:all;margin:0 0 14px}
-body.layout-desk #tab-settings .set-block{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin:0 0 14px}
+body.layout-desk .tab-pane .set-block{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin:0 0 14px}
 .tiny.sel{outline:2px solid color-mix(in srgb,var(--acc) 65%,transparent);outline-offset:1px;color:var(--fg)}
 @supports not (color: color-mix(in srgb, red, transparent)){body{background:var(--bg)}.card,.tabs,.dialog{background:var(--card)}button{background:var(--acc)}button.danger{background:#dc3545;}button:hover{box-shadow:none}}
 .limitrow{margin:5px 8px 3px;padding:4px 6px;background:color-mix(in srgb,var(--fg) 6%,transparent);border-radius:7px;font-size:11px;color:var(--fg);opacity:.82;display:block}
@@ -429,8 +429,8 @@ body.ui-new .card label>input:not([type=checkbox]):not([type=color]),body.ui-new
 body.ui-new .card>button:not(.tiny){max-width:560px}
 body.ui-new .card>p.mut{max-width:96ch}
 body.ui-new .sidebar{scrollbar-color:var(--br) transparent}
-#tab-settings .set-block{margin-bottom:12px;scroll-margin-top:12px;border:2.5px solid color-mix(in srgb,var(--acc) 62%,var(--br))}
-#tab-settings .set-block>h3{border-bottom:2px solid color-mix(in srgb,var(--acc) 52%,var(--br));padding-bottom:6px}
+.tab-pane .set-block{margin-bottom:12px;scroll-margin-top:12px;border:2.5px solid color-mix(in srgb,var(--acc) 62%,var(--br))}
+.tab-pane .set-block>h3{border-bottom:2px solid color-mix(in srgb,var(--acc) 52%,var(--br));padding-bottom:6px}
 .permgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:5px 12px}
 .permgrid label{display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer}
 /* график перезапуска: одна строка = одно задание; выключенное гаснется целиком,
@@ -488,6 +488,30 @@ body.layout-mob .pmenu{backdrop-filter:none;-webkit-backdrop-filter:none}
   .card,.tabs,.dialog,.dialog.open>.dcard,#qrModal,button.sec,.pmenu{
     backdrop-filter:none;-webkit-backdrop-filter:none}
 }
+/* ── «Жидкое стекло» — отделка по образцу стеклянного интерфейса ─────────────
+   Рецепт снят с публичных образцов: размытие от двенадцати до тридцати ног и
+   поднятие насыщенности до ста восьмидесяти процентов, кайма-блик по внутреннему
+   краю, вместо цветной полосы карточки — световой блик по верху. Смещения
+   пикселей и шейдеров нет: матовая полупрозрачность, зеркальная кайма и нейтральная
+   подложка. Телефон фоновое размытие не получает — сохранено уже замеренное
+   спокойное рисование, на телефоне остаются тон, кайма и скругления. */
+body.liquid-glass{--lg-hl:color-mix(in oklab,currentColor 8%,transparent);--lg-hl-strong:color-mix(in oklab,currentColor 34%,transparent);--lg-rim:color-mix(in oklab,currentColor 22%,transparent)}
+body.liquid-glass .card{background:linear-gradient(165deg,color-mix(in oklab,var(--card) 55%,transparent),color-mix(in oklab,var(--card2) 38%,transparent) 55%,color-mix(in oklab,var(--card) 55%,transparent));border:1px solid var(--lg-rim);border-radius:26px;box-shadow:0 22px 60px rgba(0,0,0,.35),inset 0 1px 0 var(--lg-hl-strong),inset 0 0 26px var(--lg-hl)}
+body.liquid-glass .card::before{height:1px;background:linear-gradient(90deg,transparent,var(--lg-hl-strong),transparent);opacity:1}
+body.liquid-glass .tabs{background:color-mix(in oklab,var(--card) 46%,transparent);border:1px solid var(--lg-rim);box-shadow:0 14px 36px rgba(0,0,0,.3),inset 0 1px 0 var(--lg-hl-strong)}
+body.liquid-glass .pmenu{background:color-mix(in oklab,var(--card) 62%,transparent);border-color:var(--lg-rim);box-shadow:0 12px 30px rgba(0,0,0,.35),inset 0 1px 0 var(--lg-hl-strong)}
+body.liquid-glass .dialog{background:color-mix(in oklab,var(--bg) 62%,transparent);border-color:var(--lg-rim)}
+body.liquid-glass .dialog.open>.dcard{background:color-mix(in oklab,var(--card) 62%,transparent);border-color:var(--lg-rim);box-shadow:0 10px 26px rgba(0,0,0,.35),inset 0 1px 0 var(--lg-hl-strong)}
+body.liquid-glass input,body.liquid-glass select{background:var(--lg-hl);border:1px solid var(--lg-rim)}
+body.liquid-glass button.sec{background:var(--lg-hl);border:1px solid var(--lg-rim);box-shadow:inset 0 1px 0 var(--lg-hl-strong)}
+@media (min-width:900px){
+body.liquid-glass .card,body.liquid-glass .tabs,body.liquid-glass .pmenu,
+body.liquid-glass .dialog.open>.dcard,body.liquid-glass button.sec{-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%)}
+}
+body.layout-mob.liquid-glass .card,body.layout-mob.liquid-glass .tabs,
+body.layout-mob.liquid-glass .pmenu,body.layout-mob.liquid-glass .dialog,
+body.layout-mob.liquid-glass .dialog.open>.dcard,
+body.layout-mob.liquid-glass button.sec{backdrop-filter:none;-webkit-backdrop-filter:none}
 /* Десктоп-принуд держит ширину и в ui-new */
 body.ui-new.layout-desk .wrap{max-width:1200px}
 body.ui-new table.data th:first-child,body.ui-new table.data td:first-child{padding-left:16px}
@@ -765,7 +789,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </p>
     </div>
 
-    <div class="card" id=autoSetupCard>
+    <div class="card set-block" id=autoSetupCard>
       <h2>⚡ Автонастройка <span class=mut style="font-weight:400;font-size:12px">(отметь галочками — панель пройдёт по порядку)</span></h2>
       <p class=mut>Три шага по порядку: DNS-записи поддоменов, единый сертификат на все имена, развилка на общий порт 443. Готовое панель пропускает, недостающее дотягивает сама — без свежего сертификата развилка не работает, поэтому сертификат будет выпущен, даже если галочку «сертификат» не ставили.</p>
       <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -826,7 +850,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
     </div>
 
-    <div class="card hidden" id=onbCard style="border-left:4px solid var(--ok)">
+    <div class="card set-block hidden" id=onbCard style="border-left:4px solid var(--ok)">
       <div class=row><h2>🎉 Твой VPN готов — прямо из коробки!</h2></div>
       <p class=mut style="margin:0 0 10px">Панель сама завела тебе личную подписку «Я»: без лимита трафика и срока, со всеми протоколами сразу. Наведи камеру телефона на QR-код в VPN-приложении (Happ, Streisand, v2rayNG…) — или скопируй ссылку.</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
@@ -844,7 +868,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
     </div>
 
-    <div class=card>
+    <div class="card set-block">
       <div class=row><h2>Ссылки VPN</h2></div>
       <details class=expl id=bkStartHint style="border-left-color:var(--ok)" ontoggle="if(!this.open)localStorage.setItem('veil_starter','1')"><summary>🚀 Я тут впервые — с чего начать?</summary><div>
         <p><b>Хорошая новость: уже всё работает.</b> Панель при установке сама подняла VPN-протоколы и сертификаты. Тебе осталось только выдать первую ссылку — три шага:</p>
@@ -869,6 +893,28 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div id=protoCards></div>
 
       <div class=msg id=vpnMsg></div>
+    </div>
+
+    <div class="card set-block" id=manInbCard onmouseenter=miPopulate()>
+      <div class=row><h2>🛠 Ручная настройка входа</h2></div>
+      <p class=mut style="margin:0 0 10px;font-size:12px">Здесь вход собирают по своей спецификации: протокол и транспорт, порт, путь, хост, SNI, short ids, ключ, внешний адрес ссылки. Сначала <b>«Предпросмотр»</b> — панель только проверяет, ничего не записывая; затем <b>«Применить»</b> — запись с проверкой ядром и честным откатом при неудаче. Имя клиента (uuid) живет не здесь: подписчика заводят во вкладке подписчиков.</p>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем?</b> Обычно панель настраивает входы сама. Эта карточка — для случаев, когда нужно иначе: свой порт, свой путь, маска под другой сайт, вход за внешним прокси, свои параметры туннеля.</p>
+        <p><b>Открытый ключ</b> придумывать не нужно: впишите закрытый — панель посчитает открытый и сверит с вашим. Ошиблись — она заметит и не применит.</p>
+        <p><b>Осторожно:</b> смена порта поднимает вход на новом месте, старые ссылки с этим портом сгорят. Очистите поле — вернется заводское значение.</p>
+      </div></details>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">
+        <div><label class=mut style="font-size:11px">Протокол и транспорт</label>
+          <select id=miProto onchange=miPick(this.value)><option value="">— загрузка —</option></select></div>
+        <div id=miState class=mut style="font-size:11px;align-self:end"></div>
+      </div>
+      <div id=miFields style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class=tiny id=miPrevBtn onclick=miPreview()>👁 Предпросмотр</button>
+        <button class=tiny id=miApplyBtn onclick=miApply()>✔ Применить</button>
+      </div>
+      <div class=msg id=miMsg></div>
+      <div id=miChanges style="margin-top:6px;font-size:12px"></div>
     </div>
 
     <div id=addBox class="dialog hidden">
@@ -1017,7 +1063,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
   </div>
 
-  <div id=tab-proxy class="tab-pane"><div class=card>
+  <div id=tab-proxy class="tab-pane"><div class="card set-block">
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -1046,7 +1092,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
       <details class=expl style="margin-top:6px"><summary>Объяснить простым языком</summary><div>
         <p><b>Что это?</b> Обычный MTProto-прокси слышен на своём порту (например <code>:7443</code>) — такой порт реже, но всё- видно. Эта настройка ставит его на <b>тот же :443</b>, что и веб-прокси: наружу это выглядит как обычный HTTPS.</p>
-        <p><b>Почему нужен отдельный поддомен?</b> Развилка по SNI кладёт ОДНО имя ровно на ОДНУ дорожку. Значит у веб-прокси (<code>твойдомен</code>), у сайт-маски (<code>tg.…</code>) и у MTProto-прокси (<code>mp.…</code>) должны быть РАЗНЫЕ имена. Двум прокси на :443 называться одинаково нельзя — панель не даст.</p>
+        <p><b>Почему нужен отдельный поддомен?</b> Развилка по SNI кладёт ОДНО имя ровно на ОДНУ дорожку. Значит у веб-прокси (<code>web.твойдомен</code>), у сайт-маски (<code>tg.…</code>) и у MTProto-прокси (<code>mp.…</code>) должны быть РАЗНЫЕ имена. Двум прокси на :443 называться одинаково нельзя — панель не даст.</p>
         <p><b>Что ещё делает панель?</b> Выпускает имя <code>mp.&lt;база&gt;</code> и DNS-запись к нему, добавляет его в список имён рабочего сертификата, поднимает для него <b>свою</b> заглушку-сайт на внутреннем порту и переключает прокси прятаться за неё. Настоящую «форму» ответа прокси панель берёт с локального фронта, а не с публичного :443: на коробке с включённым мюксом иначе прокси снимал бы форму сам с себя.</p>
         <p><b>Ссылки.</b> Когда маршрут включён, карточки клиентов и подписки зовут на <code>mp.&lt;база&gt;:443</code>, а «Главная ссылка Telegram» на этой странице становится именно этой ссылкой — отдельно переключать её не надо. Имя прокси и сертификат к нему панель выпустит сама при применении, кнопки «Выпустить» отдельно не требуется. Снятая галочка возвращает всё назад: прежний порт, прежний фасад, прежняя форма — ссылки, розданные ранее, не отваливаются.</p>
         <p><b>Почему на рабочем компьютере MTProto на :443 может молчать, а на отдельном порту работать?</b> Секрет такого прокси спрятан не в сессии, а в самом первом рукопожатии: прокси подглядывает в него, сам его не завершая. Антивирус или корпоративная защита, которые расшифровывают HTTPS, разбирают это рукопожатие и собирают своё — секрет не доезжает, и сервер вежливо отдаёт страницу-заглушку вместо прокси. Проверить просто: открыть в браузере той же сети адрес прокси и посмотреть, кто выдал сертификат. Если вместо Let's Encrypt стоит эмитент антивируса — расшифровка есть, и на :443 такой прокси работать не будет ни одной настройкой сервера. Этому компьютеру нужен вход на отдельном порту: он живёт рядом и включается снятием этой галочки, а ссылки, розданные ранее, продолжают работать.</p>
@@ -1056,7 +1102,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <label class=fldlbl style="margin:0"><input type=checkbox id=mpOn443 onchange=mp443Preview()> вести MTProto на общий :443</label>
         <input id=mpDomain placeholder="имя прокси, напр. mp.example.com" style="max-width:280px" autocomplete=off>
         <button class="tiny sec" onclick=mp443Preview()>🔍 Предпросмотр</button>
-        <button class="tiny sec" onclick=mp443Issue()>🌐 Выпустить имя и сертификат</button>
+        <span class=mut style="font-size:12px">выпуск имени и сертификата — единый вход «🌐 Имена и сертификаты» во вкладке «Сайт»</span>
         <button class="tiny" onclick=mp443Apply()>▶ Применить</button>
       </div>
       <div id=mp443Prev class=mut style="margin-top:8px;font-size:13px;line-height:1.6"></div>
@@ -1080,7 +1126,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
           <input id=frontDomain placeholder="напр. webproxy.example.com" style="max-width:280px" autocomplete=off>
           <button class="tiny sec" id=frontApplyBtn onclick=applyFront()>Настроить сайт-маску</button>
-          <button class="tiny sec" onclick=provisionFrontTg()>🌐 Выпустить tg и сертификат</button>
+          <span class=mut style="font-size:12px">выпуск <code>tg</code>-имени и сертификата — единый вход «🌐 Имена и сертификаты» во вкладке «Сайт»</span>
           <button class="tiny sec" onclick=loadFront()>⟳ Статус</button>
         </div>
         <div class=msg id=frontMsg></div>
@@ -1220,12 +1266,13 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <details class=expl style="margin-top:6px"><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем?</b> По рукам уже ходит ссылка <code>tg://proxy?server=…</code> — например, с прошлого сервера. Панель подстроит прокси под неё, и клиентам не придётся менять ссылку: они просто продолжат работать здесь.</p>
         <p><b>Что читается из ссылки?</b> Адрес, порт и секрет. Внутри секрета зашит ещё и фронт (сайт, за которым прячется прокси), поэтому одной вставленной ссылки достаточно — панель узнаёт из неё всё нужное.</p>
+        <p><b>А ссылка веб-прокси?</b> Сюда же принята и она: <code>tg://webproxy?server=…&amp;secret=dd…</code>. В ней только имя фасада и ключ — порта и фронта нет, путь держит :443. Панель подставит это имя в веб-прокси и привяжет ключ к клиенту. Ключ у клиента один, и он же стоит за его <code>ee</code>-ссылками MTProto: привязка чужого ключа меняет и их, поэтому панель называет это предупреждением. Сертификат на имя и DNS она не выпускает — про них скажет отдельно.</p>
         <p><b>А если бот дал только ключ?</b> Бот выдаёт секрет голыми 32 <code>hex</code>-символами — без <code>ee</code> и без имени фронта, и по такой ссылке клиент идёт на порт прямым протоколом, а там у нас фасад, поэтому рукопожатие не складывается. Вставьте сюда хоть весь текст бота, хоть одни <code>hex</code>: панель сама достроит <code>ee</code> и имя фронта — свой публичный адрес и порт, если в ссылке их нет. Спонсорский канал на ссылку не влияет, он ставится кнопкой «Рекламный канал» у клиента.</p>
         <p><b>Чем отличается от «＋ Клиент MTProto»?</b> Там панель выпускает <i>новую</i> ссылку. Тут ссылка уже выпущена раньше, и задача — сделать рабочей именно её.</p>
         <p><b>Это безопасно?</b> Ничего не переносится и не удаляется: панель добавит клиента (или привяжет ключ к выбранному), допишет фронт в список и слушателя на порт из ссылки. Перед применением покажет список действий и спросит подтверждение.</p>
       </div></details>
       <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
-        <input id=tgManualLink placeholder="ссылка tg://proxy целиком — или только секрет-hex из бота" style="flex:1;min-width:260px">
+        <input id=tgManualLink placeholder="ссылка tg://proxy или tg://webproxy целиком — или только секрет-hex из бота" style="flex:1;min-width:260px">
         <input id=tgManualName placeholder="клиент (необязательно)" style="width:190px">
         <button class="tiny sec" onclick=tgManualCheck()>Проверить</button>
         <button class="tiny" onclick=tgManualApply()>Настроить</button>
@@ -1262,6 +1309,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div class=msg id=manMsg></div>
     </div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Telemt: обновление и откат</h3>
     <p class=mut style="margin:0 0 10px">Проверка новой версии прокси-движка telemt и откат на прошлую. Текущий бинарь перед сменой сохраняется.</p>
     <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
@@ -1276,6 +1325,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div id=tvBackList></div>
     <div class=msg id=tvMsg></div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">🇷🇺 Доступность из России (Globalping)</h3>
     <p class=mut style="margin:0 0 10px">Проверка доступности веб-прокси (ссылки подписки) из России через 20 зондов Globalping. Проверка каждые 15 минут.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -1298,7 +1349,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
   </div></div>
 
-  <div id=tab-site class="tab-pane"><div class=card>
+  <div id=tab-site class="tab-pane"><div class="card set-block">
     <h2>Сайт, домен и HTTPS</h2>
     <details class=guide style="margin-bottom:16px;padding:12px;background:color-mix(in srgb,var(--card2) 40%,transparent);border:1px solid var(--br);border-radius:10px">
       <summary style="cursor:pointer;font-weight:700;font-size:15px;color:var(--acc)">📖 Полная инструкция: как настроить домен (нажмите, чтобы свернуть/развернуть)</summary>
@@ -1335,7 +1386,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <p style="margin:0 0 8px">Для работы TLS-протоколов (VLESS-Reality, VMess-gRPC, XHTTP) нужен валидный сертификат. Панель умеет выпускать его автоматически через Let's Encrypt (порт 80 должен быть свободен):</p>
         <ol style="margin:0 0 8px;padding-left:18px">
           <li>Убедитесь, что порт <b>80</b> открыт в фаерволе и не занят nginx/apache</li>
-          <li>В блоке «Let's Encrypt» впишите email (для уведомлений) → «Выпустить сертификат». При первой выдаче панель сразу предлагает заодно выпустить поддомены <b>tg</b> и <b>vpn</b> единым сертификатом (галка «сразу tg и vpn») — для маски прокси и SNI-развилки это то, что нужно; снимите галку, если хотите только основное имя</li>
+          <li>В блоке «Let's Encrypt» впишите email (для уведомлений) → «Выпустить сертификат» — эта кнопка трогает только основное имя. Поддомены и единый SAN-сертификат на все имена выпускаются входом «🌐 Имена и сертификаты» вверху этой же вкладки</li>
           <li>Включите «Автопродление» — панель продлевает сертификат за 30 дней до истечения</li>
         </ol>
         
@@ -1365,6 +1416,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=setMsg2></div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Домен и DDNS (dynv6)</h3>
     <p class=mut style="margin:0 0 10px">Сервер сам обновляет A/AAAA домена при смене IP. Когда записи актуальны, домен автоматически подставляется в ссылки клиентов.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -1405,6 +1458,19 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
 
     <hr>
+    </div>
+    <div class="card set-block">
+    <h3 style="margin:0 0 8px">🌐 Имена и сертификаты <span class=mut style="font-weight:400;font-size:12px">(единый вход выпуска)</span></h3>
+    <p class=mut style="margin:0 0 10px">Все имена-поддомены этой коробки в одном месте: база и служебные метки (<code>tg</code>, <code>vpn</code>, <code>web</code>, <code>mp</code> и имена переводимых входов). Вид показывает, кто уже ведёт на этот сервер и какие имена несёт рабочий сертификат. Кнопка выпускает недостающее одним прогоном: DNS-записи → ожидание резолва → единый сертификат на все имена → раздача TLS. Отдельные кнопки выпуска в других блоках свёрнуты сюда.</p>
+    <div id=veilCenterStatus class=mut style="font-size:13px;line-height:1.6">—</div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class=sec onclick=veilCenterGo() id=veilCenterBtn>🌐 Выпустить недостающее</button>
+      <button class=tiny onclick=loadVeilCenter()>⟳ Обновить вид</button>
+    </div>
+    <div class=msg id=veilCenterMsg></div>
+    <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Let&rsquo;s Encrypt</h3>
     <p class=mut style="margin:0 0 10px">Реальный сертификат для домена. Панель сама выберет способ: если порт 80 свободен — HTTP-01; если занят — DNS-01 через Cloudflare (нужен API-токен Zone→DNS:Edit во вкладке «Настройки»/DDNS). dynv6 DNS-01 не поддерживает — при занятом :80 освободите порт или настройте Cloudflare. Сертификат автоматически подключается к TLS-протоколам (ws/grpc/xhttp). Автопродление раз в сутки (для DNS-01 работает и при занятом :80).</p>
     <div class=mut>Статус: <b id=certStatus>—</b></div>
@@ -1418,15 +1484,16 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <option value=http01>Только HTTP-01 (:80)</option>
         <option value=dns01>Только DNS-01 (Cloudflare)</option>
       </select></label>
-      <label class=mut style="font-size:12px"><input id=certVeilAll type=checkbox> сразу tg и vpn (единый SAN-сертификат)</label>
       <button class=sec onclick=issueCert() id=certBtn>Выпустить сертификат</button>
       <button class="tiny sec" onclick=freePort80()>🔓 Освободить порт 80</button>
       <button class=tiny onclick=saveCertCfg()>&#x1F4CE; Сохранить email/авто</button>
       <button class=tiny onclick=renewCert() id=renBtn>&#x27F3; Продлить сейчас</button>
     </div>
-    <div id=certVeilHint class=mut style="font-size:12px;margin-top:6px"></div>
+    <div class=mut style="font-size:12px;margin-top:6px">Единый сертификат на поддомены (<code>tg</code>, <code>vpn</code> и остальные имена) — кнопкой «Выпустить недостающее» выше, во входе «🌐 Имена и сертификаты». Эта кнопка трогает только основное имя.</div>
     <div class=msg id=certMsg></div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">🔀 SNI-мюкс на :443 <span class=mut style="font-weight:400;font-size:12px">(диагностика + точное применение)</span></h3>
     <p class=mut style="margin:0 0 10px">Сколько TLS-протоколов с сертификатом на своём домене можно привести на один общий порт 443 через nginx (stream + ssl_preread по SNI). Ниже — кто сейчас держит :443/:80, готов ли nginx и что произойдёт при включении. <b>Reality через SNI не мюксится</b> (общий SNI с реальным сайтом) и останется на отдельном порту.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -1837,7 +1904,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   </div>
   </div>
 
-  <div id=tab-appearance class="tab-pane"><div class=card>
+  <div id=tab-appearance class="tab-pane"><div class="card set-block">
     <h2>Оформление</h2>
     <p class=mut>Настрой цвета и шрифт панели. Изменения применяются сразу.</p>
 
@@ -1884,11 +1951,15 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <button type=button class="tiny sec" onclick="applyThemePreset('Матча')">🍃 Матча</button>
         <button type=button class="tiny sec" onclick="applyThemePreset('Закат')">🌅 Закат</button>
         <button type=button class="tiny sec" onclick="applyThemePreset('Космос')">🌌 Космос</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Жидкое стекло')">💧 Жидкое стекло</button>
+        <button type=button class="tiny sec" onclick="applyThemePreset('Жидкое стекло (светлая)')">💧 Жидкое стекло светлая</button>
       </div>
     </div>
 
     <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
     
+    </div>
+    <div class="card set-block">
     <h3 style="margin:16px 0 8px">Логотип панели</h3>
     <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF (анимированный отображается), до 2 МБ. Появится рядом с заголовком Veil и на экране входа.</p>
     <input type=file id=th-logo accept="image/*" onchange=uploadLogo()>
@@ -1922,6 +1993,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <button class=sec onclick=resetTheme() style="margin-left:8px">Сбросить</button>
 
     <hr style="border:0;border-top:1px solid var(--br);margin:20px 0">
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Обои</h3>
     <p class=mut style="margin:0 0 8px">PNG / JPG / WEBP / GIF, до 8 МБ.</p>
     <input type=file id=th-wall accept=image/* onchange=uploadWall()>
@@ -1935,7 +2008,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 </div></div>
 
   <!-- Вкладка Telegram Bot -->
-  <div id=tab-telegrambot class="tab-pane"><div class=card>
+  <div id=tab-telegrambot class="tab-pane"><div class="card set-block">
     <h2>Telegram Bot</h2>
     <p class=mut>Управление Telegram-ботом для уведомлений и управления VPN.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2024,6 +2097,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     
     <hr style="margin:20px 0;border-color:var(--br)">
     
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">📋 Команды бота</h3>
     <div style="background:var(--bg2);padding:12px;border-radius:8px;border:1px solid var(--br);font-family:monospace;font-size:13px;white-space:pre-wrap">
 /start — начать работу, получить Chat ID
@@ -2036,7 +2111,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 /help — справка по командам</div>
   </div></div>
    <div id=tab-subscription class="tab-pane">
-     <div class=card>
+     <div class="card set-block">
        <div class=row style="margin-bottom:10px">
          <h3>Универсальная подписка (Subscription URL)</h3>
          <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -2109,9 +2184,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
              <input id=subSupportUrl maxlength=250 style="width:100%" placeholder="https://t.me/username" spellcheck=false>
            </div>
            <button class=sec onclick=saveSubSettings()>Сохранить</button>
+           <button class=sec onclick=subForceNow()>⚡ Обновить подписки сейчас</button>
          </div>
          <p class=mut style="font-size:12px;margin:8px 0 0">Период уходит в заголовок <code>profile-update-interval</code> — клиенты сами подтягивают обновлённый список. Прокси-ссылки (<code>tg://proxy</code> и <code>tg://webproxy</code>) добавляются в base64-выдачу; для персонального режима при создании подписчика спрашивается отдельная или общая ссылка.</p>
          <p class=mut style="font-size:12px;margin:6px 0 0">Бренд — название подписки в Happ, v2rayNG и др. (до 25 символов; пусто = имя клиента). Ссылка поддержки показывается кнопкой справа от подписки; если это ссылка <code>t.me</code> — с иконкой Telegram.</p>
+         <p class=mut style="font-size:12px;margin:6px 0 0">«⚡ Обновить подписки сейчас» — разовая мера на случай глобальных перемен: каждому подписчику в Telegram приходит просьба обновить, следующий час выдача подписок отдаётся с периодом 1 час, и на странице подписки сутки висит баннер. Сохранённый период автообновления не меняется, через час всё само возвращается как было. Повтор не раньше чем через 10 минут.</p>
          <div class=msg id=subSetMsg></div>
        </div>
 
@@ -2137,7 +2214,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
   <!-- Вкладка Ноды -->
   <div id=tab-nodes class="tab-pane">
-    <div class=card>
+    <div class="card set-block">
       <h3>Мультисерверность (Управление нодами)</h3>
       <p class=mut>Подключение дополнительных VPN-серверов для распределения нагрузки и создания единой сети.</p><p>&nbsp;</p>
       <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2196,6 +2273,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         </div>
       </details>
       <hr>
+      </div>
+      <div class="card set-block">
       <h3>Node API (входящие подключения)</h3>
       <p class=mut>Токены для других панелей Veil: они смогут размещать и вести <b>своих</b> клиентов на этом сервере (в существующих входящих). Токен показывается один раз при создании и отзывается в любой момент.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
@@ -2213,7 +2292,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   </div>
 
   <div id=tab-hop class="tab-pane">
-    <div class=card>
+    <div class="card set-block">
       <h3>🔀 Двойной прыжок (RU-фронт → зарубежный бэк)</h3>
       <p class=mut style="line-height:1.7">Клиенты подключаются к дешёвому VPS <b>в России</b> (фронт), а он на уровне ядра (nft DNAT+MASQUERADE) пересылает трафик на этот сервер (бэк). Наружу подписчик видит «чистый» российский адрес входа, а работает через бэк. Ни xray, ни telemt, ни Reality не трогаются — фронт ничего не расшифровывает.<br>
       <b>Что нужно:</b> любой чистый RU-VPS с root-SSH (или умением вставить одну команду). Установка обратима: «Удалить» снимает службу и правила с фронта.</p>
@@ -2277,7 +2356,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         </div>
       </div>
 <div id=tab-migrate class="tab-pane">
-    <div class=card>
+    <div class="card set-block">
       <h3>🚚 Переезд на новый VPS</h3>
       <p class=mut style="line-height:1.7">Панель <b>полностью переносит себя на новый сервер</b> по SSH: ставит Veil и переносит конфиг, подписчиков, все ключи, секреты Telegram-прокси и сертификаты — <b>порт-в-порт</b>, поэтому ссылки подписчиков не меняются. Потом остаётся переключить домен на новый IP и «пенсионировать» старый хост.</p>
       <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2295,7 +2374,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div class=msg id=mvMsg></div>
     </div>
   </div>
-<div id=tab-security class="tab-pane"><div class=card>
+<div id=tab-security class="tab-pane"><div class="card set-block">
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2311,6 +2390,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <button onclick=doSaveSecurity()>Сохранить</button>
     <div class=msg id=secMsg></div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Двухфакторная аутентификация (2FA)</h3>
     <p class=mut style="margin:0 0 10px">Защита входа через Google Authenticator, Яндекс Ключ или Authy.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2334,7 +2415,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class=msg id=faMsg></div>
   </div>
 
-  <div class=card id=pkCard>
+  <div class="card set-block" id=pkCard>
     <h2>🔑 Ключи входа (Face ID / Touch ID)</h2>
     <p class=mut>Вход без пароля — отпечатком пальца или лицом, как в банке. Работает на iPhone, Mac и Android.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2349,7 +2430,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=pkMsg></div>
   </div>
-  <div class=card style="margin-top:14px" id=termCard>
+  <div class="card set-block" style="margin-top:14px" id=termCard>
     <h3 style="margin:0 0 8px">🖥️ SSH-терминал в браузере <span class=mut style="font-weight:400;font-size:12px">(только владелец; по умолчанию выключен)</span></h3>
     <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
       <p><b>Что это.</b> Маленькое окошко терминала прямо в панели: можно набирать команды сервера (ls, systemctl status xray, journalctl, df -h, top) не открывая отдельный SSH-клиент. Это <b>root-оболочка</b> — команда «rm -rf /» удалит всё. Силу имеет ровно такую же, как вход по SSH.</p>
@@ -2383,7 +2464,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=termMsg></div>
   </div>
-  <div class=card style="margin-top:14px" id=sshPortCard>
+  <div class="card set-block" style="margin-top:14px" id=sshPortCard>
     <h3 style="margin:0 0 8px">🔌 Порт SSH <span class=mut style="font-weight:400;font-size:12px">(только владелец)</span></h3>
     <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
       <p><b>Зачем.</b> Порт 22 постоянно сканируют боты и подбирают пароли. Смена на нестандартный порт не защищает пароль — но убирает сервер из постоянного шума и снимает часть нагрузки с авто-гарда.</p>
@@ -2398,9 +2479,24 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div class=msg id=sshPortMsg></div>
   </div>
+  <div class="card set-block" style="margin-top:14px" id=nodeOptCard>
+    <h3 style="margin:0 0 8px">🚦 Оптимизация узла <span class=mut style="font-weight:400;font-size:12px">(только владелец)</span></h3>
+    <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
+      <p><b>Зачем.</b> Ядро Linux по умолчанию бережёт память: очереди приёма соединений короткие, проверка «жив ли клиент ещё» приходит только через два часа простоя, а быстрые алгоритмы перегрузки не включены. Для узла, который держит много долгих VPN-соединений, это главные тормоза.</p>
+      <p><b>Что делает «Применить».</b> Панель пишет один файл настройки ядра (переживает перезагрузку), поднимает лимиты очередей, включает алгоритм перегрузки BBR и укорачивает часы простоя до 45 секунд. Перед первой записью значения «до» сохраняются на диск — кнопка «Откатить» возвращает ровно их.</p>
+      <p><b>Как это безопасно.</b> Каждое значение перечитывается после применения. Если ядро отвергло хотя бы один ключ (например, модуль BBR не загрузился), панель сама откатывает файлы и значения обратно и честно сообщает причину.</p>
+    </details>
+    <div style="margin:8px 0"><span class=mut style="font-size:13px">Состояние: </span><b id=nodeOptState>—</b></div>
+    <div id=nodeOptList style="margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <button class=sec id=nodeOptBtn onclick=nodeOptApply()>▶ Применить</button>
+      <button class=sec id=nodeOptRollBtn onclick=nodeOptRollback()>↩ Откатить к снимку «до»</button>
+    </div>
+    <div class=msg id=nodeOptMsg></div>
+  </div>
 </div>
 
-<div id=tab-ai class="tab-pane"><div class=card>
+<div id=tab-ai class="tab-pane"><div class="card set-block">
     <h3 style="margin:0 0 8px">🤖 AI-ассистент по панели <span class=mut style="font-weight:400;font-size:12px">(только чтение; только владелец)</span></h3>
     <details class=expl style="margin:0 0 10px"><summary>Объяснить простым языком</summary>
       <p><b>Что это.</b> Чат, который отвечает на вопросы о твоём сервере понятными словами: «сколько активны подписчиков», «кто съел больше всего трафика», «почему нода offline», «что в последнем журнале безопасности». Он не гадает — дергает внутренние отчёты панели и пересказывает их.</p>
@@ -2443,7 +2539,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   </div>
 </div>
 
-    <div id=tab-pay class="tab-pane"><div class=card>
+    <div id=tab-pay class="tab-pane"><div class="card set-block">
     <h2>💳 Приём оплаты</h2>
     <p class=mut>Клиент на своей странице подписки жмёт «Продлить», выбирает тариф и платит — срок продлевается автоматически.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2478,6 +2574,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <p style="font-size:12px;margin:4px 0"><code id=payHookYoo>—</code> <button class="tiny sec" onclick="payCopy(PAYD&&PAYD.hook_yoo)">Копировать</button></p>
     </div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:0 0 8px">Тарифы</h3>
     <div id=payPlans class=mut>—</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
@@ -2492,6 +2590,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class=sec onclick="window.open('/shop','_blank')">🛒 Открыть витрину</button>
     </div>
     <hr>
+    </div>
+    <div class="card set-block">
     <h3 style="margin:12px 0 8px">Счета</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
       <label>Клиент<select id=paySubSel style="min-width:180px;margin-top:4px"></select></label>
@@ -2502,7 +2602,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div id=payInvs class=mut>—</div>
   </div></div>
 
-<div id=tab-logs class="tab-pane"><div class=card>
+<div id=tab-logs class="tab-pane"><div class="card set-block">
     <h2>🧾 Логи служб</h2>
     <p class=mut>Логи отдельных служб сервера: VPN-ядро (Xray), Telegram-прокси, сама панель, nginx и другие. Только чтение — ничего не меняется.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2522,7 +2622,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class=msg id=logsMsg></div>
     <pre id=logOut data-noswipe style="display:none;max-height:60vh;overflow:auto;background:color-mix(in srgb,var(--bg) 62%,transparent);border:1px solid var(--br);border-radius:10px;padding:10px;font-size:11.5px;line-height:1.45;white-space:pre-wrap;word-break:break-all;margin:8px 0 0"></pre>
   </div></div>
-<div id=tab-journal class="tab-pane"><div class=card>
+<div id=tab-journal class="tab-pane"><div class="card set-block">
     <h2>📋 Журналы безопасности</h2>
     <p class=mut>Аудит действий и история входов в панель (хранение 7 дней).</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2578,7 +2678,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
   </div></div>
 
-  <div id=tab-diagnostics class="tab-pane"><div class=card>
+  <div id=tab-diagnostics class="tab-pane"><div class="card set-block">
     <h2>🩺 Центр диагностики</h2>
     <p class=mut>Проверка состояния служб, портов, системных ресурсов и самотестирование.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -2667,6 +2767,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
             </div>
           </div>
           <div id=fluxDirect class=mut style="font-size:12px"></div>
+          <div>
+            <label style="display:flex;align-items:center;gap:8px"><input type=checkbox id=fluxCkR7 onchange="$('fluxUrlR7').disabled=!this.checked"> R7 — свой скрипт панели (приоритет 85)</label>
+            <input id=fluxUrlR7 class=in style="width:100%;margin-top:4px" disabled placeholder="https://cloud.mail.ru/public/…/…">
+            <div id=fluxR7State class=mut style="font-size:12px"></div>
+          </div>
           <div id=fluxCarState style="font-size:12px"></div>
         </div>
       </div>
@@ -3034,6 +3139,24 @@ async function saveSubSettings(){
     $('subBrand').value = d.brand || '';
     $('subSupportUrl').value = d.support_url || '';
     msg.textContent = 'Настройки подписки сохранены'; msg.className = 'msg ok';
+  }catch(e){
+    msg.textContent = e.message; msg.className = 'msg err';
+  }
+}
+
+async function subForceNow(){
+  const msg = $('subSetMsg');
+  if(!confirm('Разово попросить всех подписчиков обновить подписку? Telegram-просьба уйдёт каждому, час выдача будет отдавать период 1 час. Сохранённый интервал не изменится.')) return;
+  msg.textContent = 'Рассылаю…'; msg.className = 'msg';
+  try{
+    const d = await api('/api/sub/force', {method:'POST', body: JSON.stringify({confirm:true})});
+    if(d.ok){
+      msg.textContent = 'Разослано ' + d.sent + ' из ' + d.total + '. Час подписки отдаются с периодом 1 час, на странице — баннер сутки.';
+      msg.className = 'msg ok';
+    } else {
+      msg.textContent = (d.error || 'не получилось') + (d.retry_in ? ' (повтор через ' + d.retry_in + ' с)' : '');
+      msg.className = 'msg err';
+    }
   }catch(e){
     msg.textContent = e.message; msg.className = 'msg err';
   }
@@ -3613,6 +3736,8 @@ const TH_PRESETS={
   'Закат':           {bg:'180f1e',bg2:'24162e',card:'321d40',card2:'422654',br:'643b80',fg:'faeeff',mut:'ccb2e0',acc:'a855f7',acc2:'ec4899'},
    'Космос':          {bg:'080c14',bg2:'0d1424',card:'131f36',card2:'192a4a',br:'2b4371',fg:'eef4ff',mut:'9db6e8',acc:'3b82f6',acc2:'8b5cf6'},
   'Неон-Глубина':     {bg:'081226',bg2:'0a1b2f',card:'0d1f3a',card2:'102a4d',br:'1d3d68',fg:'f2f7ff',mut:'8ea8cc',acc:'0080f0',acc2:'22d3ee'},
+  'Жидкое стекло':        {bg:'070b18',bg2:'0a1124',card:'16203e',card2:'1a2750',br:'2d3c6d',fg:'eff5ff',mut:'a8b8de',acc:'5b8cff',acc2:'69e7ff',skin:'liquid'},
+  'Жидкое стекло (светлая)':{bg:'eef1f8',bg2:'e3e9f5',card:'ffffff',card2:'f4f7fd',br:'c7d0e4',fg:'111113',mut:'5f687c',acc:'3b6ef5',acc2:'12b8dd',skin:'liquid'},
 };
 function applyThemePreset(name){
   const p=TH_PRESETS[name];
@@ -3622,6 +3747,8 @@ function applyThemePreset(name){
     const v=p[map[id]];
     if(v)$(id).value='#'+v;
   });
+  curSkin=p.skin||'';
+  document.body.classList.toggle('liquid-glass',curSkin==='liquid');
   saveTheme(true);
   toast(name+'-тема применена','ok');
 }
@@ -4539,6 +4666,7 @@ async function loadProtocols(){
     protoLabels={}; protoGroups={}; protoUILabels={};
     protoList.forEach(p=>{protoLabels[p.id]=p.label; if(p.group)protoGroups[p.id]=p.group; if(p.ui_group_label)protoUILabels[p.id]=p.ui_group_label;});
     renderProtoCards();
+    try{miPopulate();}catch(e){}
   }catch(e){}
 }
 
@@ -5361,10 +5489,11 @@ function _advInp(id,label,val,ph){return '<label class=mut style="display:block;
   '<input id="'+id+'" value="'+escapeHtml(val==null?'':val)+'" placeholder="'+escapeHtml(ph||'')+'" style="width:100%;margin-top:2px;background:var(--bg);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:4px 6px;font-size:12px">';}
 function _advSel(id,label,val,opts){let h='<label class=mut style="display:block;margin-top:6px;font-size:12px">'+label+'<select id="'+id+'" style="width:100%;margin-top:2px;background:var(--bg);color:inherit;border:1px solid var(--brd);border-radius:6px;padding:4px 6px;font-size:12px">';
   opts.forEach(o=>{h+='<option value="'+escapeHtml(o[0])+'"'+(o[0]===val?' selected':'')+'>'+escapeHtml(o[1])+'</option>';});return h+'</select></label>';}
+function _advBtn(priv,pub,what,cap){return ' <button type=button class=btn style="font-size:11px;padding:1px 8px;margin-top:3px" onclick="mi_gen(\''+jsStr(what)+'\',\''+jsStr(priv)+'\''+(pub?',\''+jsStr(pub)+'\'':'')+')">⚡ '+cap+'</button>';}
 function renderInbAdv(){
   const box=$('inbAdv');const c=inbCur;
   if(!c){box.innerHTML='<p class=mut style="font-size:12px">Загрузка…</p>';return;}
-  if(c.proto in {wireguard:1,amneziawg:1}){box.innerHTML='<p class=mut style="font-size:12px">Для WireGuard/AmneziaWG точечные настройки пока не доступны.</p>';return;}
+  if(c.proto in {wireguard:1,amneziawg:1}){box.innerHTML='<p class=mut style="font-size:12px">Туннельные настройки WireGuard/AmneziaWG (ключ, MTU, адрес, DNS, keep alive) — в карточке «🛠 Ручная настройка входа» внизу вкладки.</p>';return;}
   let r='';
   if(c.reality){
     r+=_advInp('adv_snis','SNI-список (через запятую)',(c.snis||[]).join(', ')||c.sni||'','www.samsung.com');
@@ -5423,6 +5552,169 @@ async function saveInb(){
     toast('Порт/SNI/отпечаток сохранены'+(body.sni?' (XRay перезапущен)':''),'ok');
     await loadSettings();
   }catch(e){$('inbMsg').textContent=e.message;$('inbMsg').className='msg err';}
+}
+
+/* Цикл #256: карточка «Ручная настройка входа» во вкладке VPN.
+   Семантика полей: не-секреты предзаполнены текущим, пустое значение = вернуть
+   заводское; секреты (закрытый ключ, пароль, psk) пустым НЕ отправляются —
+   «не менять». Открытый ключ для сверки шлётся только вместе с новым закрытым. */
+let mi_cur=null, mi_last=null;
+function mi_meta(id){let m=null;(protoList||[]).forEach(p=>{if(p.id===id)m=p;});return m||{};}
+function miPopulate(){
+  const sel=$('miProto'); if(!sel)return;
+  if(!protoList||!protoList.length)return;
+  const prev=mi_cur||sel.value||'';
+  const order=[];const byG={};
+  protoList.forEach(p=>{const g=p.group_label||p.group||'—';if(!byG[g]){byG[g]=[];order.push(g);}byG[g].push(p);});
+  let h='<option value="">— выберите —</option>';
+  order.forEach(g=>{h+='<optgroup label="'+escapeHtml(g)+'">';
+    byG[g].forEach(p=>{h+='<option value="'+escapeHtml(p.id)+'">'+escapeHtml(p.label)+(p.has_inbound?'':' (не создан)')+'</option>';});
+    h+='</optgroup>';});
+  sel.innerHTML=h;
+  if(prev)sel.value=prev;
+  mi_state();
+}
+function mi_state(){
+  const el=$('miState'); if(!el)return;
+  if(!mi_cur){el.textContent='';return;}
+  const m=mi_meta(mi_cur);
+  if(mi_last){
+    el.textContent='вход есть · порт '+(mi_last.port!=null?mi_last.port:'—')+
+      ' · подписчиков: '+(mi_last.clients!=null?mi_last.clients:'—')+(mi_last.disabled?' · выключен':'');
+  } else {
+    el.textContent=m.has_inbound?'вход есть, но читается с трудом — применяется как есть'
+                                :'вход не создан — будет собран при применении';
+  }
+}
+async function miPick(id){
+  mi_cur=id||null; mi_last=null;
+  const ch=$('miChanges'); if(ch)ch.innerHTML='';
+  const msg=$('miMsg'); if(msg){msg.textContent='';msg.className='msg';}
+  mi_render(); mi_state();
+  if(!id)return;
+  try{
+    const c=await api('/api/inbound/get?proto='+encodeURIComponent(id));
+    if(mi_cur!==id)return;
+    mi_last=c||null;
+  }catch(e){if(mi_cur!==id)return;mi_last=null;}
+  mi_render(); mi_state();
+}
+function mi_render(){
+  const box=$('miFields'); if(!box)return;
+  if(!mi_cur){box.innerHTML='<p class=mut style="font-size:12px">Выберите протокол и транспорт — поля соберутся под него.</p>';return;}
+  const m=mi_meta(mi_cur); const grp=m.group; const net=m.net||'';
+  const c=mi_last||{};
+  const reality=(grp==='reality'); const tun=(grp==='wg'||grp==='awg');
+  let r='';
+  r+=_advInp('mi_uuid','UUID подписчика (для нового клиента — не поле входа)','','нажмите «выпустить UUID»')+_advBtn('mi_uuid','','uuid','выпустить UUID');
+  r+=_advInp('mi_port','Порт',c.port!=null?c.port:'','заводской при создании');
+  r+=_advInp('mi_link_host','Внешний адрес ссылки (прокси/домен)',c.link_host||'','пусто = адрес панели');
+  r+=_advInp('mi_link_port','Внешний порт ссылки',c.link_port!=null?c.link_port:'','пусто = порт входа');
+  if(reality){
+    r+=_advInp('mi_sni','SNI (маска)',c.sni||'','www.samsung.com');
+    r+=_advInp('mi_snis','SNI-список (через запятую)',(c.snis||[]).join(', '),c.sni?('пока один: '+c.sni):'');
+    r+=_advInp('mi_dest','Назначение (хост:порт маскировки)',c.dest||'','www.samsung.com:443');
+    r+=_advInp('mi_sid','shortId',c.sid||'','e1362878')+_advBtn('mi_sid','','shortid','выпустить');
+    r+=_advInp('mi_sids','shortId-список (через запятую)',(c.sids||[]).join(', '),c.sid?('пока один: '+c.sid):'');
+    r+=_advInp('mi_private_key','Закрытый ключ (x25519)','',c.has_private_key?'уже стоит — пусто не менять':'панель выпустит сама')+_advBtn('mi_private_key','mi_public_key','x25519','выпустить пару');
+    r+=_advInp('mi_public_key','Открытый ключ для сверки','',c.public_key?('сейчас: '+c.public_key):'пусто — посчитается');
+  }
+  if(net==='ws'){r+=_advInp('mi_path','Путь (ws)',c.path||'','/veil');r+=_advInp('mi_host','Host / Authority',c.host||'','example.com');}
+  if(net==='grpc'){r+=_advInp('mi_service','serviceName',c.service||'','veil');
+    r+=_advSel('mi_mode','mode',c.mode||'',[['','заводское'],['unary','unary'],['multi','multi'],['gun','gun']]);
+    r+=_advInp('mi_host','Host / Authority',c.host||'','example.com');}
+  if(net==='xhttp'||net==='splithttp'){r+=_advInp('mi_path','Путь',c.path||'','/veil');
+    r+=_advSel('mi_mode','mode',c.mode||'',[['','заводское'],['auto','auto'],['stream','stream'],['packet-up','packet-up'],['multi','multi']]);}
+  if(m.tls&&!reality&&!tun){r+=_advInp('mi_alpn','ALPN (через запятую)',(c.alpn||[]).join(', '),'h2, http/1.1');}
+  if(!tun&&grp!=='hy2'){r+=_advSel('mi_flow','Flow (xtls)',c.flow||'',[['','пусто (без flow)'],['xtls-rprx-vision','xtls-rprx-vision'],['xtls-rprx-direct','xtls-rprx-direct'],['xtls-rprx-splice','xtls-rprx-splice']]);}
+  if(!tun){const sv=c.sniff===true?'true':(c.sniff===false?'false':'');
+    r+=_advSel('mi_sniff','Sniffing',sv,[['','по умолчанию'],['true','включить'],['false','выключить']]);}
+  if(grp==='ss'){r+=_advSel('mi_method','Метод шифрования',c.method||'',[['','заводской (aes-256-gcm)'],['aes-256-gcm','aes-256-gcm'],['aes-128-gcm','aes-128-gcm'],['chacha20-ietf-poly1305','chacha20-ietf-poly1305']]);
+    r+=_advInp('mi_password','Пароль','',c.has_password?'уже стоит — пусто не менять':'6–128 символов без пробелов')+_advBtn('mi_password','','password','выпустить');}
+  if(tun){
+    r+=_advInp('mi_private_key','Закрытый ключ туннеля','',c.has_private_key?'уже стоит — пусто не менять':'панель выпустит сама')+_advBtn('mi_private_key','mi_public_key','wg','выпустить пару');
+    r+=_advInp('mi_public_key','Открытый ключ для сверки','',c.public_key?('сейчас: '+c.public_key):'пусто — посчитается');
+    r+=_advInp('mi_address','Адрес туннеля (CIDR)',c.address||'','10.66.0.1/24');
+    r+=_advInp('mi_mtu','MTU',c.mtu!=null?c.mtu:'','576–1420');
+    r+=_advInp('mi_keepalive','Keep alive (сек)',c.keepalive!=null?c.keepalive:'','25');
+    r+=_advInp('mi_allowed_ips','Разрешённые адреса (CIDR, через запятую)',c.allowed_ips||'','0.0.0.0/0, ::/0');
+    r+=_advInp('mi_dns','DNS туннеля (через запятую)',c.dns||'','1.1.1.1, 8.8.8.8');
+    r+=_advInp('mi_psk','Pre-shared key','',c.has_psk?'уже стоит — пусто не менять':'пусто = без PSK')+_advBtn('mi_psk','','psk','выпустить');
+  }
+  box.innerHTML=r;
+}
+async function mi_post(action){
+  if(!mi_cur)throw new Error('Сначала выберите протокол');
+  const body={action:action, proto:mi_cur};
+  const getv=id=>{const e=$(id);return e?e.value.trim():null;};
+  const put=(k,id)=>{const v=getv(id);if(v!==null)body[k]=v;};
+  put('port','mi_port'); put('link_host','mi_link_host'); put('link_port','mi_link_port');
+  put('sni','mi_sni'); put('snis','mi_snis'); put('dest','mi_dest'); put('sid','mi_sid'); put('sids','mi_sids');
+  put('path','mi_path'); put('host','mi_host'); put('service','mi_service'); put('mode','mi_mode');
+  put('alpn','mi_alpn'); put('flow','mi_flow'); put('sniff','mi_sniff'); put('method','mi_method');
+  put('address','mi_address'); put('mtu','mi_mtu'); put('keepalive','mi_keepalive');
+  put('allowed_ips','mi_allowed_ips'); put('dns','mi_dns');
+  const pk=getv('mi_private_key'); if(pk)body.private_key=pk;
+  const pw=getv('mi_password'); if(pw)body.password=pw;
+  const ps=getv('mi_psk'); if(ps)body.psk=ps;
+  const pub=getv('mi_public_key'); if(pub&&pk)body.public_key=pub;
+  return api('/api/inbound/manual',{method:'POST',body:JSON.stringify(body)});
+}
+async function mi_gen(what,privId,pubId){
+  const msg=$('miMsg');
+  try{
+    const r=await api('/api/inbound/gen',{method:'POST',body:JSON.stringify({what:what})});
+    const put=(id,v)=>{const e=$(id);if(e&&v!=null)e.value=v;};
+    if(what==='uuid')put(privId,r.uuid);
+    else if(what==='shortid')put(privId,r.shortid);
+    else if(what==='password')put(privId,r.password);
+    else if(what==='psk')put(privId,r.psk);
+    else{put(privId,r.private_key);if(pubId)put(pubId,r.public_key);}
+    if(msg){msg.textContent='выпущено — значения подставлены в поля';msg.className='msg ok';}
+  }catch(e){if(msg){msg.textContent='генератор: '+e.message;msg.className='msg err';}}
+}
+function mi_fmt(v){if(v==null||v==='')return 'заводское';if(typeof v==='object')return JSON.stringify(v);return String(v);}
+function mi_changes_only(changes,cap){
+  const box=$('miChanges'); if(!box)return;
+  let h='<div class=mut style="font-size:11px;margin-bottom:2px">'+escapeHtml(cap)+'</div>';
+  const list=changes||[];
+  list.forEach(ch=>{h+='<div class=mut style="font-size:11px">'+escapeHtml(ch.field)+': '+
+    escapeHtml(mi_fmt(ch.was))+' → '+escapeHtml(mi_fmt(ch.now))+'</div>';});
+  if(!list.length)h+='<div class=mut style="font-size:11px">Изменений нет — всё уже на месте.</div>';
+  box.innerHTML=h;
+}
+async function miPreview(){
+  const msg=$('miMsg');
+  if(!mi_cur){if(msg){msg.textContent='Сначала выберите протокол';msg.className='msg err';}return;}
+  if(msg){msg.textContent='Проверяю ядром, ничего не записывая…';msg.className='msg';}
+  try{
+    const d=await mi_post('preview');
+    mi_last=d.inbound||mi_last; mi_state();
+    if(msg){msg.textContent='Предпросмотр пройден: конфиг принимает ядро, на диске ничего не изменилось';msg.className='msg ok';}
+    mi_changes_only(d.changes,'Список на применение:');
+  }catch(e){if(msg){msg.textContent=e.message;msg.className='msg err';}}
+}
+async function miApply(){
+  const msg=$('miMsg');
+  if(!mi_cur){if(msg){msg.textContent='Сначала выберите протокол';msg.className='msg err';}return;}
+  const bp=$('miPrevBtn'),ba=$('miApplyBtn');
+  if(bp)bp.disabled=true; if(ba)ba.disabled=true;
+  if(msg){msg.textContent='Проверяю и применяю…';msg.className='msg';}
+  try{
+    const d=await mi_post('apply');
+    mi_last=d.inbound||mi_last;
+    const grp=(mi_meta(mi_cur)||{}).group;
+    if(msg){msg.textContent='Применено: конфиг прошёл проверку ядром'+
+      ((grp==='wg'||grp==='awg')?', туннель синхронизирован':', xray перезапущен');msg.className='msg ok';}
+    mi_changes_only(d.changes,'Применено:');
+    toast('Вход обновлён','ok');
+    await loadProtocols(); miPopulate(); mi_state();
+  }catch(e){
+    if(msg){msg.textContent=e.message;msg.className='msg err';}
+    const box=$('miChanges');
+    if(box)box.innerHTML='<div class=mut style="font-size:11px">Отказ — прежний конфиг цел.</div>';
+  }
+  if(bp)bp.disabled=false; if(ba)ba.disabled=false;
 }
 
 function showModal(id){
@@ -5706,12 +5998,6 @@ async function loadCert(cfg){
       cs.innerHTML=t; cs.className='mut';
       if(b.domain && b.left<=0){ cs.className='mut err'; cs.innerHTML=t+' · <b>лимит исчерпан — выпуск будет отклонён</b>'; }
     }
-    var va=$('certVeilAll'), vh=$('certVeilHint');
-    if(va){
-      if(!cfg.cert){ va.checked=true; if(vh) vh.textContent='При первой установке сразу предлагаем выпустить поддомены tg и vpn единым сертификатом — снимите галку, если нужно только основное имя.'; }
-      else if(cfg.veil_ready){ va.checked=false; va.disabled=true; if(vh) vh.textContent='Связка tg и vpn уже выпускалась и сертификат свежий — повторный выпуск бережётся (лимиты выдачи).'; }
-      else { va.checked=false; va.disabled=false; if(vh) vh.textContent=''; }
-    }
   }catch(e){$('certStatus').textContent='—';}
 }
 async function saveCertCfg(){
@@ -5732,7 +6018,6 @@ async function renewCert(){
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('renBtn').disabled=false;}
 }
 async function issueCert(){
-  if($('certVeilAll') && $('certVeilAll').checked){ return issueVeilCert(); }
   const mode=($('certMode')&&$('certMode').value)||'auto';
   const mtxt=mode==='dns01'?'DNS-01 через Cloudflare':(mode==='http01'?'HTTP-01 (порт 80)':'авто: HTTP-01, если :80 занят — DNS-01/Cloudflare');
   if(!confirm('Выпустить Let\'s Encrypt сертификат для текущего домена? Способ: '+mtxt+'. Выпуск может занять до минуты.'))return;
@@ -5753,17 +6038,53 @@ async function issueCert(){
     }, 1500);
   }catch(e){setMsg('certMsg',e.message,'err');}finally{$('certBtn').disabled=false;}
 }
-async function issueVeilCert(){
-  if(!confirm('Выпустить DNS-поддомены tg и vpn и единый SAN-сертификат (база + tg.база + vpn.база)?\n\nДля dynv6 порт :80 будет кратковременно освобождён (HTTP-01). Выпуск может занять до пары минут.')) return;
-  const s=$('certMsg'); if(s){ s.textContent='Выпускаю поддомены и сертификат…'; s.className='msg'; }
-  const btn=$('certBtn'); if(btn) btn.disabled=true;
+async function loadVeilCenter(){
+  const box=$('veilCenterStatus'); if(!box) return null;
+  box.textContent='читаю вид…';
+  let v; try{ v=await api('/api/veil/center'); }
+  catch(e){ box.innerHTML='<span class=err>не удалось прочитать вид: '+esc(e.message)+'</span>'; return null; }
+  if(!v||!v.ok){ box.innerHTML='<span class=err>'+esc((v&&v.error)||'нет вида выпуска')+'</span>'; return null; }
+  const SL={free:'свободно',ours:'ведёт сюда',foreign:'занято чужим'};
+  const c=v.cert||{}, md=v.missing_dns||[], mc=v.missing_cert||[];
+  let h='<div>База: <b>'+esc(v.base)+'</b> · провайдер: '+esc(v.provider||'—')+'</div>';
+  h+='<table style="font-size:12.5px;margin-top:4px"><tbody>';
+  (v.names||[]).forEach(function(r){
+    h+='<tr><td class=mut style="padding:1px 10px 1px 0">'+esc(r.label||'')+'</td>'+
+       '<td style="padding:1px 10px 1px 0"><code>'+esc(r.name)+'</code></td>'+
+       '<td style="padding:1px 10px 1px 0;color:'+(r.status==='ours'?'var(--ok)':(r.status==='foreign'?'var(--err)':'var(--warn)'))+'">'+(SL[r.status]||esc(r.status||''))+'</td>'+
+       '<td style="padding:1px 10px 1px 0">'+(r.cert?'✅ в сертификате':'⚠ нет в сертификате')+'</td>'+
+       '<td class=mut style="padding:1px 0">'+(r.applied?'имя использует развилка':'')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  if(v.renumbered) h+='<div style="color:var(--warn);font-size:12px">Часть имён занята чужими — план подставил цифру; финальное имя можно поправить руками у провайдера.</div>';
+  if(c.has) h+='<div style="margin-top:4px">Сертификат: '+esc(String((c.san||[]).length))+' имён, истекает '+(c.expire?fmtZ(c.expire,'d'):'—')+(c.ready?' · покрывает все имена и свежий':' · не покрывает всё или скоро истекает')+'</div>';
+  else h+='<div style="margin-top:4px;color:var(--warn)">Сертификата на диске ещё нет — выпуск создаст его сразу на все имена.</div>';
+  if(c.budget&&c.budget.domain) h+='<div class=mut style="font-size:12px">Окно лимита выдачи: выпусков на <code>'+esc(c.budget.domain)+'</code> '+esc(String(c.budget.issued||0))+' из '+esc(String(c.budget.limit||0))+'</div>';
+  if(c.error) h+='<div style="color:var(--err);font-size:12px">'+esc(c.error)+'</div>';
+  const needN=md.length||mc.length;
+  h+='<div style="margin-top:6px"><b>'+(needN?('Недостаёт: '+((md.length?('DNS-записей — '+md.map(esc).join(', ')):'')+(md.length&&mc.length?', ':'')+(mc.length?('покрытие сертификата — '+mc.map(esc).join(', ')):''))):'Всё на месте: имена ведут сюда, сертификат их покрывает.')+'</b></div>';
+  box.innerHTML=h;
+  const btn=$('veilCenterBtn'); if(btn) btn.disabled=!needN;
+  return v;
+}
+async function veilCenterGo(){
+  const s=$('veilCenterMsg'), btn=$('veilCenterBtn');
+  const v=await loadVeilCenter();
+  if(!v) return;
+  const md=v.missing_dns||[], mc=(v.cert&&!v.cert.ready)?(v.missing_cert||[]):[];
+  if(!md.length&&!mc.length){ setMsg('veilCenterMsg','Выпускать нечего: все имена ведут сюда, сертификат их покрывает и не скоро истекает (бережём лимиты выдачи).','ok'); return; }
+  if(!confirm('Выпустить недостающее одним прогоном?\n\nDNS-записи: '+(md.join(', ')||'—')+
+              '\nСертификат: '+(mc.length?('расширить SAN до '+mc.join(', ')):'уже покрывает все имена')+
+              '\n'+(v.provider==='dynv6'?'⚠ порт :80 будет кратковременно освобождён (HTTP-01)\n':'')+
+              '\nПрогон может занять до пары минут.')) return;
+  if(s){ s.textContent='Выпускаю… (до пары минут)'; s.className='msg'; }
+  if(btn) btn.disabled=true;
   try{
-    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({issue_cert:true,confirm:true})});
-    const nm=r.names||{};
-    setMsg('certMsg','Выпущено: tg='+esc(nm.tg||'—')+', vpn='+esc(nm.vpn||'—')+'. '+esc((r.report||[]).join(' | ')),'ok');
-    toast('Поддомены и сертификат выпущены','ok');
-    loadCert();
-  }catch(e){ setMsg('certMsg','Ошибка: '+esc(e.message),'err'); }
+    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:v.base||null,provider:v.provider||null,issue_cert:true,confirm:true,labels:(v.extras&&v.extras.length?v.extras:null)})});
+    setMsg('veilCenterMsg','✅ '+esc((r.report||[]).join(' | ')),'ok',false);
+    toast('Имена и сертификат выпущены','ok');
+    loadCert(); loadVeilCenter();
+  }catch(e){ setMsg('veilCenterMsg','Ошибка: '+esc(e.message),'err'); loadVeilCenter(); }
   finally{ if(btn) btn.disabled=false; }
 }
 async function freePort80(){
@@ -6145,7 +6466,7 @@ async function loadWebmux(){
   h+='<div>Reality на :'+(d.reality_port||'—')+' · TLS-inbound\u2019ы: '+((d.tls_ports&&d.tls_ports.length)?d.tls_ports.join(', '):'—')+'</div>';
   h+='<div style="margin-top:6px">'+(d.can_mux?bd('✅ nginx готов к SNI-мюксу',okc):bd('❌ SNI-мюкс через этот nginx невозможен',errc))+'</div>';
   if(d.plan&&d.plan.length)
-    h+='<div style="margin-top:8px"><b>Что сделает включение мюкса (появится во 2-м срезе):</b><ul style="margin:4px 0 0 18px;padding:0">'+d.plan.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+    h+='<div style="margin-top:8px"><b>Что делает включение мюкса:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.plan.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
   if(d.warnings&&d.warnings.length)
     h+='<div style="margin-top:8px;color:'+errc+'"><b>⚠ Важно:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.warnings.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
   h+='<div class=mut style="margin-top:8px;font-size:12px">Диагностика ничего не меняет. Применить/откатить — блок ниже.</div>';
@@ -6414,6 +6735,62 @@ async function sshPortApply(){
     loadSshPort();
   }catch(e){ setMsg('sshPortMsg',(e&&e.message)||'Не удалось сменить порт.','err',false); }
   finally{ if(btn) btn.disabled=false; }
+}
+function _nodeOptRow(it){
+  const row=document.createElement('div');
+  row.className='mut';
+  row.style.cssText='display:flex;gap:10px;flex-wrap:wrap;font-size:13px;padding:1px 0';
+  const mark=document.createElement('b');
+  mark.style.cssText='min-width:18px';
+  const txt=document.createElement('span');
+  if(it.skipped){ mark.textContent='·'; txt.textContent=it.label+' — пропущено: ядро не приняло этот алгоритм'; }
+  else if(it.ok){ mark.textContent='✓'; mark.style.color='var(--ok,#2a4)';
+    txt.textContent=it.label+': '+it.cur; }
+  else{ mark.textContent='→'; txt.textContent=it.label+': сейчас '+(it.cur||'—')+', стало бы '+it.want; }
+  row.appendChild(mark); row.appendChild(txt);
+  return row;
+}
+function loadNodeOpt(){
+  const card=$('nodeOptCard');
+  if(card && typeof ME!=='undefined' && ME && !ME.owner){ card.style.display='none'; return; }
+  if(card) card.style.display='';
+  api('/api/node/optimizer').then(d=>{
+    const el=$('nodeOptState');
+    if(el){ const bits=[];
+      bits.push(d.applied?'применено':'настройки не применены');
+      bits.push(d.in_sync?'значения совпадают с целевыми':'часть значений отличается');
+      if(d.sbx) bits.push('песочница:Live не трогаем');
+      el.textContent=bits.join(' · ');
+    }
+    const rb=$('nodeOptRollBtn');
+    if(rb) rb.disabled=!d.has_snapshot;
+    const box=$('nodeOptList');
+    if(box){ box.innerHTML=''; (d.items||[]).forEach(it=>box.appendChild(_nodeOptRow(it))); }
+  }).catch(()=>{ const el=$('nodeOptState'); if(el) el.textContent='—'; });
+}
+async function nodeOptApply(){
+  if(!confirm('Применить оптимизацию узла?\n\n'
+    +'• Панель сохранит снимок значений «до» и напишет файл настройки ядра — он переживёт перезагрузку.\n'
+    +'• Каждое значение будет перечитано после применения; при отказе ядро всё вернётся автоматически.\n'
+    +'• Живые подписчики не перезапускаются: новые значения влияют на поднимаемые соединения.')) return;
+  const btn=$('nodeOptBtn'); if(btn) btn.disabled=true;
+  try{
+    setMsg('nodeOptMsg','Применяю и перечитываю значения…','ok',false);
+    await api('/api/node/optimizer/apply',{method:'POST',body:JSON.stringify({confirm:true})});
+    setMsg('nodeOptMsg','Применено.','ok',false);
+    loadNodeOpt();
+  }catch(e){ setMsg('nodeOptMsg',(e&&e.message)||'Не удалось применить.','err',false); }
+  finally{ if(btn) btn.disabled=false; }
+}
+async function nodeOptRollback(){
+  if(!confirm('Откатить узел к снимку «до»?\n\nФайл настройки будет снят (или возвращён прежний), значения ядра вернутся к сохранённому снимку.')) return;
+  const btn=$('nodeOptRollBtn'); if(btn) btn.disabled=true;
+  try{
+    setMsg('nodeOptMsg','Откатываю…','ok',false);
+    await api('/api/node/optimizer/rollback',{method:'POST',body:JSON.stringify({confirm:true})});
+    setMsg('nodeOptMsg','Откат выполнен: узел вернулся к снимку «до».','ok',false);
+  }catch(e){ setMsg('nodeOptMsg',(e&&e.message)||'Не удалось откатить.','err',false); }
+  finally{ loadNodeOpt(); }
 }
 let _termOpened=false, _termRx=0, _termTx=0, _termLastClose=null;
 function _termDiag(ws, why){
@@ -6730,7 +7107,7 @@ function _muxRenderPrev(d){
   const okc='var(--ok)', errc='var(--err)', mutc='var(--mut)', wnc='var(--warn)';
   const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
   let h='';
-  h+='<div>Веб-SNI: '+(d.web_domain?esc(d.web_domain):'<span class=mut>не задан</span>')
+  h+='<div>Веб-SNI: '+(d.web_sni||d.web_domain?esc(d.web_sni||d.web_domain):'<span class=mut>не задан</span>')
     +' · VPN-SNI: '+(d.vpn_domain?esc(d.vpn_domain):'<span class=mut>—</span>')
     +' · сертификат: '+esc(d.cert_kind||'—')+'</div>';
   h+='<div>Reality: '+(d.reality_port?(':'+esc(String(d.reality_port))+' (не трогается)'):'—')+'</div>';
@@ -6742,7 +7119,7 @@ function _muxRenderPrev(d){
   if(d.tg_domain)
     h+='<div>Сайт-маска и фасад tg-прокси: '+esc(d.tg_domain)
       +(d.mask_port?(' на loopback :'+esc(String(d.mask_port))):'')
-      +' · указывает сюда: '+(d.tg_dns_ok?bd('✅ да',okc):bd('⚠ нет — нажмите «Выпустить»',wnc))+'</div>';
+      +' · указывает сюда: '+(d.tg_dns_ok?bd('✅ да',okc):bd('⚠ нет — выпуск во вкладке «Сайт»',wnc))+'</div>';
   if(d.vpn_domain)
     h+='<div class=mut style="font-size:12px">Ссылки VPN '+esc(d.vpn_domain)+':443: '
       +(d.link_host_ready?'хост уже перевёрнут на vpn.<база>':'остаются на базе, пока vpn.<база> не зарезолвится')+'</div>';
@@ -6754,7 +7131,7 @@ function _muxRenderPrev(d){
       h+='<div style="color:'+wnc+';font-size:12px">Часть имён занята чужими — панель подставит цифру (tg2/vpn2); финальное имя можно поправить руками.</div>';
   }
   if(d.can_provision)
-    h+='<div style="margin-top:6px"><button class="tiny sec" onclick=muxProvision()>🌐 Выпустить поддомены и сертификат</button> '
+    h+='<div style="margin-top:6px">Выпуск имён и сертификата — единым входом «🌐 Имена и сертификаты» во вкладке «Сайт». '
       +'<span class=mut style="font-size:12px">'+esc(d.dns_provider||'')+'</span></div>';
   const e=d.effect||{};
   if(e.applied){
@@ -6873,9 +7250,9 @@ async function muxApply(){
   const chosen=(d.sel||[]).map(s=>s.label+' → '+s.domain+(s.dns_ok?'':' (имя ещё не ведёт сюда)')).join('\n  ');
   const warn = d.foreign443 ? ('\n\n❗ На :443 чужой процесс ('+(d.foreign443.proc||'?')+'). Он будет ОСТАНОВЛЕН (с бэкапом unit). Veil не отвечает за его работу после.') : '';
   if(!confirm('Применить SNI-мюкс :443?\n\nЗа общий порт встанут:\n  '+chosen
-              +'\n\nВеб-SNI: '+(d.web_domain||'—')+'\nVPN-SNI: '+(d.vpn_domain||'—')
+              +'\n\nВеб-SNI: '+((d.web_sni||d.web_domain)||'—')+'\nVPN-SNI: '+(d.vpn_domain||'—')
               +'\nМаска + фасад tg: '+(d.tg_domain||'—')+(d.mask_port?(' → loopback :'+d.mask_port):'')
-              +(d.tg_dns_ok&&(d.tg_domain!=d.web_domain)?'\nФасад telemt переедет на '+d.tg_domain:'')
+              +(d.tg_dns_ok&&(d.tg_domain!=(d.web_sni||d.web_domain))?'\nФасад telemt переедет на '+d.tg_domain:'')
               +warn+
               '\n\nnginx.conf, xray и фасад telemt будут изменены (с бэкапами и авто-откатом при ошибке nginx -t / xray -test).')) return;
   setMsg('muxMsg','Применяю… (nginx -t, xray -test, рестарт telemt)','');
@@ -6893,37 +7270,6 @@ async function muxApply(){
     setMsg('muxMsg',rep,'ok',false);
     loadWebmux(); muxPreview();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
-}
-
-async function muxProvision(){
-  let d; try{ d=await _muxPrev(); }
-  catch(e){ setMsg('muxMsg',e.message,'err'); return; }
-  if(!d){ setMsg('muxMsg','Отметьте галочкой хотя бы один вход — выпускать имена под пустой выбор незачем.','err'); return; }
-  if(!d.can_provision){ setMsg('muxMsg','Выпуск недоступен: нет провайдера DNS — настройте dynv6 или Cloudflare во вкладке «Сайт».','err'); return; }
-  const v=d.veil||{}, nm=v.names||{}, base=v.base||d.web_domain||'';
-  const pr=(($('muxProvider')||{}).value||'')||d.dns_provider||'';
-  const ex=_muxExtraLabels(d);
-  if(!confirm('Выпустить поддомены и SAN-сертификат?\n\nБаза: '+(base||'—')+'\ntg: '+(nm.tg||'—')+'\nvpn: '+(nm.vpn||'—')
-              +(ex.length?'\nотмеченные входы: '+ex.join(', '):'')
-              +'\nПровайдер: '+(pr||'—')+(pr==='dynv6'?'\n\n⚠ порт :80 будет кратковременно освобождён (HTTP-01)':'')
-              +'\n\nПанель создаст DNS-записи и выпустит один сертификат на все имена. Это может занять до пары минут.')) return;
-  setMsg('muxMsg','Выпускаю DNS + сертификат… (до пары минут)','');
-  try{
-    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:base||null,provider:(($('muxProvider')||{}).value||null),issue_cert:true,confirm:true,labels:(ex.length?ex:null)})});
-    const rn=r.names||{};
-    setMsg('muxMsg','✅ Выпущено. tg='+esc(rn.tg||'—')+', vpn='+esc(rn.vpn||'—')+'. '+esc((r.report||[]).join(' | ')),'ok');
-    muxPreview();
-  }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
-}
-
-// Выпущенное имя нужно каждому отмеченному входу, кроме vpn (его имя движок уже ведёт) и tg
-// (оно в плане всегда) — метки = то, что просит /api/veil/ensure в labels.
-function _muxExtraLabels(d){
-  const out=[];
-  for(const s of ((d&&d.sel)||[])){
-    if(s.label&&s.label!=='vpn'&&s.label!=='tg'&&out.indexOf(s.label)<0) out.push(s.label);
-  }
-  return out;
 }
 
 async function muxRevert(){
@@ -6974,7 +7320,7 @@ async function loadMp443(){
 function _mp443PrevHtml(d){
   const mpd=d.mp_domain||'—';
   let h='<div>Имя прокси: <b>'+esc(mpd)+'</b> '+(d.mp_dns_ok?'<span style="color:var(--ok)">ведёт сюда</span>':'<span style="color:var(--warn)">имя ещё не резолвится — нужен «Выпустить»</span>')+'</div>';
-  h+='<div>Маска (фронт) отдельным именем: '+esc(d.tg_domain||'—')+' · веб-прокси: '+esc(d.web_domain||'—')+(d.mp?('<div>Форма прокси внутри: петлевой фронт :'+(d.mp_mask_port||'—')+' · порт прокси внутри :'+(d.mp_port||'—')+'</div>'):'')+'</div>';
+  h+='<div>Маска (фронт) отдельным именем: '+esc(d.tg_domain||'—')+' · веб-прокси: '+esc(d.web_sni||d.web_domain||'—')+(d.mp?('<div>Форма прокси внутри: петлевой фронт :'+(d.mp_mask_port||'—')+' · порт прокси внутри :'+(d.mp_port||'—')+'</div>'):'')+'</div>';
   if(d.mp) h+='<div class=mut style="margin-top:4px">Галочка снята — прокси вернётся на прежний публичный порт, розданные ссылки не отвалятся.</div>';
   if((d.blockers||[]).length)
     h+='<div style="margin-top:6px;color:var(--err)">'+d.blockers.map(x=>'❌ '+esc(x)).join('<br>')+'</div>';
@@ -7002,7 +7348,7 @@ async function mp443Apply(){
   if(!d.can_apply){ setMsg('mp443Msg','Есть блокировки — см. предпросмотр.','err'); return; }
   const md=d.mp_domain||'—';
   if(!confirm((on?'Вести MTProto-прокси на общий :443?':'Снять MTProto с общего :443?')+
-      '\n\nИмя прокси: '+md+'\nИмя маски: '+(d.tg_domain||'—')+'\nБаза (веб-прокси): '+(d.web_domain||'—')+
+      '\n\nИмя прокси: '+md+'\nИмя маски: '+(d.tg_domain||'—')+'\nИмя веб-прокси: '+((d.web_sni||d.web_domain)||'—')+
       (on&&(!d.mp_dns_ok||!d.cert_ready)?
         ('\n\nИмени ещё нет в DNS или в сертификате — панель выпустит его сама (до пары минут), потом применит.'):'')+
       '\n\nnginx stream, фасад telemt и его источник формы будут изменены (с бэкапами и авто-откатом при ошибке).')) return;
@@ -7011,22 +7357,6 @@ async function mp443Apply(){
     const r=await api('/api/webmux/apply',{method:'POST',body:JSON.stringify({mp:on, mp_domain:(($('mpDomain').value||'').trim()||null), tg_domain:(d.tg_domain||null), confirm:true, force:!!d.foreign443})});
     setMsg('mp443Msg','✅ '+(on?('MTProto ведётся на :443 через '+esc(r.mp_domain||md)+'. '):'MTProto снят с общего :443, прежний порт цел. ')+(r.mp_mask_port?('Форма — с петлевого фронта :'+r.mp_mask_port+'. '):'')+esc((r.note||'')),'ok',false);
     loadMp443(); mp443Preview();
-  }catch(e){ setMsg('mp443Msg','Ошибка: '+esc(e.message),'err'); }
-}
-
-async function mp443Issue(){
-  let d=_mp443Prev;
-  if(!d){ await mp443Preview(); d=_mp443Prev; }
-  if(!d){ setMsg('mp443Msg','Предпросмотр не получился — см. выше.','err'); return; }
-  if(!d.can_provision){ setMsg('mp443Msg','Выпуск недоступен: нет провайдера DNS — настройте dynv6 или Cloudflare во вкладке «Сайт».','err'); return; }
-  const v=d.veil||{}, base=v.base||d.web_domain||'', mpd=d.mp_domain||'—';
-  if(!confirm('Выпустить имя '+mpd+' и добавить его в SAN-сертификат?\n\nБаза: '+(base||'—')+'\nПанель создаст A/AAAA-запись и перевыпустит один сертификат на все имена (до пары минут).')) return;
-  setMsg('mp443Msg','Выпускаю DNS + сертификат… (до пары минут)','');
-  try{
-    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({base:(base||null),provider:(d.dns_provider||null),issue_cert:true,confirm:true,labels:['mp']})});
-    const rn=r.names||{};
-    setMsg('mp443Msg','✅ Выпущено. mp='+esc(rn.mp||'—')+'. '+esc((r.report||[]).join(' | ')),'ok');
-    mp443Preview();
   }catch(e){ setMsg('mp443Msg','Ошибка: '+esc(e.message),'err'); }
 }
 
@@ -7368,9 +7698,10 @@ function renderTgManual(){
   man.forEach(function(m){
     h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0;border-top:1px solid var(--br);font-size:13px">'
       + (m.ok ? bd('держится','rgba(46,160,67,.15)') : bd('сбой','rgba(248,81,73,.15)'))
+      + (m.kind === 'web' ? bd('веб-прокси','rgba(56,139,253,.15)') : '')
       + '<b>'+esc(m.username||'—')+'</b>'
       + '<code style="font-size:12px">'+esc(m.link||'')+'</code>'
-      + (m.front?'<span class=mut style="font-size:12px">фронт '+esc(m.front)+'</span>':'')
+      + (m.front?'<span class=mut style="font-size:12px">'+(m.kind==='web'?'фасад ':'фронт ')+esc(m.front)+'</span>':'')
       + (m.detail?'<span style="color:var(--err);font-size:12px">'+esc(m.detail)+'</span>':'')
       + '</div>';
   });
@@ -7390,7 +7721,13 @@ async function tgManualCheck(){
   if(d.error){ setMsg('tgManualMsg','❌ '+d.error,'err'); prev.innerHTML=''; return; }
   tgManualPlan = d;
   const li = (d.actions||[]).map(x=>'«'+esc(x)+'»').join('; ')||'—';
-  let h = '<div>Фронт из ссылки: <b>'+esc(d.front||'—')+'</b> · порт <b>:'+(d.port||'?')+'</b> · клиент <b>'+esc(d.username||'—')+'</b></div>';
+  const hd = d.kind === 'web' ? 'Имя фасада из ссылки' : 'Фронт из ссылки';
+  let h = '<div>'+hd+': <b>'+esc(d.front||'—')+'</b> · порт <b>:'+(d.port||'?')+'</b> · клиент <b>'+esc(d.username||'—')+'</b></div>';
+  if(d.kind==='web'){
+    const w = d.web||{};
+    h += '<div class=mut style="margin-top:2px">Веб-прокси сейчас: '+(w.enabled?'включён':'выключен')+
+         ' · фасад <b>'+esc(w.host||'—')+'</b> · профилей '+((w.profiles||[]).length)+'</div>';
+  }
   if(d.parsed&&d.parsed.composed)
     h += '<div style="margin-top:4px">Ссылка, которую панель настроит: <code style="font-size:12px">'+esc(d.parsed.link)+'</code></div>';
   h += '<div class=mut style="margin-top:4px">Панель соберётся сделать: '+li+'</div>';
@@ -7408,7 +7745,11 @@ async function tgManualApply(){
   if(!d){ setMsg('tgManualMsg','Сначала «Проверить».','err'); return; }
   if(!d.can_apply){ setMsg('tgManualMsg','Есть препятствия — применять нельзя.','err'); return; }
   const li = (d.actions||[]).map(x=>'• '+x).join('\n')||'• ничего не потребуется';
-  if(!confirm('Подогнать прокси под розданную ссылку?\n\n'+li+'\n\nКлиенты этой ссылки продолжат работать без изменения ссылки. Telemt перезапустится.')) return;
+  const tail = d.kind==='web'
+    ? 'Клиенты этой ссылки продолжат работать без изменения ссылки. ' +
+      (d.restart?'Telemt перезапустится один раз.':'Telemt перезапускать не потребуется.')
+    : 'Клиенты этой ссылки продолжат работать без изменения ссылки. Telemt перезапустится.';
+  if(!confirm('Подогнать прокси под розданную ссылку?\n\n'+li+'\n\n'+tail)) return;
   setMsg('tgManualMsg','Применяю…','');
   try{
     const r = await api('/api/tg/manual/apply',{method:'POST',body:JSON.stringify({link:d.parsed.link,username:d.username,confirm:true})});
@@ -7769,25 +8110,6 @@ async function applyFront(){
   }finally{ btn.disabled = false; }
 }
 
-async function provisionFrontTg(){
-  const inp = document.getElementById('frontDomain'), msg = document.getElementById('frontMsg');
-  let v; try{ v = await api('/api/veil/names'); }
-  catch(e){ setMsg('frontMsg','не удалось построить план имён: '+e.message,'err'); return; }
-  if(!v || !v.ok){ setMsg('frontMsg',(v&&v.error)||'нет плана имён (не задан домен панели)','err'); return; }
-  const tg=(v.names&&v.names.tg)||''; const pr=v.provider||'';
-  if(!tg){ setMsg('frontMsg','не удалось определить tg-поддомен','err'); return; }
-  if(inp) inp.value=tg;
-  if(!confirm('Выпустить DNS-имя и единый SAN-сертификат для сайт-маски: '+tg+'\nПровайдер: '+(pr||'—')
-              +(pr==='dynv6'?'\n\n⚠ порт :80 будет кратковременно освобождён (HTTP-01)':'')
-              +'\n\nЗаведём запись и сертификат. После этого нажмите «Настроить сайт-маску», чтобы переключить прокси на этот домен.')) return;
-  setMsg('frontMsg','Выпускаю имя и сертификат… (до пары минут)','');
-  try{
-    const r=await api('/api/veil/ensure',{method:'POST',body:JSON.stringify({issue_cert:true,confirm:true})});
-    if(msg){ msg.innerHTML=(r.report||[]).map(x=>'• '+esc(x)).join('<br>')+'<br>Готово. Нажмите «Настроить сайт-маску», чтобы переключить прокси.'; msg.className='msg ok'; }
-  }catch(e){ setMsg('frontMsg','Ошибка: '+e.message,'err'); }
-  loadFront();
-}
-
 let fixActive = false;
 
 async function loadFix(){
@@ -7891,9 +8213,9 @@ document.querySelectorAll('.tabs button').forEach(b=>{
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
        if(b.dataset.tab==='proxy'){loadTgVerInfo();loadTgDcs();}
-       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();loadSshPort();}
+       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();loadSshPort();loadNodeOpt();}
        if(b.dataset.tab==='ai')loadAi();
-       if(b.dataset.tab==='site'){loadMyIps();loadWebmux();}
+       if(b.dataset.tab==='site'){loadMyIps();loadWebmux();loadVeilCenter();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
        if(b.dataset.tab==='logs'){if(!_logSvcLoaded)loadLogServices();fetchLogs();}
@@ -8257,7 +8579,8 @@ function veilFluxTaps(){
 document.addEventListener('click',function(e){if(e.target&&e.target.id==='headerLogo')veilFluxTaps()});
 const FLUX_CAR_ROWS=[['vyandex','fluxCkVyandex','fluxUrlVyandex'],
                      ['mailru','fluxCkMailru','fluxUrlMailru'],
-                     ['cupsonline','fluxCkCupsonline','fluxUrlCupsonline']];
+                     ['cupsonline','fluxCkCupsonline','fluxUrlCupsonline'],
+                     ['r7','fluxCkR7','fluxUrlR7']];
 let _fluxCarDirty=false;
 function fluxCarDirty(){_fluxCarDirty=true}
 FLUX_CAR_ROWS.forEach(function(r){
@@ -8310,10 +8633,10 @@ function fluxRender(d){
   // чем владелец добрался бы до кнопки «Применить».
   if(!_fluxCarDirty){
     FLUX_CAR_ROWS.forEach(function(r){
-      const ck=$(r[1]), u=$(r[2]);if(!ck||!u)return;
+      const ck=$(r[1]), u=r[2]&&$(r[2]);if(!ck)return;
       const on=Object.prototype.hasOwnProperty.call(byUrl,r[0]);
-      ck.checked=on;u.disabled=!on;
-      if(document.activeElement!==u)u.value=byUrl[r[0]]||'';
+      ck.checked=on;if(u)u.disabled=!on;
+      if(u&&document.activeElement!==u)u.value=byUrl[r[0]]||'';
     });
   }
   const dp=(d.direct_pri!=null?d.direct_pri:50);
@@ -8332,6 +8655,18 @@ function fluxRender(d){
       :'<span class=err>носителей нет: узел едет только прямым каналом, а его белый список гасит</span>')
       +(miss.length?' <span class=err>для '+miss.map(function(x){
           return escapeHtml(String(x.type));}).join(', ')+' строки нет</span>':'');
+  }
+  // Своего носителя судят двумя мерами: ссылкой чужого документа — её ядро
+  // передаёт скрипту, — и файлом с подписью: без живого байтового совпадения
+  // юнит соберётся без него, и морда обязана сказать это до нажатия.
+  const rs=$('fluxR7State');
+  if(rs){
+    const s=(d.own_scripts||[]).filter(function(x){return x.type==='r7';})[0];
+    if(!s)rs.innerHTML='<span class=err>⚠ строки своего носителя в списке панели нет</span>';
+    else rs.innerHTML=(s.ok
+      ?'файл '+escapeHtml(String(s.bytes))+' байт · подпись сошлась'
+      :'<span class=err>⚠ '+escapeHtml(String(s.why))+'</span>')
+      +' · в ссылку не кладётся: клиент импортирует его сам';
   }
   const one=$('fluxOne');if(one)one.textContent=d.one_client||'';
   const sb=$('fluxStartBtn');if(sb)sb.disabled=!d.enabled;
@@ -8642,6 +8977,8 @@ function applyTheme(t){
     const el = document.getElementById('th-'+k); if (el && t[k]) el.value = t[k];
   });
   const fs = document.getElementById('th-font'); if (fs && t.font) fs.value = t.font;
+  curSkin = (t.skin === 'liquid') ? 'liquid' : '';
+  document.body.classList.toggle('liquid-glass', curSkin === 'liquid');
   curLayout = t.layout || 'auto';
   applyLayout(curLayout);
   curSwipe=(t.swipe!==false);
@@ -8657,6 +8994,7 @@ function applyTheme(t){
   }
   }
 let curLayout='auto';
+let curSkin='';
 function applyLayout(layout){
   const wide = !window.matchMedia || window.matchMedia('(min-width:900px)').matches;
   const desk = layout==='desk' || (layout==='auto' && wide);
@@ -8682,6 +9020,7 @@ async function saveTheme(quiet){
     acc:  document.getElementById('th-acc').value,
     acc2: document.getElementById('th-acc2').value,
     font: document.getElementById('th-font').value,
+    skin: curSkin,
   };
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
   await loadTheme();
@@ -8690,7 +9029,7 @@ async function saveTheme(quiet){
 async function resetTheme(){
   await fetch('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},
     body: JSON.stringify({bg:'#0b1023',bg2:'#0d1230',card:'#151c3d',card2:'#1a2350',br:'#333d72',
-      fg:'#eef2ff',mut:'#a3aede',acc:'#6d5df6',acc2:'#22d3ee',
+      fg:'#eef2ff',mut:'#a3aede',acc:'#6d5df6',acc2:'#22d3ee',skin:'',
       font:'system-ui,-apple-system,Segoe UI,Roboto,sans-serif'})});
   await loadTheme();
 }
