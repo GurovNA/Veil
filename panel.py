@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.2"
+VERSION = "2.17.3"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -124,7 +124,7 @@ VERSION = "2.17.2"
 # 2.13.7: «🖥️ SSH-терминал в браузере» — root-шелл через WebSocket (PTY) прямо в панели.
 #        POST /api/term/toggle вкл/выкл (только владелец, по умолчанию ВЫКЛЮЧЕН, флаг
 #        CFG_CACHE["ssh_terminal"]); GET /api/term — статус/активные сеансы; GET /api/term с
-#        Upgrade: websocket угоняет соединение под RFC6455: рукопожатие (Sec-WebSocket-Accept=
+#        Upgrade: `websocket` угоняет соединение под RFC6455: рукопожатие (Sec-WebSocket-Accept=
 #        SHA1(key+GUID)), далее pty.fork + /bin/bash -i от root, два направления через select:
 #        кадры клиента→stdin pty (бинарные) и текстовый JSON {type:resize}→TIOCSWINSZ; вывод
 #        pty→бинарные кадры. Потолок 4 сеанса, простой 30 мин, жёсткий лимит 3 ч; каждый сеанс
@@ -147,7 +147,7 @@ VERSION = "2.17.2"
 #        Per-subscriber: via_warp на клиенте → маршрут inboundTag=warp→outbound warp (после
 #        ru_bypass, чтобы РФ-домены шли напрямую). До 8 аккаунтов, переключение в один клик,
 #        «📡 Проверить туннель» (cdn-cgi/trace ждёт warp=on). Telegram-прокси: telemt
-#        [[upstreams]] socks5 через тот же вход (между маркерами veil-warp), рестарт telemt.
+#        [[`upstreams`]] socks5 через тот же вход (между маркерами veil-warp), рестарт telemt.
 #        UI: карточка WARP на Настройках + тумблер 🌀 и чип в карточках подписчиков;
 #        все операции через _validate_and_apply (xray run -test) с откатом, аудит warp_*.
 # 2.13.4: аудит понятности описаний: добавлены блоки «Объяснить простым языком» там,
@@ -510,7 +510,7 @@ _TZC = {"name": None, "zone": None, "names": None}
 
 def _tz_zone(name=None):
     """ZoneInfo по имени из config.json (`tz`); None = «живём как раньше», то есть
-    системный localtime. Имя берётся из конфига при каждом вызове (cheap dict),
+    системный `localtime`. Имя берётся из конфига при каждом вызове (`cheap` dict),
     чтобы смена пояса не требовала рестарта. Несуществующее имя кэшируется как
     «нет зоны»: конфиг правят руками и с чужой панели, и падать из-за опечатки
     отображение дат не имеет права."""
@@ -530,7 +530,7 @@ def _tz_zone(name=None):
     return z
 
 def _tz_names():
-    """Зоны, которые реально есть в tzdata этой машины. Полный список снимаем
+    """Зоны, которые реально есть в `tzdata` этой машины. Полный список снимаем
     один раз: морда не имеет права предлагать пояс, который панель потом честно
     проигнорирует, а оператор, выбравший «Аделаиду» на машине со slim-tzdata,
     увидел бы только молчаливо сдвинувшиеся обратно даты."""
@@ -627,7 +627,7 @@ def _mkexpire(y, mo, d, hh=23, mi=59, ss=59):
 
     Оператор мыслит датами своего календаря: «до 15 октября» значит до последней
     минуты его 15 октября, а не его 14-го. Без пояса считаем по системному
-    localtime — ровно так, как `_ltime` показывает даты. Обратное превращение
+    `localtime` — ровно так, как `_ltime` показывает даты. Обратное превращение
     (`_ldate`) и это должны быть две стороны одной функции, иначе строка,
     введённая сегодня, завтра показалась бы другой."""
     z = _tz_zone()
@@ -1726,7 +1726,7 @@ AWG_POOL = "10.20.0."
 # фрагментируется на маршрутизаторах: крупные пакеты (ответы сервера) молча
 # чёрнеют — handshake и DNS (мелкие) проходят, а первое же крупное TCP/TLS
 # соединение виснет («VPN загорелся, но интернет падает»). 1280 — гарантированный
-# минимум IPv6, влезает в любой мобильный путь (outer = 1280 + 80 = 1360).
+# минимум IPv6, влезает в любой мобильный путь (`outer` = 1280 + 80 = 1360).
 WG_MTU = 1280
 
 def _tun6(c, prefix="fd10:10::"):
@@ -1833,7 +1833,7 @@ def _awg_write_conf(inb):
             f.write("\n[Peer]\n"
                     f"PublicKey = {c['client_public_key']}\n"
                     f"AllowedIPs = {c['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
-                    "PersistentKeepalive = 25\n")
+                    f"PersistentKeepalive = {inb.get('keepalive', 25)}\n")
     finally:
         f.close()
 
@@ -1940,7 +1940,7 @@ def _awg_sync(st, force=False):
     for pub, addr in want.items():
         try:
             subprocess.run(["/usr/bin/awg", "set", AWG_IFACE, "peer", pub,
-                            "allowed-ips", addr, "persistent-keepalive", "25"],
+                            "allowed-ips", addr, "persistent-keepalive", str(inb.get("keepalive", 25))],
                            capture_output=True, text=True, timeout=10)
         except Exception as e:
             print("awg set peer err: " + str(e), flush=True)
@@ -1984,7 +1984,7 @@ def _wg_conf_text(inb):
         parts += ["\n[Peer]\n",
                   f"PublicKey = {c['client_public_key']}\n",
                   f"AllowedIPs = {c['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n",
-                  "PersistentKeepalive = 25\n"]
+                  f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"]
     return "".join(parts)
 
 def _wg_iface_synced(inb):
@@ -2104,7 +2104,7 @@ def _ensure_wg_net():
         subprocess.run(["sysctl", "-w", "net.ipv6.conf.all.forwarding=1"],
                        capture_output=True, text=True, timeout=10)
         # ULA внутри туннеля: ответный трафик уходит в тот же интерфейс, но RPF
-        # на net0 может его гасить — ослабляем reverse-path для туннельных ifaces.
+        # на net0 может его гасить — ослабляем reverse-path для туннельных `ifaces`.
         subprocess.run(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"],
                        capture_output=True, text=True, timeout=10)
         with open("/etc/sysctl.d/99-veil-wg.conf", "w") as f:
@@ -2165,6 +2165,21 @@ def _wg_key_std(k):
         return base64.b64encode(raw).decode()
     except Exception:
         return k
+
+def _x25519_pub_reality(priv):
+    """Открытый ключ x25519 из закрытого, в canonical RawURL-форме reality
+    (её пишет завод и её же печатает `xray x25519`). Считаем на месте через
+    `cryptography`: чужой бинарь не зовём, закрытый ключ за процесс не идёт."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        k = str(priv).strip()
+        raw = base64.b64decode(k + "=" * ((4 - len(k) % 4) % 4), altchars=b"-_")
+        if len(raw) != 32:
+            return ""
+        pub = X25519PrivateKey.from_private_bytes(raw).public_key().public_bytes_raw()
+        return base64.urlsafe_b64encode(pub).rstrip(b"=").decode()
+    except Exception:
+        return ""
 
 def _wg_is_wireguard(inb):
     if str(inb.get("proto", "")) == "wireguard":
@@ -2383,7 +2398,7 @@ def _inb_writable(st):
 
     Чем плохи прежние `st.setdefault("inbounds", {})` и
     `(st or {}).get("inbounds", {})`: оба возвращают то, что в файле УЖЕ записано.
-    Ключ present со значением `null`, `""`, `[]` или списком входов — это не
+    Ключ `present` со значением `null`, `""`, `[]` или списком входов — это не
     словарь, и первое же `.get("amneziawg")` или `.values()` падает. У читающей
     ручки падение отозвалось бы 500-кой, а здесь цена совсем другая: этих
     обходчиков зовёт блок старта, где один внешний `except` превращает
@@ -2548,8 +2563,8 @@ def _migrate_state(st):
         # означало падение страницы подписчиков (`_do_GET`: AttributeError:
         # 'str' object has no attribute 'get') и молчаливый отказ всего старта
         # — `_awg_sync`, `_wg_sync` и база трафика обрываются на той же строке,
-        # а catching except превращает это в «автоблокировка не считает байты».
-        # Мусор чинится здесь, а не перекладывается на тик: healing here стоит
+        # а `catching` except превращает это в «автоблокировка не считает байты».
+        # Мусор чинится здесь, а не перекладывается на тик: `healing` `here` стоит
         # ровно столько, сколько стоит чтение, и не просвечивает в ответах.
         if not isinstance(inb, dict):
             # №61: `continue` без выбрасывания оставалось ровно наполовину
@@ -2749,7 +2764,7 @@ def _reconcile_shared(inbs):
                         c[k] = v
                         changed = True
                 elif k in _RECON_ANY and v:
-                    # absent == False; «заблокирован» обязан дойти до всех записей,
+                    # `absent` == False; «заблокирован» обязан дойти до всех записей,
                     # иначе запись без флага читается мордой как разблокированная
                     c[k] = v
                     changed = True
@@ -2890,7 +2905,7 @@ def _ensure_hy2_cert(dom):
         os.chmod(HY2_KEY, 0o600)
         # Ключ остаётся root:root. Прежний `chown nobody:nogroup` был страховкой под
         # шаблон `xray@.service` (`User=nobody`) — юнит на этой машине выключен,
-        # instances нет, и читает он свой `%i.json`, а не hy2. А результат получался
+        # `instances` нет, и читает он свой `%i.json`, а не hy2. А результат получался
         # обратный страховке: `nobody` — чужой uid, и живой файл дожил до наших дней
         # в `0604 nobody:nogroup`, то есть приватный ключ читался кем угодно.
         for p in (HY2_CERT, HY2_KEY):
@@ -2902,8 +2917,8 @@ def _ensure_hy2_cert(dom):
         print(f"не удалось создать hy2 cert: {e}", flush=True)
 
 def _deep_merge(base, over):
-    """Рекурсивно врезает over в base (словари сливаются, остальное заменяется).
-        base не мутируется; пустой/не-словарь over -> копия base без изменений."""
+    """Рекурсивно врезает `over` в base (словари сливаются, остальное заменяется).
+        base не мутируется; пустой/не-словарь `over` -> копия base без изменений."""
     if not isinstance(over, dict) or not over:
         return dict(base) if isinstance(base, dict) else base
     out = dict(base) if isinstance(base, dict) else {}
@@ -3051,7 +3066,616 @@ def _inbound(proto, inb):
 
 _INBOUND_EDIT_KEYS = ("sni", "snis", "dest", "sid", "sids", "path", "host",
                       "service", "mode", "alpn", "sniff", "flow", "mtu",
-                      "_adv", "_adv_ib")
+                      "method", "_adv", "_adv_ib")
+
+# Поля ручного настраивания, специфичные для wireguard/awg-туннеля. Наружу
+# (в _inbound_public) из них отдаются только несекретные; psk и private_key —
+# фактом наличия, значение не покидает ручку.
+_WG_TUNNEL_KEYS = ("address", "keepalive", "allowed_ips", "dns", "link_host", "link_port")
+_MANUAL_KEY_SHAPE = re.compile(r"[A-Za-z0-9+/]{43}={0,1}")
+# закрытый ключ Reality: xray говорит формами и std, и RawURL — принимаем обе,
+# к хранению приводим RawURL (как пишет завод при создании входа)
+_MANUAL_KEY_SHAPE_W = re.compile(r"[A-Za-z0-9+/_-]{43}={0,1}")
+_MANUAL_HEX_SHAPE = re.compile(r"[0-9a-fA-F]{2,16}")
+_MANUAL_HOST_SHAPE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?")
+_MANUAL_PATH_SHAPE = re.compile(r"/[^\s\x00-\x1f]{0,199}")
+_MANUAL_PASS_SHAPE = re.compile(r"[^\s\x00-\x1f]{6,128}")
+_SS_METHODS = ("aes-256-gcm", "aes-128-gcm", "chacha20-ietf-poly1305")
+_WG_MTU_LO, _WG_MTU_HI = 576, 1420
+_GRPC_MODES = ("unary", "multi", "gun")
+_XHTTP_MODES = ("auto", "stream", "packet-up", "multi")
+
+
+def _manual_gen(what):
+    """Генератор свежих значений для ручной настройки (цикл #256 по слову
+    хозяина). Ничего не пишет: секрет уходит только запросившему владельцу.
+    Незнакомое «что» — ValueError с честным списком."""
+    if what == "uuid":
+        return {"uuid": str(uuidlib.uuid4())}
+    if what == "shortid":
+        return {"shortid": secrets.token_hex(4)}
+    if what == "password":
+        # форма совпадает с принятой ручкой (6–128, без пробелов)
+        return {"password": secrets.token_urlsafe(18)}
+    if what == "psk":
+        return {"psk": base64.b64encode(os.urandom(32)).decode()}
+    if what == "wg":
+        r = subprocess.run(["/usr/bin/wg", "genkey"], capture_output=True,
+                           text=True, timeout=10)
+        priv = r.stdout.strip()
+        pub = _wg_pubof(priv) if priv else ""
+        if not priv or not pub:
+            raise RuntimeError("wg genkey/pubkey не дал пару")
+        return {"private_key": priv, "public_key": pub}
+    if what == "x25519":
+        priv, pub = _gen_keys()
+        return {"private_key": priv, "public_key": pub}
+    raise ValueError("что генерировать: uuid, shortid, password, psk, wg, x25519")
+
+def _manual_host_val(v):
+    """Имя хоста или IPv4/IPv6 без скобок и порта. Пустое — «не задано», ок."""
+    v = (v or "").strip()
+    if not v:
+        return ""
+    if v.startswith("[") and v.endswith("]"):
+        v = v[1:-1]
+    if ":" in v:
+        try:
+            ipaddress.IPv6Address(v)
+            return v
+        except ValueError:
+            return None
+    if _MANUAL_HOST_SHAPE.fullmatch(v) and ".." not in v:
+        return v
+    return None
+
+def _manual_cidrs(text):
+    """'0.0.0.0/0, ::/0' -> нормализованный список CIDR (v4 и v6) или None."""
+    items = _as_list(text)
+    if not items:
+        return []
+    out = []
+    for it in items:
+        try:
+            n = ipaddress.ip_network(it, strict=False)
+        except ValueError:
+            return None
+        out.append(str(n))
+    if len(out) > 128:
+        return None
+    return out
+
+def _manual_ips(text):
+    """Список адресов DNS (не имена: wg-quick трактует их иначе)."""
+    items = _as_list(text)
+    if not items:
+        return []
+    out = []
+    for it in items:
+        try:
+            out.append(str(ipaddress.ip_address(it)))
+        except ValueError:
+            return None
+    if len(out) > 3:
+        return None
+    return out
+
+def _xray_test_only(st, force_proto=None):
+    """`xray run -test` по candidate-состоянию БЕЗ записи и рестарта (предпросмотр #256).
+    Тот же 0600-временный файл, что в _validate_and_apply: пробный конфиг несёт
+    живые приватные ключи и не должен читаться кем-то ещё даже мгновение."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(XRAY), prefix="panel.preview.", suffix=".json")
+    os.close(fd)
+    try:
+        cfg = _build_xray_cfg(st, force_proto=force_proto)
+        _save(tmp, cfg, 0o600)
+        t = subprocess.run(["xray", "run", "-test", "-config", tmp],
+                           capture_output=True, text=True, timeout=30)
+        if t.returncode:
+            return False, ("конфиг Xray невалиден: "
+                           + (t.stderr or t.stdout or "").strip()[:600])
+        return True, None
+    except subprocess.TimeoutExpired:
+        return False, "xray -test: таймаут проверки конфига"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+def _manual_fields(proto, inb, b, inbs, existed):
+    """Цикл #256: поля ручного настройки входа. (inb — копия, правим её) ->
+    (список ошибок, список изменений {field, was, now}).
+
+    Матрица полей выведена из таблицы PROTOCOLS и сборщика _stream_settings:
+    поле живёт ровно там, где его читает транспорт, — «path» у grpc-входа не
+    бывает. Секреты (private_key, psk, password) в список изменений попадают
+    скрытыми: наружу только ФАКТ изменения, значение — никогда (оно и в ответ
+    не возвращается). Пустое значение поля = вернуть заводское (снять ключ),
+    закрытый ключ пустым не снимают: вход без ключа не поднимется, а «не
+    пришёл» и «пришёл пустой» различаем честно: ключ правится только живым."""
+    meta = _proto_meta(proto)
+    grp = meta["group"]
+    reality = ("reality" in proto)
+    tun = grp in ("wg", "awg")
+    errs = []
+    changes = []
+
+    def note(field, was, now, secret=False):
+        changes.append({"field": field,
+                        "was": ("<скрыт>" if (secret and was) else was),
+                        "now": ("<скрыт>" if (secret and now not in (None, "")) else now)})
+
+    def host_field(key, label):
+        raw = (str(b.get(key) or "")).strip()
+        if raw and _manual_host_val(raw) is None:
+            errs.append("%s: имя хоста или IP, без порта и пути" % label)
+            return None
+        return raw
+
+    def int_field(key, lo, hi, label):
+        raw = b.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            errs.append("%s: целое число" % label)
+            return "bad"
+        if not (lo <= v <= hi):
+            errs.append("%s: %d-%d" % (label, lo, hi))
+            return "bad"
+        return v
+
+    def port_field(key, label, reserved_check=True):
+        v = int_field(key, 1, 65535, label)
+        if v == "bad" or v is None:
+            return v if v == "bad" else None
+        if reserved_check and v in _RESERVED_PORTS:
+            errs.append("порт %d зарезервирован (веб/панель/telemt)" % v)
+            return "bad"
+        for pr2, ib2 in (inbs or {}).items():
+            if pr2 != proto and isinstance(ib2, dict) and ib2.get("port") == v:
+                errs.append("порт %d занят входом %s" % (v, pr2))
+                return "bad"
+        return v
+
+    allowed = {"port", "link_host", "link_port", "action", "proto"}
+    if not tun:
+        allowed |= {"sniff", "_adv", "_adv_ib", "flow"}
+    if reality:
+        allowed |= {"sni", "snis", "dest", "sid", "sids", "private_key"}
+    if meta["net"] == "ws":
+        allowed |= {"path", "host"}
+    if meta["net"] == "grpc":
+        allowed |= {"service", "host", "mode"}
+    if meta["net"] in ("xhttp", "splithttp"):
+        allowed |= {"path", "mode"}
+    if meta["tls"] and not reality and not tun:
+        allowed |= {"alpn"}
+    if grp == "ss":
+        allowed |= {"method", "password"}
+    if tun:
+        allowed |= {"private_key", "address", "mtu", "keepalive",
+                    "allowed_ips", "dns", "psk"}
+
+    for k in b:
+        if k not in allowed and k not in ("uuid", "cert", "key", "public_key"):
+            errs.append("поле «%s» не применим к протоколу %s" % (k, proto))
+    if "uuid" in b and str(b.get("uuid") or "").strip():
+        errs.append("uuid принадлежит подписчику, не входу: клиента заводят "
+                    "во вкладке подписчиков")
+    if "cert" in b or "key" in b:
+        errs.append("сертификат TLS панель выпускает и подключает сама — "
+                    "путей сюда нет")
+    if "public_key" in b and str(b.get("public_key") or "").strip() and "private_key" not in b:
+        errs.append("открытый ключ выводится из закрытого: пришлите закрытый, "
+                    "панель посчитает открытый и сверит")
+
+    # --- порт ---
+    if "port" in b:
+        pv = port_field("port", "порт")
+        if pv == "bad":
+            pv = None
+        elif pv is not None:
+            was = inb.get("port")
+            if was != pv:
+                inb["port"] = pv
+                note("port", was, pv)
+    # --- внешний адрес ссылки («внешний прокси») ---
+    if "link_host" in b:
+        v = host_field("link_host", "внешний адрес ссылки")
+        if v is not None:
+            was = inb.get("link_host")
+            if v:
+                inb["link_host"] = v
+            else:
+                inb.pop("link_host", None)
+            if (was or "") != v:
+                note("link_host", was or "", v)
+    if "link_port" in b:
+        raw_lp = b.get("link_port")
+        if raw_lp is None or raw_lp == "":
+            was = inb.pop("link_port", None)
+            if was is not None:
+                note("link_port", was, "")
+        else:
+            lv = int_field("link_port", 1, 65535, "внешний порт ссылки")
+            if lv not in ("bad", None):
+                was = inb.get("link_port")
+                inb["link_port"] = lv
+                if was != lv:
+                    note("link_port", was, lv)
+
+    # --- reality / маскировка ---
+    if reality:
+        sni0 = inb.get("sni")
+        sid0 = inb.get("sid")
+        for key, lab in (("sni", "SNI"),):
+            if key in b:
+                v = host_field(key, lab)
+                if v is not None and (v or "") != (inb.get("sni") or ""):
+                    pl0 = inb.get("snis")
+                    if pl0 and pl0 != [sni0]:
+                        # сборка конфига считает список важнее единичного —
+                        # правка единичного при самостоятельном списке мертва
+                        errs.append("SNI: действует список SNI — правьте его, единичное поле им занято")
+                        v = None
+                if v is not None:
+                    was = inb.get(key)
+                    if v:
+                        inb[key] = v[:200]
+                    else:
+                        inb.pop(key, None)
+                    if (was or "") != v:
+                        note(key, was, v)
+        if "snis" in b:
+            items = _as_list(b.get("snis")) or []
+            bad = [x for x in items if _manual_host_val(x) is None]
+            if bad:
+                errs.append("SNI-список: %r — не имя хоста" % bad[0][:40])
+            elif items and sni0 is not None and items == [sni0] \
+                    and (inb.get("sni") or "") != (sni0 or ""):
+                # список был ровно тенью прежнего единичного SNI — тянем его
+                # за правкой, иначе правка единичного умирает молча на сборке
+                was = inb.get("snis")
+                items = [inb["sni"]] if inb.get("sni") else []
+                if items:
+                    inb["snis"] = items
+                else:
+                    inb.pop("snis", None)
+                note("snis", was, items)
+            else:
+                was = inb.get("snis")
+                if items:
+                    inb["snis"] = items
+                else:
+                    inb.pop("snis", None)
+                if bool(was) != bool(items) or (items and sorted(items) != sorted(was or [])):
+                    note("snis", was or [], items)
+        if "dest" in b:
+            v = (str(b.get("dest") or "")).strip()[:200]
+            if v:
+                hv, _, pp = v.rpartition(":")
+                if _manual_host_val(hv) is None or not pp.isdigit() or not (0 < int(pp) < 65536):
+                    errs.append("назначение (dest): хост:порт, например www.example.com:443")
+                else:
+                    was = inb.get("dest")
+                    inb["dest"] = v
+                    if was != v:
+                        note("dest", was, v)
+            else:
+                was = inb.get("dest")
+                inb.pop("dest", None)
+                if was:
+                    note("dest", was, "")
+        for key, lab in (("sid", "shortId"), ("sids", "ShortId-список")):
+            if key not in b:
+                continue
+            items = _as_list(b.get(key)) or []
+            bad = [x for x in items if not _MANUAL_HEX_SHAPE.fullmatch(x)]
+            if bad:
+                errs.append("%s: %r — не hex (2–16 символов)" % (lab, bad[0][:20]))
+            elif key == "sid" and items and (items[0] or "") != (inb.get("sid") or "") \
+                    and inb.get("sids") and inb.get("sids") != [sid0]:
+                # сборка конфига считает список важнее единичного —
+                # правка единичного при самостоятельном списке мертва
+                errs.append("shortId: действует ShortId-список — правьте его, единичное поле им занято")
+            else:
+                if key == "sids" and items and sid0 is not None and items == [sid0] \
+                        and (inb.get("sid") or "") != (sid0 or ""):
+                    # тень: список ровно повторял прежний shortId — едет за правкой
+                    items = [inb["sid"]] if inb.get("sid") else []
+                was = inb.get(key)
+                nv = (items[0] if key == "sid" else items) if items else None
+                if nv is None:
+                    inb.pop(key, None)
+                elif key == "sid":
+                    inb["sid"] = nv
+                else:
+                    inb["sids"] = nv
+                if key == "sids":
+                    if bool(was) != bool(nv) or (nv and sorted(nv) != sorted(was or [])):
+                        note(key, was or [], nv or [])
+                elif was != nv:
+                    note(key, was, nv)
+
+    if "flow" in b and not tun:
+        v = (str(b.get("flow") or "")).strip()[:200]
+        if v and re.search(r"\s", v):
+            errs.append("flow: без пробелов")
+        else:
+            was = inb.get("flow")
+            if v:
+                inb["flow"] = v
+            else:
+                inb.pop("flow", None)
+            if (was or "") != v:
+                note("flow", was, v)
+
+    if meta["net"] in ("ws", "xhttp", "splithttp") and "path" in b:
+        v = (str(b.get("path") or "")).strip()[:200]
+        if v and not _MANUAL_PATH_SHAPE.fullmatch(v):
+            errs.append("путь: начинается с «/», без пробелов")
+        else:
+            was = inb.get("path")
+            if v:
+                inb["path"] = v
+            else:
+                inb.pop("path", None)
+            if (was or "") != v:
+                note("path", was, v)
+    if ("host" in b and meta["net"] in ("ws", "grpc")):
+        v = host_field("host", "хост (Host/authority)")
+        if v is not None:
+            was = inb.get("host")
+            if v:
+                inb["host"] = v[:200]
+            else:
+                inb.pop("host", None)
+            if (was or "") != v:
+                note("host", was, v)
+    if meta["net"] == "grpc" and "service" in b:
+        v = (str(b.get("service") or "")).strip()
+        if v and not re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", v):
+            errs.append("serviceName: буквы, цифры, точка, дефис, подчёркивание")
+        else:
+            was = inb.get("service")
+            if v:
+                inb["service"] = v
+            else:
+                inb.pop("service", None)
+            if (was or "") != v:
+                note("service", was, v)
+    if ("mode" in b and meta["net"] in ("grpc", "xhttp", "splithttp")):
+        v = (str(b.get("mode") or "")).strip().lower()
+        allow_modes = _GRPC_MODES if meta["net"] == "grpc" else _XHTTP_MODES
+        if v and v not in allow_modes:
+            errs.append("mode: один из %s" % ", ".join(allow_modes))
+        else:
+            was = inb.get("mode")
+            if v:
+                inb["mode"] = v
+            else:
+                inb.pop("mode", None)
+            if (was or "") != v:
+                note("mode", was, v)
+    if meta["tls"] and not reality and not tun and "alpn" in b:
+        items = _as_list(b.get("alpn")) or []
+        bad = [x for x in items if x.lower() not in ("h2", "http/1.1", "h3")]
+        if bad:
+            errs.append("alpn: только h2, http/1.1, h3")
+        else:
+            was = inb.get("alpn")
+            if items:
+                inb["alpn"] = [x.lower() for x in items]
+            else:
+                inb.pop("alpn", None)
+            if (was or []) != [x.lower() for x in items]:
+                note("alpn", was, items)
+
+    if grp == "ss":
+        if "method" in b:
+            v = (str(b.get("method") or "")).strip()
+            if v and v not in _SS_METHODS:
+                errs.append("метод SS: один из %s" % ", ".join(_SS_METHODS))
+            else:
+                was = inb.get("method")
+                if v:
+                    inb["method"] = v
+                else:
+                    inb.pop("method", None)
+                if (was or "") != v:
+                    note("method", was, v)
+        if "password" in b:
+            v = (str(b.get("password") or "")).strip()
+            if v and not _MANUAL_PASS_SHAPE.fullmatch(v):
+                errs.append("пароль SS: 6–128 печатных символов без пробелов")
+            else:
+                was = inb.get("password")
+                if v:
+                    inb["password"] = v
+                else:
+                    inb.pop("password", None)
+                if (was or "") != v:
+                    note("password", was, v, secret=True)
+
+    if not tun and "sniff" in b:
+        sv = b.get("sniff")
+        was = inb.get("sniff")
+        if isinstance(sv, dict):
+            inb["sniff"] = sv
+        elif sv in (False, "false", 0, "0"):
+            inb["sniff"] = False
+        elif sv in (True, "true", 1, "1"):
+            inb["sniff"] = True
+        else:
+            inb.pop("sniff", None)
+            sv = None
+        if was != sv:
+            note("sniff", was, sv if not isinstance(sv, dict) else "<объект>")
+    for key in ("_adv", "_adv_ib"):
+        if key in b and not tun:
+            ov = b.get(key)
+            if ov in (None, "", {}, "null"):
+                was = inb.pop(key, None)
+                if was:
+                    note(key, "<объект>", "")
+                continue
+            if not isinstance(ov, dict):
+                errs.append(key + " должен быть JSON-объектом")
+                continue
+            if len(json.dumps(ov)) > 8000:
+                errs.append(key + ": слишком большой overriding")
+                continue
+            if key == "_adv_ib":
+                ov = {k2: v2 for k2, v2 in ov.items()
+                      if k2 not in ("protocol", "settings", "port", "tag", "clients")}
+            inb[key] = ov
+            note(key, None, "<объект>")
+
+    # --- ключ x25519: reality и туннели; открытый выводим и сверяем ---
+    if "private_key" in b and (reality or tun):
+        v = (str(b.get("private_key") or "")).strip()
+        if v:
+            shape = _MANUAL_KEY_SHAPE_W if reality else _MANUAL_KEY_SHAPE
+            if not shape.fullmatch(v):
+                errs.append("закрытый ключ: base64 x25519 (43 символа, факультативно «=»)")
+            elif reality:
+                # Reality живёт в RawURL-форме (её пишет завод, её же печатает
+                # `xray x25519`): приводим к ней и сверяем открытого в ней же
+                v = _reality_key_std(v)
+                pub = _x25519_pub_reality(v)
+                if not pub:
+                    errs.append("закрытый ключ не проходит проверку: x25519 "
+                                "его не раскрывает (вывод не сочинить — только заменить)")
+                else:
+                    want_pub = _reality_key_std((str(b.get("public_key") or "")).strip())
+                    if want_pub and want_pub != pub:
+                        errs.append("открытый ключ не совпадает с закрытым: "
+                                    "панель посчитала %d символов, сверьтесь" % len(pub))
+                    else:
+                        was = inb.get("private_key")
+                        inb["private_key"] = v
+                        inb["public_key"] = pub
+                        note("private_key", was, v, secret=True)
+                        note("public_key", None, pub)
+            else:
+                pub = _awg_pubof(v) if grp == "awg" else _wg_pubof(v)
+                if not pub:
+                    errs.append("закрытый ключ не проходит проверку: ядро wireguard "
+                                "его не принимает (вывод не сочинить — только заменить)")
+                else:
+                    want_pub = (str(b.get("public_key") or "")).strip()
+                    if want_pub and want_pub != pub:
+                        errs.append("открытый ключ не совпадает с закрытым: "
+                                    "панель посчитала %d символов, сверьтесь" % len(pub))
+                    else:
+                        was = inb.get("private_key")
+                        inb["private_key"] = v
+                        inb["public_key"] = pub
+                        note("private_key", was, v, secret=True)
+                        note("public_key", None, pub)
+        elif existed and (reality or tun):
+            errs.append("закрытый ключ нельзя снять пустым: вход без него не поднимется "
+                        "(ключи заводит панель при создании)")
+    elif "public_key" in b and str(b.get("public_key") or "").strip() and not (reality or tun):
+        errs.append("открытый ключ нужен только Reality и туннелям")
+
+    # --- туннельные поля wg/awg ---
+    if tun:
+        if "address" in b:
+            v = (str(b.get("address") or "")).strip()
+            if v:
+                try:
+                    # адрес туннеля — интерфейс с хостом (10.66.0.1/24), сеть
+                    # из него считать нельзя: ip_network съедает хостовые биты
+                    nn = ipaddress.ip_interface(v)
+                    v = str(nn)
+                except ValueError:
+                    nn = None
+                    errs.append("адрес туннеля: CIDR, например 10.10.0.1/24")
+                if nn is not None:
+                    was = inb.get("address")
+                    if was != v:
+                        live = [c for c in (inb.get("clients") or []) if isinstance(c, dict)]
+                        if existed and live:
+                            errs.append("смена адреса туннеля при живых подписчиках "
+                                        "порвёт их конфиги: сначала снимите подписчиков "
+                                        "или правьте на пустом входе")
+                        else:
+                            inb["address"] = v
+                            note("address", was, v)
+        if "mtu" in b:
+            if b.get("mtu") in (None, ""):
+                was = inb.pop("mtu", None)
+                if was is not None:
+                    note("mtu", was, "")
+            else:
+                mv = int_field("mtu", _WG_MTU_LO, _WG_MTU_HI, "MTU")
+                if mv not in ("bad", None):
+                    was = inb.get("mtu")
+                    inb["mtu"] = mv
+                    if was != mv:
+                        note("mtu", was, mv)
+        if "keepalive" in b:
+            if b.get("keepalive") in (None, ""):
+                was = inb.pop("keepalive", None)
+                if (was or 0) != 0:
+                    note("keepalive", was, "")
+            else:
+                kv = int_field("keepalive", 0, 65535, "keepalive")
+                if kv not in ("bad", None):
+                    was = inb.get("keepalive")
+                    if kv:
+                        inb["keepalive"] = kv
+                    else:
+                        inb.pop("keepalive", None)
+                    if (was or 0) != kv:
+                        note("keepalive", was, kv)
+        if "allowed_ips" in b:
+            items = _manual_cidrs(b.get("allowed_ips"))
+            if items is None:
+                errs.append("разрешённые адреса: список CIDR через запятую "
+                            "(например 0.0.0.0/0, ::/0)")
+            else:
+                was = inb.get("allowed_ips")
+                v = ", ".join(items)
+                if v:
+                    inb["allowed_ips"] = v
+                else:
+                    inb.pop("allowed_ips", None)
+                if (was or "") != v:
+                    note("allowed_ips", was, v)
+        if "dns" in b:
+            items = _manual_ips(b.get("dns"))
+            if items is None:
+                errs.append("DNS туннеля: до трёх адресов через запятую (1.1.1.1, 8.8.8.8)")
+            else:
+                was = inb.get("dns")
+                v = ", ".join(items)
+                if v:
+                    inb["dns"] = v
+                else:
+                    inb.pop("dns", None)
+                if (was or "") != v:
+                    note("dns", was, v)
+        if "psk" in b:
+            v = (str(b.get("psk") or "")).strip()
+            if v:
+                if not _MANUAL_KEY_SHAPE.fullmatch(v):
+                    errs.append("psk: base64 32-байтного ключа (43 символа, факультативно «=»)")
+                else:
+                    was = inb.get("psk")
+                    inb["psk"] = v
+                    note("psk", was, v, secret=True)
+            else:
+                was = inb.pop("psk", None)
+                if was:
+                    note("psk", "<скрыт>", "")
+    return errs, changes
 
 
 def _uniq_uuid(cs):
@@ -3074,10 +3698,29 @@ def _inbound_public(proto, inb):
     """Безопасное для UI представление точечных настроек inbound (без приватных ключей)."""
     meta = _proto_meta(proto)
     out = {"proto": proto, "port": inb.get("port"),
+           "clients": len(inb.get("clients") or []),
+           "disabled": bool(inb.get("disabled")),
            "net": meta.get("net", ""), "tls": bool(meta.get("tls")),
            "reality": ("reality" in proto)}
     for k in _INBOUND_EDIT_KEYS:
         if k in inb: out[k] = inb[k]
+    # #256: туннельные и внешние поля — несекретные, отдаются значением;
+    # psk и закрытые ключи — только фактом наличия.
+    for k in _WG_TUNNEL_KEYS:
+        if k in inb: out[k] = inb[k]
+    if "mtu" in inb: out["mtu"] = inb["mtu"]
+    out["has_psk"] = bool(inb.get("psk"))
+    out["has_private_key"] = bool(inb.get("private_key"))
+    if meta.get("group") in ("wg", "awg") or "reality" in proto:
+        # открытый ключ не секрет: он и так лежит в каждой выданной ссылке
+        out["public_key"] = inb.get("public_key") or ""
+    if meta.get("group") in ("wg", "awg"):
+        out["address"] = inb.get("address") or ""
+    if meta.get("group") == "ss":
+        # метод шифрования не секрет (он в ссылке); пароль — секрет, наружу
+        # только ФАКТ наличия, значение не уходит никогда.
+        out["method"] = inb.get("method") or ""
+        out["has_password"] = bool(inb.get("password"))
     return out
 
 _STATS_PORT = 10088
@@ -4567,9 +5210,14 @@ def _fp():
     return v if v in _FP_VALUES else "firefox"
 
 def _pub_port(inb):
-    """Порт для ссылок подписчика. SNI-мюкс nginx переносит вход на loopback-порт,
-    а снаружи по-прежнему 443: без этой поправки ссылки, выпущенные после мюкса,
-    вели бы на 127.0.0.1:4443, где клиенту делать нечего."""
+    """Порт для ссылок подписчика. Ручной `link_port` входа (цикл #256) — внешний
+    прокси/порт, по которому вход реально виден снаружи: он важнее всего. Без него
+    SNI-мюкс nginx переносит вход на loopback-порт, а снаружи по-прежнему 443: без
+    этой поправки ссылки, выпущенные после мюкса, вели бы на 127.0.0.1:4443, где
+    клиенту делать нечего."""
+    lp = inb.get("link_port")
+    if lp:
+        return lp
     return 443 if inb.get("_mux_enabled") else inb["port"]
 
 
@@ -4585,6 +5233,12 @@ def _pub_host(inb, host, proto=""):
     bare = hh[1:-1] if hh.startswith("[") and hh.endswith("]") else hh
     if re.fullmatch(r"[0-9.]+", bare) or ":" in bare:
         return host
+    # Ручной `link_host` входа (цикл #256) — адрес внешнего прокси для ссылки: он
+    # важнее мюкса. Прямые IP-ссылки выше уже вышли из функции и не переписываются:
+    # их смысл — обходиться без DNS, а внешний домен туда врать не должен.
+    mh = (inb.get("link_host") or "").strip()
+    if mh and ":" not in mh and not re.fullmatch(r"[0-9.]+", mh):
+        return mh
     if inb.get("_mux_enabled") and not (CFG_CACHE.get("hop_public_host") or "").strip():
         lh = (inb.get("_mux_link_host") or "").strip()
         if lh and ":" not in lh and not re.fullmatch(r"[0-9.]+", lh):
@@ -4593,7 +5247,7 @@ def _pub_host(inb, host, proto=""):
 
 def _link(inb, host, client, proto, std=False):
     """Ссылка подключения. std=True — канонический Xray-формат (строгий парсер
-    INCY): encryption=none, без allowInsecure (удалён из свежих ядер), обычный
+    INCY): `encryption`=none, без allowInsecure (удалён из свежих ядер), обычный
     base64 в vmess, реальные path/service из inbound. По умолчанию std=False —
     исторический формат, который понимают Happ/Shadowrocket/v2rayNG."""
     meta = _proto_meta(proto)
@@ -4635,27 +5289,27 @@ def _link(inb, host, client, proto, std=False):
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
-                f"DNS = 1.1.1.1, 8.8.8.8\n"
+                f"DNS = {inb.get('dns') or '1.1.1.1, 8.8.8.8'}\n"
                 f"MTU = {inb.get('mtu', WG_MTU)}\n"
                 + cli_junk
                 + "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
-                f"Endpoint = {_wg_ep(host)}:{inb['port']}\n"
-                f"AllowedIPs = {_wg_full_tunnel_allowed_ips()}\n"
-                "PersistentKeepalive = 25\n"
+                f"Endpoint = {_wg_ep(host)}:{_port}\n"
+                f"AllowedIPs = {inb.get('allowed_ips') or _wg_full_tunnel_allowed_ips()}\n"
+                f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"
                 "")
     if proto == "wireguard":
         a6 = _tun6(client)
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
-                f"DNS = 1.1.1.1, 8.8.8.8\n"
+                f"DNS = {inb.get('dns') or '1.1.1.1, 8.8.8.8'}\n"
                 f"MTU = {inb.get('mtu', WG_MTU)}\n\n"
                 "[Peer]\n"
                 f"PublicKey = {inb['public_key']}\n"
-                f"Endpoint = {_wg_ep(host)}:{inb['port']}\n"
-                f"AllowedIPs = {_wg_full_tunnel_allowed_ips()}\n"
-                "PersistentKeepalive = 25\n"
+                f"Endpoint = {_wg_ep(host)}:{_port}\n"
+                f"AllowedIPs = {inb.get('allowed_ips') or _wg_full_tunnel_allowed_ips()}\n"
+                f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"
                 "")
     if proto.startswith("shadowsocks"):
         cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
@@ -4673,7 +5327,7 @@ def _link(inb, host, client, proto, std=False):
             if meta["tls"]:
                 p["sni"] = _dom; p["fp"] = fp
             if meta["net"] == "grpc":
-                # gRPC говорит по HTTP/2; без явного alpn=h2 свежие ядра приложений
+                # gRPC говорит по HTTP/2; без явного `alpn`=h2 свежие ядра приложений
                 # могут согласовать http/1.1 и молча не открыть соединение.
                 p["alpn"] = "h2"
             return "vmess://" + base64.b64encode(json.dumps(p, separators=(",", ":")).encode()).decode()
@@ -5707,7 +6361,7 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
         if modern:
             # wireguard-outbound снят ядром в 1.13 (замерено 1.13.2/1.14.2: unknown
             # field "server"), его место — top-level `endpoints`, где allowed_ips
-            # ОБЯЗАТЕЛЬНЫ (замерено: "missing allowed ips for peer 0"). keepalive —
+            # ОБЯЗАТЕЛЬНЫ (замерено: "missing allowed ips for peer 0"). `keepalive` —
             # те же 25, что панель пишет в *.conf.
             peer = {"address": _wg_ep(host), "port": int(port), "public_key": pub,
                     "allowed_ips": ["0.0.0.0/0"] + (["::/0"] if a6 else []),
@@ -5746,7 +6400,7 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
         ob = {"type": "vless", "tag": tag, "server": host, "server_port": port,
               "uuid": c["uuid"]}
     if proto in ("reality", "vless-xhttp-reality"):
-        # flow xtls-rprx-vision держит только чистый TCP-Reality. На xhttp он
+        # `flow` xtls-rprx-vision держит только чистый TCP-Reality. На xhttp он
         # ломает рукопожатие (и строго ядро отвергает конфиг целиком), поэтому
         # ровно там, где его добавляет сервер, — см. _build_xray_cfg и _link.
         if proto == "reality":
@@ -5768,7 +6422,7 @@ if not os.path.exists(_LOGO_PNG):
     _LOGO_PNG = ""
 
 # Каталог приложений для страницы подписки (/p/<token>).
-# "link" — deep-link шаблон; плейсхолдеры: {sub} (URL-энкод), {rawsub} (как есть),
+# "link" — deep-link шаблон; плейсхолдеры: {sub} (URL-энкод), {`rawsub`} (как есть),
 #   {b64} (base64 подписки), {wgconf} (base64 личного конфига WireGuard).
 # "pay": платное приложение — в списке помещается ниже бесплатных, помечается «платно».
 # "wg"/"awg": карточка показывается только если у подписчика есть этот протокол.
@@ -5947,6 +6601,7 @@ _SUB_TXT_RU = {
     "btn_add": "Добавить / Импортировать", "btn_install": "Установить конфиг",
     "btn_how": "Как подключиться", "btn_copy": "Скопировать подписку",
     "btn_share": "Поделиться",
+    "th_tip": "Переключить тему: тёмная / светлая",
     "btn_qr": "QR-код", "qr_hd": "QR-код подписки",
     "qr_hint": "Наведите камеру приложения на этот код — подписка добавится сама.",
     "qr_err": "Код не открылся. Скопируйте ссылку кнопкой выше.",
@@ -5987,6 +6642,8 @@ _SUB_TXT_RU = {
              "</ul>",
     "addr_nt": ("🔄 <b>Адрес сервера изменён %s.</b> Если прокси перестал подключаться: обнови подписку "
                 "в приложении (обычно это кнопка «обновить» у профиля) или добавь ссылку заново — все ссылки на этой странице и в боте уже с новым адресом."),
+    "force_nt": ("🔄 <b>Администратор просит обновить подписку.</b> Открой приложение и нажми "
+                 "«обновить» у профиля или добавь ссылку заново — все ссылки на этой странице уже свежие."),
     "rt_ir": "<b>Через туннель идут только иранские сервисы</b>, остальной трафик — напрямую.<br>"
              "В <b>Happ</b> и <b>INCY</b> настраивать не нужно: профиль туннеля приходит прямо в подписке и включается сам. "
              "Готовые правила для других приложений — в кнопке «sing-box · полный конфиг». В ссылочных клиентах правило настраивается в самом приложении:"
@@ -6047,6 +6704,7 @@ _SUB_TXT = {
     "btn_add": "Add / Import", "btn_install": "Install config",
     "btn_how": "How to connect", "btn_copy": "Copy subscription",
     "btn_share": "Share",
+    "th_tip": "Toggle theme: dark / light",
     "btn_qr": "QR code", "qr_hd": "Subscription QR code",
     "qr_hint": "Point your app camera at this code — the subscription adds itself.",
     "qr_err": "The code did not open. Copy the link with the button above.",
@@ -6097,6 +6755,8 @@ _SUB_TXT = {
              "</ul>",
     "addr_nt": ("🔄 <b>The server address changed on %s.</b> If the proxy stopped connecting: refresh the subscription "
                 "in your app (usually an “update” button on the profile) or add the link again — every link on this page and in the bot already uses the new address."),
+    "force_nt": ("🔄 <b>The administrator asks you to refresh your subscription.</b> Open the app and "
+                 "tap update on your profile or add the link again — every link on this page is already fresh."),
     "fam_hd": "Family",
     "fam_chip": "part of the family plan “%s”",
     "fam_note": "Each member gets a personal link and their own device limit, while traffic, "
@@ -6147,6 +6807,7 @@ _SUB_TXT = {
     "btn_add": "افزودن / وارد کردن", "btn_install": "نصب کانفیگ",
     "btn_how": "چگونه وصل شویم", "btn_copy": "کپی اشتراک",
     "btn_share": "اشتراک‌گذاری",
+    "th_tip": "تغییر پوسته: تیره / روشن",
     "btn_qr": "کد QR", "qr_hd": "کد QR اشتراک",
     "qr_hint": "دوربین اپ را روی این کد بگیرید — اشتراک خودش اضافه می‌شود.",
     "qr_err": "کد باز نشد. با دکمهٔ بالا لینک را کپی کنید.",
@@ -6196,6 +6857,8 @@ _SUB_TXT = {
              "</ul>",
     "addr_nt": ("🔄 <b>نشانی سرور در %s تغییر کرد.</b> اگر پروکسی دیگر وصل نمی‌شود: اشتراک را در برنامه "
                 "به‌روزرسانی کنید (معمولاً دکمهٔ «به‌روزرسانی» روی پروفایل) یا لینک را دوباره اضافه کنید — همهٔ لینک‌های این صفحه و ربات نشانی جدید دارند."),
+    "force_nt": ("🔄 <b>درخواست مدیر: لطفاً اشتراک را به‌روز کنید.</b> برنامه را باز کنید و دکمهٔ "
+                 "«به‌روزرسانی» روی پروفایل را بزنید یا لینک را دوباره اضافه کنید — همهٔ لینک‌های این صفحه تازه‌اند."),
     "fam_hd": "خانواده",
     "fam_chip": "بخشی از پلن خانوادگی «%s»",
     "fam_note": "هر عضو لینک شخصی و سقف دستگاه مخصوص خود را دارد؛ اما حجم، مهلت و هشدارها "
@@ -6246,7 +6909,8 @@ _SUB_TXT = {
     "btn_add": "添加 / 导入", "btn_install": "安装配置",
     "btn_how": "如何连接", "btn_copy": "复制订阅",
     "btn_share": "分享",
-    "btn_qr": "二维码", "qr_hd": "订阅二维码",
+    "th_tip": "主题",
+    "btn_qr": "二维码", "qr_hd": "二维码",
     "qr_hint": "用应用摄像头对准此码，订阅会自动添加。",
     "qr_err": "二维码未能打开，请用上面的按钮复制链接。",
     "fam_qr": "成员二维码",
@@ -6534,7 +7198,7 @@ def _avatar_serve(tok):
 # Панель рисует QR сама и отдаёт его картинкой (SVG): страница подписчика не
 # должна зависеть от чужих cdn, а встроенная в админскую морду qrcodejs ей не
 # доступна. Кодировщик сверен матрица-в-матрицу против настоящей qrcodejs из
-# index.html (её матрицу снимают в node) и против libqrencode: прибор
+# index.html (её матрицу снимают в node) и против `libqrencode`: прибор
 # gp/f10_qr_test.py.
 #
 # Выбор маски повторяет штраф getLostPoint из qrcodejs дословно, вместе с её
@@ -7120,6 +7784,16 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
                          + "</div></div>")
     except Exception:
         addr_html = ""
+    # #169: баннер кнопки принудительного обновления — сутки, а не неделю: просьба
+    # разовая, на второй день она уже не просьба, а мусор на странице.
+    force_html = ""
+    try:
+        _ft = int(CFG_CACHE.get("sub_force_ts") or 0)
+        if _ft and now - _ft < 86400:
+            force_html = ("<div class='sec'><div class='rt' style='border-left:3px solid var(--warn,#f59e0b)'>"
+                          + L["force_nt"] + "</div></div>")
+    except Exception:
+        force_html = ""
     hy2_conf = links.get("hysteria2") or ""
     cat = {k: [dict(a) for a in v
                if not (a.get("wg") and not wg_conf)
@@ -7266,11 +7940,30 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/png" href="/logo.png">
 <meta name="theme-color" content="#0a122a">
+<script>(function(){try{var s=null;try{s=localStorage.getItem("veil-theme")}catch(e){}
+var t=(s==="light"||s==="dark")?s:
+(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");
+document.documentElement.dataset.theme=t;
+var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute("content",t==="light"?"#eef2fb":"#0a122a");}catch(e){}})();</script>
 <title>__NAMEHT__ · __TTL__</title><style>
+:root{--bg:#0a122a;--ink:#e8ecf7;--ink2:#eef2ff;--ink3:#cbd5f1;--mut:#8b94b5;--note:#58618a;
+--card:rgba(18,23,42,.72);--tilebg:rgba(22,29,52,.75);--chipbg:rgba(22,29,52,.6);--appsel:rgba(19,33,58,.92);
+--line:rgba(66,84,130,.45);--line2:rgba(94,109,166,.6);--trackbg:rgba(10,15,33,.8);--ckbg:rgba(10,15,33,.5);
+--confbg:rgba(30,58,138,.5);--confbgh:rgba(30,58,138,.85);--confink:#bfe3ff;--onaccent:#04101f;
+--ok:#4ade80;--bad:#fb7185;--store:#60a5fa;--accent3:#a5b4fc;--fam:#c4b5fd;--sky:#7dd3fc;--danger:#fca5a5;--warn:#fbbf24;
+--ghost:rgba(255,255,255,.07);--ghosth:rgba(255,255,255,.14);--ghostb:rgba(255,255,255,.16)}
+html[data-theme=light]{--bg:#eef2fb;--ink:#0f1730;--ink2:#1b2440;--ink3:#3a4468;--mut:#5b6584;--note:#6a7392;
+--card:rgba(255,255,255,.82);--tilebg:rgba(240,244,253,.9);--chipbg:rgba(233,238,250,.85);--appsel:rgba(219,234,254,.95);
+--line:rgba(96,120,180,.35);--line2:rgba(100,116,160,.5);--trackbg:rgba(180,195,225,.45);--ckbg:rgba(255,255,255,.7);
+--confbg:rgba(219,234,254,.8);--confbgh:rgba(191,219,254,.95);--confink:#0c3a66;
+--ok:#15803d;--bad:#be123c;--store:#2563eb;--accent3:#4f46e5;--fam:#6d28d9;--sky:#0369a1;--danger:#b91c1c;--warn:#92400e;
+--ghost:rgba(15,23,48,.05);--ghosth:rgba(15,23,48,.1);--ghostb:rgba(15,23,48,.18)}
+html[data-theme=light] .blob{opacity:.28}
+html[data-theme=light] .card{box-shadow:0 30px 80px -24px rgba(15,23,48,.25)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0}
-body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e8ecf7;
-  background:#0a122a;display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
+body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink);
+  background:var(--bg);display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
 .bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
 .blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.45;animation:drift 18s ease-in-out infinite}
 .b1{width:52vmax;height:52vmax;left:-18vmax;top:-20vmax;background:radial-gradient(circle,#24407f,transparent 65%)}
@@ -7281,54 +7974,62 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
   background:radial-gradient(900px 600px at 50% -12%,rgba(56,189,248,.10),transparent 60%)}
 .page{width:100%;max-width:460px;position:relative;z-index:1}
 .hbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
-  grid-template-areas:"logo br pill" "logo br langs";
+  grid-template-areas:"logo br pill" "logo br th";
   column-gap:11px;row-gap:6px;align-items:center;margin-bottom:18px;padding:0 2px}
 .hbar .lg{grid-area:logo;align-self:center;width:40px;height:40px;border-radius:12px;object-fit:cover;box-shadow:0 8px 20px -6px rgba(34,211,238,.5)}
 .hbar .br{grid-area:br;align-self:center;min-width:0;display:flex;flex-direction:column;justify-content:center}
 .hbar .br b{font-size:15px;font-weight:800;letter-spacing:3px;line-height:1}
-.hbar .br span{font-size:10.5px;color:#8b94b5;letter-spacing:.3px;margin-top:3px;overflow-wrap:anywhere}
-.langs{grid-area:langs;justify-self:end;display:grid;grid-template-columns:repeat(2,min-content);gap:4px}
-[dir=rtl] .langs{justify-self:start}
-.langs a{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:#8b94b5;text-decoration:none;
-  padding:6px 8px;border-radius:999px;border:1px solid rgba(66,84,130,.45);background:rgba(22,29,52,.6);text-align:center}
-.langs a.sel{color:#04101f;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent}
+.hbar .br span{font-size:10.5px;color:var(--mut);letter-spacing:.3px;margin-top:3px;overflow-wrap:anywhere}
+.th{grid-area:th;justify-self:end;display:flex;align-items:flex-end;gap:4px}
+[dir=rtl] .th{justify-self:start}
+.langs{display:grid;grid-template-columns:repeat(2,min-content);gap:4px}
+.tbtn{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;padding:0;cursor:pointer;
+  border-radius:999px;border:1px solid var(--line);background:var(--chipbg);color:var(--mut);transition:.15s}
+.tbtn:hover{color:var(--ink);border-color:#3b82f6}
+.tbtn svg{width:15px;height:15px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.tbtn .sun{display:none}
+html[data-theme=light] .tbtn .sun{display:block}
+html[data-theme=light] .tbtn .moon{display:none}
+.langs a{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);text-decoration:none;
+  padding:6px 8px;border-radius:999px;border:1px solid var(--line);background:var(--chipbg);text-align:center}
+.langs a.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent}
 .hbar .pill{grid-area:pill;justify-self:end;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
   font-size:12px;font-weight:700;white-space:nowrap}
-.pill.ok{background:rgba(74,222,128,.1);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
-.pill.off{background:rgba(251,113,133,.1);color:#fb7185;border:1px solid rgba(251,113,133,.35)}
+.pill.ok{background:rgba(74,222,128,.1);color:var(--ok);border:1px solid rgba(74,222,128,.35)}
+.pill.off{background:rgba(251,113,133,.1);color:var(--bad);border:1px solid rgba(251,113,133,.35)}
 .pill i{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
 .pill.ok i{animation:pulse 1.8s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.card{background:rgba(18,23,42,.72);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid rgba(66,84,130,.45);border-radius:24px;overflow:hidden;
+.card{background:var(--card);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:24px;overflow:hidden;
   box-shadow:0 30px 80px -24px rgba(0,0,0,.8)}
 .head{display:flex;align-items:center;gap:14px;padding:20px 20px 16px;
   background:linear-gradient(180deg,rgba(59,130,246,.16),rgba(34,211,238,.04) 60%,transparent)}
 .ava{width:64px;height:64px;border-radius:20px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  font-size:30px;font-weight:800;color:#04101f;position:relative;
+  font-size:30px;font-weight:800;color:var(--onaccent);position:relative;
   background:linear-gradient(135deg,#3b82f6,#22d3ee);box-shadow:0 14px 30px -8px rgba(34,211,238,.5)}
 .ava img{width:100%;height:100%;object-fit:cover;display:block;position:relative;border-radius:20px}
 .avawrap{display:flex;flex-direction:column;align-items:center;gap:6px;flex:0 0 auto}
 .avactl{display:flex;gap:6px}
-.avabtn{width:26px;height:26px;border-radius:9px;border:1px solid rgba(255,255,255,.16);cursor:pointer;
-  background:rgba(255,255,255,.07);color:#c6cee6;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
-.avabtn:hover{background:rgba(255,255,255,.14)}
+.avabtn{width:26px;height:26px;border-radius:9px;border:1px solid var(--ghostb);cursor:pointer;
+  background:var(--ghost);color:var(--ink2);font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
+.avabtn:hover{background:var(--ghosth)}
 .ava .ring{position:absolute;inset:-3px;border-radius:23px;border:2px solid transparent;pointer-events:none;
   border-top-color:rgba(125,211,252,.9);animation:spin 7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .meta{min-width:0}
-.meta .name{font-size:22px;font-weight:800;color:#f2f5ff;margin:0;line-height:1.2;word-break:break-word}
-.meta .sub{font-size:12.5px;color:#8b94b5;margin-top:6px;word-break:break-word}
-.meta .sub b{color:#a5b4fc;font-weight:600}
-.chip-fam{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:#c4b5fd;
+.meta .name{font-size:22px;font-weight:800;color:var(--ink);margin:0;line-height:1.2;word-break:break-word}
+.meta .sub{font-size:12.5px;color:var(--mut);margin-top:6px;word-break:break-word}
+.meta .sub b{color:var(--accent3);font-weight:600}
+.chip-fam{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:var(--fam);
   background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.4);border-radius:999px;padding:3px 10px}
-.famdev{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;color:#c4b5fd;cursor:pointer;
+.famdev{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;color:var(--fam);cursor:pointer;
   background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.35);border-radius:99px;padding:5px 6px}
 .famadd{display:block;width:100%;margin-top:12px;padding:10px;border-radius:13px;cursor:pointer;
-  font:inherit;font-size:12.5px;font-weight:700;color:#c4b5fd;border:1px dashed rgba(139,92,246,.5);
+  font:inherit;font-size:12.5px;font-weight:700;color:var(--fam);border:1px dashed rgba(139,92,246,.5);
   background:rgba(139,92,246,.07)}
 .famadd:disabled{opacity:.5;cursor:default}
-.famcopy,.famqr,a.devx{color:#7dd3fc;background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
+.famcopy,.famqr,a.devx{color:var(--sky);background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
   text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
 .famcopy:hover,.famqr:hover,a.devx:hover{background:rgba(56,189,248,.18)}
 /* QR поверх страницы: белый лист обязателен — сканер читает чёрные модули
@@ -7342,99 +8043,99 @@ body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 .qrname{color:#111a33;font-size:13px;font-weight:700;margin-top:11px;word-break:break-word}
 .qrhint{color:#4b5878;font-size:11.5px;margin-top:5px;line-height:1.5}
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 20px 0}
-.stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:rgba(22,29,52,.85);
-  border:1px solid rgba(66,84,130,.4);overflow:hidden}
+.stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:var(--tilebg);
+  border:1px solid var(--line);overflow:hidden}
 .stat::before{content:'';position:absolute;inset:auto 0 0 0;height:2px;
   background:linear-gradient(90deg,#3b82f6,#22d3ee);opacity:.6}
-.stat svg{width:14px;height:14px;stroke:#60a5fa;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;margin-bottom:8px}
-.stat .lb{font-size:10px;color:#8b94b5;text-transform:uppercase;letter-spacing:.8px;font-weight:600}
-.stat b{display:block;font-size:14px;font-weight:700;color:#eef2ff;margin-top:5px;line-height:1.35;word-break:break-word}
-.stat b .dim{color:#8b94b5;font-weight:400;font-size:11px}
+.stat svg{width:14px;height:14px;stroke:var(--store);stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;margin-bottom:8px}
+.stat .lb{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+.stat b{display:block;font-size:14px;font-weight:700;color:var(--ink2);margin-top:5px;line-height:1.35;word-break:break-word}
+.stat b .dim{color:var(--mut);font-weight:400;font-size:11px}
 .barwrap{padding:14px 20px 16px}
-.track{height:10px;border-radius:99px;background:rgba(10,15,33,.8);box-shadow:inset 0 2px 6px rgba(0,0,0,.5);
+.track{height:10px;border-radius:99px;background:var(--trackbg);box-shadow:inset 0 2px 6px rgba(0,0,0,.5);
   overflow:hidden;position:relative}
 .track i{display:block;height:100%;border-radius:99px;transition:width .6s cubic-bezier(.4,0,.2,1);position:relative;
   background:linear-gradient(90deg,#2563eb,#22d3ee,#34d399);background-size:200% 100%;animation:flows 3.5s linear infinite}
 @keyframes flows{to{background-position:200% 0}}
 .tl{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px}
-.tl span{font-size:11.5px;color:#8b94b5}
-.tl b{font-size:12px;color:#cbd5f1;font-weight:600}
+.tl span{font-size:11.5px;color:var(--mut)}
+.tl b{font-size:12px;color:var(--ink3);font-weight:600}
 .confs{display:flex;gap:9px;padding:0 20px 6px;flex-wrap:wrap}
 .confs:empty{display:none}
 .btn-conf{flex:1;min-width:150px;display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  padding:11px 10px;border-radius:13px;text-decoration:none;font-size:12.5px;font-weight:600;color:#bfe3ff;
-  background:rgba(30,58,138,.5);border:1px solid rgba(59,130,246,.45);transition:.15s}
-.btn-conf:hover{border-color:#3b82f6;background:rgba(30,58,138,.85)}
+  padding:11px 10px;border-radius:13px;text-decoration:none;font-size:12.5px;font-weight:600;color:var(--confink);
+  background:var(--confbg);border:1px solid rgba(59,130,246,.45);transition:.15s}
+.btn-conf:hover{border-color:#3b82f6;background:var(--confbgh)}
 .btn-conf svg{width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.rt{font-size:12.5px;color:#9aa6c8;line-height:1.65;background:rgba(22,29,52,.75);
-  border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:12px 14px}
-.rt b{color:#cbd5f1}
+.rt{font-size:12.5px;color:var(--ink3);line-height:1.65;background:var(--tilebg);
+  border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.rt b{color:var(--ink3)}
 .rt ul{margin:8px 0 0;padding-inline-start:18px}
 .rt li{margin:5px 0}
-.rt code{color:#7dd3fc;font-size:11px;background:rgba(10,15,33,.6);padding:1px 5px;border-radius:5px}
+.rt code{color:var(--sky);font-size:11px;background:var(--chipbg);padding:1px 5px;border-radius:5px}
 .devlist{display:flex;flex-direction:column;gap:8px}
-.devr{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:rgba(22,29,52,.75);
-  border:1px solid rgba(66,84,130,.4);border-radius:14px;padding:10px 12px}
+.devr{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--tilebg);
+  border:1px solid var(--line);border-radius:14px;padding:10px 12px}
 .devi{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
-.devi b{font-size:13px;font-weight:700;color:#edf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.devi span{font-size:11px;color:#8b94b5;overflow-wrap:anywhere}
-.devx{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:#fca5a5;
+.devi b{font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.devi span{font-size:11px;color:var(--mut);overflow-wrap:anywhere}
+.devx{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:var(--danger);
   background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.35);border-radius:10px;padding:7px 12px;transition:.15s}
 .devx:hover{background:rgba(251,113,133,.2)}
 .devx:disabled{opacity:.5;cursor:default}
-.devnote{font-size:11px;color:#58618a;margin-top:10px;line-height:1.55}
+.devnote{font-size:11px;color:var(--note);margin-top:10px;line-height:1.55}
 .usmore{margin-top:8px}
-.usmore>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600;color:#8b94b5;
+.usmore>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600;color:var(--mut);
   padding:6px 2px;user-select:none}
 .usmore>summary::-webkit-details-marker{display:none}
-.usmore>summary:hover{color:#edf2fb}
-.usmore[open]>summary{color:#edf2fb}
+.usmore>summary:hover{color:var(--ink2)}
+.usmore[open]>summary{color:var(--ink2)}
 .usmore>.devlist{margin-top:6px}
 .sec{padding:18px 20px 20px}
-h2{font-size:13px;color:#94a3c4;text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
+h2{font-size:13px;color:var(--ink3);text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
   display:flex;align-items:center}
-h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,84,130,.5),transparent);margin-inline-start:12px}
+h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-inline-start:12px}
 .chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
 .chip-p{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;
-  font-size:12.5px;font-weight:600;color:#9aa6c8;border:1px solid rgba(66,84,130,.5);background:rgba(22,29,52,.6);transition:.15s}
-.chip-p:hover{color:#e8ecf7;border-color:#3b82f6}
-.chip-p.sel{color:#04101f;background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent;font-weight:700;
+  font-size:12.5px;font-weight:600;color:var(--ink3);border:1px solid var(--line);background:var(--chipbg);transition:.15s}
+.chip-p:hover{color:var(--ink);border-color:#3b82f6}
+.chip-p.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent;font-weight:700;
   box-shadow:0 8px 20px -8px rgba(34,211,238,.6)}
 .apps{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media (max-width:420px){.apps{grid-template-columns:1fr}}
 .app{display:flex;align-items:center;gap:11px;padding:11px;border-radius:16px;cursor:pointer;
-  background:rgba(22,29,52,.75);border:1px solid rgba(66,84,130,.4);transition:.15s;min-width:0}
+  background:var(--tilebg);border:1px solid var(--line);transition:.15s;min-width:0}
 .app:hover{border-color:#3b82f6;transform:translateY(-1px)}
-.app.sel{border-color:#22d3ee;background:rgba(19,33,58,.92);
+.app.sel{border-color:#22d3ee;background:var(--appsel);
   box-shadow:0 0 0 1px #22d3ee inset,0 10px 24px -12px rgba(34,211,238,.5)}
 .ic{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   font-size:17px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 6px 14px -6px rgba(0,0,0,.6)}
 .ic img{width:100%;height:100%;object-fit:cover;border-radius:11px;display:block}
 .inf{min-width:0;flex:1}
-.inf b{display:block;font-size:13px;font-weight:700;color:#edf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inf b{display:block;font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tags{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
-.tags a.store{font-size:10.5px;color:#60a5fa;text-decoration:none;font-weight:600}
+.tags a.store{font-size:10.5px;color:var(--store);text-decoration:none;font-weight:600}
 .tags a.store:active{opacity:.7}
 .tag{font-size:9px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:999px;text-transform:uppercase}
-.tag.pay{color:#fbbf24;border:1px solid rgba(251,191,36,.45);background:rgba(251,191,36,.1)}
-.tag.cfg{color:#7dd3fc;border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
+.tag.pay{color:var(--warn);border:1px solid rgba(251,191,36,.45);background:rgba(251,191,36,.1)}
+.tag.cfg{color:var(--sky);border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
 .ck{width:21px;height:21px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  font-size:11px;font-weight:800;color:transparent;border:1px solid rgba(94,109,166,.6);background:rgba(10,15,33,.5);transition:.15s}
-.app.sel .ck{color:#04101f;background:#22d3ee;border-color:#22d3ee;box-shadow:0 0 12px rgba(34,211,238,.7)}
+  font-size:11px;font-weight:800;color:transparent;border:1px solid var(--line2);background:var(--ckbg);transition:.15s}
+.app.sel .ck{color:var(--onaccent);background:#22d3ee;border-color:#22d3ee;box-shadow:0 0 12px rgba(34,211,238,.7)}
 .btn{width:100%;padding:15px;border-radius:15px;border:0;cursor:pointer;font-size:15px;font-weight:800;letter-spacing:.2px;
   display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:.15s;font-family:inherit}
 .btn svg{width:16px;height:16px;stroke:currentColor;stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.btn-add{background:linear-gradient(90deg,#2563eb,#22d3ee);color:#04101f;position:relative;overflow:hidden;
+.btn-add{background:linear-gradient(90deg,#2563eb,#22d3ee);color:var(--onaccent);position:relative;overflow:hidden;
   box-shadow:0 14px 34px -10px rgba(34,211,238,.6)}
 .btn-add::after{content:'';position:absolute;top:0;bottom:0;width:40%;left:-60%;transform:skewX(-20deg);
   background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:sheen 3.4s ease-in-out infinite}
 @keyframes sheen{0%,60%{left:-60%}100%{left:130%}}
 .btn-add:active{transform:scale(.985)}
 .btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
-.btn-row .btn-copy{flex:1;background:rgba(26,34,64,.8);color:#c7d0ea;border:1px solid rgba(66,84,130,.5)}
-.btn-row .btn-copy:hover{border-color:#3b82f6;color:#eef2ff}
+.btn-row .btn-copy{flex:1;background:var(--tilebg);color:var(--ink3);border:1px solid var(--line)}
+.btn-row .btn-copy:hover{border-color:#3b82f6;color:var(--ink2)}
 /* Узкий экран. Кнопки в row flex не сжимаются ниже своего min-content (min-width:auto
    по умолчанию), поэтому третья кнопка рядом с «Скопировать подписку» и «Поделиться»
    не умещается в ~332px вьюпорта и вылезает за него — ряд обязан переноситься.
@@ -7447,10 +8148,10 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
  .famdev{padding:5px 5px;font-size:11px}
 }
 .action{max-width:460px;padding-top:18px;position:relative;z-index:1;width:100%}
-.hint{font-size:12px;color:#8b94b5;margin-top:12px;line-height:1.55;text-align:center;min-height:18px}
-.footer{font-size:11px;color:#58618a;margin:18px 4px 0;text-align:center;line-height:1.9;word-break:break-all;position:relative;z-index:1}
-.footer b{font-weight:600;color:#7b85ab}
-.footer code{color:#5d6a94;font-size:10px}
+.hint{font-size:12px;color:var(--mut);margin-top:12px;line-height:1.55;text-align:center;min-height:18px}
+.footer{font-size:11px;color:var(--note);margin:18px 4px 0;text-align:center;line-height:1.9;word-break:break-all;position:relative;z-index:1}
+.footer b{font-weight:600;color:var(--mut)}
+.footer code{color:var(--note);font-size:10px}
 .fade{animation:rise .5s ease both}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @media (min-width:760px){
@@ -7472,7 +8173,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
   <img src="/logo.png" class="lg" alt="Veil" width="40" height="40">
   <div class="br"><b>VEIL</b><span>__TAG__</span></div>
   <span class="pill __CLS__"><i></i>__STATUS__</span>
-  <nav class="langs">__LANGS__</nav>
+  <div class="th"><nav class="langs">__LANGS__</nav><button type="button" class="tbtn" id="thBtn" title="__THTIP__" aria-label="__THTIP__"><svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button></div>
  </header>
  <main class="card fade" style="animation-delay:.08s">
   <div class="head">
@@ -7498,6 +8199,7 @@ h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(66,
    <div class="tl"><span>__LBUSED__</span><b>__PCTLBL__</b></div>
   </div>
   __ADDRNT__
+  __FORCENT__
   __CONFS__
   <div class="sec">
    <h2>__SECDEV__</h2>
@@ -7538,7 +8240,7 @@ function F(s){var a=[].slice.call(arguments,1);return String(s).replace(/%s/g,fu
 let cur=null;
 let lastK=__PLATDEFAULT__;
 const HP=document.getElementById.bind(document);
-function hint(m,c){const h=HP('hint');h.textContent=m;h.style.color=c||'#8b94b5';}
+function hint(m,c){const h=HP('hint');h.textContent=m;h.style.color=c==="ok"?"var(--ok)":c==="bad"?"var(--bad)":(c||"");}
 function buildLink(a){return (a.link||'')
   .replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
   .replace('{name}',encodeURIComponent(NAME)).replace('{wgconf}',WGCONF).replace('{awgconf}',AWGCONF);}
@@ -7622,13 +8324,13 @@ document.addEventListener('DOMContentLoaded',function(){
     if(cur.link){location.href=buildLink(cur);return;}
     if(navigator.clipboard){
       navigator.clipboard.writeText(SUB).then(function(){
-        hint(F(L.js_copied_open,cur.name),'#4ade80');
+        hint(F(L.js_copied_open,cur.name),'ok');
       }).catch(function(){hint(L.js_nocopy);});
     }else{hint(L.js_nocopy);}
   });
   HP('copyBtn').addEventListener('click',function(){
     if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'#4ade80');})
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
         .catch(function(){hint(L.js_nocopy);});
     }else{hint(L.js_nocopy);}
   });
@@ -7636,7 +8338,7 @@ document.addEventListener('DOMContentLoaded',function(){
     if(navigator.share){
       navigator.share({title:NAME,text:NAME,url:SUB}).catch(function(){hint(L.js_manual);});
     }else if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'#4ade80');})
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
         .catch(function(){hint(L.js_nocopy);});
     }else{hint(L.js_nocopy);}
   });
@@ -7650,13 +8352,13 @@ document.addEventListener('DOMContentLoaded',function(){
       btn.addEventListener('click',function(e){
         e.preventDefault();
         var src=btn.getAttribute('data-qr')||'';
-        if(!src){hint(L.qr_err,'#fb7185');return;}
+        if(!src){hint(L.qr_err,'bad');return;}
         if(img.getAttribute('src')!==src)img.src=src;
         cap.textContent=btn.getAttribute('data-qr-t')||'';
         layer.className='qrlayer on';
       });
     });
-    img.addEventListener('error',function(){close();hint(L.qr_err,'#fb7185');});
+    img.addEventListener('error',function(){close();hint(L.qr_err,'bad');});
     layer.addEventListener('click',function(e){if(e.target===layer||e.target===img)close();});
     document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
   })();
@@ -7670,8 +8372,8 @@ document.addEventListener('DOMContentLoaded',function(){
       btn.disabled=true;
       fetch('/p/'+encodeURIComponent(TOK)+'/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})})
         .then(function(r){return r.json();})
-        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint(L.js_forgot,'#4ade80');} else {hint(F(L.js_forget_err,(j&&j.error)||L.js_err),'#fb7185'); btn.disabled=false;} })
-        .catch(function(){hint(L.js_net,'#fb7185'); btn.disabled=false;});
+        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint(L.js_forgot,'ok');} else {hint(F(L.js_forget_err,(j&&j.error)||L.js_err),'bad'); btn.disabled=false;} })
+        .catch(function(){hint(L.js_net,'bad'); btn.disabled=false;});
     });
   });
   function famPost(act,body,cb){
@@ -7686,12 +8388,12 @@ document.addEventListener('DOMContentLoaded',function(){
     if(sel)sel.addEventListener('change',function(){
       sel.disabled=true;
       famPost('devlimit',{member_uuid:mu,max_devices:parseInt(sel.value,10)||0},function(err){
-        sel.disabled=false; if(err)hint(F(L.fam_err,err),'#fb7185');});
+        sel.disabled=false; if(err)hint(F(L.fam_err,err),'bad');});
     });
     var cp=row.querySelector('.famcopy');
     if(cp)cp.addEventListener('click',function(){
       var lk=cp.getAttribute('data-l')||'';
-      if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'#4ade80');},function(){prompt('',lk);});}
+      if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'ok');},function(){prompt('',lk);});}
       else{prompt('',lk);}
     });
     var rn=row.querySelector('.famren');
@@ -7702,13 +8404,13 @@ document.addEventListener('DOMContentLoaded',function(){
       rn.disabled=true;
       famPost('rename',{member_uuid:mu,name:nm},function(err,j){
         rn.disabled=false;
-        if(err){hint(F(L.fam_err,err),'#fb7185');return;}
+        if(err){hint(F(L.fam_err,err),'bad');return;}
         /* Имя на строке — то, что вернул сервер, а не то, что набрал человек:
            пределы и обрезка живут на ручке, и морда не должна врать раньше неё. */
         var nm2=(j&&j.name)||nm, b=row.querySelector('.devi b');
         if(b)b.textContent=nm2;
         rn.setAttribute('data-n',nm2);
-        hint(L.fam_renamed,'#4ade80');
+        hint(L.fam_renamed,'ok');
       });
     });
     var del=row.querySelector('.famdel');
@@ -7716,8 +8418,8 @@ document.addEventListener('DOMContentLoaded',function(){
       if(!confirm(L.fam_del_q))return;
       del.disabled=true;
       famPost('del',{member_uuid:mu},function(err){
-        if(err){del.disabled=false;hint(F(L.fam_err,err),'#fb7185');}
-        else{row.remove();hint(L.fam_del_ok,'#4ade80');}
+        if(err){del.disabled=false;hint(F(L.fam_err,err),'bad');}
+        else{row.remove();hint(L.fam_del_ok,'ok');}
       });
     });
   });
@@ -7728,8 +8430,8 @@ document.addEventListener('DOMContentLoaded',function(){
     nm=(nm||'').trim(); if(!nm)return;
     famAdd.disabled=true;
     famPost('add',{name:nm},function(err){
-      if(err){famAdd.disabled=false;hint(F(L.fam_err,err),'#fb7185');}
-      else{hint(L.fam_added,'#4ade80'); setTimeout(function(){location.reload();},700);}
+      if(err){famAdd.disabled=false;hint(F(L.fam_err,err),'bad');}
+      else{hint(L.fam_added,'ok'); setTimeout(function(){location.reload();},700);}
     });
   });
   (function(){
@@ -7740,14 +8442,14 @@ document.addEventListener('DOMContentLoaded',function(){
       fetch('/p/'+encodeURIComponent(TOK)+'/avatar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
         .then(function(r){return r.json();})
         .then(function(j){ b.disabled=false; if(rb)rb.disabled=false;
-          if(j&&j.ok){after&&after(j);}else{hint(j&&j.error||L.ava_err,'#fb7185');} })
-        .catch(function(){ b.disabled=false; if(rb)rb.disabled=false; hint(L.js_net,'#fb7185'); });
+          if(j&&j.ok){after&&after(j);}else{hint(j&&j.error||L.ava_err,'bad');} })
+        .catch(function(){ b.disabled=false; if(rb)rb.disabled=false; hint(L.js_net,'bad'); });
     }
     b.addEventListener('click',function(){f.click();});
     f.addEventListener('change',function(){
       var file=f.files&&f.files[0]; f.value='';
       if(!file)return;
-      if(file.size>5*1024*1024){hint(L.ava_big,'#fb7185');return;}
+      if(file.size>5*1024*1024){hint(L.ava_big,'bad');return;}
       var fr=new FileReader();
       fr.onload=function(){
         var im=new Image();
@@ -7758,17 +8460,22 @@ document.addEventListener('DOMContentLoaded',function(){
             var x=cv.getContext('2d');
             x.drawImage(im,(im.width-s)/2,(im.height-s)/2,s,s,0,0,192,192);
             post({img:cv.toDataURL('image/png')},function(){location.reload();});
-          }catch(e){hint(L.ava_err,'#fb7185');}
+          }catch(e){hint(L.ava_err,'bad');}
         };
-        im.onerror=function(){hint(L.ava_bad,'#fb7185');};
+        im.onerror=function(){hint(L.ava_bad,'bad');};
         im.src=fr.result;
       };
-      fr.onerror=function(){hint(L.ava_bad,'#fb7185');};
+      fr.onerror=function(){hint(L.ava_bad,'bad');};
       fr.readAsDataURL(file);
     });
     if(rb)rb.addEventListener('click',function(){ if(confirm(L.ava_rm_tip)) post({},function(){location.reload();}); });
   })();
 });
+(function(){var b=document.getElementById('thBtn');if(!b)return;
+b.addEventListener('click',function(){var d=document.documentElement;
+var t=d.dataset.theme==='light'?'dark':'light';d.dataset.theme=t;
+try{localStorage.setItem('veil-theme',t)}catch(e){}
+var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute('content',t==='light'?'#eef2fb':'#0a122a');});})();
 </script></body></html>"""
     payblock = ""
     if not u.get("family_of"):  # участник не платит — тарифом владеет хозяин
@@ -7806,6 +8513,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__SUB__", _esc(sub_url)).replace("__PAGE__", _esc(page_url))
                 .replace("__CONFS__", confs_html)
                 .replace("__ADDRNT__", addr_html)
+                .replace("__FORCENT__", force_html)
                 .replace("__HEADLINE__", head_line)
                 .replace("__FAMCHIP__", fam_chip)
                 .replace("__SECDEV__", L["sec_dev"])
@@ -7813,6 +8521,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 .replace("__BTNSHARE__", L["btn_share"]).replace("__HINTPICK__", L["hint_pick"])
                 .replace("__QRBTN__", qr_btn).replace("__QRLAYER__", qr_layer)
                 .replace("__SUBFT__", L["ft_sub"]).replace("__PAGEFT__", L["ft_page"])
+                .replace("__THTIP__", _esc(L["th_tip"]))
                 .replace("__DEVS__", devs_html)
                 .replace("__USAGE__", usage_html)
                 .replace("__FAMILY__", fam_html)
@@ -8108,7 +8817,7 @@ def _gh_asset(rel, name):
     github.com (`browser_download_url`): панель и так живёт на api.github.com, а
     второй хост в РФ без VPN часто недоступен — тот же резон, по которому геофайлы
     зеркалятся на сервер, а не отдаются телефону. Ответ может прийти без поля
-    `url` (чужие зеркала), поэтому fallback обязателен."""
+    `url` (чужие зеркала), поэтому `fallback` обязателен."""
     for a in (rel.get("assets") or []):
         if isinstance(a, dict) and a.get("name") == name:
             return a.get("url") or a.get("browser_download_url")
@@ -8488,7 +9197,7 @@ def _install_update(confirm=False, job=None, force_dirty=False):
                 base = os.path.basename(m.name)
                 if base not in ("panel.py", "index.html"): continue
                 if not m.isreg():
-                    # симлинк или каталог с именем panel.py: extract бы его создал,
+                    # симлинк или каталог с именем panel.py: `extract` бы его создал,
                     # а copy2 прочитал бы то, на что он указывает, — чужой файл
                     # уехал бы в боевой путь
                     continue
@@ -8604,15 +9313,15 @@ _BOT_RU = {
     "bk_err": "⚠️ Ошибка бэкапа: %s",
     "status_hdr": "📊 <b>Статус и статистика</b>\nXray: %s\nАптайм: %s\nКлиентов: %s\nНод: %s\n%s\nCPU: %s · RAM: %s\nДиск: %s",
     "xray_on": "🟢 работает", "xray_off": "🔴 остановлен",
-    "gp_ok": "🇷🇺 Доступность из РФ: %s %s/%s (%s%%) · %s UTC",
+    "gp_ok": "🇷🇺 Доступность из РФ: %s %s/%s (%s%%) · %s",
     "gp_none": "🇷🇺 Доступность из РФ: — (проверок ещё не было, открой панель)",
     "twofa": "🔐 <b>2FA настройка</b>\nНастройте 2FA в панели: вкладка <b>Безопасность</b> → <b>Двухфакторная аутентификация</b>",
     "unknown": "Неизвестная команда. /help",
     "err": "⚠️ Ошибка: %s",
     "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
     "lang_saved": "Готово: %s",
-    "gp_low": "🚨 <b>Доступность из РФ упала ниже 50%%!</b>\nЗонды: %s/%s (%s%%)\nВремя: %s UTC\nПодробности проведи проверку в панели или нажми %s",
-    "gp_recover": "✅ Доступность из РФ восстановилась: %s/%s (%s%%) · %s UTC",
+    "gp_low": "🚨 <b>Доступность из РФ упала ниже 50%%!</b>\nЗонды: %s/%s (%s%%)\nВремя: %s (пояс панели)\nПодробности проведи проверку в панели или нажми %s",
+    "gp_recover": "✅ Доступность из РФ восстановилась: %s/%s (%s%%) · %s (пояс панели)",
     "sub_welcome": ("👋 <b>Привет! Я помощник подписчиков Veil.</b>\n\n"
                     "Отправь сюда <b>ссылку своей подписки</b> — она начинается на <code>https://…/sub/…</code> "
                     "(была в сообщении, где тебе выдали подписку). После привязки я:\n"
@@ -8648,6 +9357,9 @@ _BOT_RU = {
     "addr_moved": ("🔄 <b>Адрес сервера изменился</b> — теперь <code>%s</code>.\n"
                    "Если прокси перестал подключаться: нажми «🔑 Ссылка» и добавь ещё раз, "
                    "либо обнови подписку в приложении (если добавлял по ссылке — она обновляется сам)."),
+    "force_upd": ("🔄 <b>Просьба администратора: обнови подписку.</b>\n"
+                  "Открой приложение и нажми «обновить» у своего профиля, либо нажми «🔑 Ссылка» "
+                  "и добавь её заново — список уже собран заново на сервере."),
     "sub_hdr": "📊 <b>Мои подписки:</b>",
     "sub_link_msg": ("🔑 Скопируй и вставь в приложение (Happ, v2rayNG, Streisand, NekoBox…) — "
                      "все серверы импортируются сразу:\n<code>%s</code>"),
@@ -8712,15 +9424,15 @@ _BOT_TXT = {
     "bk_err": "⚠️ Backup error: %s",
     "status_hdr": "📊 <b>Status and stats</b>\nXray: %s\nUptime: %s\nClients: %s\nNodes: %s\n%s\nCPU: %s · RAM: %s\nDisk: %s",
     "xray_on": "🟢 running", "xray_off": "🔴 stopped",
-    "gp_ok": "🇷🇺 Access from Russia: %s %s/%s (%s%%) · %s UTC",
+    "gp_ok": "🇷🇺 Access from Russia: %s %s/%s (%s%%) · %s",
     "gp_none": "🇷🇺 Access from Russia: — (no checks yet, open the panel)",
     "twofa": "🔐 <b>2FA setup</b>\nConfigure 2FA in the panel: tab <b>Security</b> → <b>Two-factor authentication</b>",
     "unknown": "Unknown command. /help",
     "err": "⚠️ Error: %s",
     "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
     "lang_saved": "Done: %s",
-    "gp_low": "🚨 <b>Access from Russia dropped below 50%%!</b>\nProbes: %s/%s (%s%%)\nTime: %s UTC\nCheck the panel or press %s",
-    "gp_recover": "✅ Access from Russia recovered: %s/%s (%s%%) · %s UTC",
+    "gp_low": "🚨 <b>Access from Russia dropped below 50%%!</b>\nProbes: %s/%s (%s%%)\nTime: %s (panel time)\nCheck the panel or press %s",
+    "gp_recover": "✅ Access from Russia recovered: %s/%s (%s%%) · %s (panel time)",
     "sub_welcome": ("👋 <b>Hi! I am the Veil subscriber assistant.</b>\n\n"
                     "Send here your <b>subscription link</b> — it starts with <code>https://…/sub/…</code> "
                     "(it was in the message you received with the subscription). After binding I will:\n"
@@ -8755,6 +9467,9 @@ _BOT_TXT = {
     "addr_moved": ("🔄 <b>The server address has changed</b> — now <code>%s</code>.\n"
                    "If the proxy stopped connecting: press «🔑 Link» and add it again, "
                    "or refresh the subscription in your app (if it was added by link, it updates itself)."),
+    "force_upd": ("🔄 <b>The administrator asks you to refresh your subscription.</b>\n"
+                  "Open the app and tap update on your profile, or press «🔑 Link» and add it "
+                  "again — the list is rebuilt on the server with every fetch."),
     "sub_hdr": "📊 <b>My subscriptions:</b>",
     "sub_link_msg": ("🔑 Copy and paste into your app (Happ, v2rayNG, Streisand, NekoBox…) — "
                      "all servers are imported at once:\n<code>%s</code>"),
@@ -8817,15 +9532,15 @@ _BOT_TXT = {
     "bk_err": "⚠️ خطای پشتیبان: %s",
     "status_hdr": "📊 <b>وضعیت و آمار</b>\nXray: %s\nآپتایم: %s\nکاربران: %s\nنودها: %s\n%s\nCPU: %s · RAM: %s\nدیسک: %s",
     "xray_on": "🟢 فعال", "xray_off": "🔴 متوقف",
-    "gp_ok": "🇷🇺 دسترس‌پذیری از روسیه: %s %s/%s (%s%%) · %s UTC",
+    "gp_ok": "🇷🇺 دسترس‌پذیری از روسیه: %s %s/%s (%s%%) · %s",
     "gp_none": "🇷🇺 دسترس‌پذیری از روسیه: — (بررسی انجام نشده، پنل را باز کنید)",
     "twofa": "🔐 <b>تنظیم 2FA</b>\nدر پنل تنظیم کنید: تب <b>امنیت</b> → <b>احراز دو مرحله‌ای</b>",
     "unknown": "دستور نامعلوم. /help",
     "err": "⚠️ خطا: %s",
     "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
     "lang_saved": "انجام شد: %s",
-    "gp_low": "🚨 <b>دسترس‌پذیری از روسیه زیر ۵۰٪ افتاد!</b>\nکاوش‌ها: %s/%s (%s%%)\nزمان: %s UTC\nدر پنل بررسی کنید یا %s را بزنید",
-    "gp_recover": "✅ دسترس‌پذیری از روسیه برگشت: %s/%s (%s%%) · %s UTC",
+    "gp_low": "🚨 <b>دسترس‌پذیری از روسیه زیر ۵۰٪ افتاد!</b>\nکاوش‌ها: %s/%s (%s%%)\nزمان: %s (زمان پنل)\nدر پنل بررسی کنید یا %s را بزنید",
+    "gp_recover": "✅ دسترس‌پذیری از روسیه برگشت: %s/%s (%s%%) · %s (زمان پنل)",
     "sub_welcome": ("👋 <b>سلام! من دستیار مشترکان Veil هستم.</b>\n\n"
                     "<b>لینک اشتراک</b> خود را اینجا بفرستید — با <code>https://…/sub/…</code> شروع می‌شود "
                     "(در پیامی که اشتراک را تحویل گرفتید بود). پس از پیوند من:\n"
@@ -8858,6 +9573,9 @@ _BOT_TXT = {
     "addr_moved": ("🔄 <b>نشانی سرور تغییر کرد</b> — اکنون <code>%s</code>.\n"
                    "اگر پروکسی دیگر وصل نمی‌شود: «🔑 لینک» را بزنید و دوباره اضافه کنید، "
                    "یا اشتراک را در برنامه به‌روزرسانی کنید (اگر با لینک اضافه شده، خودکار نو می‌شود)."),
+    "force_upd": ("🔄 <b>درخواست مدیر: لطفاً اشتراک را به‌روز کنید.</b>\n"
+                  "برنامه را باز کنید و دکمهٔ به‌روزرسانی را بزنید، یا «🔑 لینک» را بزنید "
+                  "و دوباره اضافه کنید — فهرست در هر برداشت از نو بسته می‌شود."),
     "sub_hdr": "📊 <b>اشتراک‌های من:</b>",
     "sub_link_msg": ("🔑 کپی کنید و در برنامه (Happ, v2rayNG, Streisand, NekoBox…) بچسبانید — "
                      "همه سرورها یکجا وارد می‌شوند:\n<code>%s</code>"),
@@ -8919,15 +9637,15 @@ _BOT_TXT = {
     "bk_err": "⚠️ 备份出错：%s",
     "status_hdr": "📊 <b>状态与统计</b>\nXray：%s\n运行时长：%s\n客户数：%s\n节点数：%s\n%s\nCPU：%s · 内存：%s\n磁盘：%s",
     "xray_on": "🟢 运行中", "xray_off": "🔴 已停止",
-    "gp_ok": "🇷🇺 俄罗斯可达性：%s %s/%s (%s%%) · %s UTC",
+    "gp_ok": "🇷🇺 俄罗斯可达性：%s %s/%s (%s%%) · %s",
     "gp_none": "🇷🇺 俄罗斯可达性：—（尚未检测，请打开面板）",
     "twofa": "🔐 <b>两步验证</b>\n请在面板设置：「安全」→「两步验证」",
     "unknown": "未知命令。/help",
     "err": "⚠️ 错误：%s",
     "lang_q": "🌐 Выберите язык / Choose language / زبان را انتخاب کنید / 请选择语言：",
     "lang_saved": "完成：%s",
-    "gp_low": "🚨 <b>俄罗斯可达性低于 50%%！</b>\n探测：%s/%s (%s%%)\n时间：%s UTC\n请在面板检查或按 %s",
-    "gp_recover": "✅ 俄罗斯可达性已恢复：%s/%s (%s%%) · %s UTC",
+    "gp_low": "🚨 <b>俄罗斯可达性低于 50%%！</b>\n探测：%s/%s (%s%%)\n时间：%s（面板时间）\n请在面板检查或按 %s",
+    "gp_recover": "✅ 俄罗斯可达性已恢复：%s/%s (%s%%) · %s（面板时间）",
     "sub_welcome": ("👋 <b>你好！我是 Veil 订阅用户助手。</b>\n\n"
                     "请把<b>订阅链接</b>发到这里 — 它以 <code>https://…/sub/…</code> 开头"
                     "（在发放订阅的消息里）。绑定后我会：\n"
@@ -10768,6 +11486,19 @@ def _tail_lines(path, count):
 _LOG_CRED_URL_RE = _AUDIT_URL_RE
 _LOG_CRED_SEP_RE = _LOG_SECRET_RE
 _LOG_CRED_PATH_RE = _AUDIT_TOK_PATH_RE
+# У этого критерия есть один названный класс-исключение, и он зафиксирован ногой, а
+# не спрятан: загрузочная строка ядра. Замер 09.10: бут 08.10 положил в `/var/log/syslog`
+# четыре строки ядра о загрузке сертификата с автогенерированным ключом сборки (шаблон
+# ниже несёт байтовую копию сообщения), и строгий разделитель сворачивает их как
+# форму — хотя это ключ, вшитый в образ ядра при сборке, он печатается на каждой
+# загрузке и не даёт доступа ни к чему клиентскому.
+# Маска читателя такую строку по-прежнему сворачивает (охват окна не сужается), а мера
+# её не считает. Ворота узкие с двух сторон: писатель обязан быть `kernel`, а строка —
+# побайтно совпасть с известным сообщением ядра, включая закрывающую кавычку; и этим
+# сообщением строка обязана кончаться — что стоит после кавычки, в класс не входит.
+# Гипотетическая строка ядра с `secret=` в эти ворота не входит и остаётся формой.
+_LOG_KERNEL_BOOT_RE = re.compile(
+    r"Loaded X\.509 cert 'Build time autogenerated kernel key:\s*[0-9a-fA-F]{6,}'\s*$")
 _LOG_RESIDUE_TTL = 900.0        # чаще этого носитель не перечитывать: живой опрос вкладки «Логи» идёт каждые 3 с
 _LOG_RESIDUE_CAP = 400 * 1024 * 1024   # файл больше этого не сканируется — это граница меры, а не «чисто»
 # Потолок скана всего носителя снят замером, а не взят «на глазок»: полный проход по
@@ -10799,7 +11530,11 @@ def _log_cred_line(line):
     разделитель, credential до `@` в ссылке подписчика и путь-credential
     (`/p/<tok>`). Критерий меры совпадает с маской читателя, а не с догадкой о том,
     что «похоже на ключ»: иначе мера назвала бы чистым носитель, на котором лежит
-    форма, сворачиваемая только в окне чтения."""
+    форма, сворачиваемая только в окне чтения. Единственное названное исключение —
+    загрузочная строка ядра: писатель `kernel` и побайтное совпадение с известным
+    сообщением загрузки, этот класс разобран комментарием у `_LOG_KERNEL_BOOT_RE`."""
+    if _LOG_KERNEL_BOOT_RE.search(line) and _log_writer(line) == "kernel":
+        return False
     return (bool(_LOG_CRED_SEP_RE.search(line) or _LOG_CRED_URL_RE.search(line))
             or bool(_LOG_CRED_PATH_RE.search(line)))
 
@@ -10930,7 +11665,7 @@ def _log_residue(path):
 # Самодостаточная реализация без внешних зависимостей: минимальный декодер CBOR
 # и проверка ECDSA P-256 (ES256) на чистом Python. Регистрация — TOFU: ключ
 # привязывается из уже аутентифицированной сессии и принимается как есть;
-# вход доказывает владение приватным ключом подписью assertion'а (UV обязателен,
+# вход доказывает владение приватным ключом подписью `assertion`'а (UV обязателен,
 # т.е. биометрия/PIN на устройстве).
 PASSKEYS_FILE = f"{BASE}/passkeys.json"
 _PK_LOCK = threading.Lock()
@@ -11294,7 +12029,7 @@ def _perm_for(p, m):
         # просмотрен». Сотрудник без права «настройки» прятал этим подсказку
         # хозяина — и наоборот, хозяин сбрасывал её под оператора. Морда
         # вызывает ручку в try/catch, поэтому 403 для не-владельца ничего не
-        # ломает:banner просто остаётся видимым тому, кому он и показан.
+        # ломает:`banner` просто остаётся видимым тому, кому он и показан.
         return ["owner"]
     if p.startswith("/api/ext/") or p.startswith("/pay/"):
         return None
@@ -11387,7 +12122,7 @@ def _perm_gate(self, p, m):
 # ---------- telemt / telegram proxy ----------
 
 
-# ---------- node federation: входящий API (/api/ext/*) ----------
+# ---------- node `federation`: входящий API (/api/ext/*) ----------
 
 _EXT_SCOPES = ("read", "write")
 _EXT_HITS = {}
@@ -11451,7 +12186,7 @@ def _ext_owned_group(st, tid, u):
     return [c for proto, inb in (st.get("inbounds") or {}).items()
             for c in inb.get("clients", []) if c.get("uuid") == u and c.get("ext_owner") == tid]
 
-# ---------- node federation: исходящий вызов мастер→нода ----------
+# ---------- node `federation`: исходящий вызов мастер→нода ----------
 
 def _node_host_ok(node):
     """SSRF-guard для федерации нод: хост ноды задаёт оператор, и по нему мастер
@@ -11564,7 +12299,7 @@ def _node_port(node):
 
 def _node_call(node, path, body=None, timeout=8, need_token=True):
     """HTTPS-запрос к Node API ноды. (data, err, fp): fp — sha256 дерта сертификата.
-    Pin-нинг: если у ноды задан pin, чужой сертификат отсекается до отправки токена."""
+    Pin-нинг: если у ноды задан `pin`, чужой сертификат отсекается до отправки токена."""
     import http.client
     host = (node.get("host") or "").strip()
     port = _node_port(node)
@@ -11921,7 +12656,7 @@ def _node_bootstrap_worker(jid):
                 if "denied" in etxt.lower() or "permission" in etxt.lower():
                     etxt = "SSH отклонил логин/пароль"
                 return fail(0, etxt[:200])
-            # ssh-copy-id в OpenSSH 10.2 сломан (литерал ~ в mktemp) — ставим ключ напрямую
+            # ssh-copy-id в OpenSSH 10.2 сломан (литерал ~ в `mktemp`) — ставим ключ напрямую
             try:
                 pubtxt = open(pubkey).read().strip()
             except Exception:
@@ -12184,7 +12919,7 @@ _NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "hysteria2",
                         "shadowsocks", "wireguard", "amneziawg")
 
 def _deploy_client_to_nodes(st, u):
-    """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (deployed, skipped)."""
+    """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (`deployed`, skipped)."""
     deployed, skipped = [], []
     recs = [(proto, inb, c) for proto, inb in (st.get("inbounds") or {}).items()
             for c in inb.get("clients", []) if c.get("uuid") == u]
@@ -12415,6 +13150,12 @@ def _tg_status():
     by_user = {m["username"]: m for m in man if m["ok"] and m.get("link")}
     for u in users:
         m = by_user.get(u["username"])
+        if m and (m.get("kind") or "proxy") == "web":
+            # Ссылка веб-прокси живёт в своём поле: в `link` карточки лежит MTProto,
+            # и подменять его веб-ссылкой значит соврать про протокол.
+            u["web_link"] = m["link"]
+            u["web_manual"] = {"front": m["front"], "ts": m["ts"]}
+            continue
         if m:
             u["link"] = m["link"]
             u["manual"] = {"port": m["port"], "front": m["front"], "ts": m["ts"]}
@@ -12759,7 +13500,7 @@ _MPST = {"ts": 0.0, "res": None}
 
 def _tls_probe(ip, port, sni, timeout=6):
     """TLS-рукопожатие с SNI=фронт к ip:port (CERT_NONE — facade-сертификат не валиден
-    по определению). Вернуть (ok, detail): detail содержит subject сервера при успехе."""
+    по определению). Вернуть (ok, detail): detail содержит `subject` сервера при успехе."""
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
@@ -13515,8 +14256,8 @@ def _mr_view():
 # «кластер по умолчанию». Отсюда #193: текст ходит, картинки и видео — нет.
 # Ключей три: `use_middle_proxy` — сам вход, `me2dc_fallback` — разрешение уехать на
 # прямой DC, `me2dc_fast` — бюджет быстрых попыток; по коду движка он активен ТОЛЬКО
-# вместе с fallback (`admission.rs:42`), то есть один он не значит ничего. Важное, чего
-# по ключам не видно: при включённом fallback движок СТАРТУЕТ в Direct и добирает ME в
+# вместе с `fallback` (`admission.rs:42`), то есть один он не значит ничего. Важное, чего
+# по ключам не видно: при включённом `fallback` движок СТАРТУЕТ в Direct и добирает ME в
 # фоне (`runtime_build.rs:131`), поэтому «ME включён» ещё не значит «сессии идут через
 # ME» — это отдельный факт, и движок сам его отдаёт на `/v1/runtime/gates`.
 # Замер в песочнице (06.10, варианты A0–A3, живую службу не трогали): `/v1/config`
@@ -13964,7 +14705,7 @@ def _tg_mp_selftest(force=False):
     return res
 
 def _tg_mp_firewall_open(port):
-    """Best-effort: открыть порт в firewalld, если он активен. Молча игнорируем отсутствие."""
+    """Best-effort: открыть порт в `firewalld`, если он активен. Молча игнорируем отсутствие."""
     try:
         if subprocess.run(["bash", "-c",
                            "command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1"],
@@ -14211,6 +14952,196 @@ def _ssh_port_set(new_port, confirm=False, user=None):
     return {"ok": True, "old": old, "new": new_port, "guard_migrated": bool(has_guard),
             "ports": _ssh_effective_ports()}
 
+# --- Оптимизация узла (пункт доски #172). Цели сняты с разбора чужого
+# установщика (#107, только чтение), каждое значение перечитывается живьём
+# перед записью и после неё; применение оставляет снимок «до» на диске и
+# обязано откатиться, если ядро отвергнуло хотя бы один ключ.
+_NODE_OPT_DROPIN = "/etc/sysctl.d/99-vpnpanel-tune.conf"
+_NODE_OPT_MODULES = "/etc/modules-load.d/vpnpanel-bbr.conf"
+_OPT_STATE = f"{BASE}/opt_node.json"
+
+# Ключ ядра -> (требуемое значение, метка для человека). Порядок здесь —
+# порядок строк в карточке морды.
+_NODE_OPT_TARGETS = [
+    ("net.core.somaxconn", "65535", "очередь принятия соединений"),
+    ("net.ipv4.tcp_max_syn_backlog", "65535", "полуоткрытые подъёмы"),
+    ("net.core.netdev_max_backlog", "65535", "входящая очередь драйвера"),
+    ("net.ipv4.tcp_fastopen", "3", "подъём с первым пакетом данных"),
+    ("net.core.default_qdisc", "fq", "очередная дисциплина"),
+    ("net.ipv4.tcp_congestion_control", "bbr", "алгоритм перегрузки"),
+    ("net.ipv4.tcp_keepalive_time", "45", "простаивание до зонда"),
+    ("net.ipv4.tcp_keepalive_intvl", "15", "шаг между зондами"),
+    ("net.ipv4.tcp_keepalive_probes", "3", "число зондов"),
+    ("fs.file-max", "2097152", "потолок открытых файлов узла"),
+]
+
+_NODE_OPT_CC_KEY = "net.ipv4.tcp_congestion_control"
+
+
+def _opt_proc_path(key):
+    return "/proc/sys/" + key.replace(".", "/")
+
+
+def _opt_current():
+    """Живые значения всех целей: строка из `procfs` или None, если ключ не читается."""
+    out = {}
+    for k, _want, _label in _NODE_OPT_TARGETS:
+        v = None
+        try:
+            with open(_opt_proc_path(k), encoding="utf-8") as f:
+                v = f.read().strip()
+        except Exception:
+            pass
+        out[k] = v
+    return out
+
+
+def _opt_cc_available():
+    """Список алгоритмов перегрузки, которые ядро приняло модулями."""
+    try:
+        with open("/proc/sys/net/ipv4/tcp_available_congestion_control",
+                  encoding="utf-8") as f:
+            return f.read().split()
+    except Exception:
+        return []
+
+
+def _opt_dropin_text(targets):
+    lines = ["# veil: оптимизация узла (пункт #172); переживает перезагрузку"]
+    for k, v, _ in targets:
+        lines.append("%s = %s" % (k, v))
+    return "\n".join(lines) + "\n"
+
+
+def _opt_snap(path):
+    try:
+        with open(path, "rb") as f:
+            return ["bytes", base64.b64encode(f.read()).decode("ascii")]
+    except Exception:
+        return ["absent", None]
+
+
+def _opt_restore_files(snap):
+    """Вернуть оба файла по снимку: `absent` — снять, `bytes` — положить прежние."""
+    for tag, path in (("dropin", _NODE_OPT_DROPIN), ("modules", _NODE_OPT_MODULES)):
+        kind, data = (snap.get(tag) or ["absent", None])[:2]
+        try:
+            if kind == "absent":
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(data))
+        except Exception:
+            pass
+
+
+def _opt_restore_vals(vals):
+    for k, v in (vals or {}).items():
+        if v is None:
+            continue
+        subprocess.run(["sysctl", "-w", "%s=%s" % (k, v)],
+                       capture_output=True, text=True, timeout=10)
+
+
+def _opt_reload_sysctls():
+    subprocess.run(["sysctl", "--system"], capture_output=True, text=True, timeout=60)
+
+
+def _node_opt_status():
+    cur = _opt_current()
+    st = _load(_OPT_STATE, {}) or {}
+    has_bbr = "bbr" in _opt_cc_available()
+    items = []
+    for k, want, label in _NODE_OPT_TARGETS:
+        got = cur.get(k)
+        items.append({"key": k, "want": want, "cur": got, "label": label,
+                      "ok": got == want,
+                      "skipped": bool(k == _NODE_OPT_CC_KEY and not has_bbr)})
+    return {"ok": True, "items": items,
+            "in_sync": all(i["ok"] for i in items if not i["skipped"]),
+            "applied": bool(st.get("applied")),
+            "has_snapshot": bool((st.get("snap") or {}).get("vals")),
+            "applied_ts": int(st.get("applied_ts") or 0),
+            "bbr_supported": has_bbr, "sbx": bool(SBX)}
+
+
+def _node_opt_apply(confirm=False, user=None):
+    """Применить цели: снять «до» на диск, поднять модуль `bbr`, написать
+    дроп-инет, перезагрузить значения и ПЕРЕПРОЧИТАТЬ их; при отказе ядра —
+    откатить файлы и значения. Все мутации под `_STATE_LOCK` (вызывающий),
+    `confirm` обязателен, под песочницей (`SBX`) — отказ."""
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    if SBX:
+        raise RuntimeError("под песочницей настройки узла не трогаем")
+    cur = _opt_current()
+    has_bbr = "bbr" in _opt_cc_available()
+    if not has_bbr:
+        subprocess.run(["modprobe", "tcp_bbr"], capture_output=True, text=True, timeout=30)
+        has_bbr = "bbr" in _opt_cc_available()
+    targets = [t for t in _NODE_OPT_TARGETS
+               if not (t[0] == _NODE_OPT_CC_KEY and not has_bbr)]
+    st = _load(_OPT_STATE, {}) or {}
+    if not (st.get("snap") or {}).get("vals"):
+        # снимок «до» пишется один раз: повторное применение не должно
+        # превращать «после первого применения» в новое «до»
+        st = {"snap": {"vals": {t[0]: cur.get(t[0]) for t in _NODE_OPT_TARGETS},
+                       "dropin": _opt_snap(_NODE_OPT_DROPIN),
+                       "modules": _opt_snap(_NODE_OPT_MODULES)}}
+    try:
+        os.makedirs(os.path.dirname(_NODE_OPT_DROPIN), exist_ok=True)
+        with open(_NODE_OPT_DROPIN, "w", encoding="utf-8") as f:
+            f.write(_opt_dropin_text(targets))
+        if has_bbr:
+            os.makedirs(os.path.dirname(_NODE_OPT_MODULES), exist_ok=True)
+            with open(_NODE_OPT_MODULES, "w", encoding="utf-8") as f:
+                f.write("tcp_bbr\n")
+        r = subprocess.run(["sysctl", "--system"], capture_output=True,
+                           text=True, timeout=60)
+        after = _opt_current()
+        bad = ["%s: ждали %s, ядро отдаёт %s" % (k, w, after.get(k))
+               for k, w, _ in targets if after.get(k) != w]
+        if bad:
+            why = "; ".join(bad)[:200]
+            if r.returncode != 0:
+                why += " || вывод: " + (r.stderr or r.stdout).strip()[:120]
+            raise RuntimeError(why)
+    except Exception as e:
+        _opt_restore_files(st.get("snap") or {})
+        _opt_restore_vals((st.get("snap") or {}).get("vals"))
+        _opt_reload_sysctls()
+        raise RuntimeError("откат: " + str(e)[:200])
+    st["applied"] = True
+    st["applied_ts"] = int(time.time())
+    st["changed"] = [k for k, w, _ in targets if cur.get(k) != w]
+    _save(_OPT_STATE, st, 0o600)
+    _audit("node_opt_apply", user=user, changed=len(st["changed"]),
+           skipped=0 if has_bbr else 1)
+    return _node_opt_status()
+
+
+def _node_opt_rollback(confirm=False, user=None):
+    """Вернуть узел к снимку «до»: файлы по их виду (`absent` — снять),
+    значения через прямую запись, затем перезагрузка окружения.
+    `confirm` обязателен; под песочницей — отказ."""
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    if SBX:
+        raise RuntimeError("под песочницей настройки узла не трогаем")
+    st = _load(_OPT_STATE, {}) or {}
+    snap = st.get("snap") or {}
+    if not snap.get("vals"):
+        raise RuntimeError("снимка «до» нет — откатывать нечего")
+    _opt_restore_files(snap)
+    _opt_restore_vals(snap.get("vals"))
+    _opt_reload_sysctls()
+    st["applied"] = False
+    _save(_OPT_STATE, st, 0o600)
+    _audit("node_opt_rollback", user=user)
+    return _node_opt_status()
+
+
 def _tg_mp_apply(port=None, confirm=False):
     """Добавить публичный MTProto [[server.listeners]] в telemt.toml и перезапустить telemt."""
     if not confirm:
@@ -14343,7 +15274,7 @@ def _tg_pick_tls_link(tls, prefer=""):
     return (tls or [""])[0]
 
 def _tg_web_enable_user(name):
-    """Добавить пользователя в веб-профили vhosts (нужен включённый web в telemt)."""
+    """Добавить пользователя в веб-профили `vhosts` (нужен включённый web в telemt)."""
     w = _tg_web_get()
     if not (w and w.get("enabled") and w.get("host")):
         return ""
@@ -14360,7 +15291,7 @@ def _tg_web_enable_user(name):
     return _tg_web_link(name)
 
 def _tg_add(username, mode="both"):
-    """Создать пользователя telemt. mode: mtproto | web | both."""
+    """Создать пользователя telemt. mode: mtproto | web | `both`."""
     name = (username or "").strip().replace(" ", "_")
     if not name:
         raise RuntimeError("имя пустое")
@@ -14474,9 +15405,9 @@ def _tg_sni():
 def _veil_front_domains():
     """Домены-фронты MTProto facade (SNI в ClientHello подделки TLS). Xray-сервер
     обязан исключать их из sniffing-override: туннельное соединение к прокси
-    (hairpin: телефон под VPN → xray → свой же :7443) имеет изначальный dest
+    (hairpin: телефон под VPN → xray → свой же :7443) имеет изначальный `dest`
     = IP/домен панели, но внутри — TLS ClientHello с SNI=фронт. Если sniffing
-    перезапишет dest этим SNI (docs telemt XRAY-SINGBOX-ROUTING, «Вариант B»),
+    перезапишет `dest` этим SNI (docs telemt XRAY-SINGBOX-ROUTING, «Вариант B»),
     сервер начнёт долбить фронт (Akamai microsoft.com) на порту 7443 — там
     никто не слушает: шторм безответных SYN, а telemt не видит ни одного
     соединения. Отсюда и «прокси не работает под VPN» в клиентах без
@@ -14710,6 +15641,9 @@ def _tg_mask_front_guard():
 # ------------------------------------------------------------------ #158: подгонка под уже розданную ссылку
 
 _TG_EE_SECRET = re.compile(r"^ee([0-9a-f]{32})([0-9a-f]{2,})$")
+# #241: у веб-прокси секрет короче: `dd` + 32 hex, и hex этот — тот же ключ клиента из
+# `[access.users]`, что стоит за `ee`-секретами MTProto. Ни порта, ни фронта в ссылке нет.
+_TG_DD_SECRET = re.compile(r"^dd([0-9a-f]{32})$")
 # #196: @MTProxybot отдаёт секрет голыми 32 hex — ни `ee`, ни имени фронта. Клиент по
 # такой строке идёт прямым MTProto на порт, а наш :443 держит TLS-развилку, поэтому
 # рукопожатие не складывается и ссылка «не работает». Физика та же, что у розданных
@@ -14757,6 +15691,9 @@ def _tg_manual_parse(link):
     #196: бот спонсорства отдаёт секрет голыми 32 hex — без `ee` и без фронта, и ссылка с ним
     не работает на фронтовом порту. Такое вставка достраивается сама; имя фронта, которое
     панель подшила, возвращается в поле `composed`, чтобы морда показала готовую ссылку.
+
+    #241: сюда же приехала ссылка веб-прокси — у неё своя физика и свой разбор,
+    `_tg_manual_parse_web`; поле `kind` различает их («proxy» и «web»).
     """
     raw = (link or "").strip().strip('"').strip("'")
     if not raw:
@@ -14783,9 +15720,12 @@ def _tg_manual_parse(link):
         if i < 0:
             raise RuntimeError("в ссылке t.me нет параметров — вставьте её целиком")
         raw = "tg://proxy" + raw[i:]
+    if re.match(r"(?i)^tg://webproxy\?", raw):
+        return _tg_manual_parse_web(raw)
     if not re.match(r"(?i)^tg://proxy\?", raw):
-        raise RuntimeError("это не ссылка tg://proxy: панель подгоняет только MTProto-фасад "
-                           "(вида tg://proxy?server=…&port=…&secret=ee…)")
+        raise RuntimeError("это не ссылка tg://proxy и не tg://webproxy: панель подгоняет "
+                           "MTProto-фасад (tg://proxy?server=…&port=…&secret=ee…) и "
+                           "веб-прокси (tg://webproxy?server=…&secret=dd…)")
     q = {k.lower(): v for k, v in urllib.parse.parse_qs(raw.split("?", 1)[1]).items()}
     server = (q.get("server") or [""])[0].strip().lower().rstrip(".")
     ports = (q.get("port") or [""])[0].strip()
@@ -14807,9 +15747,31 @@ def _tg_manual_parse(link):
         raise RuntimeError("хвост секрета не расшифровывается в имя фронта — ссылка битая")
     if "." not in front or not re.fullmatch(r"[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?", front):
         raise RuntimeError("фронт из секрета прочитался как «%s» — это не домен" % front[:40])
-    return {"server": server, "port": int(ports), "key": key, "front": front, "secret": secret,
-            "composed": composed,
+    return {"kind": "proxy", "server": server, "port": int(ports), "key": key,
+            "front": front, "secret": secret, "composed": composed,
             "link": "tg://proxy?server=%s&port=%d&secret=%s" % (server, int(ports), secret)}
+
+
+def _tg_manual_parse_web(raw):
+    """#241: разобрать готовую ссылку `tg://webproxy` — имя фасада и `dd`-секрет на ключ.
+
+    Физика (мерено на живом `telemt`): в ссылке два поля — `server` (имя веб-фасада, оно же
+    vhost в `[web.vhosts]`) и `dd` + 32 hex ключа клиента из `[access.users]`. Ни порта, ни
+    фронта: путь до :443 держит nginx, а имя сервера читает сам Telegram. Под себя панель
+    обязана подстроить ровно то же, что и по MTProto-ссылке: ключ клиента и имя фасада.
+    """
+    q = {k.lower(): v for k, v in urllib.parse.parse_qs(raw.split("?", 1)[1]).items()}
+    server = (q.get("server") or [""])[0].strip().lower().rstrip(".")
+    secret = (q.get("secret") or [""])[0].strip().lower()
+    if not server or not re.fullmatch(r"[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?", server):
+        raise RuntimeError("в ссылке webproxy непонятный server= — нужно имя без порта и пути")
+    m = _TG_DD_SECRET.match(secret)
+    if not m:
+        raise RuntimeError("секрет webproxy: нужен `dd` и 32 hex-символа ключа — "
+                           "вид tg://webproxy?server=…&secret=dd…")
+    return {"kind": "web", "server": server, "port": 443, "key": m.group(1),
+            "front": server, "secret": secret, "composed": "",
+            "link": "tg://webproxy?server=%s&secret=%s" % (server, secret)}
 
 
 def _tg_manual_read_toml():
@@ -14905,7 +15867,12 @@ def _tg_manual_store(rec):
     Храним именно ссылку, а не её пересборку: карточка не имеет права предлагать оператору
     другой текст, чем тот, что уже у клиентов на руках.
     """
-    recs = [r for r in _tg_manual_records() if r.get("username") != rec.get("username")]
+    # #241: один клиент может держать две розданные ссылки — MTProto и веб-прокси, —
+    # поэтому снятый по имени откат различает носитель, а не только клиента.
+    kind = rec.get("kind") or "proxy"
+    recs = [r for r in _tg_manual_records()
+            if not (r.get("username") == rec.get("username")
+                    and (r.get("kind") or "proxy") == kind)]
     recs.append(rec)
     _save(_TG_MANUAL_STATE, recs, 0o600)
     return recs
@@ -14983,7 +15950,11 @@ def _tg_manual_name(front, key, taken):
 
 
 def _tg_manual_status(rows=None):
-    """Состояние розданных ссылок: помнит ли telemt побайтно каждый вставленный секрет."""
+    """Состояние розданных ссылок: помнит ли telemt побайтно каждый вставленный секрет.
+
+    #241: у ссылки веб-прокси своя доверка — её telemt выдаёт не из `links.tls`, а собирает
+    из имени vhost'а и ключа клиента, поэтому судим её равнением готовой ссылки.
+    """
     recs = _tg_manual_records()
     if not recs:
         return []
@@ -14997,20 +15968,144 @@ def _tg_manual_status(rows=None):
     for r in recs:
         name = r.get("username") or ""
         row = by.get(name)
-        ok = bool(r.get("secret")) and r["secret"] in _tg_user_secrets(row)
-        if not row:
-            detail = "клиент «%s» не найден в telemt" % name
-        elif not r.get("secret"):
-            detail = "ссылка не записана полностью"
-        elif not ok:
-            detail = ("telemt не выдаёт этот секрет: фронт %s или ключ потеряны"
-                      % (r.get("front") or "?"))
+        kind = r.get("kind") or "proxy"
+        if kind == "web":
+            live = ""
+            try:
+                live = _tg_web_link(name)
+            except Exception:
+                live = ""
+            ok = bool(r.get("link")) and live == r["link"]
+            if not row:
+                detail = "клиент «%s» не найден в telemt" % name
+            elif not r.get("link"):
+                detail = "ссылка не записана полностью"
+            elif not ok:
+                detail = "web не выдаёт эту ссылку: фасад %s или ключ потеряны" % (r.get("front") or "?")
+            else:
+                detail = ""
         else:
-            detail = ""
-        out.append({"username": name, "link": r.get("link") or "", "port": r.get("port"),
+            ok = bool(r.get("secret")) and r["secret"] in _tg_user_secrets(row)
+            if not row:
+                detail = "клиент «%s» не найден в telemt" % name
+            elif not r.get("secret"):
+                detail = "ссылка не записана полностью"
+            elif not ok:
+                detail = ("telemt не выдаёт этот секрет: фронт %s или ключ потеряны"
+                          % (r.get("front") or "?"))
+            else:
+                detail = ""
+        out.append({"username": name, "kind": kind, "link": r.get("link") or "",
+                    "port": r.get("port"),
                     "front": r.get("front") or "", "ts": r.get("ts") or "",
                     "ok": ok, "detail": detail})
     return out
+
+
+def _tg_manual_preview_web(p, username=""):
+    """#241: план подгонки под розданную ссылку `tg://webproxy` — только чтение.
+
+    Ссылка веб-прокси называет две вещи: имя фасада и ключ клиента. Фронта и порта в ней нет,
+    поэтому и подгонка короче: ключ, имя vhost'а, присутствие клиента в профилях. Всё остальное
+    (сертификат на имя, DNS) панель обязана назвать, но не чинит — это живёт во вкладке Сайт.
+    """
+    if not _tg_available():
+        raise RuntimeError("telemt API не отвечает — сначала включи MTProto-прокси")
+    w = _tg_web_get()
+    if not w:
+        raise RuntimeError("telemt не отдаёт раздел `[web]` — веб-прокси в движке не виден")
+    users = [u.get("username") or "" for u in (_tg_api("GET", "/v1/users").get("data") or [])]
+    name = (username or "").strip()
+    if name and not _TG_USER_NAME.fullmatch(name):
+        raise RuntimeError("имя клиента: только латиница, цифры, _ . - (до 32 символов)")
+    if name and name not in users:
+        raise RuntimeError("клиента «%s» нет в telemt — выберите существующего или оставьте поле пустым"
+                           % name)
+    owner = _tg_key_owner(p["key"])
+    blockers, warnings, actions = [], [], []
+    if owner and name and owner != name:
+        blockers.append("ключ из ссылки уже принадлежит клиенту «%s»: перепривязка к «%s» "
+                        "оставила бы два клиента на одном ключе" % (owner, name))
+    target = name or owner
+    if not target:
+        target = _tg_manual_name(p["front"], p["key"], set(users))
+    need_user = target not in users
+    if need_user:
+        actions.append("создать клиента «%s»" % target)
+    need_key = owner != target
+    if need_key:
+        actions.append("привязать ключ из ссылки к клиенту «%s»" % target)
+        # Одно и то же число держит и `ee`-секреты MTProto, и `dd` этого веб-прокси:
+        # молчать об этом нельзя — у клиента меняются все розданные ссылки.
+        warnings.append("ключ у клиента один: меняя его под ссылку веб-прокси, панель меняет "
+                        "и MTProto-ссылки клиента «%s»" % target)
+    need_enable = not w.get("enabled")
+    if need_enable:
+        blockers.append("веб-прокси в telemt выключен — включи его в верхнем блоке вкладки «Прокси», "
+                        "здесь панель его не поднимает")
+    need_host = bool(w.get("host")) and w["host"] != p["server"]
+    if need_host:
+        actions.append("подставить имя фасада %s в vhost веб-прокси (сейчас %s)"
+                       % (p["server"], w["host"]))
+    need_profile = not need_user and target not in (w.get("profiles") or [])
+    if need_profile:
+        actions.append("добавить клиента «%s» в профили веб-прокси" % target)
+    need_mode = ""
+    if not need_user and target in (w.get("profiles") or []):
+        mode = (_tg_toml_web_profiles() or {}).get(target, "")
+        if mode and mode != "dd":
+            need_mode = mode
+            actions.append("перевести профиль «%s» в режим секретов dd (сейчас %s)"
+                           % (target, mode))
+    cp = _cert_pathes()
+    cert_file = cp["cert"]
+    if cert_file and os.path.exists(cert_file):
+        names = _cert_dns_names(cert_file)
+        if not _host_covered_by(names, p["server"]):
+            blockers.append("сертификат %s не покрывает имя %s (SAN: %s) — клиенты по ссылке "
+                            "получат ошибку TLS, а не прокси"
+                            % (os.path.basename(cert_file), p["server"],
+                               ", ".join(names[:4]) or "пустой"))
+    else:
+        blockers.append("сертификата в настройках панели нет — на имя %s клиенты придут с ошибкой "
+                        "TLS; выпустите сертификат во вкладке Сайт" % p["server"])
+    occ = _sock_occupant(443)
+    if occ.get("free") or not ("nginx" in (occ.get("proc") or "")
+                               or "telemt" in (occ.get("proc") or "")):
+        warnings.append("на :443 сидит %s, а не фасад веб-прокси: ссылка заработает только после "
+                        "установки веб-прокси (это не блокирует подгонку конфига)"
+                        % (occ.get("proc") or "никто"))
+    try:
+        ips = _resolve_ips(p["server"])
+        ours = _our_ips()
+        if ips and ours and not (ips & ours):
+            warnings.append("адрес %s из ссылки резолвится на %s, а этот сервер — %s: пока DNS "
+                            "не сойдётся, клиенты по ссылке придут не сюда (это не блокирует "
+                            "подгонку конфига)"
+                            % (p["server"], ", ".join(sorted(ips)[:2]), ", ".join(sorted(ours)[:2])))
+    except Exception:
+        pass
+    if not w.get("host") and not need_enable:
+        blockers.append("у веб-прокси нет ни одного vhost'а — включите его и задайте имя во "
+                        "верхнем блоке вкладки «Прокси»")
+    issued_ok = False
+    try:
+        issued_ok = _tg_web_link(target) == p["link"]
+    except Exception:
+        issued_ok = False
+    already = issued_ok and not actions
+    if actions:
+        actions.append("перезапустить telemt один раз" if need_host
+                       else "telemt не перезапускаем: правки профилей он принимает на ходу")
+    return {"ok": True, "kind": "web", "parsed": p, "username": target, "owner": owner,
+            "front": p["server"], "port": 443, "server": p["server"],
+            "web": {"enabled": w.get("enabled"), "host": w.get("host"),
+                    "profiles": list(w.get("profiles") or [])},
+            "need_user": need_user, "need_key": need_key, "need_host": need_host,
+            "need_profile": need_profile, "need_mode": need_mode,
+            "need_enable": need_enable, "restart": bool(need_host), "already": already,
+            "actions": actions or ["подгонка не требуется — ссылка уже настроена"],
+            "blockers": blockers, "warnings": warnings, "can_apply": not blockers}
 
 
 def _tg_manual_preview(link, username=""):
@@ -15019,6 +16114,8 @@ def _tg_manual_preview(link, username=""):
     Ни файла, ни API не касается.
     """
     p = _tg_manual_parse(link)
+    if p.get("kind") == "web":
+        return _tg_manual_preview_web(p, username)
     if not _tg_available():
         raise RuntimeError("telemt API не отвечает — сначала включи MTProto-прокси")
     text = _tg_manual_read_toml()
@@ -15074,12 +16171,92 @@ def _tg_manual_preview(link, username=""):
         pass
     issued = _tg_user_secrets(_tg_user_row(target)) if target in users else set()
     already = p["secret"] in issued and not need_port
-    return {"ok": True, "parsed": p, "username": target, "owner": owner,
+    return {"ok": True, "kind": "proxy", "parsed": p, "username": target, "owner": owner,
             "front": p["front"], "port": p["port"], "fronts": fronts, "ports": ports,
             "need_user": target not in users, "need_front": need_front, "need_port": need_port,
             "restart": bool(actions), "already": already,
             "actions": actions or ["подгонка не требуется — ссылка уже настроена"],
             "blockers": blockers, "warnings": warnings, "can_apply": not blockers}
+
+
+def _tg_manual_guard(backup):
+    """Откат: вернуть снятый `telemt.toml` и поднять движок. Одна физика для обеих веток."""
+    def _restore(why):
+        try:
+            with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+                f.write(backup)
+            subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        except Exception as e2:
+            why += " (откат не выполнен: %s)" % str(e2)[:80]
+        raise RuntimeError(why)
+    return _restore
+
+
+def _tg_manual_apply_web(pv):
+    """#241: подогнать веб-прокси под уже розданную ссылку `tg://webproxy`.
+
+    Порядок: ключ клиента, потом имя фасада и адрес, потом профили — и побайтная доверка
+    ссылки, которую отдаёт сам telemt. Не сошлось — снятый `telemt.toml`, рестарт и отказ.
+    """
+    p = pv["parsed"]
+    target = pv["username"]
+    backup = _tg_manual_read_toml()
+    _restore = _tg_manual_guard(backup)
+    created = bound = moved = False
+    try:
+        if pv["need_user"]:
+            _tg_add(target, "web")
+            created = True
+        if pv["need_key"]:
+            _tg_rotate_secret(target, p["key"])
+            bound = True
+        if pv["need_host"]:
+            _tg_web_set_vhost(host=p["server"])
+            moved = True
+        if pv["need_profile"] or pv["need_mode"]:
+            keep = list((pv.get("web") or {}).get("profiles") or [])
+            _tg_web_set_profiles(list(dict.fromkeys(keep + [target])), secret_mode="dd")
+            moved = True
+    except Exception as e:
+        _restore("не смог подстроить веб-прокси: %s — прежнее состояние возвращено" % str(e)[:140])
+    restarted = False
+    if pv["restart"]:
+        r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
+                           text=True, timeout=120)
+        restarted = True
+        if r.returncode != 0:
+            _restore("telemt не перезапустился (rc=%d) — конфиг откачен" % r.returncode)
+    verok = False
+    for _ in range(15 if pv["restart"] else 3):
+        try:
+            verok = _tg_web_link(target) == p["link"]
+        except Exception:
+            verok = False
+        if verok:
+            break
+        time.sleep(1)
+    if not verok:
+        _restore("telemt не выдаёт вставленную ссылку побайтно — под клиента «%s» он отдал другое; "
+                 "конфиг откачен%s" % (target, "" if not created else
+                                       ", клиента можно удалить"))
+    occ = _sock_occupant(443)
+    listening = (not occ.get("free")) and ("nginx" in (occ.get("proc") or "")
+                                           or "telemt" in (occ.get("proc") or ""))
+    _tg_manual_store({"kind": "web", "username": target, "link": p["link"],
+                      "secret": p["secret"], "front": p["server"], "port": 443,
+                      "ts": _now_iso()})
+    _audit("tg_manual_link", kind="web", username=target, host=p["server"],
+           created=created, bound=bound, moved=moved, restarted=restarted)
+    note = "Ссылка настроена: telemt выдаёт её побайтно клиенту «%s»" % target
+    if not listening:
+        note += ". На :443 сейчас %s — фасад веб-прокси надо установить или перевыпустить " \
+                "(вкладка «Прокси», блок «Веб-прокси»)" % (occ.get("proc") or "никто")
+    if pv["warnings"]:
+        note += ". " + " ".join(pv["warnings"])
+    return {"ok": True, "kind": "web", "username": target, "link": p["link"],
+            "port": 443, "front": p["server"], "verified": True, "listening": listening,
+            "created": created, "bound": bound, "moved": moved, "restarted": restarted,
+            "note": note, "warnings": pv["warnings"]}
 
 
 def _tg_manual_apply(link, username="", confirm=False):
@@ -15096,18 +16273,11 @@ def _tg_manual_apply(link, username="", confirm=False):
     if not pv["can_apply"]:
         raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"] or ["неизвестно"]))
     p = pv["parsed"]
+    if p.get("kind") == "web":
+        return _tg_manual_apply_web(pv)
     target = pv["username"]
     backup = _tg_manual_read_toml()
-
-    def _restore(why):
-        try:
-            with open(TELEMT_CONF, "w", encoding="utf-8") as f:
-                f.write(backup)
-            subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
-        except Exception as e2:
-            why += " (откат не выполнен: %s)" % str(e2)[:80]
-        raise RuntimeError(why)
-
+    _restore = _tg_manual_guard(backup)
     created = False
     added = False
     try:
@@ -15651,7 +16821,7 @@ def _sub_settings():
             "brand": CFG_CACHE.get("sub_brand") or ""}
 
 def _tg_web_get():
-    """WEB-конфиг telemt: enabled, carrier, vhosts-профили, host."""
+    """WEB-конфиг telemt: enabled, `carrier`, vhosts-профили, host."""
     try:
         d = _tg_api("GET", "/v1/config").get("data", {})
     except Exception:
@@ -15748,8 +16918,12 @@ def _tg_web_link(username):
         return ""
     return "tg://webproxy?server=%s&secret=dd%s" % (w["host"], secret)
 
-def _tg_web_set_profiles(users):
-    """PATCH [web].vhosts[].profiles целиком (hot-reload, без перезапуска)."""
+def _tg_web_set_profiles(users, secret_mode=""):
+    """PATCH [web].`vhosts`[].`profiles` целиком (hot-reload, без перезапуска).
+
+    #241: `secret_mode` задаёт всем строкам один режим — ссылка `dd` не работает с профилем,
+    который живёт в другом режиме, а чужие строки профиля (лимиты) остаются как были.
+    """
     d = _tg_api("GET", "/v1/config").get("data", {})
     w = d.get("web") or {}
     vhosts = list(w.get("vhosts") or [])
@@ -15765,17 +16939,56 @@ def _tg_web_set_profiles(users):
                                  "max_sessions": 8, "max_streams": 512,
                                  "max_streams_per_session": 64}
         p["user"] = u
-        if "secret_mode" not in p:
+        if secret_mode:
+            p["secret_mode"] = secret_mode
+        elif "secret_mode" not in p:
             p["secret_mode"] = "dd"
         new_profiles.append(p)
     v["profiles"] = new_profiles
     vhosts[0] = v
     _tg_api("PATCH", "/v1/config", {"web": {"vhosts": vhosts}})
 
+
+def _tg_web_set_vhost(host="", public_addr=""):
+    """PATCH [web].`vhosts`[0]: имя фасада и публичный адрес — целиком, одним запросом.
+
+    #241: имя vhost'а и есть `server=` из ссылки веб-прокси, поэтому переезд на чужую ссылку
+    начинается здесь. Остальные строки vhost'а (заглушка, профили, базовый путь) возвращаем
+    как прочитали, иначе PATCH затёр бы их.
+    """
+    d = _tg_api("GET", "/v1/config").get("data", {})
+    w = d.get("web") or {}
+    vhosts = list(w.get("vhosts") or [])
+    if not vhosts:
+        raise RuntimeError("в telemt нет ни одного vhost'а веб-прокси — сначала включи его")
+    v = dict(vhosts[0])
+    if host:
+        v["host"] = host
+    if public_addr:
+        v["public_addr"] = public_addr
+    vhosts[0] = v
+    _tg_api("PATCH", "/v1/config", {"web": {"vhosts": vhosts}})
+    return _tg_web_get()
+
+
+def _tg_toml_web_profiles(text=None):
+    """{имя: secret_mode} из `[[web.vhosts.profiles]]` — без обращения к API."""
+    if text is None:
+        text = _tg_manual_read_toml()
+    out = {}
+    for m in re.finditer(r"(?ms)^\s*\[\[web\.vhosts\.profiles\]\]\s*$(.+?)(?=^\s*\[|\Z)", text):
+        body = m.group(1)
+        u = re.search(r'(?m)^\s*"?user"?\s*=\s*"([^"]+)"', body)
+        if not u:
+            continue
+        sm = re.search(r'(?m)^\s*"?secret_mode"?\s*=\s*"([^"]+)"', body)
+        out[u.group(1).strip()] = (sm.group(1).strip().lower() if sm else "")
+    return out
+
 _WEB_CARRIERS = ("https", "https-lanes", "websocket", "websocket-lanes")
 
 def _tg_web_set(carrier=None, enabled=None):
-    """Сменить [web] carrier / включить-выключить WEB (hot-reload, без перезапуска)."""
+    """Сменить [web] `carrier` / включить-выключить WEB (hot-reload, без перезапуска)."""
     patch = {}
     if enabled is not None:
         patch["enabled"] = bool(enabled)
@@ -15815,7 +17028,9 @@ def _tg_web_ensure():
     for p in ("/etc/telemt", "/etc/telemt/telemt.toml"):
         if os.path.exists(p):
             subprocess.run(["chown", "telemt:telemt", p], capture_output=True, timeout=20)
-    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    # #249: vhost'ом веб-прокси становится своё имя `web.<база>`; ссылки `tg://webproxy`
+    # берут `server=` из него.
+    domain = _web_sni(CFG_CACHE.get("panel_domain")) or (CFG_CACHE.get("panel_domain") or "").strip()
     if not domain or ":" in domain or "//" in domain or "/" in domain:
         raise RuntimeError("нет домена — внеси его во вкладке Сайт (раздел DDNS)")
     if not _tg_available():
@@ -15983,7 +17198,9 @@ def _webproxy_status():
     installed = bool(nginx_bin and ng_conf and ng_active)
     free80 = _port_free(80)
     free443 = _port_free(443)
-    domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    # #249: веб-прокси живёт под своим именем `web.<база>`; база остаётся доменом панели.
+    _base_dom = (CFG_CACHE.get("panel_domain") or "").strip()
+    domain = _web_sni(_base_dom) or _base_dom
     domain_set = bool(domain and not re.fullmatch(r"[0-9.]+", domain)
                       and ":" not in domain and "//" not in domain)
     
@@ -16004,6 +17221,13 @@ def _webproxy_apply(domain):
     subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True, timeout=10)
     cert, key = _ng_certs(domain)
     conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
+    # #249: под живым SNI-мюксом общий :443 держит stream-развилка, а веб-фронт сидит на
+    # петлевом `web_port` — шаблонный `listen 443` вернул бы конфликт портов на рестарте.
+    ms0 = _load(_MUX_STATE, {}) or {}
+    wp = int(ms0.get("web_port") or 0) if ms0.get("applied") else 0
+    if wp and wp != 443:
+        conf = conf.replace("listen 443 ssl;", "listen %d ssl;" % wp)
+        conf = conf.replace("listen [::]:443 ssl;", "listen [::]:%d ssl;" % wp)
     os.makedirs(os.path.dirname(_NG_CONF), exist_ok=True)
     with open(_NG_CONF, "w") as f:
         f.write(conf)
@@ -16036,7 +17260,7 @@ def _webproxy_install():
     return {"ok": True, "status": _webproxy_status()}
 
 def _sock_occupant(port):
-    """Кто держит TCP-листнер на :port. Вернуть {free, proc, pids}.
+    """Кто держит TCP-листнер на :port. Вернуть {free, proc, `pids`}.
     Панель работает под root, поэтому ss показывает имена чужих процессов."""
     res = {"free": True, "proc": "", "pids": []}
     if not (isinstance(port, int) and 0 < port < 65536):
@@ -16129,15 +17353,20 @@ def _mux_status():
     if not mprotos and applied and mst.get("inbound"):
         mprotos = [str(mst.get("inbound"))]
     plan = []
+    mp0 = _mp_route_state(domain)
     if not o443["free"]:
         if our_nginx_443:
-            plan.append("перенастроить НАШ веб-прокси nginx на :443 в stream/ssl_preread-мюкс (это тот же nginx, ничего чужого не трогаем)")
+            plan.append("перенести ВСЕ наши веб-фронты nginx с :443 на внутренние петлевые порты (IPv4 и IPv6; каждый тронутый файл бэкапится, «Откатить» возвращает все)")
         else:
             plan.append("остановить текущий сервис на :443 (%s) — он будет отключён" % (o443["proc"] or "?"))
-    plan.append("поднять наш stream/ssl_preread nginx на :443 (SNI-развилка по сертификату домена)")
-    plan.append("cert-TLS inbound'ы (%s) завести на общий :443 через SNI" % (",".join(map(str, tls_ports)) or "—"))
+    plan.append("поднять наш nginx со stream/ssl_preread на :443: развилка по имени — «%s»→xray на петле :%s, веб-имя и всё прочее→наш петлевой фронт"
+                % (("vpn." + domain) if domain else "vpn-SNI", 4443))
+    plan.append("cert-TLS inbound'ы (%s) оставить на петлевых адресах — наружу они пойдут через общий :443, каждый под своим SNI-именем" % (",".join(map(str, tls_ports)) or "—"))
+    if mp0["applied"] or mp0["on443"] or mp0["ours"]:
+        plan.append("MTProto-фасад telemt вести через ту же развилку своим именем «%s» на петлевую маску; публичный слушатель telemt остаётся на порту %s"
+                    % (mp0["domain"] or "?", mp0["listener_port"] or "?"))
     if reality_ports:
-        plan.append("Reality (: %s) через ssl_preread НЕ mux-ится (общий SNI с реальным сайтом) — оставить на отдельном порту"
+        plan.append("Reality (: %s) через развилку не вести: его первое рукопожатие — не TLS, читаемого SNI на входе stream/ssl_preread оно не даёт — оставить на отдельных портах"
                     % ", :".join(str(x) for x in reality_ports))
     warnings = []
     if not o443["free"] and not our_nginx_443:
@@ -16158,7 +17387,7 @@ def _mux_status():
             "tls_ports": tls_ports, "domain": domain,
             "has_cert": has_cert, "cert_dns": cert_dns, "applied": applied,
             "protos": mprotos,
-            "mp": _mp_route_state(domain),
+            "mp": mp0,
             "plan": plan, "warnings": warnings}
 
 # ─────────────────────────── #56 slice 2: opt-in SNI-mux (:443) ───────────────────────────
@@ -16166,7 +17395,8 @@ def _mux_status():
 # cert-TLS VPN получает собственный SNI-поддомен. nginx stream/ssl_preread на :443 разводит:
 #   <vpn-sni>   → 127.0.0.1:<tls_port>  (xray cert-TLS inbound, слушает только loopback)
 #   <веб-sni> / default → 127.0.0.1:<web_port> (веб-фронт / decoy, TLS-терминация у nginx)
-# Reality НЕ mux-ится (общий SNI с реальным сайтом) — остаётся на своём порту.
+# Reality через развилку не ведётся: его первое рукопожатие — не TLS, читаемого SNI на входе
+# stream/ssl_preread оно не даёт — остаётся на своих портах.
 _MUX_STATE = f"{BASE}/mux_state.json"
 _NG_MAIN = "/etc/nginx/nginx.conf"
 _NG_STREAM_INC = "/etc/nginx/veil-mux-stream.conf"
@@ -16180,13 +17410,21 @@ _MUX_BAK_SUFFIX = ".veil-mux.bak"
 _MUX_INBOUND = "vless-xhttp-tls"   # cert-TLS inbound, который мюкс переводит на loopback
 _MUX_VPN_LABEL = "vpn"             # метка поддомена для vless-xhttp (живые ссылки не переименовываем)
 _MUX_MP_LABEL = "mp"               # метка поддомена для MTProto-фасада (#168): имя обязано быть своим
+_MUX_WEB_LABEL = "web"             # метка поддомена веб-прокси (#249): база остаётся доменом панели
+
+def _web_sni(base=None):
+    """#249: SNI-имя веб-прокси — `web.<база>`. Веб-фронт, telemt-vhost и ссылки живут под
+    этим именем; база (`panel_domain`) остаётся доменом панели и CN сертификата."""
+    base = (base if base is not None else (CFG_CACHE.get("panel_domain") or "")).strip().lower()
+    return (_MUX_WEB_LABEL + "." + base) if base else ""
+
 
 _TGBP_STATE = f"{BASE}/tg_mp_port.json"   # помнит, на какой порт мы перенесли mask-фронт MTProto и прежний порт
 
 _MUX_STREAM_TMPL = """# VEIL-MUX (generated) — не редактируйте вручную
 stream {
     map $ssl_preread_server_name $veil_mux_backend {
-{vpn_lines}        {web_domain}      127.0.0.1:{web_port};
+{vpn_lines}{web_sni_line}        {web_domain}      127.0.0.1:{web_port};
 {tg_line}{mp_line}        default           127.0.0.1:{web_port};
     }
     server {
@@ -16280,7 +17518,7 @@ def _mux_stream_module_state():
     """Можно ли nginx этого хоста реально использовать stream, и нужен ли явный load_module.
     Динамическая сборка (--with-stream=dynamic) НЕ гарантирует, что модуль установлен:
     на Ubuntu его даёт пакет libnginx-mod-stream, подключаемый через modules-enabled/*.conf.
-    Возвращает (available, directive): directive=="" — грузится сам (built-in или modules-enabled);
+    Возвращает (available, `directive`): `directive`=="" — грузится сам (built-in или modules-enabled);
     иначе — строка load_module для вставки."""
     try:
         v = subprocess.run(["nginx", "-V"], capture_output=True, text=True, timeout=20).stderr or ""
@@ -16312,7 +17550,7 @@ def _mux_ports_in_use():
     return used
 
 def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", mask_port=0, sni_pairs=None,
-                     mp_domain="", mp_port=0):
+                     mp_domain="", mp_port=0, web_sni=""):
     # sni_pairs — [(domain, port), ...] для НЕСКОЛЬКИХ переводимых cert-TLS входов. Если
     # не передан — прежний единственный (vpn_domain, tls_port). Пустой/повторный домен
     # пропускается: пустой ключ дал бы nginx «conflicting parameter» в map.
@@ -16332,7 +17570,13 @@ def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", m
     mpd = (mp_domain or "").strip().lower()
     if mpd and int(mp_port or 0) and mpd not in seen and mpd != (tg_domain or "").strip().lower():
         mp_line = "        %s      127.0.0.1:%d;\n" % (mpd, int(mp_port))
+    # #249: явная строка имени веб-прокси стоит перед базовой; ветка `default` прежняя —
+    # неизвестный SNI приходит на веб-фронт, база не теряет роль маски.
+    wsnid = (web_sni or "").strip().lower()
+    web_sni_line = ("        %s      127.0.0.1:%d;\n" % (wsnid, int(web_port))
+                    if wsnid and wsnid != (web_domain or "").strip().lower() and wsnid not in seen else "")
     return (_MUX_STREAM_TMPL.replace("{vpn_lines}", "".join(vlines))
+            .replace("{web_sni_line}", web_sni_line)
             .replace("{web_domain}", web_domain)
             .replace("{web_port}", str(web_port))
             .replace("{tg_line}", tg_line)
@@ -16697,7 +17941,7 @@ def _hop_ssh_worker(jid):
     with HOP_LOCK:
         job = HOP_JOBS.get(jid) or {}
         prm = dict(job.get("params") or {})
-    # до закрытий: fail() возможен раньше, чем ниже берётся prm, а _scrub должен
+    # до закрытий: fail() возможен раньше, чем ниже берётся `prm`, а _scrub должен
     # иметь секрет при себе всегда
     password = prm.get("password") or ""
     def st(i, s, d=""):
@@ -17012,6 +18256,47 @@ def _addr_watch_tick():
         except Exception as e:
             print("[addr] admin: " + str(e)[:120], flush=True)
 
+def _sub_force_push():
+    """#169: разовое принудительное обновление подписок по кнопке администратора.
+
+    Физика: панель не умеет пушить подписку — клиент сам тянет выдачу `/sub/`, а
+    частоту задаёт заголовок `profile-update-interval`. Значит «обновить сейчас»
+    складывается из трёх честных ходов: каждому подписчику с `tg_chat` приходит
+    сообщение бота «обнови подписку», следующий час выдача отдаёт шапку с единицей
+    вместо сохранённого периода (приложения потянут чаще), сутки на странице `/p`
+    висит просьба-баннер. Кулдаун десять минут, как при смене адреса: кнопку нельзя
+    превратить в спам-цикл. Сохранённый период `sub_update_hours` кнопка НЕ трогает —
+    через час он возвращается сам, никакого перевода таймера не происходит.
+    """
+    now = int(time.time())
+    prev = int(CFG_CACHE.get("sub_force_ts") or 0)
+    if now - prev < 600:
+        return {"ok": False, "error": "прошлая рассылка меньше 10 минут назад",
+                "retry_in": 600 - (now - prev)}
+    CFG_CACHE["sub_force_ts"] = now
+    _cfg_save()
+    try:
+        subs = [x for x in _subs_summary(_load(STATE) or {}) if str(x.get("tg_chat") or "")]
+    except Exception:
+        subs = []
+    chats = {}
+    for x in subs:
+        chats.setdefault(str(x["tg_chat"]), x)
+    sent = 0
+    for cid, x in list(chats.items())[:500]:
+        try:
+            Bc = _bot_B(cid)
+            kb = {"inline_keyboard": [
+                [{"text": Bc["m_sub_link"], "callback_data": "sub_link"}],
+                [{"text": Bc["m_sub_page"], "url": _bot_sub_urls(x)[1]}]]}
+            _bot_send_message(cid, Bc["force_upd"], "HTML", kb)
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            pass
+    _audit("sub_force", sent=sent, total=len(chats))
+    return {"ok": True, "sent": sent, "total": len(chats)}
+
 def _mux_effect():
     """Что мюкс держит СЕЙЧАС — для честного отклика «Применить» (№149).
     Один SNI у nginx ведёт ровно на один бэкенд, поэтому за общий :443 встаёт каждый
@@ -17079,6 +18364,9 @@ def _mp_name_is_ours(name, base=None):
 
 def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, mp=None):
     web_domain = (CFG_CACHE.get("panel_domain") or "").strip()
+    # #249: веб-прокси переезжает на своё имя `web.<база>`; база остаётся панелью и дефолтной
+    # веткой развилки. Все производные имена (vpn/tg/mp/метки входов) считаются от базы.
+    web_sni = _web_sni(web_domain)
     vpn_domain = (vpn_domain or (("vpn." + web_domain) if web_domain else "")).strip().lower()
     tg_domain = (tg_domain or (("tg." + web_domain) if web_domain else "")).strip().lower()
     # #168: MTProto со своим SNI. Имя по умолчанию — `<метка>.<база>`; `mp=None` — авто:
@@ -17153,7 +18441,8 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
     # Доп. SNI (кроме vpn) обязан быть отличён от web/vpn/tg и от прочих выбранных: дубль ключа
     # map кладёт один SNI на два бэкенда — nginx «conflicting parameter» и падает на -t.
     base_keys = {}
-    for k, v in ((web_domain, "домен панели"), (vpn_domain, "VPN-SNI"), (tg_domain, "tg-SNI")):
+    for k, v in ((web_domain, "домен панели"), (web_sni, "имя веб-прокси"),
+                 (vpn_domain, "VPN-SNI"), (tg_domain, "tg-SNI")):
         if k:
             base_keys.setdefault(k.strip().lower(), v)
     if mp and mp_domain:
@@ -17181,7 +18470,7 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
     le_ok = False   # LE-сертификат годен мюксу: живой И покрывает все SNI (тот же guard, что в _mux_cert)
     if exp and exp > time.time() + 86400:
         names = _cert_dns_names(cp["cert"])
-        _need = [d for d in (web_domain, vpn_domain, tg_domain) if d]
+        _need = [d for d in (web_domain, web_sni, vpn_domain, tg_domain) if d]
         _need += [e["domain"] for e in sel_entries if e["proto"] != _MUX_INBOUND]
         # #168: имя MTProto входит в тот же `SAN`-гейт. Мерено живьём: telemt ОТБРАСЫВАЕТ
         # рукопожатие на 0 байтах, если сыгранная им цепь не покрывает запрошенное имя,
@@ -17207,15 +18496,17 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
         _tg_txt = (", %s→маска" % tg_domain) if tg_domain else ""
         _ex = [e for e in sel_entries if e["proto"] != _MUX_INBOUND]
         _ex_txt = (", " + ", ".join("%s→%s" % (e["domain"], e["label"]) for e in _ex)) if _ex else ""
+        _web_txt = ", ".join(x for x in (web_sni, web_domain) if x) or "?"
         note = (("nginx stream на :443 разведёт SNI: %s→xray(loopback :%s), %s/default→веб(:%s)"
                  + _tg_txt + _ex_txt + ". Reality остаётся на :%s. Сертификат: %s.")
-                % (vpn_domain or "?", 4443, web_domain or "?", 8445,
+                % (vpn_domain or "?", 4443, _web_txt, 8445,
                    ", ".join(str(x) for x in rps) or "—",
                    "LE" if le_ok else "self-signed (SAN на все SNI-имена)"))
     # --- защита от дурака: указывает ли VPN-SNI на этот сервер и можно ли выпустить имя+серт ---
     vp = ""
     vpn_dns_ok = False
     tg_dns_ok = False
+    web_dns_ok = False
     mask_port = 0
     veil = None
     can_provision = False
@@ -17223,6 +18514,9 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
     try:
         vp = _veil_provider(web_domain)
         ours = _our_ips()
+        # #249: имя веб-прокси проверяется как остальные veil-имена: без A/AAAA сюда
+        # ссылки `tg://webproxy?server=web.<база>` не дойдут.
+        web_dns_ok = bool(_resolve_ips(web_sni) & ours) if web_sni else False
         rips = _resolve_ips(vpn_domain) if vpn_domain else set()
         vpn_dns_ok = bool(rips & ours)
         tg_dns_ok = bool(_resolve_ips(tg_domain) & ours) if tg_domain else False
@@ -17277,6 +18571,10 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
         if not mp_mask_port:
             warns.append("не найден свободный петлевой порт под сайт-маску имени MTProto — форма "
                          "прокси будет сниматься с публичного маршрута, то есть с самого telemt")
+    if web_sni and not web_dns_ok:
+        warns.append("имя веб-прокси «%s» сейчас не указывает на этот сервер — ссылки "
+                     "tg://webproxy не дойдут до веб-фронта. Нажмите «Выпустить» "
+                     "(создаст A/AAAA и расширит SAN)." % web_sni)
     if vpn_domain and not vpn_dns_ok and web_domain:
         warns.append("VPN-SNI «%s» сейчас не указывает на этот сервер — подпись до него не дойдёт. "
                      "Нажмите «Выпустить»: панель создаст A/AAAA-запись%s и SAN-сертификат."
@@ -17290,7 +18588,8 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
                      % ", ".join(e["domain"] for e in _pend))
     link_ready = vpn_dns_ok or any(dns_ok_map.get(e["domain"]) for e in sel_entries
                                    if e["proto"] != _MUX_INBOUND)
-    return {"web_domain": web_domain, "vpn_domain": vpn_domain, "tg_domain": tg_domain,
+    return {"web_domain": web_domain, "web_sni": web_sni, "web_dns_ok": web_dns_ok,
+            "vpn_domain": vpn_domain, "tg_domain": tg_domain,
             "can_apply": not blockers,
             "blockers": blockers, "reality_port": ms["reality_port"], "reality_ports": rps,
             "warnings": warns, "applied": bool(ms.get("applied")),
@@ -17305,7 +18604,8 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
                      "dns_ok": bool(dns_ok_map.get(e["domain"]))} for e in sel_entries],
             "dns_provider": vp, "can_provision": can_provision,
             "cert_ready": _veil_cert_ready([d for d in (
-                web_domain, (veil or {}).get("names", {}).get("tg"),
+                web_domain, (veil or {}).get("names", {}).get(_MUX_WEB_LABEL),
+                (veil or {}).get("names", {}).get("tg"),
                 (veil or {}).get("names", {}).get("vpn"),
                 (veil or {}).get("names", {}).get(_MUX_MP_LABEL)) if d]),
             "veil": (veil if (veil or {}).get("ok") else None),
@@ -17376,9 +18676,18 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
         _veil_ensure(None, pv.get("dns_provider"), True, True,
                      pv.get("web_domain") or "", [_MUX_MP_LABEL])
         pv = _mux_preview(vpn_domain, tg_domain, protos, mp_domain=mp_domain, mp=mp)
+    # #249: то же правило для имени веб-прокси `web.<база>`: если имени ещё нет в DNS
+    # или в списке имён рабочего сертификата — выпустить до применения, иначе SAN-гейт
+    # лег бы self-signed'ом поверх живого LE.
+    _ws = (pv.get("web_sni") or "").strip().lower()
+    if _ws and pv.get("can_provision") and (not pv.get("web_dns_ok") or not _veil_cert_ready([_ws])):
+        _veil_ensure(None, pv.get("dns_provider"), True, True,
+                     pv.get("web_domain") or "", [_MUX_WEB_LABEL])
+        pv = _mux_preview(vpn_domain, tg_domain, protos, mp_domain=mp_domain, mp=mp)
     if not pv["can_apply"]:
         raise RuntimeError("нельзя применить: " + "; ".join(pv["blockers"]))
-    web_domain, vpn_domain, tg_domain = pv["web_domain"], pv["vpn_domain"], pv.get("tg_domain") or ""
+    web_domain, web_sni, vpn_domain, tg_domain = (pv["web_domain"],
+        (pv.get("web_sni") or _web_sni(pv["web_domain"])), pv["vpn_domain"], pv.get("tg_domain") or "")
     vpn_dns_ok, tg_dns_ok = bool(pv.get("vpn_dns_ok")), bool(pv.get("tg_dns_ok"))
     # #168: MTProto на общий :443 СВОИМ SNI. `mp` уже прошёл гейт превью (имя наше или
     # маршрут уже стоял), поэтому здесь это факт применения, а не намерение.
@@ -17430,6 +18739,10 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
     # в слушателя mtproxy, а telemt играет цепь фронта и на незнакомом имени рвёт рукопожатие.
     if mp and mp_domain and mp_domain not in extra and mp_domain != tg_domain:
         extra.append(mp_domain)
+    # #249: `web.<база>` обязано быть в `SAN` рабочего сертификата: развилка ведёт его SNI
+    # на веб-фронт, а клиент Telegram сверяет имя ссылки с цепью.
+    if web_sni and web_sni != web_domain and web_sni not in extra:
+        extra.append(web_sni)
     cert, key, kind = _mux_cert(web_domain, vpn_domain, tg_domain, extra_domains=extra)
     avail, mod_directive = _mux_stream_module_state()
     if not avail:
@@ -17497,7 +18810,8 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
     with open(_NG_STREAM_INC, "w") as f:
         f.write(_mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain,
                                  mask_port, sni_pairs=sni_pairs,
-                                 mp_domain=mp_domain if mp else "", mp_port=mp_port if mp else 0))
+                                 mp_domain=mp_domain if mp else "", mp_port=mp_port if mp else 0,
+                                 web_sni=web_sni))
     # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
     main = open(_NG_MAIN_BAK).read()
     changed = False
@@ -17764,7 +19078,8 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
     link_ready = any(bool(e.get("dns_ok")) for e in entries)
     # legacy-поля (inbound/prev/tls_port) зеркалим с vpn-записи: старые читатели mux_state
     # и откат до #155 продолжают работать (правило R-D). prev_map/entries — новое состояние.
-    _save(_MUX_STATE, {"applied": True, "web_domain": web_domain, "vpn_domain": vpn_domain,
+    _save(_MUX_STATE, {"applied": True, "web_domain": web_domain, "web_sni": web_sni,
+                       "vpn_domain": vpn_domain,
                        "tg_domain": tg_domain, "mask_port": mask_port,
                        "mp": mp, "mp_domain": mp_domain if mp else "",
                        "mp_port": mp_port if mp else 0,
@@ -17789,6 +19104,7 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
     except Exception as e:
         print("synfix: " + str(e), flush=True)
     return {"ok": True, "vpn_domain": vpn_domain, "web_domain": web_domain,
+            "web_sni": web_sni,
             "tg_domain": tg_domain, "mask_port": mask_port,
             "mp": mp, "mp_domain": mp_domain if mp else "",
             "mp_port": mp_port if mp else 0, "mp_mask_port": mp_mask_port if mp else 0,
@@ -18212,7 +19528,7 @@ def _login_ok(client_ip):
 
 # ---------- fail2ban-lite: баны по IP в nftables (без fail2ban демона) ----------
 # Таблица inet veil_bans: множества b4/b6 с timeout — IP отваливается сам.
-# protected: IP с активной сессией панели НЕ банится (защита от самоблокировки),
+# `protected`: IP с активной сессией панели НЕ банится (защита от самоблокировки),
 # приватные/loopback адреса не банятся вообще. bans.json — персист ре-аппрая после рестарта.
 
 BANS_FILE = f"{BASE}/bans.json"
@@ -18573,9 +19889,10 @@ def _f2b_unban(ip):
 # ---------- MTProto SYN-защита (nftables; порт логики MTPROTO_FIX_By_MEKO v3) ----------
 # Публичный MTProto-порт круглосуточно сканируют каталогизаторы Telegram-прокси.
 # Ограничить SYN-флуд просто — ломается Telegram iOS: он агрессивно шлёт дубли
-# SYN (retransmit быстрее лимита). Поэтому три слоя, как в MEKO:
+# SYN (`retransmit` быстрее лимита). Поэтому три слоя, как в MEKO:
 #  1) SYN с TCP-опциями iOS (отпечаток в заголовке) — accept без лимита;
-#  2) все остальные — 54 SYN/мин на IP (реальному клиенту хватает с запасом);
+#  2) все остальные — 600 SYN в минуту на источник с запасом 40 пакетов
+#     (поднял цикл #205 с прежних 54; причина стоит у констант);
 #  3) сверх — reject «хост недоступен»: сканер видит фильтруемый порт.
 # Таблица inet veil_synfix пересобирается панелью при старте, при изменении набора
 # защищаемых портов (#170: их несколько — слушатель telemt и общий :443, когда на него
@@ -18819,9 +20136,9 @@ _DEV_BAN_SEC = 2 * 3600
 _DEV_IDLE_LO = 90
 _DEV_IDLE_HI = 420
 _DEV_OVER_SEC = 120
-_DEVTRACK = {}          # uuid -> {gid: {"ips": {ip: last_seen_ts}}}  gid = первый IP группы
+_DEVTRACK = {}          # uuid -> {`gid`: {"ips": {ip: last_seen_ts}}}  `gid` = первый IP группы
 _DEV_OVER = {}          # uuid -> ts, когда заметили превышение
-_DEV_POS = [0, 0]       # [offset чтения, последний размер файла]
+_DEV_POS = [0, 0]       # [`offset` чтения, последний размер файла]
 _DEV_POS_FILE = f"{BASE}/logs/xray-access.pos"
 _DEV_POS_INIT = [False]
 
@@ -18919,12 +20236,12 @@ def _protoact_merge(cnt, now):
     return changed
 
 def _protoact_view(token):
-    """Последние 7 дней для подписчика: [{tag, n, today, last}] по убыванию."""
+    """Последние 7 дней для подписчика: [{tag, n, `today`, last}] по убыванию."""
     with _PROTOACT_LOCK:
         pa = _protoact_load()
         raw = pa.get(str(token or ""))
         raw = raw if isinstance(raw, dict) else {}
-        # копия обязана быть ГЛУБОКОЙ: merger и чистка в фоне правят вложенные
+        # копия обязана быть ГЛУБОКОЙ: `merger` и чистка в фоне правят вложенные
         # словари «день → счётчик» по тем же ссылкам. С одним верхним уровнем
         # морда /p/<токен> ловила «dictionary changed size during iteration» —
         # то есть 500 на ровно том экране, где подписчик смотрит, чем пользуется.
@@ -19998,7 +21315,7 @@ def _gh_release_by_tag(repo, tag):
 
 def _zip_bin(zpath, name, dest):
     """Достать один бинарь из архива, не позволяя ни имени участника, ни тому, на
-    что он ссылается, полезть наружу. `extract` в zipfile умеет создавать симлинки
+    что он ссылается, полезть наружу. `extract` в `zipfile` умеет создавать симлинки
     (флаг в external_attr), а `isfile` по симлинку смотрит на цель: «бинарь»,
     указывающий на ../../../../etc/passwd, прошёл бы проверку, и панель поставила
     бы содержимое чужого файла на путь xray. Сумма с той же выдачи этому не помеха
@@ -20782,7 +22099,7 @@ def _tg_switch(version, confirm=False, job=None):
         _write_atomic(newbin, "/usr/bin/telemt", 0o755)
         r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True,
                            text=True, timeout=120)
-        # returncode 0 у `systemctl restart` значит лишь «команду приняли»: юнит
+        # `returncode` 0 у `systemctl restart` значит лишь «команду приняли»: юнит
         # с Accept-секретом падает уже после, и без is-active мы бы записали
         # успех над мёртвым прокси.
         if r.returncode or not _tg_up():
@@ -21230,8 +22547,16 @@ def _rot_pick_ip(cur):
     return cand[0]
 
 
-def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200):
-    """Серверная проверка доступности через Globalping (зонды из РФ). -> (ok, total, details)"""
+def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200,
+              reachable_only=False):
+    """Серверная проверка доступности через Globalping (зонды из РФ). -> (ok, total, details)
+
+    `reachable_only` — режим монитора автозамены IP: ему нужна достижимость адреса
+    из РФ, а не исправность эндпоинта. Любой HTTP-ответ (пусть даже 404 с голого
+    домена) значит «пакеты ходят»; блокировка выглядит как отсутствие ответа.
+    Без этого флага монитор мерил бы голый домен панели (`404`) как `0/20` и
+    спорил бы с браузерной проверкой живого фронта — отсюда поочерёдные
+    «упало/вернулось» (находка #258)."""
     if not target:
         raise RuntimeError("не задан адрес для проверки")
     proto = proto or ("HTTPS" if port in (443, 8443, 2053, 2083, 2087, 2096) else "HTTP")
@@ -21292,7 +22617,10 @@ def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200):
     for r in results:
         res = (r.get("result") or {})
         code = res.get("statusCode")
-        good = bool(code) and 200 <= int(code) < 400
+        if reachable_only:
+            good = bool(code)
+        else:
+            good = bool(code) and 200 <= int(code) < 400
         if good:
             ok += 1
         tms = res.get("timings") or {}
@@ -21522,7 +22850,8 @@ def _rot_tick():
         _ROT["busy"] = True
     try:
         try:
-            ok, total, details = _gp_probe(cfg["target"], cfg["port"], cfg["path"])
+            ok, total, details = _gp_probe(cfg["target"], cfg["port"], cfg["path"],
+                                           reachable_only=True)
         except Exception as e:
             with _ROT_LOCK:
                 _ROT["error"] = str(e)[:200]
@@ -21816,7 +23145,7 @@ def _veil_want_names():
 
 
 def _domain_points(domain, cands):
-    """True, если домен из вне (DoH Cloudflare/Google) резолвится в один из cands."""
+    """True, если домен из вне (DoH Cloudflare/Google) резолвится в один из `cands`."""
     def _doh(url):
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
@@ -22181,7 +23510,7 @@ def _cert_renewal_is_dns(domain):
 # ---------- ЕДИНЫЙ ВЫПУСК ПОДДОМЕНОВ И СЕРТИФИКАТА (:443 SNI-стек) ----------
 # Маски отталкиваются от базы панели: tg.<база> (MTProto-фасад), vpn.<база> (VPN).
 # Один провайдер на всё (dynv6 HTTP-01 | Cloudflare DNS-01), один SAN-сертификат.
-_VEIL_LABELS = ("tg", "vpn")
+_VEIL_LABELS = ("tg", "vpn", "web")
 
 def _resolve_ips(name):
     """Быстрый резолв имени системным решателем (оба семейства адресов). set() IP-строк;
@@ -22417,7 +23746,7 @@ def _veil_names_wanted():
     if not base:
         return []
     got = [ms.get("vpn_domain") or ("vpn." + base), ms.get("tg_domain"),
-           (ms.get("mp_domain") if ms.get("mp") else "")]
+           (ms.get("mp_domain") if ms.get("mp") else ""), ms.get("web_sni")]
     got += [(e or {}).get("domain") for e in (ms.get("entries") or [])
             if isinstance(e, dict)]
     out = []
@@ -22475,6 +23804,64 @@ def _veil_names_guard():
                foreign=",".join(foreign), restored=",".join(fixed),
                error=_VEIL_GUARD["error"])
     return fixed
+
+
+# ─────────────────────────── #171: единый вид выпуска ───────────────────────────
+# Вход в поддомены и сертификаты был разбросан по вкладкам пятью кнопками, и каждая
+# звала своего писателя своей росписью имён. Писатель и план давно одни
+# (`_veil_ensure`, `_veil_name_plan`), не хватало одного ЧТЕНИЯ: карточки, которая
+# показывает все имена, покрытие сертификатом и чего не хватает — а кнопка в ней
+# ведёт ровно к тому же единому писателю. Роспись кнопок сворачивает этот вид.
+def _veil_center():
+    """Единый вид выпуска: все выпускаемые имена, покрытие сертификатом и недостающее.
+    Только читает: план имён на ВСЕ переводимые входы плюс служебные метки (и `mp`,
+    когда маршрут уже применён — снимок применения, а не галочка предпросмотра),
+    состояние сертификата и окно лимита выдачи. Писателя не трогает."""
+    base = (_veil_base() or (CFG_CACHE.get("panel_domain") or "")).strip().lower()
+    if not base or re.fullmatch(r"[0-9.]+", base or "") or "*" in base:
+        return {"ok": False, "error": "не задан домен панели (база) — укажите его во вкладке «Сайт»"}
+    prov = _veil_provider(base)
+    allp = [e.get("proto") for e in (_mux_relocatable(_load(STATE, {}) or {}) or [])
+            if isinstance(e, dict) and e.get("proto")]
+    labels = _setup_labels_of(allp)
+    ms = _load(_MUX_STATE, {}) or {}
+    if ms.get("applied") and ms.get("mp") and "mp" not in labels:
+        labels.append("mp")
+    plan = _veil_name_plan(base, prov, labels)
+    if not plan.get("ok"):
+        return {"ok": False, "error": plan.get("error") or "нет плана имён"}
+    rows = [r for r in (plan.get("plan") or []) if isinstance(r, dict)]
+    try:
+        cs = _cert_status() or {}
+    except Exception as e:
+        cs = {"san_error": str(e)[:120]}
+    have = [str(x).lower() for x in (cs.get("san") or [])]
+    wanted = set(_veil_names_wanted())
+    out, missing_dns, missing_cert = [], [], []
+    for r in rows:
+        nm = (r.get("final") or "").strip().lower()
+        if not nm:
+            continue
+        cov = bool(have) and _host_covered_by(have, nm)
+        if r.get("status") != "ours":
+            missing_dns.append(nm)
+        if not cov:
+            missing_cert.append(nm)
+        out.append({"label": r.get("label"), "name": nm, "status": r.get("status"),
+                    "cert": cov, "applied": nm in wanted, "ips": r.get("ips") or []})
+    full_want = [base] + [x["name"] for x in out if x["name"] != base]
+    try:
+        cert_ready = bool(_veil_cert_ready(full_want))
+    except Exception:
+        cert_ready = False
+    return {"ok": True, "base": base, "provider": prov, "names": out,
+            "cert": {"has": bool(cs.get("has_cert")), "issued": cs.get("issued"),
+                     "expire": cs.get("expire"), "ready": cert_ready,
+                     "san": cs.get("san") or [], "san_next": cs.get("san_next") or [],
+                     "budget": cs.get("budget"), "error": cs.get("san_error") or ""},
+            "missing_dns": missing_dns, "missing_cert": missing_cert,
+            "extras": [l for l in labels if l not in _VEIL_LABELS],
+            "renumbered": bool(plan.get("renumbered"))}
 
 
 # ─────────────────────────── #160: автонастройка галочками ───────────────────────────
@@ -24528,7 +25915,7 @@ def _term_ws_accept(key):
 
 
 def _term_send_frame(wfile, payload, opcode, wlock):
-    """Сервер→клиент: без маски. opcode 1=text 2=binary 8=close."""
+    """Сервер→клиент: без маски. `opcode` 1=text 2=binary 8=close."""
     b = payload if isinstance(payload, bytes) else payload.encode("utf-8")
     h = bytes([0x80 | opcode])
     n = len(b)
@@ -24554,7 +25941,7 @@ def _term_recv_exact(sock, n):
 
 
 def _term_recv_frame(sock):
-    """Читает один кадр клиента (всегда замаскирован). → (opcode, payload) или (None,None)."""
+    """Читает один кадр клиента (всегда замаскирован). → (`opcode`, payload) или (None,None)."""
     b0, b1 = _term_recv_exact(sock, 2)
     fin = b0 & 0x80
     opcode = b0 & 0x0F
@@ -24590,7 +25977,7 @@ def _term_session(sock, wfile, master, pid, peer, t_start):
     idle_at = [time.time()]
 
     def reader():
-        # stdin: бинарные кадры → pty; текстовые JSON {type:resize} → ioctl
+        # stdin: бинарные кадры → pty; текстовые JSON {type:resize} → `ioctl`
         try:
             while not stop.is_set():
                 op, data, fin = _term_recv_frame(sock)
@@ -25033,6 +26420,11 @@ FLUX_LOCK = threading.Lock()
 # сознательно опущен до 50 и служит запасным, а не главным. Ссылка обязана нести
 # те же числа: по ним клиент выбирает, чем ехать.
 FLUX_DIRECT_PRI = 50
+# Свой носитель живёт на коробке, а не в чужом публичном документе: панель держит
+# байты скрипта и подпись соседа, ядро читает их по пути из юнита. Ключ проверки —
+# публичная часть той же подписи; приватная наружу не выходит.
+FLUX_CAR_DIR = f"{BASE}/carriers"
+FLUX_R7_PUBKEY = "0d4cc83deeb73817129a286bd39c8dc0711ebfddcf6d1f49b2cda18c08f199a7"
 FLUX_CARRIERS = (
     {"type": "vyandex", "pri": 100, "flag": "--vyandex-url",
      "name": "Яндекс",
@@ -25056,6 +26448,18 @@ FLUX_CARRIERS = (
      "re": re.compile(r"https://interview\.cups\.online/live-coding/"
                       r"\?room=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                       r"[0-9a-f]{4}-[0-9a-f]{12}")},
+    # `r7` — носитель, сочинённый здесь. Байты скрипта и подпись к нему панель
+    # держит на коробке, но ссылку чужого документа строка всё равно обязана
+    # спросить: живым промером снято, что ядро передаёт скрипту адрес через
+    # `--url`, а без него носитель сразу глохнет («ссылка документа не задана»).
+    # Имя транспорта ядро знает одно (`script`), имя носителя скрипт называет сам.
+    # Приоритет `85` встал между `mailru` и `cupsonline`: свой черновик идёт ниже
+    # чужих документовых носителей, потому что на клиенте он ещё не мерян.
+    {"type": "r7", "tl": "script", "pri": 85, "own": True, "script": "r7",
+     "pubkey": FLUX_R7_PUBKEY, "flag": "--url", "name": "R7 — свой скрипт",
+     "hint": "https://cloud.mail.ru/public/…/…",
+     "re": re.compile(r"https://cloud\.mail\.ru/public/[A-Za-z0-9_-]{2,64}"
+                      r"/[A-Za-z0-9_-]{2,128}")},
 )
 FLUX_CARRIER_BY = {c["type"]: c for c in FLUX_CARRIERS}
 
@@ -25107,6 +26511,43 @@ def _flux_clean_link(url, keep_query=False):
     return u.rstrip("/")
 
 
+def _flux_car_prj(c):
+    """Что уносим из таблицы по выбранному носителю. Свои носители несут путь,
+    имя транспорта ядра и ключ проверки — без них юнит не собрать."""
+    return {k: c[k] for k in ("type", "pri", "flag", "name", "hint", "tl", "script",
+                              "pubkey", "own") if k in c}
+
+
+def _flux_script_ok(c):
+    """Жив ли свой носитель: байты скрипта и подпись соседа сходятся с ключом.
+
+    Верим не один раз при выпуске, а каждый раз, когда собираем юнит или просим
+    состояние: файл лежит в директории, доступ к которой есть не только у панели,
+    а ядро исполняет его в юните. Молча принять подмену значило бы отдать
+    `--script-pubkey` роль штампа: ядро сверяет подпись с КЛЮЧОМ, который ему
+    назвали мы, и подменённый файл с нашей же подписью соседа прошёл бы дальше.
+    Возвращает (живо, причина отказа, байт скрипта)."""
+    path = os.path.join(FLUX_CAR_DIR, c["script"] + ".js")
+    try:
+        with open(path, "rb") as f:
+            body = f.read()
+        with open(path + ".sig", "rb") as f:
+            sig = f.read()
+    except OSError:
+        return False, "файла носителя или его подписи нет", 0
+    if len(sig) != 64:
+        return False, f"подписи не `64` байта, а {len(sig)}", len(body)
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(c["pubkey"])).verify(sig, body)
+    except ImportError:
+        return False, "библиотеки проверки подписи на коробке нет", len(body)
+    except Exception:
+        return False, "подпись не сходится с байтами носителя", len(body)
+    return True, "", len(body)
+
+
 def _flux_carriers_ok(raw):
     """Носители белых списков: принимаем только те типы, чью форму мы умеем
     собрать в юнит, и судим ссылку тем же правилом, которым ядро судит ноду
@@ -25128,6 +26569,14 @@ def _flux_carriers_ok(raw):
         if t in seen:
             bad.append(f"транспорт `{t}` выбран дважды")
             continue
+        if c.get("own"):
+            # Своего носителя судят двумя мерами: файлом с коробки — подпись
+            # обязана сойтись с байтами скрипта, — и ссылкой того же документного
+            # вида, что и у чужих: её ядро передаёт скрипту через `--url`.
+            ok, why, _size = _flux_script_ok(c)
+            if not ok:
+                bad.append(f"{c['name']}: {why}")
+                continue
         url = _flux_clean_link(it.get("url"), keep_query=bool(c.get("keep_query")))
         if not url:
             bad.append(f"{c['name']}: ссылка пуста")
@@ -25136,7 +26585,7 @@ def _flux_carriers_ok(raw):
             bad.append(f"{c['name']}: нужна ссылка вида {c['hint']}")
             continue
         seen.add(t)
-        out.append({k: c[k] for k in ("type", "pri", "flag", "name", "hint")} | {"url": url})
+        out.append(_flux_car_prj(c) | {"url": url})
     out.sort(key=lambda x: -x["pri"])
     return out, bad
 
@@ -25234,9 +26683,14 @@ def _flux_unit_body(st):
     # (документ требуют капчи, ссылка живёт на другом аккаунте), выход обязан
     # остаться доступным, а не молча умереть вместе с носителем.
     cars, _bad = _flux_carriers_ok(st.get("carriers"))
-    tl = ",".join([f'{c["type"]}:{c["pri"]}' for c in cars]
+    tl = ",".join([f'{c.get("tl") or c["type"]}:{c["pri"]}' for c in cars]
                   + [f"direct:{FLUX_DIRECT_PRI}"])
-    urls = "".join(f' {c["flag"]}="{c["url"]}"' for c in cars)
+    urls = "".join(f' {c["flag"]}="{c["url"]}"' for c in cars if c["url"])
+    # Своему носителю в юните дают путь и ключ автора: ядро читает скрипт с диска,
+    # сверяет подпись соседа до первого запуска кода и передаёт ему ссылку тем же
+    # `--url`, каким кормит одиночный транспорт.
+    urls += "".join(f' --script-path="{os.path.join(FLUX_CAR_DIR, c["script"] + ".js")}"'
+                    f' --script-pubkey={c["pubkey"]}' for c in cars if c.get("own"))
     extra = ""
     if mode == "l3":
         # сырые сокеты и таблицы маршрутов: без этих прав `l3` падает на старте
@@ -25564,7 +27018,12 @@ def _flux_transports(st, host, port):
     ровно то, на чём узел стоит, иначе клиент выберет канал, которого узел не
     поднимал."""
     cars, _bad = _flux_carriers_ok(st.get("carriers"))
-    tl = [{"type": c["type"], "url": c["url"], "priority": c["pri"]} for c in cars]
+    # Своего носителя в ссылке нет: сборщик ссылки ядра знает только встроенные
+    # имена и на `script` отвечает `unknown transport type`. Носитель обязан
+    # приехать клиенту отдельным импортом, поэтому обещать его в ссылке панель не
+    # может — клиент бы выбрал канал, которого у него нет.
+    tl = [{"type": c["type"], "url": c["url"], "priority": c["pri"]}
+          for c in cars if not c.get("own")]
     tl.append({"type": "direct", "dial": f"{host}:{int(port)}",
                "priority": FLUX_DIRECT_PRI})
     return cars, tl
@@ -25604,9 +27063,15 @@ def _flux_link():
         code = (out.get("error") or {}).get("code") if isinstance(out.get("error"), dict) else ""
         raise RuntimeError("ядро отказало ссылкой" + (f" (`{code}`)" if code else ""))
     _audit("flux_link", port=port, carriers=[c["type"] for c in cars])
+    note = "в ссылке лежит ключ: покажи её только своему клиенту"
+    own = [c["name"] for c in cars if c.get("own")]
+    if own:
+        note += (f" · своих носителей ({', '.join(own)}) в ссылке нет — ядро "
+                 "пускает в ссылку только встроенные имена, клиент обязан "
+                 "импортировать их сам")
     return {"link": link, "carriers": [c["type"] for c in cars],
             "dial": f"{host}:{port}",
-            "note": "в ссылке лежит ключ: покажи её только своему клиенту"}
+            "note": note}
 
 
 def _flux_mint_room():
@@ -25656,6 +27121,22 @@ def _flux_view():
     host = _flux_host()
     cars, _bad = _flux_carriers_ok(st.get("carriers"))
     owner = _flux_port_busy(st.get("port"))
+    # Свои носители показываем отдельной мерой: выбранный и пропавший из-за
+    # расшедшейся подписи носитель юнит не везёт, и молчание об этом выглядело бы
+    # как «узел едет хорошо».
+    scripts = []
+    for c in FLUX_CARRIERS:
+        if not c.get("own"):
+            continue
+        ok, why, size = _flux_script_ok(c)
+        chosen = any(str(x.get("type") or "") == c["type"]
+                     for x in (st.get("carriers") or []) if isinstance(x, dict))
+        scripts.append({"type": c["type"], "name": c["name"], "pri": c["pri"],
+                        "ok": ok, "why": why, "bytes": size, "chosen": chosen,
+                        "file": c["script"] + ".js"})
+        if chosen and not ok:
+            blockers.append(f"{c['name']} выбран, но файла живого нет: {why} — "
+                            "юнит соберётся без него")
     return {"enabled": _flux_enabled(), "ver": FLUX_VER, "sha": FLUX_SHA[:12],
             "bin": info, "free": free, "port": st.get("port"), "mode": st.get("mode"),
             "ctx": st.get("ctx"), "active": active,
@@ -25668,6 +27149,7 @@ def _flux_view():
             "carriers": cars,
             "carrier_kinds": [{k: c[k] for k in ("type", "pri", "name", "hint")}
                               for c in FLUX_CARRIERS],
+            "own_scripts": scripts,
             "direct_pri": FLUX_DIRECT_PRI,
             "blockers": blockers,
             "peer_note": ("узел не пишет в журнал ни подъём клиента, ни его уход: "
@@ -26384,7 +27866,7 @@ class H(http.server.BaseHTTPRequestHandler):
         # Цепляем именно send_response_only, а не send_response: через него проходит
         # и служебный send_error, так что флаг не врёт ни на одной ветке.
         # Нужен обработчику сбоя в do_GET: дописать 500 в уже открытый поток
-        # (скачиваемый конфиг, страница, терминальный websocket после 101) — это
+        # (скачиваемый конфиг, страница, терминальный `websocket` после 101) — это
         # склейка двух ответов на keep-alive, ровно тот класс дефекта, от
         # которого защищают _drain_body и ka-тесты.
         self._resp_started = True
@@ -26453,6 +27935,11 @@ class H(http.server.BaseHTTPRequestHandler):
             if not u or not u["owner"]:
                 return self._send(403, {"error": "только владелец"})
             return self._send(200, _ssh_port_status())
+        if p == "/api/node/optimizer":
+            u = _auth_user(self)
+            if not u or not u["owner"]:
+                return self._send(403, {"error": "только владелец"})
+            return self._send(200, _node_opt_status())
         if p == "/api/ai":
             u = _auth_user(self)
             if not u or not u["owner"]:
@@ -26719,6 +28206,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     pui = str(max(1, min(168, int(CFG_CACHE.get("sub_update_hours") or 24))))
                 except Exception:
                     pui = "24"
+                # #169: час после кнопки «обновить сейчас» отдаём единицу — приложения
+                # потянут подписку чаще; сохранённый период не тронут, через час всё само
+                # вернётся, потому что здесь читается только штамп, а не запись.
+                if int(time.time()) - int(CFG_CACHE.get("sub_force_ts") or 0) < 3600:
+                    pui = "1"
                 self.send_header("profile-update-interval", pui)
                 self.send_header("profile-web-page-url",
                                  f"{_pb(host, panel_port)}/p/{sub_path}" if sub_path
@@ -27825,6 +29317,9 @@ class H(http.server.BaseHTTPRequestHandler):
             _lb = (q.get("labels") or [""])[0]
             labels = [x.strip() for x in _lb.split(",") if x.strip()] or None
             return self._send(200, _veil_name_plan((q.get("base") or [""])[0] or None, prov, labels))
+        if p == "/api/veil/center":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _veil_center())
         if p == "/api/setup/plan":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -28130,7 +29625,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                         "retry_after": 15})
             # С этого момента любые Telegram-письма, которые родит обработчик,
             # копятся и уходят в рабочую очередь уже после отпускания замка:
-            # молчаливый Telegram не имеет права держать состояние whole панели
+            # молчаливый Telegram не имеет права держать состояние `whole` панели
             # (находка #14 — тот же дефект, что в фоновом тике).
             _notify_begin()
             if p == "/api/term/toggle":
@@ -28152,6 +29647,26 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _ssh_port_set(b.get("port"),
                                                          confirm=bool(b.get("confirm")),
                                                          user=u.get("login")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:200]})
+            if p == "/api/node/optimizer/apply":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                try:
+                    return self._send(200, _node_opt_apply(confirm=bool(b.get("confirm")),
+                                                           user=u.get("login")))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:200]})
+            if p == "/api/node/optimizer/rollback":
+                u = _auth_user(self)
+                if not u or not u["owner"]:
+                    return self._send(403, {"error": "только владелец"})
+                b = self._body() or {}
+                try:
+                    return self._send(200, _node_opt_rollback(confirm=bool(b.get("confirm")),
+                                                              user=u.get("login")))
                 except Exception as e:
                     return self._send(400, {"error": str(e)[:200]})
             if p == "/api/flux/switch":
@@ -28547,6 +30062,96 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not ok:
                     return self._send(400, {"error": err or "конфиг не прошёл проверку"})
                 return self._send(200, {"ok": True, "inbound": _inbound_public(proto, inb)})
+            if p == "/api/inbound/manual":
+                # Цикл #256: блок «ручная настройка входа» во вкладке VPN.
+                # `action:preview` — пробный `xray run -test` по кандидату, без
+                # записи и рестарта; `action:apply` — настоящий путь: сначала
+                # `_validate_and_apply` (он сам откатывает при неудаче), потом
+                # туннель, который живёт вне xray; не принял туннель параметры —
+                # честно откатываем всё и возвращаем прежний конфиг в ядро.
+                b = self._body() or {}
+                action = _field(b, 'action').strip().lower() or "preview"
+                if action not in ("preview", "apply"):
+                    return self._send(400, {"error": "action: preview или apply"})
+                proto = _field(b, 'proto').strip()
+                if proto not in _VALID_PROTOCOLS:
+                    return self._send(400, {"error": "неизвестный протокол"})
+                st = _load(STATE) or {}
+                inbs = _inb_writable(st)
+                if inbs is None:
+                    return self._send(400, {"error": "входы в файле состояния не пригодны для правки"})
+                existed = isinstance(inbs.get(proto), dict)
+                base = inbs.get(proto) if existed else None
+                candidate = dict(base) if existed else _alloc_inbound(st, proto)
+                errs, changes = _manual_fields(proto, candidate, b, inbs, existed)
+                if errs:
+                    return self._send(400, {"error": "; ".join(errs)[:900], "changes": changes})
+                meta = _proto_meta(proto)
+                tun = meta.get("group") in ("wg", "awg")
+                if not existed and not tun:
+                    # Создаём вход xray-протокола: вход без подписчиков xray в
+                    # конфиг не собирает — «созданный» пустой транспорт был бы
+                    # враньём, поэтому подписчиков приводим сразу (тот же
+                    # backfill, что у кнопки «включить»), а нечего приводить — отказ.
+                    try:
+                        _proto_backfill(st, proto, candidate)
+                    except Exception as e:
+                        return self._send(400, {"error": "не удалось добавить подписчиков: " + str(e)[:160]})
+                    if not (candidate.get("clients") or []):
+                        return self._send(400, {"error": "у нового входа нет подписчиков — xray его не поднимет: "
+                                                        "сначала заведите подписчика или правьте существующий транспорт"})
+                cand_st = dict(st)
+                cand_inbs = dict(inbs)
+                cand_inbs[proto] = candidate
+                cand_st["inbounds"] = cand_inbs
+                if action == "preview":
+                    ok, err = _xray_test_only(cand_st)
+                    if not ok:
+                        return self._send(400, {"error": err or "конфиг не прошёл проверку", "changes": changes})
+                    return self._send(200, {"ok": True, "preview": True, "proto": proto,
+                                            "changes": changes,
+                                            "inbound": _inbound_public(proto, candidate)})
+                inbs[proto] = candidate
+                ok, err = _validate_and_apply(st)
+                if not ok:
+                    if existed:
+                        inbs[proto] = base
+                    else:
+                        inbs.pop(proto, None)
+                    return self._send(400, {"error": err or "конфиг не прошёл проверку", "changes": changes})
+                if tun:
+                    # force=True: адрес и `keepalive` `_awg_iface_synced` не сравнивает,
+                    # без форса интерфейс дожил бы на прежних байтах конфига.
+                    synced = _awg_sync(st, force=True) if proto == "amneziawg" else _wg_sync(st, force=True)
+                    if not synced:
+                        if existed:
+                            inbs[proto] = base
+                        else:
+                            inbs.pop(proto, None)
+                        ok2, err2 = _validate_and_apply(st)
+                        if proto == "amneziawg":
+                            _awg_sync(st, force=True)
+                        else:
+                            _wg_sync(st, force=True)
+                        return self._send(400, {"error": "туннель не принял новые параметры — откатил прежние"
+                                                + (": " + str(err2)[:160] if not ok2 else "")})
+                _audit("inbound_manual", proto=proto, created=not existed,
+                       fields=[c["field"] for c in changes])
+                return self._send(200, {"ok": True, "proto": proto, "changes": changes,
+                                        "inbound": _inbound_public(proto, candidate)})
+            if p == "/api/inbound/gen":
+                # Генератор свежих значений для ручной настройки (#256, слово
+                # хозяина). Ничего не пишет и не рестартует; сгенерированный
+                # секрет уходит только владельцу в ответе и в логах не бывает.
+                b = self._body() or {}
+                what = _field(b, "what").strip().lower()
+                try:
+                    return self._send(200, dict(_manual_gen(what), ok=True))
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)[:200]})
+                except Exception:
+                    # вывод генератора (там закрытый ключ) в ошибку не пускаем
+                    return self._send(500, {"error": "генератор не дал значение — попробуй ещё раз"})
             if p == "/api/inbound/toggle":
                 b = self._body()
                 proto = _field(b, 'proto').strip()
@@ -30738,6 +32343,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 t = _load(THEME, {}) or {}
                 for k in ("bg","bg2","card","card2","fg","mut","br","acc","acc2","font","layout","swipe"):
                     if k in body: t[k] = body[k]
+                if "skin" in body:
+                    if body["skin"] == "liquid": t["skin"] = "liquid"
+                    else: t.pop("skin", None)
                 _save(THEME, t)
                 self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length","11"); self.end_headers()
                 self.wfile.write(b'{"ok":true}'); return
@@ -31071,6 +32679,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 _cfg_save()
                 _audit("sub_settings", **_sub_settings())
                 return self._send(200, {"ok": True, **_sub_settings()})
+            if p == "/api/sub/force":
+                b = self._body()
+                if not b.get("confirm"):
+                    return self._send(400, {"error": "нужен confirm: разовая рассылка всем подписчикам"})
+                return self._send(200, _sub_force_push())
             if p == "/api/sub/format":
                 b = self._body()
                 tok = _field(b, 'sub_token').strip()
@@ -31317,6 +32930,20 @@ class S(socketserver.ThreadingTCPServer):
             self.close_request(request)
             return
         try:
+            # Цикл #34: ответы панели по keep-alive мелкие — заголовки, следом
+            # тело, и тело между двумя записями сидит в очереди Нагля до
+            # подтверждения на заголовки; мобильные стеки копят это
+            # подтверждение таймером отсроченного ACK на ~40 мс. Замер на
+            # петлей: голый `stdlib`-сервер ловит те же 40.5 мс на каждый
+            # ответ против 0.5 мс без таймера, то есть цена НЕ в обработчике.
+            # Снимаем на ГОЛОМ сокете до обёртки: на SSLSocket в этом Python
+            # прямая запись не проходит (EBADF), а флаг обработчика
+            # `disable_nagle_algorithm` рвал бы каждое TLS-соединение.
+            # Рукопожатие и обработчик поедут по этому же сокету позже.
+            try:
+                request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+            except OSError:
+                pass
             sock = self._veil_handshake(request)
             if sock is None:
                 # соединение уже некому обслуживать (молчало, ушло, не TLS, кривой
@@ -31449,8 +33076,8 @@ class S(socketserver.ThreadingTCPServer):
             sock.sendall(b"HTTP/1.1 503 Overloaded\r\nRetry-After: 3\r\n"
                          b"Connection: close\r\nContent-Length: 0\r\n\r\n")
             if sock is not request:
-                # снимаем TLS-обёртку: descriptor закрывает вызывающий по исходному
-                # сокету, и разрыв будет без unanswered close_notify
+                # снимаем TLS-обёртку: `descriptor` закрывает вызывающий по исходному
+                # сокету, и разрыв будет без `unanswered` close_notify
                 try:
                     sock.unwrap()
                 except Exception:
