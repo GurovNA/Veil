@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.3"
+VERSION = "2.17.4"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -395,6 +395,7 @@ PROTOCOLS = [
     {"id": "trojan-ws-tls",       "label": "Trojan + WebSocket + TLS",             "group": "trojan",  "net": "ws",       "tls": True},
     {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS",        "group": "trojan",  "net": "tcp",      "tls": True},
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS",       "group": "trojan",  "net": "grpc",     "tls": True},
+    {"id": "trojan-reality",      "label": "Trojan + TCP + Reality",    "group": "trojan",  "net": "tcp",      "tls": False},
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
     {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
     {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
@@ -427,6 +428,7 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
+           "trojan-reality": 25443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
 # Порт 80 занят nginx/Let's Encrypt, 18080 — telemt web, 9091 — telemt API,
 # 7443 — telemt MTProto. 443 намеренно НЕ зарезервирован: на чистом хосте Reality
@@ -1778,6 +1780,32 @@ AWG_JUNK = {
     "H1": 1, "H2": 2, "H3": 3, "H4": 4
 }
 
+def _tun_tools(proto):
+    """Инструменты туннельного транспорта на этой машине -> текст честного
+    отказа либо None. Поймано начистой установкой на тестовой коробке (v2.17.3,
+    10.10): там нет ни `wg-quick`, ни `awg-quick`, панель же делала вид —
+    заводила вход в состояние, гоняла `systemctl restart awg-quick@awg0`
+    («Unit not found» в журнал на каждую мутацию подписчиков) и отвечала
+    расплывчатым «туннель не принял новые параметры». Без пакета транспорт не
+    поднимается ничем, поэтому синки и ручки теперь спрашивают бинарь ДО любой
+    записи и любого рестарта. Не кэшируем: `apt-get install` появляется на
+    живой машине посреди работы панели (тем же прогоном и проверено)."""
+    if proto == "amneziawg":
+        if not shutil.which("awg-quick"):
+            return ("AmneziaWG не установлен на этой машине: нет пакета с "
+                    "`awg-quick`, панель не поднимает транспорт и не трогает "
+                    "состояние — AmneziaWG ставится отдельно, в штатных "
+                    "репозиториях дистрибутива его нет")
+        return None
+    if proto == "wireguard":
+        if not shutil.which("wg-quick"):
+            return ("wireguard-tools не установлены на этой машине: без `wg-quick` "
+                    "интерфейс veilwg не поднять — поставь пакет "
+                    "`apt-get install -y wireguard-tools` и включи транспорт заново")
+        return None
+    return None
+
+
 def _awg_pubof(priv):
     try:
         r = subprocess.run(["/usr/bin/awg", "pubkey"], input=str(priv).strip(),
@@ -1893,6 +1921,11 @@ def _awg_restart_iface(st):
 def _awg_sync(st, force=False):
     """Синхронизирует панель с системой: ключи интерфейса awg0 и список peers."""
     if not st:
+        return False
+    if _tun_tools("amneziawg"):
+        # инструмента нет: не заводим вход в состояние (из этого «ничего» и
+        # рождались фантомные amneziawg с нулём клиентов), не пишем конфиг, не
+        # дёргаем systemctl и не красим журнал — синк просто молча ничего не делает
         return False
     inbounds = _inb_writable(st)
     if inbounds is None:
@@ -2071,6 +2104,10 @@ def _wg_sync(st, force=False):
     wg-quick сам регистрирует маршруты /32 каждого клиента; при любом изменении
     конфиг переписывается и интерфейс перезапускается."""
     if not st:
+        return False
+    if _tun_tools("wireguard"):
+        # та же стражка, что у amneziawg: без `wg-quick` интерфейс не поднять,
+        # панель не заводит вход и не шлёт systemd заведомо пустой запрос
         return False
     _ensure_wg_net()
     inbounds = _inb_writable(st)
@@ -2592,7 +2629,7 @@ def _migrate_state(st):
                 # выброшенная запись внутри входа, а цена у этих двух разная.
                 _audit("state_junk_dropped", what="client", proto=proto, n=len(junk),
                        sample=_audit_sample(junk[0]))
-        if proto in ("reality", "vless-xhttp-reality"):
+        if proto in ("reality", "vless-xhttp-reality", "trojan-reality"):
             for k in ("private_key", "public_key"):
                 if inb.get(k):
                     fixed = _reality_key_std(inb[k])
@@ -2662,7 +2699,7 @@ def _gen_selfsigned(proto):
 def _new_inbound(proto):
     if proto not in _VALID_PROTOCOLS: proto = "reality"
     inb = {"port": _find_free_port(_PORTS.get(proto)), "clients": []}
-    if proto in ("reality", "vless-xhttp-reality"):
+    if proto in ("reality", "vless-xhttp-reality", "trojan-reality"):
         priv, pub = _gen_keys()
         inb.update({"private_key": priv, "public_key": pub,
                     "sid": secrets.token_hex(4), "sni": "www.samsung.com",
@@ -2845,6 +2882,11 @@ def _enable_proto(st, proto):
         return False, "нет состояния"
     if proto not in _VALID_PROTOCOLS:
         return False, "неизвестный протокол"
+    missing = _tun_tools(proto)
+    if missing:
+        # кнопка «включить» на машине без пакета раньше возвращала 200 и ложливый
+        # вход с нулём подписчиков — честный отказ до первой записи
+        return False, missing
     inbounds = st.setdefault("inbounds", {})
     fresh = proto not in inbounds
     if fresh:
@@ -2970,7 +3012,7 @@ def _stream_settings(proto, inb):
         return {"show": False, "dest": inb.get("dest") or "www.samsung.com:443", "xver": 0,
                 "serverNames": snis, "privateKey": pk,
                 "shortIds": sids}
-    if proto == "reality":
+    if proto in ("reality", "trojan-reality"):
         return _deep_merge({"network": "tcp", "security": "reality",
                             "realitySettings": _reality()}, adv)
     path = inb.get("path") or "/veil"
@@ -3239,6 +3281,16 @@ def _manual_fields(proto, inb, b, inbs, existed):
         for pr2, ib2 in (inbs or {}).items():
             if pr2 != proto and isinstance(ib2, dict) and ib2.get("port") == v:
                 errs.append("порт %d занят входом %s" % (v, pr2))
+                return "bad"
+        if not (isinstance((inbs or {}).get(proto), dict) and inbs[proto].get("port") == v):
+            # Цикл #273 (живая поимка на аренде): `xray run -test` порт не
+            # трогает, а `systemctl restart` не ждёт связки — apply на порт
+            # стороннего слушателя (живьём — sshd :22) возвращал 200, а узел
+            # падал в перезагрузку юнита. Меряем bind-пробой того же розлива,
+            # что бережёт старт панели; свою же паузу (тот же порт этого
+            # входа) занятым не считаем — слушатель на нём и есть этот вход.
+            if _panel_port_taken("0.0.0.0", v):
+                errs.append("порт %d занят живым слушателем на коробке" % v)
                 return "bad"
         return v
 
@@ -5245,6 +5297,20 @@ def _pub_host(inb, host, proto=""):
             return lh
     return host
 
+def _reality_sni(inb):
+    """Первый sni входа: список важнее единичного — канон, которым живёт
+    сборщик конфига."""
+    snis = _as_list(inb.get("snis")) or [inb.get("sni") or ""]
+    return str(snis[0] or "")
+
+
+def _reality_sid(inb):
+    """Первый shortId входа: список важнее единичного — тот же канон, что у
+    сборки конфига; пустой shortId законен."""
+    sids = _as_list(inb.get("sids")) or ([inb.get("sid")] if inb.get("sid") else [])
+    return str(sids[0] or "") if sids else ""
+
+
 def _link(inb, host, client, proto, std=False):
     """Ссылка подключения. std=True — канонический Xray-формат (строгий парсер
     INCY): `encryption`=none, без allowInsecure (удалён из свежих ядер), обычный
@@ -5286,6 +5352,8 @@ def _link(inb, host, client, proto, std=False):
                     f"H3 = {jk['H3']}\n"
                     f"H4 = {jk['H4']}\n")
         a6 = _tun6(client, "fd20:10::")
+        if not client.get("client_private_key"):
+            raise ValueError("у AmneziaWG-подписчика нет ключа на устройстве — конфиг не соберётся")
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
@@ -5300,6 +5368,8 @@ def _link(inb, host, client, proto, std=False):
                 "")
     if proto == "wireguard":
         a6 = _tun6(client)
+        if not client.get("client_private_key"):
+            raise ValueError("у WireGuard-подписчика нет ключа на устройстве — конфиг не соберётся")
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
                 f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
@@ -5371,14 +5441,23 @@ def _link(inb, host, client, proto, std=False):
             qparts["authority"] = inb["host"]
     elif meta["net"] in ("xhttp", "splithttp"):
         qparts["path"] = inb.get("path") or "/veil"
-    if proto in ("reality", "vless-xhttp-reality"):
-        qparts.update({"security": "reality", "pbk": inb["public_key"],
-                       "fp": fp, "sni": inb["sni"], "sid": inb["sid"],
+    if proto in ("reality", "vless-xhttp-reality", "trojan-reality"):
+        # Чтение по канону сборщика конфига: ручная правка оставляет shortId
+        # только в списке, прямой индекс единичного поля поднимал KeyError,
+        # а страница подписчиков складывалась в 500 (живая находка #265).
+        pk = inb.get("public_key")
+        sni = _reality_sni(inb)
+        if not pk or not sni:
+            raise ValueError("у reality-входа нет открытого ключа или sni — ссылка не соберётся")
+        qparts.update({"security": "reality", "pbk": pk,
+                       "fp": fp, "sni": sni, "sid": _reality_sid(inb),
                        "spx": "/"})
         if proto == "reality":
+            # `vision` — свойство vless-потока; троян его не несёт и ядро на него
+            # жалуется, поэтому развилка явная по протоколу, а не «иначе».
             qparts["flow"] = "xtls-rprx-vision"
-        else:
-            qparts["host"] = inb["sni"]
+        elif proto == "vless-xhttp-reality":
+            qparts["host"] = sni
     elif meta["tls"]:
         # allowInsecure нигде не ставим: сертификат валидный LE, а свежие ядра
         # Xray (Happ 5.9+ и INCY) удалили флаг и отвергают ссылку целиком.
@@ -5488,8 +5567,13 @@ def _map_vless_proto(sec, typ):
         return "vless-ws" if typ == "ws" else None
     return None
 
-def _map_trojan_proto(typ):
+def _map_trojan_proto(typ, sec=""):
     typ = {"splithttp": "xhttp", "ws": "ws", "grpc": "grpc", "tcp": "tcp"}.get(typ, "tcp")
+    if sec == "reality":
+        # троян под reality — свой вход, пароль тот же; раньше импорт опускал
+        # его до tls-подписного трояна и ссылки переставали сходиться (слово
+        # хозяина: перенос 1в1).
+        return "trojan-reality"
     return {"ws": "trojan-ws-tls", "grpc": "trojan-grpc-tls", "tcp": "trojan-tcp-tls"}.get(typ)
 
 def _map_vmess_proto(net, tls):
@@ -5530,7 +5614,8 @@ def _parse_link_line(line):
             if "@" not in body: return None
             pw, hp = body.rsplit("@", 1)
             typ = (params.get("type") or [""])[0].strip().lower()
-            return {"scheme": "trojan", "proto": _map_trojan_proto(typ),
+            sec = (params.get("security") or [""])[0].strip().lower()
+            return {"scheme": "trojan", "proto": _map_trojan_proto(typ, sec),
                     "password": urllib.parse.unquote(pw),
                     "name": urllib.parse.unquote(frag), "host": _split_hostport(hp)[0]}
         if low.startswith("vmess://"):
@@ -5840,7 +5925,7 @@ _EXTIMP_PROTO_MAP = {
     "vmess": {"tls|ws": "vmess-ws-tls", "tls|tcp": "vmess-tcp-tls", "tls|grpc": "vmess-ws-tls",
               "tls|xhttp": "vmess-ws-tls", "none|ws": "vmess-ws", "none|*": "vmess-ws"},
     "trojan": {"tls|ws": "trojan-ws-tls", "tls|tcp": "trojan-tcp-tls", "tls|grpc": "trojan-grpc-tls",
-               "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-tcp-tls", "reality|*": "trojan-tcp-tls",
+               "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-reality", "reality|*": "trojan-reality",
                "tls|*": "trojan-tcp-tls"},
     "shadowsocks": {"*|*": "shadowsocks"},
     "hysteria2": {"*|*": "hysteria2"},
@@ -5914,7 +5999,7 @@ def _xui_parse_items(con, warnings):
             continue
         if str(protocol).lower() in ("vless", "trojan") and str(stream.get("security") or "") == "reality":
             warnings.append("«%s»: Reality-ключей перенос нет — %s импортируется со своими ключами (ссылки подписчикам обновятся)" %
-                            (inb_name, "reality-группа" if protocol == "vless" else "trojan-tcp-tls"))
+                            (inb_name, veil_proto))
         for c in (s.get("clients") or []):
             if not isinstance(c, dict): continue
             name = (str(c.get("email") or c.get("remark") or "").strip() or inb_name)[:40]
@@ -6159,6 +6244,11 @@ def _incy_link(proto, inb, c, host):
         # mtu обязателен: по умолчанию приложения берут 1500, а туннельный
         # интерфейс — WG_MTU (1280); на мобильном IPv6-пути крупные пакеты не
         # фрагментируются и молча чёрнеют (handshake есть, трафика нет).
+        if not (c.get("client_private_key") or "").strip():
+            # переехавший пир без секретного ключа (старая x-ui хранила только
+            # публичные): пустой wireguard:// INCY принимает, но туннель из него
+            # не поднимается — ссылка только вводит в заблуждение, снимаем её.
+            return None
         addr = (c.get("address") or "10.10.0.2/32").split("/")[0]
         a6 = _tun6(c)
         if a6:
@@ -6343,6 +6433,12 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
             # Поэтому для sing-box AWG не существует (полный конфиг его тоже пропускает).
             return None
         raw_priv = c.get("client_private_key") or ""
+        if not raw_priv:
+            # пустой private_key sing-box не принимает, а плохой wireguard-объект
+            # рвёт ВЕСЬ конфиг — подписчик теряет разом все протоколы. Переехавшие
+            # пиры без ключа (старая x-ui хранила только публичные) честнее
+            # не показывать вовсе, чем ломать остальное.
+            return None
         priv = urllib.parse.unquote(raw_priv).replace("%2F", "/").replace("%2B", "+").replace("%3D", "=")
         raw_pub = inb.get("public_key") or ""
         pub = urllib.parse.unquote(raw_pub).replace("%2F", "/").replace("%2B", "+").replace("%3D", "=")
@@ -6399,15 +6495,16 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
     else:  # vless family
         ob = {"type": "vless", "tag": tag, "server": host, "server_port": port,
               "uuid": c["uuid"]}
-    if proto in ("reality", "vless-xhttp-reality"):
-        # `flow` xtls-rprx-vision держит только чистый TCP-Reality. На xhttp он
-        # ломает рукопожатие (и строго ядро отвергает конфиг целиком), поэтому
-        # ровно там, где его добавляет сервер, — см. _build_xray_cfg и _link.
+    if proto in ("reality", "vless-xhttp-reality", "trojan-reality"):
+        # `flow` xtls-rprx-vision держит только чистый TCP-Reality vless: на xhttp
+        # и на трояне он ломает рукопожатие (и строго ядро отвергает конфиг
+        # целиком), поэтому ровно там, где его добавляет сервер, — см.
+        # _build_xray_cfg и _link.
         if proto == "reality":
             ob["flow"] = "xtls-rprx-vision"
-        ob["tls"] = {"enabled": True, "server_name": inb.get("sni") or host,
+        ob["tls"] = {"enabled": True, "server_name": _reality_sni(inb) or host,
                      "reality": {"enabled": True, "public_key": inb.get("public_key") or "",
-                                 "short_id": inb.get("sid", "")},
+                                 "short_id": _reality_sid(inb)},
                      "utls": {"enabled": True, "fingerprint": fp}}
     else:
         ob["tls"] = _tls()
@@ -12912,7 +13009,7 @@ def _agent_link(n, ap, u, c0):
 
 # Порядок предпочтения протокола при размещении клиента на ноде:
 # берём первый протокол клиента, который нода реально поддерживает.
-_NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "hysteria2",
+_NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "trojan-reality", "hysteria2",
                         "vless-xhttp-tls", "vless-ws-tls", "vless-tcp-tls", "vless-grpc-tls", "vless-ws",
                         "trojan-tcp-tls", "trojan-ws-tls", "trojan-grpc-tls",
                         "vmess-ws-tls", "vmess-tcp-tls", "vmess-ws",
@@ -17330,7 +17427,7 @@ def _mux_status():
         if not p:
             continue
         meta = _proto_meta(proto) or {}
-        if meta.get("group") == "reality":
+        if meta.get("group") == "reality" or proto == "trojan-reality":
             try:
                 reality_ports.append(int(p))
             except (TypeError, ValueError):
@@ -24660,7 +24757,7 @@ def _backup():
         with open(WALL, "rb") as f:
             data["wallpaper"] = base64.b64encode(f.read()).decode()
     for proto in _VALID_PROTOCOLS:
-        if not _PROTO_MAP[proto]["tls"] and proto not in ("reality", "vless-xhttp-reality"):
+        if not _PROTO_MAP[proto]["tls"] and proto not in ("reality", "vless-xhttp-reality", "trojan-reality"):
             continue
         for ext in ("crt", "key"):
             p = f"{CERT_DIR}/{proto}.{ext}"
@@ -27721,10 +27818,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
             expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
             reset_cycle = _field(b, 'reset_cycle').strip().lower()
-            try:
-                max_devices = max(0, int(b.get("max_devices") or 0))
-            except Exception:
-                max_devices = 0
+            # зеркала названного отказа `#271`: внешнему вызывающему причина
+            # важнее молчаливого «без лимита»
+            try: max_devices = int(float(b.get("max_devices") or 0))
+            except (TypeError, ValueError, OverflowError):
+                return self._send(400, {"error": "max_devices не число"})
+            if max_devices < 0 or max_devices > 1000:
+                return self._send(400, {"error": "max_devices от 0 до 1000"})
             c = _new_client(name, proto, inb, limit_gb=limit_gb, expiry=expiry,
                             reset_cycle=reset_cycle, max_devices=max_devices)
             c["ext_owner"] = tid
@@ -28055,7 +28155,11 @@ class H(http.server.BaseHTTPRequestHandler):
                                 if lkey not in inb_links:
                                     inb_links[lkey] = _link(inb, host, c, proto)
                                 if lkey not in inc_links:
-                                    inc_links[lkey] = _incy_link(proto, inb, c, host)
+                                    _il = _incy_link(proto, inb, c, host)
+                                    if _il:
+                                        # None — пир без ключа на устройстве: ссылки
+                                        # нет, пустой строки в выдаче быть не должно.
+                                        inc_links[lkey] = _il
                                 if lkey not in sb_objs:
                                     _ob = _singbox_outbound(proto, inb, c, host)
                                     if _ob:
@@ -28754,7 +28858,13 @@ class H(http.server.BaseHTTPRequestHandler):
                             (t.get("label") for t in _node_tokens() if t.get("id") == c["ext_owner"]),
                             "внешняя панель")
                     if ipv6:
-                        item["link6"] = _link(inb, f"[{ipv6}]", c, proto)
+                        try:
+                            item["link6"] = _link(inb, f"[{ipv6}]", c, proto)
+                        except Exception as e:
+                            # отказ v6-ссылки одного клиента не рвёт страницу
+                            # целиком — тот же приём, что у v4-ссылки выше
+                            item["link6"] = ""
+                            _audit("client_link6_error", proto=proto, detail=str(e)[:200])
                     if proto == "wireguard" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
@@ -30111,6 +30221,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, "preview": True, "proto": proto,
                                             "changes": changes,
                                             "inbound": _inbound_public(proto, candidate)})
+                missing = _tun_tools(proto) if tun else None
+                if missing:
+                    # туннельному протоколу без пакета на этой машине отказ раньше
+                    # любой записи: причина названа, состояние не тронуто
+                    return self._send(400, {"error": missing, "changes": changes})
                 inbs[proto] = candidate
                 ok, err = _validate_and_apply(st)
                 if not ok:
@@ -30119,7 +30234,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     else:
                         inbs.pop(proto, None)
                     return self._send(400, {"error": err or "конфиг не прошёл проверку", "changes": changes})
-                if tun:
+                if tun and changes:
+                    # `and changes`: нулевой apply (повторный нажим «Применить») не
+                    # обязан пересобирать интерфейс — юнит жил на прежних байтах,
+                    # и перезапускать его ради косметики — рвать туннель подписчикам
                     # force=True: адрес и `keepalive` `_awg_iface_synced` не сравнивает,
                     # без форса интерфейс дожил бы на прежних байтах конфига.
                     synced = _awg_sync(st, force=True) if proto == "amneziawg" else _wg_sync(st, force=True)
@@ -30722,8 +30840,15 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(400, {"error": "expiry_days от 0 до 36500 суток"})
                 expiry = (int(time.time()) + _edays * 86400) if _edays > 0 else 0
                 reset_cycle = _field(b, 'reset_cycle').strip().lower()
-                try: max_devices = max(0, int(b.get("max_devices") or 0))
-                except Exception: max_devices = 0
+                # Цикл #271 (живая находка обкатки на аренде): до этого «abc» и -2
+                # молча означали «без лимита» с ответом 200 — тот же класс честности,
+                # что починенные `limit_gb`/`expiry_days`; формулировка зеркалит
+                # названный отказ ручки правки.
+                try: max_devices = int(float(b.get("max_devices") or 0))
+                except (TypeError, ValueError, OverflowError):
+                    return self._send(400, {"error": "max_devices не число"})
+                if max_devices < 0 or max_devices > 1000:
+                    return self._send(400, {"error": "max_devices от 0 до 1000"})
                 # Telegram-прокси в подписке: отдельная (персональная) ссылка, общая или не надо
                 tg_mode = _field(b, 'tg_proxy').strip().lower()
                 if tg_mode not in ("off", "shared", "personal"):
