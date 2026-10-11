@@ -110,6 +110,8 @@ button.tiny{width:auto;padding:7px 12px;margin:0;font-size:13px;font-weight:600;
 .uc-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .uc-raw{display:inline-flex;align-items:center;padding:5px 10px;border:1px solid var(--br);border-radius:8px;color:var(--fg);font-size:12px;text-decoration:none;background:transparent;cursor:pointer;font-weight:400;box-shadow:none}
 .uc-raw:hover{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 10%,transparent)}
+.uc-raw.uc-off{opacity:.55;cursor:default}
+.uc-raw.uc-off:hover{border-color:var(--br);background:transparent}
 .uc-pick{font-size:12px;background:var(--bg2);color:inherit;border:1px solid var(--br);border-radius:8px;padding:4px 6px}
 .uc-empty{font-size:12px;color:var(--mut);margin:6px 0 2px}
 .uc-sum{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--card);border:1px solid var(--br);border-radius:12px;font-weight:600;list-style:none}
@@ -252,6 +254,13 @@ hr{border:0;border-top:1px solid color-mix(in srgb,var(--br) 80%,transparent);ma
 .gauge .gv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
 @keyframes pulseUptime{0%{opacity:1}50%{opacity:.45}100%{opacity:1}}
 #stXrayUp{animation:pulseUptime 2.2s ease-in-out infinite}
+/* #311: обновление дашборда свайпом вниз — спиннер следует за протяжкой.
+   Штатное браузерное обновление конкурирует с жестом, гасится на уровне страницы. */
+html{overscroll-behavior-y:contain}
+#ptrSpin{position:fixed;top:0;left:50%;margin-left:-17px;width:34px;height:34px;border-radius:50%;background:color-mix(in srgb,var(--card) 88%,transparent);border:1px solid color-mix(in srgb,var(--br) 70%,transparent);box-shadow:0 6px 18px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;z-index:9998;pointer-events:none;opacity:0;transform:translateY(-56px);transition:transform .14s ease,opacity .14s ease}
+#ptrSpin i{display:block;width:17px;height:17px;border-radius:50%;border:2px solid color-mix(in srgb,var(--mut) 35%,transparent);border-top-color:var(--acc)}
+#ptrSpin.ptr-go i{animation:ptrRot .7s linear infinite}
+@keyframes ptrRot{to{transform:rotate(360deg)}}
 
 .dialog{background:color-mix(in srgb,var(--bg) 84%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb,var(--acc) 55%,transparent);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 10px 26px rgba(0,0,0,.35)}
 .dialog.open{position:fixed;inset:0;z-index:10000;margin:0;display:flex;align-items:center;background:rgba(0,0,0,.55);border:0;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:fadeIn .2s ease;overflow:auto;padding:20px}
@@ -712,10 +721,10 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class=ds-ico>🛡</div>
         <div style="min-width:0"><div class=ds-main id=dXray>—</div><div class=ds-cap id=dXraySub>состояние Xray</div></div>
       </div>
-      <div class="card dash-kpi">
+      <div class="card dash-kpi" id=dOnlineCard style="cursor:pointer" title="Нажми — панель покажет, кто именно в сети" onclick=openOnlineModal()>
         <div class=kpi-cap>👥 Клиенты онлайн</div>
         <div class=kpi-val><b id=dOnline>—</b><span class=kpi-tot id=dOnlineTot></span></div>
-        <div class=kpi-sub>из общего числа подписок</div>
+        <div class=kpi-sub>из общего числа подписок · нажми, чтобы увидеть кто</div>
       </div>
       <div class="card dash-kpi">
         <div class=kpi-cap>📈 Трафик за сутки</div>
@@ -1064,7 +1073,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   </div>
 
   <div id=tab-proxy class="tab-pane"><div class="card set-block">
-    <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span></div>
+    <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span>
+      <button class="tiny sec" id=tgRestartBtn onclick=restartTelemt()>⟳ Перезагрузить telemt</button></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
       <p><b>Что это?</b> Это прокси именно для Telegram — чтобы сам мессенджер работал, когда его режут. Не путай с VPN-ссылками: VPN для браузера и приложений здесь ни при чём, это отдельная «дорожка» только для Telegram.</p>
@@ -1746,7 +1756,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <li><b>Адрес проверки / Порт / Путь</b> — куда стучатся тесты из России. Обычно оставляй пустым: панель подставит свой адрес сама. Порт — 443, путь — /. Вручную вписывают, только если проверять надо не панель, а другой сервис.</li>
         <li><b>Cloudflare API-токен</b> — ключ, которым панель будет менять DNS: в Cloudflare открой профиль → API Tokens → Create Token → шаблон «Edit zone DNS», скопируй токен сюда. Сохраняется в секрете и больше нигде не показывается.</li>
         <li><b>Зона (домен)</b> — твой домен без www, например example.com.</li>
-        <li><b>Имена A-записей</b> — какие записи переписывать на новый IP, через запятую: «vpn, @» — это example.com и vpn.example.com. Записи должны быть «серыми» (DNS only): оранжевое облако для VPN-портов не работает.</li>
+        <li><b>Имена A-записей</b> — какие записи переписывать на новый IP, через запятую: «vpn, @» — это example.com и vpn.example.com. Пустое окно панель заполняет сама: база и все выпушенные поддомены. Записи должны быть «серыми» (DNS only): оранжевое облако для VPN-портов не работает.</li>
       </ul>
       <p><b>Кнопки:</b> «Сохранить» — применить настройки; «Проверить сейчас» — разовый тест доступности (результат появится внизу); «Поменять IP сейчас» — ручная замена вне очереди, для диагностики.</p>
     </div></details>
@@ -2142,9 +2152,14 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
             <span>👥 Пользователи и персональные подписки</span>
             <span id="subUsersCount" class=mut style="font-size:12px;font-weight:normal">—</span>
           </summary>
+          <div class=row style="margin:10px 0 8px">
+            <input type=text id=subUsersSearch placeholder="🔍 Поиск подписчика: имя, токен, протокол" autocomplete=off style="flex:1;min-width:220px" oninput=subUsersRender()>
+            <button type=button class="tiny sec" onclick="$('subUsersSearch').value='';subUsersRender()" title="Сбросить поиск">✕</button>
+          </div>
           <div id="subUsersList">
             <p class=mut>Загрузка списка пользователей...</p>
           </div>
+          <div id="subUsersFold" style="display:none;margin-top:8px"><button type=button class="sec" id="subUsersFoldBtn"></button></div>
           <details class=expl style="margin-bottom:10px"><summary>👨‍👩‍👧 Семейный режим — одна подписка на семью</summary><div>
             <p><b>Зачем.</b> Хозяин подписки оплачивает тариф один раз, а пользуются все: добавляешь до 5 участников семьи — каждый получает <b>полноценного клиента</b> на тех же протоколах: свою ссылку подписки, свою страницу, свои ключи.</p>
             <p><b>Что общее, что личное.</b> Общее: лимит трафика и срок (расход участников плюсуется к расходу хозяина; предупреждения и блокировка срабатывают по суммарному расходу один раз на семью). Личное: лимит устройств у каждого участника свой — сыновья не съедают устройства хозяина.</p>
@@ -2900,8 +2915,10 @@ function subCard(c, kids){
     ? '<details class="uc-det"><summary>🔗 Ссылки по протоколам · '+lm.length+'</summary>'
       +'<div class="uc-row" style="margin-top:7px">'+lm.map(([proto,link])=>{
           const lb=escapeHtml(protoLabels[proto]||proto), lbJ=jsStr(protoLabels[proto]||proto);
-          if((proto==='wireguard'||proto==='amneziawg')&&c.conf_url)
+          if((proto==='wireguard'||proto==='amneziawg')&&c.conf_url&&!c.needs_keys)
             return '<a class="uc-raw" href="'+escapeHtml(c.conf_url)+'" download>⬇ '+lb+'</a>';
+          if((proto==='wireguard'||proto==='amneziawg')&&c.needs_keys)
+            return '<span class="uc-raw uc-off" title="панель перевыпускает ключи сама — обновите страницу">⬇ '+lb+' · нет ключа</span>';
           return '<button class="uc-raw" onclick="copyText(\''+jsStr(link)+'\',\'Ссылка '+lbJ+' скопирована\')">'+lb+'</button>';
         }).join('')+'</div></details>'
     : '';
@@ -2943,7 +2960,7 @@ function subCard(c, kids){
         + '<button class="uc-i" title="Вывести из семьи: человек останется со своей ссылкой, но платит сам за себя" onclick="famOrphan(\''+mtok+'\',\''+fmnJ+'\')">⤒</button>'
         + '</div>';
     }).join('');
-    famDet = '<details class="uc-det"><summary title="Участники пользуются одной оплаченной подпиской: у каждого своя ссылка и свой лимит устройств, но трафик и срок считаются на всю семью. Предупреждения и блокировка — по общему расходу.">👨‍👩‍👧 Семья · '+fam.length+(fam.length>=5?' · максимум':' · свободно мест: '+(5-fam.length))+'</summary>'
+    famDet = '<details class="uc-det uc-fam"><summary title="Участники пользуются одной оплаченной подпиской: у каждого своя ссылка и свой лимит устройств, но трафик и срок считаются на всю семью. Предупреждения и блокировка — по общему расходу.">👨‍👩‍👧 Семья · '+fam.length+(fam.length>=5?' · максимум':' · свободно мест: '+(5-fam.length))+'</summary>'
       + '<p class="uc-empty" style="margin:7px 0 0">Участники пользуются той же оплатой: каждому — своя ссылка и свой лимит устройств, а расход трафика и срок — складываются на всю семью. Заблокировка и предупреждения срабатывают по общему расходу.</p>'
       + (fam.length?'<div style="display:flex;flex-direction:column;gap:4px;margin-top:7px">'+famRows+'</div>'
         : '<p class="uc-empty" style="margin-top:7px">Пока никого — добавьте участника ниже.</p>')
@@ -2972,7 +2989,7 @@ function subCard(c, kids){
           return '<span class="uc-chip" title="заходов за 7 дней · последний: '+(ago||'—')+'">'+lb+' · '+n+(ago?' · '+ago:'')+'</span>';
         }).join(' ')+'</div></details>'
     : '';
-  return '<div class="uc">'
+  return '<div class="uc" data-sub="'+escapeHtml(c.sub_token||'')+'">'
     + '<div class="uc-top">'
       + '<span class="uc-dot'+(c.online>0?' on':'')+'" title="'+(c.online>0?'онлайн':'офлайн')+'"></span>'
       + '<span class="uc-name" title="'+nmH+'">'+nmH+'</span><span class="uc-sp"></span>'
@@ -3056,6 +3073,12 @@ async function famAdd(tok){
   try{
     await api('/api/clients/family/add',{method:'POST',body:JSON.stringify({sub_token:tok,name:nmv})});
     await loadSub();
+    /* Перерисовка списка сворачивает все блоки карточки: новый участник
+       окажется под закрытым «Семья» и его не видно, пока не развернёшь.
+       Раскрываем секцию семьи хозяина сразу (#306). */
+    const host=Array.from(document.querySelectorAll('#subUsersList .uc')).find(el=>el.dataset.sub===tok);
+    const det=host&&host.querySelector('details.uc-fam');
+    if(det)det.open=true;
     toast('Участник «'+nmv+'» добавлен — у него своя ссылка подписки; отправьте её ему','ok');
   }
   catch(e){ toast(e.message,'err'); }
@@ -3068,6 +3091,57 @@ async function famDelMember(muuid,nmv){
 async function famDevLimit(muuid,v){
   try{ await api('/api/clients/family/devlimit',{method:'POST',body:JSON.stringify({member_uuid:muuid,max_devices:parseInt(v,10)||0})}); toast('Лимит устройств участника обновлён','ok'); }
   catch(e){ toast(e.message,'err'); }
+}
+
+// #302: подписчиков много — список не вываливается целиком: первые пять карточек
+// видно, остальных прячет раскрытие; человека зовут поиском, а не перематыванием
+// страницы. Карточка судится ключом из имени, токена, протоколов и
+// участников семьи; сворачиватель прячет всё после первых пяти, как в #7/#8/#9.
+let SUBS_FULL=[];
+const SUBS_KEEP=5;
+function subSrvKey(g){
+  const p=[];
+  const add=function(c){if(!c)return;
+    p.push(c.name||'',c.sub_token||'',c.uuid||'',c.client||'');
+    (c.protos||[]).forEach(function(x){p.push((x.proto||'')+' '+(x.label||''));});
+    if(c.links&&typeof c.links==='object')p.push(Object.keys(c.links).join(' '));
+    (c.family||[]).forEach(function(m){p.push(m.name||'',m.uuid||'',m.sub_token||'');});};
+  add(g.host);(g.kids||[]).forEach(add);
+  return p.join(' ').toLowerCase();
+}
+function subUsersRender(){
+  const el=$('subUsersList'); if(!el) return;
+  const foldEl=$('subUsersFold'), foldBtn=$('subUsersFoldBtn');
+  const q=(($('subUsersSearch')||{value:''}).value||'').trim().toLowerCase();
+  const groups=familyFold(SUBS_FULL);
+  const shown=q?groups.filter(function(g){return subSrvKey(g).indexOf(q)!==-1;}):groups;
+  const cntEl=$('subUsersCount');
+  if(cntEl) cntEl.textContent=q?('найдено '+shown.length+' карточек из '+groups.length):(SUBS_FULL.length+' чел.');
+  if(foldEl) foldEl.style.display='none';
+  if(!groups.length){
+    el.className='';
+    el.innerHTML='<p class=mut style="margin:12px 4px 0">Подписчиков пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
+    return;
+  }
+  if(!shown.length){
+    el.className='';
+    el.innerHTML='<p class=mut style="margin:12px 4px 0">Ничего не найдено по запросу «'+escapeHtml(q)+'». Уточни имя, токен или протокол.</p>';
+    return;
+  }
+  el.className='uc-grid';
+  el.innerHTML=shown.map(function(g){return subCard(g.host,g.kids);}).join('');
+  if(q) return; // при поиске показаны все совпадения — сворачивать нечего
+  const cards=Array.prototype.filter.call(el.children,function(n){return n.classList&&n.classList.contains('uc');});
+  if(foldEl&&foldBtn&&cards.length>SUBS_KEEP){
+    const hidden=cards.slice(SUBS_KEEP);
+    hidden.forEach(function(t){t.classList.add('jm-hide');});
+    let open=false;
+    foldBtn.textContent='Показать остальных · '+hidden.length;
+    foldBtn.onclick=function(){open=!open;
+      hidden.forEach(function(t){t.classList.toggle('jm-hide',!open);});
+      foldBtn.textContent=open?'свернуть':'Показать остальных · '+hidden.length;};
+    foldEl.style.display='';
+  }
 }
 
 async function loadSub(){
@@ -3091,18 +3165,9 @@ async function loadSub(){
   if(userListEl){
     try{
       const d = await api('/api/subs');
-      const list = d.subs || [];
-      const cntEl = $('subUsersCount');
-      if(cntEl) cntEl.textContent = list.length + ' чел.';
-      if(list.length === 0){
-        userListEl.className = '';
-        userListEl.innerHTML = '<p class=mut style="margin:12px 4px 0">Подписчиков пока нет. Нажми кнопку «+ Добавить пользователя» выше.</p>';
-      } else {
-        userListEl.className = 'uc-grid';
-        // Семья — одна карточка: участники свёрнуты внутрь карточки хозяина.
-        userListEl.innerHTML = familyFold(list).map(g => subCard(g.host, g.kids)).join('');
-        USERS = list;
-      }
+      SUBS_FULL = d.subs || [];
+      USERS = SUBS_FULL;
+      subUsersRender();
     }catch(e){
       userListEl.className = '';
       userListEl.innerHTML = '<p class=mut style="margin:12px 4px 0">Не удалось загрузить список подписчиков.</p>';
@@ -4091,7 +4156,7 @@ function clientCard(c,nested){
   div.querySelector('.proto-tag').textContent=protoLabels[c.proto]||c.proto||'';
   div.querySelector('.uuid').textContent=isWG?('IP: '+(c.address||c.uuid)):c.uuid;
   const _code=div.querySelector('code');
-  _code.textContent=c.link;
+  _code.textContent=isWG&&c.needs_keys?'нет ключа на устройстве — панель перевыпускает его сама; обновите страницу и скачайте конфиг заново':c.link;
   if(isWG)_code.style.maxHeight='150px';
   const _qrBtn = div.querySelector('[data-act=qr]');
   if (_qrBtn) _qrBtn.onclick=()=>showQR(c.link, c.name);
@@ -4107,6 +4172,7 @@ function clientCard(c,nested){
   };
   const _conf=div.querySelector('[data-act=conf]');
   if(_conf)_conf.onclick=()=>{
+    if(c.needs_keys){toast('На устройстве нет ключа — панель перевыпускает его сама; обновите страницу и скачайте конфиг заново','err');return;}
     if(c.conf_url){
       const a=document.createElement('a');a.href=c.conf_url;a.download='';document.body.appendChild(a);a.click();document.body.removeChild(a);return;
     }
@@ -5091,7 +5157,7 @@ async function loadRotate(){
     set('rotPort',c.port,(e,v)=>e.value=v);
     set('rotPath',c.path||'/',(e,v)=>e.value=v);
     set('cfZone',c.cf_zone||'',(e,v)=>e.value=v);
-    set('cfRecords',(c.cf_records||[]).join(', '),(e,v)=>e.value=v);
+    set('cfRecords',((c.cf_records&&c.cf_records.length)?c.cf_records:(s.cf_suggested||[])).join(', '),(e,v)=>e.value=v);
     const tok=$('cfToken'); if(tok) tok.value='';
     const ih=$('rotIfaceHint');
     if(ih){
@@ -5145,9 +5211,12 @@ async function cfTest(){
   const box=$('cfTestRes'); if(!box)return; box.textContent='Проверяю…';
   const tok=$('cfToken').value.trim();
   try{
-    if(tok){ await api('/api/rotate/settings',{method:'POST',body:JSON.stringify({cf_token:tok,cf_zone:$('cfZone').value.trim(),cf_records:$('cfRecords').value.trim()})}); $('cfToken').value=''; }
-    const r=await api('/api/rotate/cloudflare/test',{method:'POST',body:'{}'});
-    let h='Зона <b>'+(r.zone||'—')+'</b> · найдено A-записей: '+((r.records||[]).length);
+    let _cfEcho='';
+    if(tok){ const rs=await api('/api/rotate/settings',{method:'POST',body:JSON.stringify({cf_token:tok,cf_zone:$('cfZone').value.trim(),cf_records:$('cfRecords').value.trim()})});
+             if(rs.cf_token) _cfEcho='Токен Cloudflare '+(rs.cf_token==='set'?'сохранён':'стёр')+'. ';
+             $('cfToken').value=''; }
+    const r=await api('/api/rotate/cloudflare/test',{method:'POST',body:JSON.stringify({cf_records:$('cfRecords').value.trim()})});
+    let h=_cfEcho+'Зона <b>'+(r.zone||'—')+'</b> · найдено A-записей: '+((r.records||[]).length);
     (r.records||[]).forEach(rec=>{ h+='<br>· '+rec.name+' → '+rec.content+' ('+(rec.proxied?'🟠 оранжевое':'⚪ серое')+', ttl '+rec.ttl+')'; });
     if(r.wanted&&r.wanted.length) h+='<br>цель ротации: '+r.wanted.join(', ');
     box.innerHTML=h;
@@ -6390,6 +6459,23 @@ async function loadTg(){
     loadMp443();
   }catch(e){
     setMsg('tgMsg',e.message,'err');
+  }
+}
+
+// #310: ручная перезагрузка telemt. Ручка на сервере была и раньше, но входа в
+// неё со страницы не существовало — поднять службу можно было только через
+// switch/restore с подтверждением замены бинаря.
+async function restartTelemt(){
+  if(!confirm('Перезагрузить telemt? Соединения Telegram-прокси прервутся на несколько секунд.')) return;
+  const b=$('tgRestartBtn'); if(b) b.disabled=true;
+  try{
+    const r=await api('/api/tg/restart',{method:'POST'});
+    toast(r.ok?'telemt перезапущен':'telemt не перезапущен', r.ok?'ok':'err');
+  }catch(e){
+    toast('telemt не перезапущен: '+e.message,'err');
+  }finally{
+    if(b) b.disabled=false;
+    loadTg();
   }
 }
 
@@ -8303,7 +8389,7 @@ function renderDashEvents(a,l){
   items=items.slice(0,6);
   if(!items.length){box.innerHTML='<span class=mut>Событий пока нет</span>';return;}
   box.innerHTML=items.map(x=>{
-    const t=String(x.ts||'').slice(11,16)||'—';
+    const t=fmtZ(x.ts,'t');
     const ok=x.ok===false?'<span class="evt-ok" style="color:var(--err)">✗</span>':'<span class="evt-ok" style="color:var(--ok)">✓</span>';
     return '<div class=evt><span class=evt-t>'+t+'</span><span class=evt-d>'+escapeHtml(dashEvText(x))+'</span>'+ok+'</div>';
   }).join('');
@@ -8422,6 +8508,101 @@ async function loadDashboard(){
     renderDashEvents(au,lh);
   }catch(e){}
 }
+// #311: хозяин снял кнопку #301 — «обновление страницы путем свайпа вниз». Жест судится
+// только на дашборде и только от самого верха страницы: спиннер следует за протяжкой,
+// а при отпускании после порога цифры дашборда обновляются заново. На время
+// обновления жест закрыт защёлкой, чтобы два свайпа не гнали два запроса.
+const PTR_NEED=70,PTR_MAX=130;
+let PTR=null,PTR_BUSY=false;
+function ptrMove(y,go){
+  const el=$('ptrSpin');
+  if(!el)return;
+  el.classList.toggle('ptr-go',!!go);
+  if(y===null){el.style.opacity='0';el.style.transform='translateY(-56px)';return;}
+  el.style.opacity='1';
+  el.style.transform='translateY('+y+'px)';
+}
+function ptrDash(){
+  const d=$('tab-dashboard');
+  return !!(d&&d.classList.contains('active'));
+}
+document.addEventListener('touchstart',e=>{
+  PTR=null;
+  if(PTR_BUSY||!ptrDash()||window.scrollY>0)return;
+  const t=e.target;
+  if(t&&t.closest&&t.closest('#qrModal,#onlineModal,.dialog.open,#toasts'))return;
+  PTR={y0:e.touches[0].clientY,dy:0};
+},{passive:true});
+document.addEventListener('touchmove',e=>{
+  if(!PTR)return;
+  if(window.scrollY>0){PTR=null;ptrMove(null);return;}
+  const dy=e.touches[0].clientY-PTR.y0;
+  if(dy<=0){PTR.dy=0;ptrMove(null);return;}
+  e.preventDefault();
+  PTR.dy=Math.min(dy,PTR_MAX);
+  ptrMove(-56+PTR.dy*0.55);
+},{passive:false});
+async function dashRefreshNow(){
+  if(PTR_BUSY)return;
+  PTR_BUSY=true;
+  try{
+    await loadDashboard();
+    toast('Дашборд обновлён','ok');
+  }finally{
+    ptrMove(null);
+    PTR_BUSY=false;
+  }
+}
+document.addEventListener('touchend',()=>{
+  if(!PTR)return;
+  const pull=PTR.dy;
+  PTR=null;
+  if(pull<PTR_NEED){ptrMove(null);return;}
+  ptrMove(6,true);
+  dashRefreshNow();
+});
+document.addEventListener('touchcancel',()=>{PTR=null;ptrMove(null);},{passive:true});
+// ---------- Клиенты в сети: окно «кто именно» (#303) ----------
+let ONLINE_TIMER=null;
+async function onlineLoad(){
+  const el=$('onlineList'), sum=$('onlineSum'), b=$('onlineRefreshBtn');
+  if(!el||!sum)return;
+  if(b)b.disabled=true;
+  try{
+    const d=await api('/api/online');
+    const list=(d&&d.list)||[];
+    sum.textContent='в сети '+list.length+' из '+((d&&d.clients)||0);
+    if(!list.length){el.innerHTML='<div class=mut>Сейчас в сети никого нет.</div>';return;}
+    el.innerHTML='<table class=data><tr><th>Имя</th><th>Протоколы</th><th>Устройств</th></tr>'
+      +list.map(r=>'<tr><td>'+escapeHtml(r.name||'—')+'</td><td>'+escapeHtml(r.protos||'')+'</td><td>'+(r.devices||1)+'</td></tr>').join('')
+      +'</table>';
+  }catch(e){
+    sum.textContent='';
+    el.innerHTML='<div class="msg err">Не удалось получить список: '+escapeHtml(e.message||'')+'</div>';
+  }finally{
+    if(b)b.disabled=false;
+  }
+}
+async function onlineRefreshNow(b){
+  if(b&&b.disabled)return;
+  await onlineLoad();
+}
+function onlineAuto(on){
+  if(ONLINE_TIMER){clearInterval(ONLINE_TIMER);ONLINE_TIMER=null;}
+  if(on)ONLINE_TIMER=setInterval(onlineLoad,30000);
+}
+function openOnlineModal(){
+  const m=$('onlineModal');
+  if(!m)return;
+  m.style.display='flex';
+  onlineLoad();
+  onlineAuto(!!($('onlineAuto')&&$('onlineAuto').checked));
+}
+function hideOnlineModal(){
+  const m=$('onlineModal');
+  if(m)m.style.display='none';
+  onlineAuto(false);
+}
 // ---------- Платежи ----------
 let PAYD=null;
 async function loadPay(){
@@ -8530,6 +8711,10 @@ if(fxb)fxb.style.display=(ME.owner&&veilFluxUnlocked())?'':'none';
 Object.keys(SETBLOCK_PERM).forEach(function(id){var el=document.getElementById(id);if(el)el.style.display=''});
 document.querySelectorAll('#tab-settings .tiny.sec').forEach(function(ch){ch.style.display=''});
 var su=$('setUsers');if(su)su.style.display=ME.owner?'':'none';
+// Ручная перезагрузка telemt рвёт тоннели у всех и требует права settings —
+// сотруднику с одной галкой «прокси» её показывать нечего: сервер бы отверг,
+// но кнопка, всегда бьющая в отказ, хуже кнопки, которой нет.
+var trb=$('tgRestartBtn');if(trb)trb.style.display=(ME.owner||ME.perms.settings)?'':'none';
 if(ME.owner){loadUsers();return}
 var hiddenActive=false;
 document.querySelectorAll('.tabs button[data-tab]').forEach(function(b){var t=b.getAttribute('data-tab');var need=TAB_PERM[t];
@@ -9524,11 +9709,11 @@ function renderAudit(items,ev_,rows){
   rows.innerHTML = items.filter(x=>{
     if(ev_ && x.ev!==ev_) return false;
     return true;
-  }).map(x=>`<tr><td>${escapeHtml(x.ts||'')}</td><td>${escapeHtml(x.ev||'')}</td><td>${escapeHtml(x.user||x.ip||'')}</td><td>${escapeHtml(x.detail||'')}</td></tr>`).join('')||'<tr><td colspan=4 class=mut>Записей нет</td></tr>';
+  }).map(x=>`<tr><td>${escapeHtml(fmtZ(x.ts,'dt'))}</td><td>${escapeHtml(x.ev||'')}</td><td>${escapeHtml(x.user||x.ip||'')}</td><td>${escapeHtml(x.detail||'')}</td></tr>`).join('')||'<tr><td colspan=4 class=mut>Записей нет</td></tr>';
   foldTable(rows,5,4,n=>'показать ещё '+n+' запис'+(n===1?'ь':(n<5?'и':'ей')));
 }
 function renderLoginHist(items,rows){
-  rows.innerHTML = items.map(x=>`<tr><td>${escapeHtml(x.ts||'')}</td><td>${x.ok?'<span style=color:var(--ok)>✓</span>':'<span style=color:var(--err)>✗</span>'}</td><td>${escapeHtml(x.user||'')}</td><td>${escapeHtml(x.ip||'')}</td><td title="${escapeHtml(x.ua||'')}">${escapeHtml((x.ua||'').slice(0,60))}</td><td>${escapeHtml(x.err||'')}</td></tr>`).join('')||'<tr><td colspan=6 class=mut>Нет входов</td></tr>';
+  rows.innerHTML = items.map(x=>`<tr><td>${escapeHtml(fmtZ(x.ts,'dt'))}</td><td>${x.ok?'<span style=color:var(--ok)>✓</span>':'<span style=color:var(--err)>✗</span>'}</td><td>${escapeHtml(x.user||'')}</td><td>${escapeHtml(x.ip||'')}</td><td title="${escapeHtml(x.ua||'')}">${escapeHtml((x.ua||'').slice(0,60))}</td><td>${escapeHtml(x.err||'')}</td></tr>`).join('')||'<tr><td colspan=6 class=mut>Нет входов</td></tr>';
   foldTable(rows,5,6,n=>'показать ещё '+n+' вход'+(n===1?'':(n<5?'а':'ов')));
 }
 function renderSessionsList(items,rows){
@@ -9565,5 +9750,19 @@ async function revokeSid(sid){
     <div id=qrErr class="msg err"></div>
   </div>
 </div>
+<div id=onlineModal style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:20px;z-index:9999;background:rgba(0,0,0,.6)" onclick="if(event.target===this)hideOnlineModal()">
+  <div style="background:linear-gradient(180deg,color-mix(in srgb,var(--card) 82%,transparent),color-mix(in srgb,var(--card) 55%,transparent));border:1px solid color-mix(in srgb,var(--br) 75%,transparent);border-radius:18px;padding:22px;max-width:560px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.5);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <b style="font-size:16px">👥 Клиенты в сети</b>
+      <span id=onlineSum class=mut></span>
+      <button class=tiny id=onlineRefreshBtn onclick=onlineRefreshNow(this)>⟳ Обновить</button>
+      <label class=mut style="display:inline-flex;align-items:center;gap:6px"><input type=checkbox id=onlineAuto checked onchange=onlineAuto(this.checked)>авто</label>
+      <button class=tiny onclick=hideOnlineModal()>Закрыть</button>
+    </div>
+    <div id=onlineList style="max-height:50vh;overflow:auto"></div>
+    <p class=mut style="margin-top:10px">Окно судит активные соединения Xray; подписчики на WireGuard, Hysteria2 и MTProto вне его суда. Автообновление работает, пока окно открыто.</p>
+  </div>
+</div>
+<div id=ptrSpin><i></i></div>
 <div id=toasts></div>
 </body></html>
