@@ -90,7 +90,9 @@ step_1_packages() {
   msg "$(T "Шаг 1: пакеты apt" "Step 1: apt packages")"
   export DEBIAN_FRONTEND=noninteractive
   run "apt-get update -y"
-  PKGS="python3 curl openssl tar jq nftables qrencode ca-certificates unzip wireguard-tools"
+  # Реестр #288 пункт 1: certbot не входил в список — на чистой ОС выпуск сертификата
+  # тонул в невнятном отказе установщика; теперь пакет просим сразу.
+  PKGS="python3 curl openssl tar jq nftables qrencode ca-certificates unzip wireguard-tools certbot"
   run "apt-get install -y $PKGS"
   msg "$(T "Примечание: AmneziaWG в штатных репозиториях нет — он ставится отдельно (модуль ядра + awg-quick из исходников Amnezia); без него панель честно откажет по этой группе." "Note: AmneziaWG is not in stock repos — install it separately (kernel module + awg-quick from Amnezia sources); without it the panel will honestly refuse that group.")"
   command -v python3 >/dev/null || die "$(T "python3 не поставился" "python3 failed to install")"
