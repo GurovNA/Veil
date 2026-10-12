@@ -1183,6 +1183,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <input id=dcThr type=number min=10 max=100 step=5 value=80 style="width:84px">
           <button class=tiny onclick=saveDcThreshold()>Сохранить</button>
           <label class=fldlbl style="margin:0"><input id=dcMrOn type=checkbox onchange=saveMediaRoute(this.checked)> медиа через туннель</label>
+          <label class=fldlbl style="margin:0" title="медиа всегда идёт через туннель WARP, не дожидаясь порога потерь; откаты при битом WARP остаются"><input id=dcMrHold type=checkbox onchange=saveMediaHold(this.checked)> пришпилить к туннелю (не ждать потерь)</label>
           <span class=mut id=dcMrState style="font-size:11px"></span>
           <span class=mut style="font-size:11px">me_pool_min_fresh_ratio telemt: ниже порога свежие писатели не вытесняются</span>
         </div>
@@ -1555,6 +1556,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick="setJump('setNet')">🌐 Сеть и защита</button>
       <button class="tiny sec" onclick="setJump('setIps')">📋 IP сервера</button>
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
+      <button class="tiny sec" onclick="setJump('setTikTok')">🎵 TikTok</button>
       <button class="tiny sec" onclick="setJump('setBk')">💾 Бэкапы</button>
       <button class="tiny sec" onclick="setJump('setXray')">⚙️ Ядро Xray</button>
       <button class="tiny sec" onclick="setJump('setVer')">⏪ Версии и откат</button>
@@ -1818,6 +1820,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class=msg id=rotMsg></div>
     <div id=rotStatus class=mut style="font-size:12px;line-height:1.6"></div>
     <div id=rotEvents class=mut style="font-size:12px;line-height:1.6;margin-top:6px"></div>
+    </div>
+    <div class="card set-block" id=setTikTok>
+    <h3 style="margin:0 0 8px">TikTok через WARP</h3>
+    <p class=mut style="margin:0 0 10px"><span id=twState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> TikTok сверяется со своей справочной службой и решает, в какой стране сидит зритель. База самой ByteDance (разработчика TikTok) читает адрес нашего узла как российский — приложение делает вывод, что оно в стране, где сервис запрещён, и видео не играют. Фикс поднимает с сервера личный туннель Cloudflare (WARP) и ведёт через него только адреса TikTok: выход Cloudflare та же база читает заграницей, и видео возвращаются.</p>
+        <p><b>Что не задето.</b> Через туннель идут адреса самого TikTok, и только с сервера. Трафик подписчиков через эти правила не проходит — узел и клиенты фикс не замечают. Остальной трафик коробки не перемаршрутизируется; если туннель падает, адреса TikTok идут напрямую, как шли.</p>
+        <p><b>Кнопка «Применить фикс»</b> поднимает туннель сразу, не дожидаясь ближайшего тика панели; снятие галки разбирает его целиком: правила, связь и обходное правило снимаются.</p>
+        <p><b>Кнопка «Проверить, что видит TikTok»</b> шлёт два запроса к одному и тому же адресу TikTok — напрямую и через туннель — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=twOn onchange=saveTikTok(this.checked)> Применить фикс — вести TikTok через WARP</label>
+      <button class="tiny sec" onclick=checkTikTok() id=twCheckBtn>🔎 Проверить, что видит TikTok</button>
+    </div>
+    <div class=msg id=twMsg></div>
     </div>
     <div class="card set-block" id=setBk>
     <h3 style="margin:0 0 8px">Резервное копирование</h3>
@@ -6116,6 +6133,8 @@ async function loadVeilCenter(){
   const SL={free:'свободно',ours:'ведёт сюда',foreign:'занято чужим'};
   const c=v.cert||{}, md=v.missing_dns||[], mc=v.missing_cert||[];
   let h='<div>База: <b>'+esc(v.base)+'</b> · провайдер: '+esc(v.provider||'—')+'</div>';
+  if(v.ipv6_note) h+='<div style="color:var(--warn);font-size:12px">AAAA: '+esc(v.ipv6_note)+'</div>';
+  else if(v.ipv6) h+='<div class=mut style="font-size:12px">AAAA выпускаются на '+esc(v.ipv6)+' (живость подтверждена внешним эхом)</div>';
   h+='<table style="font-size:12.5px;margin-top:4px"><tbody>';
   (v.names||[]).forEach(function(r){
     h+='<tr><td class=mut style="padding:1px 10px 1px 0">'+esc(r.label||'')+'</td>'+
@@ -6353,8 +6372,9 @@ async function loadTgDcs(){
       }
     }
     const MR=d.media_route||{};
-    const mrEl=$('dcMr'), mrOn=$('dcMrOn'), mrSt=$('dcMrState');
+    const mrEl=$('dcMr'), mrOn=$('dcMrOn'), mrSt=$('dcMrState'), mrHold=$('dcMrHold');
     if(mrOn) mrOn.checked=!!MR.want;
+    if(mrHold){ mrHold.checked=!!MR.hold; mrHold.disabled=!MR.want; }
     if(mrSt) mrSt.textContent=MR.want?(MR.account?"аккаунт есть":"аккаунта нет"):"";
     if(mrEl){
       if(!MR.want) mrEl.innerHTML='';
@@ -6418,11 +6438,59 @@ async function loadTgDcs(){
 }
 async function saveMediaRoute(on){
   const m=$('dcMsg');
+  const hold=!!($('dcMrHold')&&$('dcMrHold').checked);
   try{
-    const d=await api('/api/media_route',{method:'POST',body:JSON.stringify({on:!!on})});
+    const d=await api('/api/media_route',{method:'POST',body:JSON.stringify({on:!!on,hold:hold&&!!on})});
     if(m){ m.textContent = on ? (d.up?'туннель поднят':'включено, ждём тик') : 'выключено, идёт напрямую'; }
     loadTgDcs();
   }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+}
+async function saveMediaHold(on){
+  const m=$('dcMsg');
+  const routeOn=!!($('dcMrOn')&&$('dcMrOn').checked);
+  if(!routeOn){ if(m) m.textContent='сначала включите «медиа через туннель»'; loadTgDcs(); return; }
+  try{
+    const d=await api('/api/media_route',{method:'POST',body:JSON.stringify({on:true,hold:!!on})});
+    if(m){ m.textContent = on ? (d.hold?'пришпилено: медиа держим в туннеле даже без потерь':'шпилька снята') : 'шпилька снята: ждём порог потерь'; }
+    loadTgDcs();
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+}
+async function loadTikTok(){
+  const el=$('twState'), on=$('twOn');
+  if(!el) return;
+  try{
+    const d=await api('/api/tiktok_warp');
+    if(on) on.checked=!!d.want;
+    const rt=String(d.region_tunnel||'').toUpperCase(), rd=String(d.region_direct||'').toUpperCase();
+    if(!d.want){ el.textContent='Выключено — TikTok видит сервер как есть.'; return; }
+    if(d.up&&d.ready&&rt&&rt!=='RU') el.innerHTML='🎵 <b>TikTok через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; TikTok видит <b>'+esc(rt)+'</b>'+(rd?(' вместо '+esc(rd)):'')+'.';
+    else if(d.up&&rt==='RU') el.innerHTML='🎵 <b style="color:var(--warn)">Туннель поднят, а TikTok всё ещё видит RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.';
+    else if(d.up) el.innerHTML='🎵 <b>TikTok через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.';
+    else if(d.error) el.innerHTML='🎵 <b style="color:var(--warn)">Включено, но не идёт</b> — '+esc(d.error)+'.';
+    else el.textContent='Включено, жду первого тика — звено строится.';
+  }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveTikTok(onv){
+  const m=$('twMsg');
+  if(m) m.textContent=onv?'поднимаю туннель…':'снимаю туннель…';
+  try{
+    await api('/api/tiktok_warp',{method:'POST',body:JSON.stringify({on:!!onv})});
+    if(m) m.textContent=onv?'включено — звено строится':'выключено — TikTok идёт как шло';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  loadTikTok();
+}
+async function checkTikTok(){
+  const m=$('twMsg'), b=$('twCheckBtn');
+  if(m) m.textContent='проверяю, что видит TikTok…';
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/tiktok_warp',{method:'POST',body:JSON.stringify({check:true})});
+    const rt=d.region_tunnel?('в туннеле — '+String(d.region_tunnel).toUpperCase()):'в туннеле — ответ не получен';
+    const rd=d.region_direct?('напрямую — '+String(d.region_direct).toUpperCase()):'напрямую — ответ не получен';
+    if(m) m.textContent='TikTok видит: '+rt+'; '+rd+(d.probe_error?'; проверка ответила не полностью: '+esc(d.probe_error):'');
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  if(b) b.disabled=false;
+  loadTikTok();
 }
 
 async function saveDcThreshold(){
@@ -8294,7 +8362,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();loadSched();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();loadSched();loadTikTok();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -8690,7 +8758,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}
