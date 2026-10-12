@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.5"
+VERSION = "2.17.6"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -13690,6 +13690,36 @@ def _tg_mp_ipv6_want():
     осознанный выбор, а не случайность."""
     return bool(CFG_CACHE.get("tg_mp_ipv6", True)) or not _tg_middle_proxy_on()
 
+_IP6PUB = {"t": 0.0, "v": ""}
+
+def _pub_ip6_echo():
+    """IPv6 таким, каким его видит внешнее эхо, — и только. В отличие от `_pub_ip6()`
+    здесь НЕЛЬЗЯ откатываться на адрес интерфейса: адрес чёрнодырового v6 (провайдер
+    не несёт трафик) на интерфейсе выглядит целым, а клиенты на него виснут (#292).
+    Кэш 120 с."""
+    if time.time() - _IP6PUB["t"] < 120:
+        return _IP6PUB["v"]
+    v = ""
+    for u in ("https://v6.ident.me", "https://ipv6.icanhazip.com"):
+        try:
+            with urllib.request.urlopen(u, timeout=8) as r:
+                ip = r.read().decode().strip()
+            if ":" in ip:
+                v = ip
+                break
+        except Exception:
+            pass
+    _IP6PUB.update(t=time.time(), v=v)
+    return v
+
+def _ip6_to_publish():
+    """Какой IPv6 кладём в AAAA: '' — если переключатель гасит v6 или внешнее эхо
+    живость не подтвердила. Ложь в DNS хуже отсутствующей записи: телефон уйдёт
+    на адрес, по которому узел не живёт, и будет висеть, пока WiFi (v4) работает."""
+    if not _tg_mp_ipv6_want():
+        return ""
+    return _pub_ip6_echo()
+
 def _tg_toml_add_mp_listener(text, port, ipv6=True):
     """Добавить публичные MTProto-listeners на port; вернуть (новый_текст, блок).
     При ipv6=False — только v4-слушатель, и [network] ipv6 пишется явно в false.
@@ -14089,6 +14119,19 @@ def _mr_want():
     return bool(CFG_CACHE.get("tg_media_route"))
 
 
+def _mr_hold():
+    """Пришпилить медиа к туннелю наглухо, не дожидаясь порога потери.
+
+    Гейт `_MR_LOSS` судит ПОДЪЁМ соединения (`socket.create_connection`), а зависание
+    медиа — это stall на уровне ПЕРЕДАЧИ: подъём проходит, потеря остаётся `0`%, и
+    страховка никогда не срабатывает (живая находка 11.10: `91.105.192.110:443` давал
+    `15/15` подъёмов, пока у хозяина картинка висла). Флаг снимает гейт на ВХОДЕ, чтобы
+    звено поднималось и держалось даже при нулевой замеренной потере. Откаты остаются:
+    `_MR_GIVEUP` и голод писателей по-прежнему убирают адрес из туннеля, если сам путь
+    WARP битый, — шпилька не прячет нерабочее звено."""
+    return bool(CFG_CACHE.get("tg_media_hold"))
+
+
 def _mr_cmd(*a, **kw):
     """Один вызов командной строки без право-левого разбора: (код возврата, вывод, ошибка)."""
     r = subprocess.run(list(a), capture_output=True, text=True, timeout=15, **kw)
@@ -14248,6 +14291,9 @@ def _mr_want_eps():
     since = float(st.get("up_since") or 0)
     tun = set(h for h, e in cur.items() if (e or {}).get("mode") == "tunnel")
     writers = _mr_writers(tun)
+    # шпилька снимает гейт ПОДЪЁМА на входе; приговоры в туннеле (`_MR_GIVEUP`, голод
+    # писателей) и их запреты (`banned_until`) остаются в силе — нерабочий WARP не прячется
+    hold = _mr_hold()
     want = []
     for host, loss, at in live:
         ent = dict(cur.get(host) or {})
@@ -14266,7 +14312,8 @@ def _mr_want_eps():
                             "why": "writers"})
             else:
                 want.append(host)
-        elif (float(ent.get("banned_until") or 0) <= now and loss >= _MR_LOSS
+        elif (float(ent.get("banned_until") or 0) <= now
+              and (hold or loss >= _MR_LOSS)
               and len(want) < _MR_MAX):
             ent.update({"mode": "tunnel", "starve": 0})
             ent.pop("why", None)
@@ -14543,7 +14590,7 @@ def _mr_view():
     ret = sorted((h, str((e or {}).get("writers") or "")) for h, e in tg.items()
                  if (e or {}).get("why") == "writers"
                  and float((e or {}).get("banned_until") or 0) > now)
-    return {"want": _mr_want(), "account": bool(_mr_registered()), "link": rc == 0,
+    return {"want": _mr_want(), "hold": _mr_hold(), "account": bool(_mr_registered()), "link": rc == 0,
             "ready": _mr_link_ready(tun),
             "up": bool(st.get("up")), "targets": sorted(tg.keys()),
             "tunneled": tun,
@@ -14554,6 +14601,639 @@ def _mr_view():
             "count": int(st.get("count") or 0), "handshake_age": st.get("handshake_age"),
             "error": st.get("error") or _MR_ERR, "ts": st.get("ts"),
             "max": _MR_MAX, "loss_pct": int(_MR_LOSS), "giveup_pct": int(_MR_GIVEUP)}
+
+
+# ---------- TikTok через WARP: личный туннель для адресов ByteDance (#338) ----------
+# Причина (замер на боевой 11.10): гео-база самой ByteDance читает адрес нашего узла
+# как Россию, TikTok делает вывод «мы в РФ, где нас запретили» и перестаёт отдавать
+# видео; выход Cloudflare WARP та же база читает заграницей. Слово хозяина 11.10:
+# «надо теперь в настройках в панеле сделать функцию, провери текущий ip для `tiktok`
+# и кнопка применить фикс». Заплата `backups/audit-2.16.8/tiktok-warp.py` проверена
+# живьём («ура! заработало!»); здесь тот же порядок, но смотрителем в панели —
+# по образцу `_mr_*`.
+# Таблица 204 и интерфейс tkw0 — наши; таблица 203 (медиа) и чужие правила не
+# трогаются ни на байт. Приложение (TTNet) ходит на зашитые адреса ByteDance,
+# которые в резолве не светятся: покрытие судим объединением трёх взглядов
+# резолвера, прошлого тика и семенных блоков.
+_TW_IF = "tkw0"
+_TW_TBL = "204"
+_TW_PRIO_BASE = 200
+_TW_CAP = 256            # потолок /24-блоков в туннеле: и список правил, и бюджет allowed-ips
+_TW_DIR = "/var/lib/veil-tiktok-route"
+_TW_REG = _TW_DIR + "/reg.json"
+_TW_SEEN = _TW_DIR + "/seen.json"
+_TW_STATE = _TW_DIR + "/state.json"
+_TW_MTU = "1280"
+_TW_KEEP = "25"
+_TW_ROT = 900.0          # как часто меняем молчаливый аккаунт WARP: облако считает `POST /reg`
+_TW_REG_URL = "https://api.cloudflareclient.com/v0a2223/reg"
+_TW_UA = "wireguard-go-rs"
+_TW_RES_TTL = 300.0      # с какой частотой перерезолвливаем адреса (тик — около минуты)
+_TW_PROBE_TTL = 300.0    # с какой частотой спрашиваем «что видит TikTok» вне явной проверки
+_TW_BYPASS_PRIO = 190    # ниже нашего базового: помеченный трафик обходит таблицу 204
+_TW_BYPASS_MARK = 45     # 0x2d — метка сокета для щупа «напрямую»
+_TW_MIG_OLD = "/var/lib/tiktok-warp/reg.json"  # аккаунт заплаты, дело передаём файлом
+_TW_ERR = ""
+# когда в последний раз меняли молчаливый аккаунт: глобал обязан рождаться с нулём,
+# иначе первая же ротация читает несуществующее имя и роняет весь тик
+_TW_ROTATE = 0.0
+_TW_RES_AT = 0.0
+_TW_PROBE_AT = 0.0
+_TW_MIG_DONE = False
+# 25 доменов заплаты: по ним телефон живьём получает пул Akamai и ByteDance
+_TW_DOMAINS = (
+    "www.tiktok.com", "m.tiktok.com", "v16-web.tiktok.com", "vm.tiktok.com",
+    "t.tiktok.com", "webcast.tiktok.com", "verify-sg.tiktok.com",
+    "api.tiktokv.com", "www.tiktokv.com", "log.tiktokv.com", "mon.tiktokv.com",
+    "api16-normal-c-useast1a.tiktokv.com", "api22-normal-c-useast2a.tiktokv.com",
+    "api22-normal-alisg.tiktokv.com", "sf16-ies.tiktok.com",
+    "sf-tb-sg.tiktokcdn.com", "sf16-cdn-tos.tiktokcdn-us.com",
+    "mssdk.tiktok.com",
+    "www.tiktokcdn-eu.com", "v16-web.tiktokcdn-eu.com", "v19.tiktokcdn-eu.com",
+    "v16.tiktokcdn.com", "v16m.tiktokcdn.com",
+    "api16-normal-c-alisg.tiktokv.com", "api22-normal-c-alisg.tiktokv.com",
+    # iOS-семейства (#342): приложение на iPhone ходит на CloudFront-видео
+    # `*.tiktokcdn-eu.com` и Akamai-API `*.tiktokv.eu` — живьём сняты с журнала
+    # подписчицы на iPhone 11 11.10 20:40–20:58, прежний список их не касался
+    "v15m.tiktokcdn-eu.com", "v16m.tiktokcdn-eu.com", "v45.tiktokcdn-eu.com",
+    "p16-common-sign.tiktokcdn-eu.com",
+    "api16-core-no1a.tiktokv.eu", "api16-normal-no1a.tiktokv.eu",
+    "api16-core-useastred.tiktokv.eu", "api16-normal-useastred.tiktokv.eu",
+    "webcast16-normal-useastred.tiktokv.eu", "search16-normal-no1a.tiktokv.eu",
+    "frontier16-normal-useastred.tiktokv.eu", "log32-normal-no1a.tiktokv.eu",
+    "log32-normal-useastred.tiktokv.eu", "mssdk16-normal-useastred.tiktokv.eu",
+)
+_TW_DOH = ("https://dns.google/resolve?name=%s&type=A",
+           "https://cloudflare-dns.com/dns-query?name=%s&type=A")
+# Семенные блоки: адреса, которые приложение берёт из зашитого списка TTNet и
+# через HTTPDNS — в обычном резолве они не светятся. Сняты живьём с телефона
+# хозяина 11.10: 71.18.x — собственная сеть ByteDance (`whois`), 95.130.85 —
+# фронт Akamai, куда телефон ходил при просмотре.
+_TW_SEED = ("71.18.85.0/24", "71.18.215.0/24", "71.18.222.0/24",
+            "71.18.253.0/24", "95.130.85.0/24")
+
+
+def _tw_want():
+    """Желание оператора: вести адреса TikTok через туннель. Тот же конфиг, что у остальных переключателей."""
+    return bool(CFG_CACHE.get("tiktok_warp"))
+
+
+def _tw_cmd(*a, **kw):
+    """Один вызов командной строки без право-левого разбора: (код возврата, вывод, ошибка)."""
+    r = subprocess.run(list(a), capture_output=True, text=True, timeout=15, **kw)
+    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+
+
+def _tw_registered():
+    """Снимок аккаунта WARP. Приватный ключ наружу не печатается нигде: файл `0600` вне репозитория."""
+    reg = _load(_TW_REG) or {}
+    need = ("private_key", "peer_public_key", "tunnel_v4", "endpoint", "endpoint_port")
+    return reg if all(reg.get(k) for k in need) else None
+
+
+def _tw_register():
+    """Заводим бесплатный аккаунт WARP ровно один раз и запоминаем его.
+
+    Тот же порядок, что у `_mr_register`: форма тела и заголовок проверены на живой
+    коробке; рабочий адрес пиера отдаёт ответ, а не имя из конфигурации. Возвращает
+    (аккаунт, причина отказа)."""
+    rc, priv, err = _tw_cmd("wg", "genkey")
+    if rc != 0 or not priv:
+        return None, "ключ не выпущен"
+    # `text=True` обязывает `input` быть строкой: байты на Python 3.14 вызывают
+    # `'bytes' object has no attribute 'encode'` внутри `subprocess`
+    p = subprocess.run(["wg", "pubkey"], input=priv, capture_output=True,
+                       text=True, timeout=10)
+    pub = (p.stdout or "").strip()
+    if p.returncode != 0 or not pub:
+        return None, "публичный ключ не вычислен"
+    zero = "00000000-0000-0000-0000-000000000000"
+    body = json.dumps({"key": pub, "install_id": "0", "token": zero, "type": "free",
+                       "license": "", "waitlist": False, "version": "20211018.1",
+                       "fingerprint": zero, "fp": zero}).encode()
+    req = urllib.request.Request(_TW_REG_URL, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": _TW_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as f:
+            d = json.loads(f.read().decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        # под лимитом облако отвечает `429` — причину обязан увидеть оператор
+        return None, "регистрация не прошла: " + str(e)[:90]
+    cfg = d.get("config") or {}
+    iface = cfg.get("interface") or {}
+    peer = (cfg.get("peers") or [{}])[0]
+    ep = peer.get("endpoint") or {}
+    # `v4` приходит в форме «адрес:порт» с нулевым портом, а настоящий порт — списком
+    # в `ports`; приватной части в ответе нет вовсе
+    v4 = str(ep.get("v4") or "").split(":")[0]
+    ports = ep.get("ports") or []
+    reg = {"private_key": d.get("private_key") or iface.get("private_key") or priv,
+           "peer_public_key": peer.get("public_key") or "",
+           "tunnel_v4": ((iface.get("addresses") or {}).get("v4") or "").split("/")[0],
+           "endpoint": v4 or ep.get("host") or "",
+           "endpoint_port": str(ports[0] if ports else (ep.get("port") or "2408")),
+           "at": int(time.time())}
+    if not all(reg[k] for k in ("private_key", "peer_public_key", "tunnel_v4", "endpoint")):
+        return None, "ответ облака не полный"
+    try:
+        os.makedirs(_TW_DIR, mode=0o700, exist_ok=True)
+        _save(_TW_REG, reg, 0o600)
+    except Exception as e:
+        return None, "аккаунт не сохранён: " + str(e)[:90]
+    return reg, ""
+
+
+def _tw_retire(reason):
+    """Мёртвый аккаунт WARP в расход: новый ключ облако принимает, молчаливый — нет.
+
+    Тот же приговор, что у `_mr_retire`: молчание чиним не пересборкой того же ключа
+    каждый тик, а заменой аккаунта — но редко, `POST /reg` считается облаком."""
+    global _TW_ROTATE
+    now = time.time()
+    if now - _TW_ROTATE < _TW_ROT:
+        return reason + "; новый аккаунт не раньше чем через %d с" % int(
+            _TW_ROT - (now - _TW_ROTATE))
+    _TW_ROTATE = now
+    try:
+        os.remove(_TW_REG)
+    except OSError:
+        return reason + "; аккаунт не снять"
+    return reason
+
+
+def _tw_doh_ips(tpl, domain):
+    """Ответ шифрованного резолвера: телефон резолвит TikTok через DoH, и Akamai
+    рисует ему пул по месту выхода резолвера, а не по нашему локальному взгляду."""
+    try:
+        req = urllib.request.Request(tpl % domain,
+                                     headers={"accept": "application/dns-json",
+                                              "User-Agent": _TW_UA})
+        with urllib.request.urlopen(req, timeout=6) as f:
+            d = json.loads(f.read().decode("utf-8", "replace") or "{}")
+        return [a.get("data") for a in d.get("Answer") or []
+                if a.get("type") == 1 and a.get("data")]
+    except Exception:
+        return []
+
+
+def _tw_resolve(prev):
+    """Свежий срез адресов плюс прошлый: каждый взгляд (локальный резолвер, Google DoH,
+    Cloudflare DoH) даёт свой пул, и взгляд телефона обязан попасть в покрытие целиком."""
+    ips = []
+    for d in _TW_DOMAINS:
+        views = []
+        try:
+            views.append([ai[4][0] for ai in
+                          socket.getaddrinfo(d, None, socket.AF_INET)])
+        except Exception:
+            views.append([])
+        views.append([ip for tpl in _TW_DOH for ip in _tw_doh_ips(tpl, d)])
+        for view in views:
+            for ip in view:
+                if ip not in ips:
+                    ips.append(ip)
+    for ip in prev:
+        if ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def _tw_blocks(ips):
+    """/24-блоки адресов плюс семена: внутри блока Akamai ротирует подмножества как
+    хочет, поэтому покрытие судится блоком, а не отдельным адресом."""
+    got = []
+    for ip in ips:
+        net = ".".join(ip.split(".")[:3]) + ".0/24"
+        if net not in got:
+            got.append(net)
+    got = got[:_TW_CAP]
+    for s in _TW_SEED:
+        if s not in got:
+            got.append(s)
+    return got
+
+
+def _tw_seen_ips():
+    return list((_load(_TW_SEEN, {}) or {}).get("ips") or [])
+
+
+def _tw_covered_ip(ips, nets):
+    """Первый адрес, попадающий в один из наших блоков: щуп против него обязан
+    идти через таблицу 204, иначе сравнение «напрямую / в туннеле» пустое."""
+    for ip in ips:
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if any(a in ipaddress.ip_network(n) for n in nets):
+            return ip
+    return ""
+
+
+def _tw_flush_rules():
+    """Снять НАШИ правила. Маршруты умирают вместе со связью сами, а правило — нет:
+    после удаления интерфейса оно остаётся смотреть в пустую таблицу и молча копится."""
+    for prio, _net in _tw_rules():
+        _tw_cmd("ip", "rule", "del", "priority", str(prio))
+
+
+def _tw_rules():
+    """Наши правила: [(приоритет, сеть)]. Судим только правило, ведущее в нашу таблицу.
+
+    Хостовое правило ядро печатает БЕЗ маски — тот же дефект разбора, что у `_mr_rules`."""
+    rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
+    if rc != 0:
+        return []
+    got = []
+    for line in out.splitlines():
+        if ("lookup " + _TW_TBL) not in line:
+            continue
+        prio = line.split(":", 1)[0].strip()
+        m = re.search(r"to\s+([0-9a-fA-F.:]+)(?:/([0-9]+))?", line)
+        if m and prio.isdigit():
+            net, mask = m.group(1), m.group(2)
+            net = net + (("/128" if ":" in net else "/32") if mask is None else "/" + mask)
+            got.append((int(prio), net))
+    return got
+
+
+def _tw_routes():
+    """Наши маршруты в таблице: {сеть: интерфейс}. Хостовый маршрут ядро печатает
+    БЕЗ маски — разбор как у `_mr_routes`."""
+    rc, out, _ = _tw_cmd("ip", "-o", "route", "show", "table", _TW_TBL)
+    if rc != 0:
+        return {}
+    got = {}
+    for line in out.splitlines():
+        m = re.match(r"^([0-9a-fA-F.:]+)(?:/([0-9]+))?\s+dev\s+(\S+)", line)
+        if not m:
+            continue
+        net, mask = m.group(1), m.group(2)
+        net = net + (("/128" if ":" in net else "/32") if mask is None else "/" + mask)
+        got[net] = m.group(3)
+    return got
+
+
+def _tw_bypass_present():
+    rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
+    if rc != 0:
+        return False
+    for line in out.splitlines():
+        if "lookup main" not in line:
+            continue
+        m = re.search(r"fwmark\s+((?:0x)?[0-9a-fA-F]+)", line)
+        if m and int(m.group(1), 0) == _TW_BYPASS_MARK:
+            return True
+    return False
+
+
+def _tw_bypass_on():
+    """Пустить помеченный трафик в обход таблицы 204.
+
+    Policy routing судит ПО АДРЕСУ НАЗНАЧЕНИЯ, поэтому «напрямую» до покрытого адреса
+    не получить ни `--interface`, ни выбором таблицы (замер на боевой): помогает только
+    метка 0x2d на сокете и правило ниже наших — с ним щуп идёт по main-таблице, как
+    идёт весь остальной трафик коробки."""
+    if _tw_bypass_present():
+        return ""
+    rc, _, err = _tw_cmd("ip", "rule", "add", "priority", str(_TW_BYPASS_PRIO),
+                         "fwmark", "0x%x" % _TW_BYPASS_MARK, "lookup", "main")
+    return "" if rc == 0 else "обходное правило не поставлено: " + err[:90]
+
+
+def _tw_bypass_del():
+    rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
+    if rc != 0:
+        return
+    for line in out.splitlines():
+        if "lookup main" not in line:
+            continue
+        m = re.search(r"fwmark\s+((?:0x)?[0-9a-fA-F]+)", line)
+        if m and int(m.group(1), 0) == _TW_BYPASS_MARK:
+            prio = line.split(":", 1)[0].strip()
+            if prio.isdigit():
+                _tw_cmd("ip", "rule", "del", "priority", prio)
+
+
+def _tw_sync(nets, reg):
+    """Сводим правила, маршруты и набор сетей пиера к одному списку блоков.
+
+    Разрешённые сети — это не только «куда слать», но и «что пускать обратно»: набор
+    обновляем одной операцией вместе с маршрутами (тот же контракт, что у `_mr_sync_cidrs`)."""
+    cur_rules = _tw_rules()
+    have = set(n for _, n in cur_rules)
+    used = set(p for p, _ in cur_rules)
+    for prio, net in cur_rules:
+        if net not in nets:
+            _tw_cmd("ip", "rule", "del", "priority", str(prio))
+            # освобождённый приоритет возвращается в оборот: иначе набор целей
+            # каждый тик уводит новые правила вверх
+            used.discard(prio)
+    for net in nets:
+        if net in have:
+            continue
+        prio = _TW_PRIO_BASE
+        while prio in used:
+            prio += 1
+        rc, _, err = _tw_cmd("ip", "rule", "add", "priority", str(prio), "to", net,
+                             "lookup", _TW_TBL)
+        if rc != 0:
+            return "правило не поставлено: " + err[:90]
+        used.add(prio)
+    rt = _tw_routes()
+    for net in nets:
+        if rt.get(net) != _TW_IF:
+            # `replace`, а не `add`: маршрут умер вместе с падением линка, а правило
+            # его пережило
+            rc, _, err = _tw_cmd("ip", "route", "replace", net, "dev", _TW_IF,
+                                 "src", reg["tunnel_v4"], "table", _TW_TBL)
+            if rc != 0:
+                return "маршрут не поставлен: " + err[:90]
+    for net, dev in rt.items():
+        if net not in nets and dev == _TW_IF:
+            _tw_cmd("ip", "route", "del", net, "dev", _TW_IF, "table", _TW_TBL)
+    if nets:
+        rc, _, err = _tw_cmd("wg", "set", _TW_IF, "peer", reg["peer_public_key"],
+                             "allowed-ips", ",".join(nets))
+        if rc != 0:
+            return err[:120]
+    # обходное правило нужно щупу «напрямую»: живое звено — единственный момент,
+    # где оно имеет смысл
+    _tw_bypass_on()
+    return ""
+
+
+def _tw_link_ready(nets):
+    """Поднято ли звено НА САНОМ ДЕЛЕ: интерфейс вверх, ключ стоит, пиру известен адрес
+    облака, маршруты ведут в него. Тот же контракт, что у `_mr_link_ready`: полуразобранное
+    звено после отказа `wg set` поднимать как готовое нельзя."""
+    rc, out, _ = _tw_cmd("ip", "-o", "link", "show", _TW_IF)
+    if rc != 0:
+        return False
+    if "UP" not in out.partition("<")[2].partition(">")[0].split(","):
+        return False
+    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "public-key")
+    if rc != 0 or out.strip() in ("", "(none)"):
+        return False
+    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "endpoints")
+    if rc != 0 or not out.strip() or "(none)" in out:
+        return False
+    rt = _tw_routes()
+    return all(rt.get(n) == _TW_IF for n in nets)
+
+
+def _tw_link_up(reg, nets):
+    """Поднимаем интерфейс, вешаем пира, ключ отдаём на стандартный ввод.
+
+    `/usr/bin/wg` закрыт профилем ограничения доступа: приватный ключ только трубкой,
+    на диске он не остаётся и в аргументах чужим процессам не виден (контракт `_mr_link_up`)."""
+    rc, _, err = _tw_cmd("ip", "link", "add", _TW_IF, "type", "wireguard")
+    if rc != 0 and "File exists" not in err:
+        return "связь не создана: " + err[:90]
+    _tw_cmd("ip", "-4", "addr", "replace", reg["tunnel_v4"] + "/32", "dev", _TW_IF)
+    rc, _, err = _tw_cmd("wg", "set", _TW_IF, "private-key", "/dev/stdin",
+                         "peer", reg["peer_public_key"],
+                         "endpoint", "%s:%s" % (reg["endpoint"], reg["endpoint_port"]),
+                         "allowed-ips", ",".join(nets),
+                         "persistent-keepalive", _TW_KEEP,
+                         input=reg["private_key"] + "\n")
+    if rc != 0:
+        return "веер не настроен: " + err[:90]
+    rc, _, err = _tw_cmd("ip", "link", "set", _TW_IF, "up", "mtu", _TW_MTU)
+    if rc != 0:
+        return "связь не поднята: " + err[:90]
+    return _tw_sync(nets, reg)
+
+
+def _tw_handshake_age():
+    """Сколько секунд назад было последнее рукопожатие (или нет, если звена нет).
+
+    Единочное число в `wg show` облако не принимает — требуется `latest-handshakes`."""
+    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "latest-handshakes")
+    if rc != 0:
+        return None
+    ts = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            ts = max(ts, int(parts[-1]))
+        except ValueError:
+            continue
+    return int(max(0, time.time() - ts)) if ts > 0 else None
+
+
+def _tw_carries(addr):
+    """Несёт ли звено: один пакет до адреса, который обязан идти через туннель.
+    Мерить нечем (нет `ping`) — это не доказательство молчания (контракт `_mr_carries`)."""
+    try:
+        rc, _, err = _tw_cmd("ping", "-c1", "-W2", "-I", _TW_IF, addr)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if rc == 127 or "not found" in err:
+        return True
+    return rc == 0
+
+
+def _tw_region(ip, direct):
+    """Один HTTPS-щуп: какой регион TikTok отвечает с адреса. `direct` — с меткой 0x2d,
+    т.е. в обход нашей таблицы; иначе — как есть, через туннель."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(4)
+        if direct:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, _TW_BYPASS_MARK)
+            except OSError as e:
+                return "", "метка не поставлена: " + str(e)[:60]
+        s.connect((ip, 443))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        t = ctx.wrap_socket(s, server_hostname="www.tiktok.com")
+        s = None
+        t.settimeout(5)
+        t.sendall(b"GET / HTTP/1.1\r\nHost: www.tiktok.com\r\n"
+                  b"User-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+        buf = b""
+        while len(buf) < 300000:
+            try:
+                d = t.recv(8192)
+            except socket.timeout:
+                break
+            if not d:
+                break
+            buf += d
+        try:
+            t.close()
+        except Exception:
+            pass
+        m = re.search(rb'"region":"([A-Za-z]{2})"', buf)
+        if m:
+            return m.group(1).decode("ascii", "replace").upper(), ""
+        return "", "региона в ответе нет"
+    except Exception as e:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return "", str(e)[:90]
+
+
+def _tw_probe(force=False):
+    """Диагноз «что видит TikTok»: два щупа против одного покрытого адреса — напрямую
+    (с меткой) и через туннель. Явной проверке `force` обходит черед по TTL."""
+    global _TW_PROBE_AT
+    now = time.time()
+    if not force and now - _TW_PROBE_AT < _TW_PROBE_TTL:
+        return
+    _TW_PROBE_AT = now
+    st = _load(_TW_STATE, {}) or {}
+    nets = list(st.get("nets") or [])
+    tgt = str(st.get("probe_ip") or "") or \
+        _tw_covered_ip(_tw_seen_ips(), nets) or "71.18.85.9"
+    why = _tw_bypass_on()
+    rd, ed = _tw_region(tgt, True)
+    if why:
+        ed = (ed + "; " if ed else "") + why
+    rt = ""
+    et = ""
+    if st.get("up") and _tw_link_ready(nets):
+        rt, et = _tw_region(tgt, False)
+    st.update({"region_direct": rd or None, "region_tunnel": rt or None,
+               "probe_ip": tgt, "probe_at": int(now),
+               "probe_error": "; ".join(x for x in (ed, et) if x)[:180]})
+    _save(_TW_STATE, st, 0o600)
+
+
+def _tw_migrate_once():
+    """Передача дела от заплаты смотрителю (п. 6 плана) — ровно раз за запуск процесса.
+
+    Системный таймер заплаты гасим только когда функция ВКЛЮЧЕНА: до слова хозяина
+    заплата на боевой должна жить своей жизнью, иначе включение панели без флага
+    осталось бы вообще без маршрутов TikTok. Аккаунт переносим файлом: поля совпадают
+    с нашим списком, перерегистрация съела бы лимит `POST /reg` на пустом месте."""
+    global _TW_MIG_DONE
+    if _TW_MIG_DONE:
+        return
+    _TW_MIG_DONE = True
+    try:
+        rc, _, _ = _tw_cmd("systemctl", "is-active", "--quiet", "tiktok-warp.timer")
+        if rc == 0:
+            _tw_cmd("systemctl", "disable", "--now", "tiktok-warp.timer")
+            _tw_cmd("systemctl", "disable", "--now", "tiktok-warp.service")
+            _audit("tiktok_warp_migrated", timer="off")
+    except Exception:
+        pass
+    try:
+        old = _TW_MIG_OLD
+        if os.path.exists(old) and not os.path.exists(_TW_REG):
+            os.makedirs(_TW_DIR, mode=0o700, exist_ok=True)
+            os.replace(old, _TW_REG)
+    except Exception:
+        pass
+
+
+def _tw_tick():
+    """Смотритель TikTok-звена: один шаг за тик, вне замка состояния (ходит в командную строку).
+
+    Порядок: без желания оператора — снять ТОЛЬКО своё (состояние помнит, что звено
+    наше; чужую таблицу заплаты в выключенном виде не трогаем); с желанием — сначала
+    принять дело у заплаты, потом аккаунт, адреса, звено; молчание — приговор аккаунту
+    по образцу `_mr_tick`; пустой резолв живое звено не ломает."""
+    global _TW_ERR, _TW_RES_AT
+    if SBX:
+        return
+    st = _load(_TW_STATE, {}) or {}
+    if not _tw_want():
+        if st.get("enabled") or st.get("up"):
+            # порядок снятия: сначала правила и обход, потом связь — маршрут без
+            # правила мёртвый, а правило без таблицы смотрит в пустоту (контракт ног K/J)
+            _tw_flush_rules()
+            _tw_bypass_del()
+            _tw_cmd("ip", "link", "del", _TW_IF)
+            _TW_ERR = ""
+            st.update({"enabled": False, "up": False, "count": 0, "nets": [],
+                       "handshake_age": None, "error": "", "ts": _now_iso()})
+            _save(_TW_STATE, st, 0o600)
+        return
+    # дело у запаты принимаем только с включённым флагом: при выключенном функция
+    # не имеет права гасить живой системный таймер (слово хозяна ещё не сказано)
+    _tw_migrate_once()
+    reg = _tw_registered()
+    why = ""
+    if not reg:
+        reg, why = _tw_register()
+        if not reg:
+            _TW_ERR = why
+            st.update({"enabled": True, "up": False, "error": why, "ts": _now_iso()})
+            _save(_TW_STATE, st, 0o600)
+            return
+    now = time.time()
+    prev = _tw_seen_ips()
+    if now - _TW_RES_AT >= _TW_RES_TTL:
+        _TW_RES_AT = now
+        ips = _tw_resolve(prev)
+        if ips:
+            _save(_TW_SEEN, {"ips": ips[:_TW_CAP * 8], "at": int(now)}, 0o600)
+    else:
+        ips = prev
+    if not ips and not prev and st.get("up"):
+        # резолв не дал ничего вообще (ни свежего, ни прошлого): живое звено не
+        # трогаем — переживёт один плохой тик (заплата 262-265)
+        _TW_ERR = ""
+        st.update({"ts": _now_iso()})
+        _save(_TW_STATE, st, 0o600)
+        _tw_probe()
+        return
+    nets = _tw_blocks(ips)
+    rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
+    age = _tw_handshake_age()
+    rebuilt = (rc != 0 or not _tw_link_ready(nets))
+    if rebuilt:
+        err = _tw_link_up(reg, nets)
+        age = _tw_handshake_age()
+    else:
+        err = _tw_sync(nets, reg)
+    tgt = _tw_covered_ip(ips, nets) or "71.18.85.9"
+    if err == "" and (age is None or age > 4 * int(_TW_KEEP)) and not _tw_carries(tgt):
+        # молчание судим пакетом, а не отсутствием рукопожатия: `wg` шлёт инициацию
+        # только когда появится трафик или сторожевой пакет
+        _tw_flush_rules()
+        _tw_bypass_del()
+        _tw_cmd("ip", "link", "del", _TW_IF)
+        err, age = "звено молчит: до облака нет ответа", None
+        err = _tw_retire(err)
+    _TW_ERR = err
+    up = (err == "")
+    st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
+               "nets": nets if up else (st.get("nets") or []),
+               "handshake_age": age, "probe_ip": tgt, "error": err,
+               "tunnel_v4": (reg["tunnel_v4"] if up else ""), "ts": _now_iso()})
+    _save(_TW_STATE, st, 0o600)
+    _tw_probe()
+
+
+def _tw_view():
+    """Снимок для морды и ноги самопроверки: только чтение, ничего не поднимает."""
+    st = _load(_TW_STATE, {}) or {}
+    rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
+    nets = list(st.get("nets") or [])
+    pat = float(st.get("probe_at") or 0)
+    return {"want": _tw_want(), "account": bool(_tw_registered()),
+            "link": rc == 0, "ready": _tw_link_ready(nets), "up": bool(st.get("up")),
+            "count": int(st.get("count") or 0), "nets": nets,
+            "region_tunnel": st.get("region_tunnel"),
+            "region_direct": st.get("region_direct"),
+            "probe_age": (int(time.time() - pat) if pat else None),
+            "handshake_age": st.get("handshake_age"),
+            "error": st.get("error") or _TW_ERR,
+            "probe_error": st.get("probe_error") or "",
+            "bypass": _tw_bypass_present(), "ts": st.get("ts")}
 
 
 # ---------- ME: вход в сеть Telegram и его аварийные пути (#218) ----------
@@ -14988,6 +15668,33 @@ def _tg_mp_selftest(force=False):
                 "; ".join(bits), warn=bool(mv["up"]) and bool(mv.get("error")))
     except Exception as e:
         add("media_route", "Медиа-путь к узлам Telegram через туннель", False,
+            str(e)[:160], warn=True)
+    try:
+        # #338: звено судим тем, что оно доказывает — регионом в ответе самого TikTok,
+        # а не наличием интерфейса: туннель, из которого сервис по-прежнему видит
+        # Россию, фиксом не является.
+        tv = _tw_view()
+        rt = str(tv.get("region_tunnel") or "")
+        if not tv["want"]:
+            add("tiktok_warp", "TikTok через WARP: узел виден заграницей", True,
+                "выключен — TikTok видит сервер как есть", warn=True)
+        elif tv["up"] and tv["ready"] and rt and rt != "RU":
+            add("tiktok_warp", "TikTok через WARP: узел виден заграницей", True,
+                "%d адресных блоков в туннеле — TikTok видит %s вместо RU"
+                % (tv["count"], rt))
+        elif tv["up"] and rt == "RU":
+            add("tiktok_warp", "TikTok через WARP: узел виден заграницей", False,
+                "туннель поднят, а TikTok всё ещё видит RU: "
+                + (tv.get("probe_error") or "ответ узла читается российским"), warn=True)
+        elif tv["up"]:
+            add("tiktok_warp", "TikTok через WARP: узел виден заграницей", False,
+                tv.get("probe_error") or tv.get("error") or
+                "TikTok ещё не ответил регионом — проверка не прошла", warn=True)
+        else:
+            add("tiktok_warp", "TikTok через WARP: узел виден заграницей", False,
+                tv.get("error") or "туннель не поднят")
+    except Exception as e:
+        add("tiktok_warp", "TikTok через WARP: узел виден заграницей", False,
             str(e)[:160], warn=True)
     # #180: TCP от клиента проходит весь путь — :443, развилка по SNI, слушатель, — и сессии
     # всё равно нет: узел сам не дотягивается до адресов Telegram. Это не поломка прокси, и
@@ -16691,14 +17398,28 @@ _NG_FRONT_CONF = "/etc/nginx/conf.d/veil-front.conf"
 
 def _front_dns_ensure(domain):
     """Фронт обязан жить в зоне Cloudflare панели: серые A/AAAA на этот сервер.
-    Создаёт записи, если их нет; пересоздаёт, если они облачные/уехали."""
+    Создаёт записи, если их нет; пересоздаёт, если они облачные/уехали.
+    AAAA — только подтверждённый живым эхом и включённым переключателем (#343);
+    иначе старая AAAA снимается."""
     zid, zone = _cf_zone()
     if not (domain == zone or domain.endswith("." + zone)):
         raise RuntimeError("фронт " + domain + " не в Cloudflare-зоне " + (zone or "?") +
                            " — для своего фронта нужна зона с настроенным токеном (вкладка Сайт)")
-    ip4, ip6 = _pub_ip4() or "", _pub_ip6() or ""
+    ip4, ip6 = _pub_ip4() or "", _ip6_to_publish()
     rep = []
     for typ, ip in (("A", ip4), ("AAAA", ip6)):
+        if not ip and typ == "AAAA":
+            # #343: нечего публиковать в этом семействе — снимаем и старую запись:
+            # живая AAAA уедет клиента на адрес, по которому узел не живёт.
+            q0 = "/zones/%s/dns_records?type=AAAA&name=%s&per_page=5" % (
+                urllib.parse.quote(zid), urllib.parse.quote(domain))
+            for r0 in _cf_api("GET", q0) or []:
+                _cf_api("DELETE", "/zones/%s/dns_records/%s" % (
+                    urllib.parse.quote(zid), urllib.parse.quote(r0.get("id") or "")))
+                rep.append("AAAA %s — снята: %s" % (domain,
+                         "IPv6 выключен переключателем" if not _tg_mp_ipv6_want()
+                         else "живость IPv6 не подтверждена внешним эхом"))
+            continue
         if not ip:
             continue
         q = "/zones/%s/dns_records?type=%s&name=%s&per_page=5" % (
@@ -22994,9 +23715,11 @@ def _dynv6_ensure_rec(zid, zone, label, rtype, data):
                 pass
     return changed
 
-def _dynv6_ensure_host(fqdn, ip4=None, ip6=None):
+def _dynv6_ensure_host(fqdn, ip4=None, ip6=None, drop_ip6=False):
     """Создать/починить A (и AAAA) для полного имени в зоне dynv6. Идемпотентно.
-    Семейство не трогаем, если соответствующий IP не передан. Возвращает True, если меняли."""
+    Семейство не трогаем, если соответствующий IP не передан; `drop_ip6` — вместо
+    записи AAAA снять существующую целиком (#343: нечего публиковать — не держим ложь).
+    Возвращает True, если меняли."""
     fqdn = (fqdn or "").strip().lower().rstrip(".")
     base = (_dynv6_conf()["host"] or "").strip().lower().rstrip(".")
     if not base:
@@ -23014,6 +23737,8 @@ def _dynv6_ensure_host(fqdn, ip4=None, ip6=None):
             changed = _dynv6_ensure_rec(zid, base, label, "A", ip4) or changed
         if ip6:
             changed = _dynv6_ensure_rec(zid, base, label, "AAAA", ip6) or changed
+        elif drop_ip6:
+            changed = _dynv6_ensure_rec(zid, base, label, "AAAA", "") or changed
         return changed
 
 def _dynv6_ensure_wg(host, ip4):
@@ -23132,7 +23857,10 @@ def _dynv6_update(force4=None, force6=None):
         raise RuntimeError("dynv6 не настроен (нужны host и token)")
     if not re.fullmatch(r"(?i)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}", host):
         raise RuntimeError("некорректный dynv6-host")
-    ip4, ip6 = _pub_ip4(), _pub_ip6()
+    ip4 = _pub_ip4()
+    # #343: в dynv6-базу идёт только эхом подтверждённый v6 при включённом
+    # переключателе; адрес интерфейса — не обещание, что узел живёт по v6.
+    ip6 = _ip6_to_publish()
     if force4:
         ip4 = str(force4)
     if force6:
@@ -24518,12 +25246,12 @@ def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base
         raise RuntimeError("не выбран провайдер DNS (dynv6 или cloudflare) — настройте его во вкладке Сайт")
     ours = _our_ips()
     ip4 = next((i for i in ours if ":" not in i), "")
-    ip6 = next((i for i in ours if ":" in i), "")
+    ip6 = _ip6_to_publish()
     targets = [names[l] for l in plan.get("labels") or list(_VEIL_LABELS)]
     report = []
     if prov == "dynv6":
         for nm in targets:
-            _dynv6_ensure_host(nm, ip4, ip6)
+            _dynv6_ensure_host(nm, ip4, ip6, drop_ip6=not ip6)
             report.append("dynv6: %s → %s%s" % (nm, ip4 or "?", (" / " + ip6) if ip6 else ""))
     else:
         for nm in targets:
@@ -24580,7 +25308,7 @@ def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base
 # применённого мюкса и возвращаем те, что перестали резолвиться вовсе. Чужое имя
 # не трогаем: спорить с соседом по зоне дороже, чем остаться на базе.
 _VEIL_GUARD = {"checked": 0, "lost": "", "foreign": "", "restored": "",
-               "skipped": "", "error": "", "ts": None}
+               "skipped": "", "error": "", "ts": None, "ip6_dropped": ""}
 
 
 def _veil_names_wanted():
@@ -24608,7 +25336,7 @@ def _veil_names_wanted():
 def _veil_names_guard():
     """Присмотр за выпушенными именами. Возвращает список возвращённых."""
     _VEIL_GUARD.update(ts=time.time(), checked=0, lost="", foreign="", restored="",
-                       error="", skipped="")
+                       error="", skipped="", ip6_dropped="")
     if _mv_locked():
         _VEIL_GUARD["skipped"] = "переезд: самопроизвольные правки DNS приостановлены"
         return []
@@ -24626,7 +25354,9 @@ def _veil_names_guard():
     if not ours:
         ours = _our_ips()
     ip4 = next((i for i in sorted(ours) if ":" not in i), "")
-    ip6 = next((i for i in sorted(ours) if ":" in i), "")
+    # #343: писатель AAAA уважает переключатель и живость, подтверждённую эхом, —
+    # адрес из списка «своих» для записи не достаточен.
+    ip6 = _ip6_to_publish()
     if not ip4 and not ip6:
         _VEIL_GUARD["skipped"] = "нет публичного адреса"
         return []
@@ -24642,15 +25372,28 @@ def _veil_names_guard():
     fixed = []
     for nm in lost:
         try:
-            if _dynv6_ensure_host(nm, ip4, ip6):
+            if _dynv6_ensure_host(nm, ip4, ip6, drop_ip6=not ip6):
                 fixed.append(nm)
         except Exception as e:
             _VEIL_GUARD["error"] = str(e)[:120]
     _VEIL_GUARD["restored"] = ",".join(fixed)
-    if fixed or foreign or _VEIL_GUARD["error"]:
+    # Живую AAAA с почерневшим v6 хранитель снимает и у целых имён: A на месте,
+    # а телефон всё равно уходит по AAAA в чёрную дыру (#292).
+    dropped = []
+    if not ip6:
+        for nm in names:
+            if nm in lost:
+                continue
+            try:
+                if _dynv6_ensure_host(nm, None, None, drop_ip6=True):
+                    dropped.append(nm)
+            except Exception as e:
+                _VEIL_GUARD["error"] = str(e)[:120]
+    _VEIL_GUARD["ip6_dropped"] = ",".join(dropped)
+    if fixed or foreign or dropped or _VEIL_GUARD["error"]:
         _audit("veil_names_guard", checked=len(names), lost=",".join(lost),
                foreign=",".join(foreign), restored=",".join(fixed),
-               error=_VEIL_GUARD["error"])
+               ip6_dropped=",".join(dropped), error=_VEIL_GUARD["error"])
     return fixed
 
 
@@ -24702,7 +25445,17 @@ def _veil_center():
         cert_ready = bool(_veil_cert_ready(full_want))
     except Exception:
         cert_ready = False
+    # #343: честное слово про AAAA — что панель выпустит в v6-семействе и почему.
+    ip6_pub = _ip6_to_publish()
+    if ip6_pub:
+        ip6_note = ""
+    elif not _tg_mp_ipv6_want():
+        ip6_note = "AAAA не выпускаются: IPv6 погашен переключателем «tg_mp_ipv6»"
+    else:
+        ip6_note = ("AAAA не выпускаются: внешнее эхо не подтвердило живость IPv6 — "
+                    "запись повела бы телефоны в чёрную дыру, старая снимается при выпуске")
     return {"ok": True, "base": base, "provider": prov, "names": out,
+            "ipv6": ip6_pub, "ipv6_note": ip6_note,
             "cert": {"has": bool(cs.get("has_cert")), "issued": cs.get("issued"),
                      "expire": cs.get("expire"), "ready": cert_ready,
                      "san": cs.get("san") or [], "san_next": cs.get("san_next") or [],
@@ -25088,7 +25841,8 @@ def _limits_loop():
                               (_synfix_tick, "synfix"),
                               (_addr_watch_tick, "addr"),
                               (_tg_dc_loss_tick, "dc-loss"),
-                              (_mr_tick, "media-route")):
+                              (_mr_tick, "media-route"),
+                              (_tw_tick, "tiktok-route")):
                 try:
                     _fn()
                 except Exception as e:
@@ -30238,6 +30992,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _mr_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/tiktok_warp":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _tw_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
@@ -33736,13 +34496,38 @@ class H(http.server.BaseHTTPRequestHandler):
                 if "on" not in b:
                     return self._send(400, {"error": "нужно поле on"})
                 CFG_CACHE["tg_media_route"] = bool(b.get("on"))
+                # #326: шпилька имеет смысл только вместе с включённым туннелем; выключаем
+                # её сами, если оператор погасил медиа-путь, чтобы флаг не висел вхолостую
+                if "hold" in b:
+                    CFG_CACHE["tg_media_hold"] = bool(b.get("hold")) and bool(b.get("on"))
+                elif not CFG_CACHE["tg_media_route"]:
+                    CFG_CACHE["tg_media_hold"] = False
                 _cfg_save()
-                _audit("tg_media_route", on=CFG_CACHE["tg_media_route"])
+                _audit("tg_media_route", on=CFG_CACHE["tg_media_route"],
+                       hold=CFG_CACHE.get("tg_media_hold", False))
                 try:
                     _mr_tick()
                 except Exception as e:
                     print("[media-route] " + str(e), flush=True)
                 return self._send(200, _mr_view())
+            if p == "/api/tiktok_warp":
+                # #338: `on` — «применить фикс» (включить/погасить звено), `check` — «что
+                # видит TikTok» (щуп вне очереди, ждём до ~25 с). Ни одного поля — отказ.
+                b = self._body()
+                if "on" not in b and "check" not in b:
+                    return self._send(400, {"error": "нужно поле on или check"})
+                if "on" in b:
+                    CFG_CACHE["tiktok_warp"] = bool(b.get("on"))
+                    _cfg_save()
+                    _audit("tiktok_warp", on=CFG_CACHE["tiktok_warp"])
+                try:
+                    _tw_tick()
+                    if b.get("check"):
+                        _tw_probe(force=True)
+                except Exception as e:
+                    print("[tiktok-route] " + str(e), flush=True)
+                v = _tw_view()
+                return self._send(200, v)
             if p == "/api/front/apply":
                 b = self._body()
                 try:
