@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, time, threading, socket, hmac, struct
+import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, sys, time, threading, socket, hmac, struct
 import contextlib
 import ssl, socketserver, http.server
 import urllib.parse, urllib.request, urllib.error
@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.6"
+VERSION = "2.17.7"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1930,6 +1930,108 @@ def _awg_restart_iface(st):
     except Exception as e:
         print("awg restart exc: " + str(e), flush=True)
         return False
+
+# #348 (хвост #346): смена ядра на живом узле оставила `dkms`-модуль
+# `amneziawg` только под старым ядром — интерфейс не поднялся после загрузки,
+# подписчики молча отвалились, а `awg-quick` стоит на месте и ничего не
+# называет: `_tun_tools` судит бинарь, а не модуль ядра. Хранитель лезет в
+# командную строку только когда есть вход `amneziawg` и модуль под живым ядром
+# не готов: пересобирает через `dkms autoinstall`, загружает и поднимает
+# интерфейс. Отказ называется в журнал ровно раз на ядро за час — урок #264:
+# молчаливый ноль хуже названного отказа.
+_AWG_DKMS = {"checked": 0, "fixed": "", "refused": "", "skipped": "",
+             "error": "", "ts": 0.0, "last_try": 0.0}
+_AWG_DKMS_RETRY = 3600
+
+def _awg_module_ready():
+    """Модуль `amneziawg` под живым ядром: загружен или загружается молча.
+    Проверка через `lsmod` и `modprobe` — обоими командными глазами, чтобы
+    прибор судил поведение, а не текст."""
+    try:
+        r = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.split(" ", 1)[0] == "amneziawg":
+                    return True
+    except Exception:
+        pass
+    try:
+        return subprocess.run(["modprobe", "amneziawg"],
+                              capture_output=True, text=True, timeout=60).returncode == 0
+    except Exception:
+        return False
+
+def _awg_dkms_repair(ker):
+    """Пересобрать и загрузить модуль под живым ядром. True — модуль готов."""
+    if not shutil.which("dkms"):
+        _AWG_DKMS["refused"] = "пакета `dkms` на машине нет — пересборка некому"
+        _audit_throttled("awg_dkms_no_dkms", kernel=ker)
+        return False
+    try:
+        r = subprocess.run(["dkms", "status"], capture_output=True, text=True, timeout=60)
+        have = any(line.startswith("amneziawg/") for line in (r.stdout or "").splitlines())
+    except Exception:
+        have = False
+    if not have:
+        _AWG_DKMS["refused"] = ("исходников `amneziawg` в `dkms` нет — пакет "
+                                "ставится отдельно, хранить нечего")
+        _audit_throttled("awg_dkms_no_source", kernel=ker)
+        return False
+    try:
+        b = subprocess.run(["dkms", "autoinstall", "-k", ker],
+                           capture_output=True, text=True, timeout=600)
+        built = b.returncode == 0
+    except Exception:
+        built = False
+    if not built:
+        _AWG_DKMS["refused"] = "сборка модуля под живым ядром провалилась"
+        _audit_throttled("awg_dkms_build_failed", kernel=ker)
+        return False
+    try:
+        subprocess.run(["depmod", "-a", ker], capture_output=True, timeout=120)
+    except Exception:
+        pass
+    if not _awg_module_ready():
+        _AWG_DKMS["refused"] = "модуль `amneziawg` собран, но не загружается"
+        _audit_throttled("awg_dkms_load_failed", kernel=ker)
+        return False
+    _AWG_DKMS["fixed"] = "модуль пересобран под ядро " + ker
+    _AWG_DKMS["refused"] = ""
+    _audit("awg_dkms_rebuilt", kernel=ker)
+    return True
+
+def _awg_dkms_guard():
+    """Присмотр за модулем `amneziawg` под живым ядром (тик хранителей)."""
+    _AWG_DKMS["ts"] = time.time()
+    st = _load(STATE) or {}
+    inb = (st.get("inbounds") or {}).get("amneziawg")
+    if not isinstance(inb, dict):
+        _AWG_DKMS["skipped"] = "входа `amneziawg` нет — держать нечего"
+        return False
+    if _tun_tools("amneziawg"):
+        _AWG_DKMS["skipped"] = "инструментов транспорта нет — отказ уже назван руками #264"
+        return False
+    _AWG_DKMS["skipped"] = ""
+    try:
+        iface_up = subprocess.run(["ip", "link", "show", AWG_IFACE],
+                                  capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        iface_up = False
+    if iface_up and _awg_module_ready():
+        return True
+    if time.time() - _AWG_DKMS["last_try"] < _AWG_DKMS_RETRY:
+        _AWG_DKMS["skipped"] = "повтор починки не чаще часа"
+        return False
+    _AWG_DKMS["last_try"] = time.time()
+    _AWG_DKMS["checked"] += 1
+    if not _awg_module_ready():
+        if not _awg_dkms_repair(os.uname().release):
+            return False
+    if not _awg_restart_iface(st):
+        _AWG_DKMS["refused"] = "модуль жив, но интерфейс поднялся неудачно"
+        _audit_throttled("awg_dkms_iface_failed", kernel=os.uname().release)
+        return False
+    return True
 
 def _awg_sync(st, force=False):
     """Синхронизирует панель с системой: ключи интерфейса awg0 и список peers."""
@@ -5042,10 +5144,220 @@ def _online_count(email):
                     v = 0
         except Exception:
             v = None
+    if v == 0 and _acc_live(_online_snapshot(), email):
+        # закрытый в эту секунду обработчик — не «никого нет»: свежесть accept'а
+        # называет то же присутствие, что и окно «Клиенты в сети», иначе дашборд
+        # и окно судят одного человека по-разному
+        v = 1
     _ONLINE_CACHE[email] = (now, v)
     if len(_ONLINE_CACHE) > 200:
         _ONLINE_CACHE.clear()
     return v
+
+# ---------- #322: детектор живых протоколов ----------
+# «Клиенты в сети» (#303) показывали одно число Xray и не отвечали, какой
+# именно протокол подписчика запущен. Здесь четыре источника, каждое измерение —
+# только чтение, без рестартов и записей:
+#  · `xray api statsgetallonlineusers` — кто открыт сейчас, и `statsonlineiplist`
+#    на каждого: разные адреса входа и есть разные устройства;
+#  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл последний accept;
+#  · `wg`/`awg show … latest-handshakes` — возраст рукопожатия туннельного пиера;
+#  · telemt `/v1/stats/users` — текущие MTProto-соединения по имени пользователя.
+# Снимок живёт 10 секунд: морда опрашивает чаще, а коробку каждый раз трогать
+# незачем. Молчание источника — пустой ответ, а не ноль: «не измерено» честно
+# отличается от «никого нет».
+
+_ONLINE_SNAP_TTL = 10.0
+_ONLINE_TUN_WIN = 180.0          # WG/AWG-пиер считается живым при таком возрасте рукопожатия
+_ONLINE_ACC_TAIL = 512 * 1024    # сколько байт хвоста лога читать за один снимок
+_ONLINE_DEV_MAX = 24             # сколько онлайн-подписчиков пересчитать по адресам
+_ONLINE_ACC_WIN = 600.0          # свежий accept и есть присутствие, когда обработчик закрыт
+_ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "tun": {}, "mt": {}}
+
+def _xray_devices(email):
+    """Число разных адресов входа подписчика = число устройств.
+    Отказ меры не оставляет клиента невидимым: присутствие известно из
+    общего списка, поэтому 1 — честный нижний край, а не выдуманное число."""
+    try:
+        r = subprocess.run(
+            ["xray", "api", "statsonlineiplist", "--server", f"127.0.0.1:{_STATS_PORT}",
+             "-email", email],
+            capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return 1
+        ips = (json.loads(r.stdout) or {}).get("ips")
+    except Exception:
+        return 1
+    if not isinstance(ips, dict) or not ips:
+        return 1
+    return len(ips)
+
+def _xray_online_map():
+    """{uuid подписчика: число открытых устройств}.
+    Прежний `statsquery` живая сборка `xray` (26.3.27) для этих строк глуха:
+    CLI не знает флага `includeOnlineValue` и в выдаче есть только трафик —
+    `user>>>email>>>online` там не появляется никогда. Из-за этого окно
+    «Клиенты в сети» видело только туннельных подписчиков, хотя xray считал
+    живых иначе. Теперь один вызов `statsgetallonlineusers` называет открытых,
+    и по одному `statsonlineiplist` на каждого — разные адреса входа это и
+    есть разные устройства. Больше `_ONLINE_DEV_MAX` адресов не переписываются:
+    присутствие известно, а число остаётся 1 — иначе опрос толпы подписчиков
+    превратился бы в толпу процессов. Под песочницей источник молчит: живого
+    узла прогон не спрашивает."""
+    if SBX:
+        return {}
+    try:
+        r = subprocess.run(
+            ["xray", "api", "statsgetallonlineusers", "--server", f"127.0.0.1:{_STATS_PORT}"],
+            capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return {}
+        d = json.loads(r.stdout)
+    except Exception:
+        return {}
+    emails = []
+    arr = d.get("users")
+    if not isinstance(arr, list):
+        return {}
+    for s in arr:
+        parts = [x for x in str(s).split(">>>") if x]
+        # `user>>>email>>>online`; имена без этой рамки — мимо
+        if len(parts) < 3 or parts[0] != "user" or parts[-1] != "online":
+            continue
+        e = parts[1]
+        if e and e not in emails:
+            emails.append(e)
+    out = {}
+    for e in emails[:_ONLINE_DEV_MAX]:
+        out[e] = _xray_devices(e)
+    for e in emails[_ONLINE_DEV_MAX:]:
+        out[e] = 1
+    return out
+
+def _acc_last_tags():
+    """{uuid: (тег последнего accept, метка времени)} по хвосту access-лога.
+    `_DEV_POS` НЕ трогается: курсор строк принадлежит хранителю устройств,
+    этот читатель — гость, он откусывает только хвост файла."""
+    out = {}
+    if SBX:
+        return out
+    try:
+        sz = os.path.getsize(_XRAY_ACCESS)
+        with open(_XRAY_ACCESS, "r", errors="replace") as f:
+            if sz > _ONLINE_ACC_TAIL:
+                f.seek(sz - _ONLINE_ACC_TAIL)
+                f.readline()       # огрызок строки, начавшейся до отсечки
+            data = f.read()
+    except OSError:
+        return out
+    for line in data.splitlines():
+        if " accepted " not in line:
+            continue
+        email = _acc_email(line)
+        if not email:
+            continue
+        tag = _acc_tag(line)
+        try:
+            # xray пишет местным временем коробки (#187); живой формат дат —
+            # `2026/10/12 04:45:06` (слэши), дефисная форма встречается у
+            # старых сборок лога: разбираем обе, иначе вся мера молча оседает в 0
+            ts = datetime.datetime.strptime(
+                line[:19].replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            ts = 0.0
+        prev = out.get(email)
+        if prev is None or ts >= prev[1]:
+            out[email] = (tag, ts)
+    return out
+
+def _acc_live(snap, email):
+    """Свежий accept подписчика: (тег инбаунда, возраст, метка времени) или `None`.
+
+    `statsgetallonlineusers` называет обработчики, открытые ровно в эту секунду.
+    Подписчик на XHTTP опрашивает вход короткими запросами: между запросами его
+    обработчика нет, и окно «Клиенты в сети» теряло человека целиком, хотя он
+    качал четвёртый час. Пропажу мерит хвост access-лога — поэтому присутствием
+    считается accept не старше `_ONLINE_ACC_WIN`. Отказ адресной ручки здесь тоже
+    не делает клиента невидимым: нижний край `1`, а не выдуманное число."""
+    tag, ts = (snap.get("acc") or {}).get(email) or ("", 0.0)
+    if not tag or ts <= 0:
+        return None
+    age = snap["at"] - ts
+    if age < 0:
+        age = 0.0        # часы лога и коробки могут разойтись — будущего не выдумываем
+    if age > _ONLINE_ACC_WIN:
+        return None
+    return tag, age, ts
+
+def _wg_awg_live_peers():
+    """{группа: {публичный ключ пиера: возраст рукопожатия, сек}}.
+    Нулевое «никогда» не живое; нет инструмента на коробке — не ошибка,
+    группа остаётся пустой (туннельный транспорт просто не измеряется)."""
+    out = {"wg": {}, "awg": {}}
+    if SBX:
+        return out
+    now = time.time()
+    for grp, (tool, iface) in (("wg", ("wg", WG_IFACE)),
+                               ("awg", ("/usr/bin/awg", AWG_IFACE))):
+        if not shutil.which(tool):
+            continue
+        try:
+            r = subprocess.run([tool, "show", iface, "latest-handshakes"],
+                               capture_output=True, text=True, timeout=5)
+        except Exception:
+            continue
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            try:
+                ts = int(parts[1].strip())
+            except ValueError:
+                continue
+            if ts <= 0:
+                continue
+            age = now - ts
+            if 0 <= age <= _ONLINE_TUN_WIN:
+                out[grp][parts[0].strip()] = age
+    return out
+
+def _mt_live_users():
+    """{имя пользователя telemt: число текущих соединений}. API молчит — пусто.
+    Ссылки и секреты из ответа не берутся: только имя и счётчик."""
+    if SBX:
+        return {}
+    try:
+        with urllib.request.urlopen(TELEMT_API + "/v1/stats/users", timeout=3) as r:
+            d = json.loads(r.read())
+    except Exception:
+        return {}
+    out = {}
+    for u in (d.get("data") or []):
+        try:
+            n = int(u.get("current_connections") or 0)
+        except Exception:
+            n = 0
+        name = str(u.get("username") or "")
+        if n > 0 and name:
+            out[name] = n
+    return out
+
+def _online_snapshot(force=False):
+    """Снимок всех четырёх источников; кэш `_ONLINE_SNAP_TTL` секунд.
+    Источники опрашиваются по очереди и изолированно: отказ одного не гасит
+    остальные и не превращает окно в 500."""
+    now = time.time()
+    snap = _ONLINE_SNAP
+    if not force and snap["at"] and now - snap["at"] < _ONLINE_SNAP_TTL:
+        return snap
+    snap["xray"] = _xray_online_map()
+    snap["acc"] = _acc_last_tags()
+    snap["tun"] = _wg_awg_live_peers()
+    snap["mt"] = _mt_live_users()
+    snap["at"] = now
+    return snap
 
 _STATE_TOKENS_LOCK = threading.Lock()
 
@@ -5320,10 +5632,178 @@ def _xray_apply_gate(seconds=180):
         os.close(fd)
 
 
+_HOT_USER_PROTOS = ("vless", "vmess", "trojan")
+# адрес HandlerService: тот же петлевой `api`-вход, которым панель уже меряет
+# онлайн (цикл #322). Наружу он не торчит — `dokodemo-door` на 127.0.0.1.
+_XRAY_API_SERVER = "127.0.0.1:%d" % _STATS_PORT
+
+
+def _ib_shell(ib):
+    """Вход целиком, КРОМЕ списка пользователей. Совпадение оболочек — условие,
+    при котором `adu` вообще имеет смысл: порт, транспорт, сертификаты и sniffing
+    обязаны остаться прежними."""
+    d = dict(ib)
+    st = dict(d.get("settings") or {})
+    st.pop("clients", None)
+    d["settings"] = st
+    return d
+
+
+def _hot_users_delta(cur, new):
+    """(`adds`, `rems`), если разница двух конфигов — только состав
+    пользователей существующих входов; иначе None — нужен рестарт.
+
+    #367. `adu`/`rmu` докладывают ядру про УЖЕ стоящие входы. Появление или
+    исчезновение входа, смена порта, транспорта, сертификата или ключа
+    существующего пользователя горячим путём не заменяется: `adu` не пересоздаёт
+    listener и не перевыпускает cert, а молча дописать человеку новый ключ —
+    это не «добавить участника семьи», это другая операция. Тронутые входы вне
+    `_HOT_USER_PROTOS` не берём: поведение `adu` на `hysteria`-`auth` и wg-пирах
+    не измерено, а выдумывать его под «работает же» нельзя."""
+    if not isinstance(cur, dict) or not isinstance(new, dict):
+        return None
+    if {k: v for k, v in cur.items() if k != "inbounds"} != \
+       {k: v for k, v in new.items() if k != "inbounds"}:
+        return None
+
+    def by_tag(lst):
+        out = {}
+        for ib in lst or []:
+            if not isinstance(ib, dict) or not ib.get("tag") or ib["tag"] in out:
+                return None
+            out[ib["tag"]] = ib
+        return out
+
+    c_i, n_i = by_tag(cur.get("inbounds")), by_tag(new.get("inbounds"))
+    if c_i is None or n_i is None or set(c_i) != set(n_i):
+        return None
+    adds, rems = [], []
+    for tag, nib in n_i.items():
+        cib = c_i[tag]
+        if _ib_shell(cib) != _ib_shell(nib):
+            return None
+        ccl = (cib.get("settings") or {}).get("clients")
+        ncl = (nib.get("settings") or {}).get("clients")
+        if ccl == ncl:
+            # тронутых входов не судим: на живом конфиге `hysteria2` несёт
+            # список `clients`, и протокол его вне `_HOT_USER_PROTOS` — но ядру
+            # про него не докладывают, значит он не мешает hot-пути
+            continue
+        if nib.get("protocol") not in _HOT_USER_PROTOS:
+            return None
+        if not isinstance(ccl, list) or not isinstance(ncl, list):
+            return None
+        cm = {c.get("email"): c for c in ccl if isinstance(c, dict)}
+        nm = {c.get("email"): c for c in ncl if isinstance(c, dict)}
+        if len(cm) != len(ccl) or len(nm) != len(ncl) or None in cm or None in nm:
+            return None
+        for e, c in nm.items():
+            if e not in cm:
+                adds.append((tag, c))
+            elif cm[e] != c:
+                return None
+        for e in cm:
+            if e not in nm:
+                rems.append((tag, e))
+    return adds, rems
+
+
+def _xray_api(cmd, args=(), timeout=20):
+    """Один вызов к HandlerService. False — команда не прошла или не ответила;
+    True вместе с текстом stdout — иначе вызывающий не отличит «пусто» от «нет
+    ответа»."""
+    try:
+        r = subprocess.run(["xray", "api", cmd, "--server", _XRAY_API_SERVER,
+                            *args], capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return False, ""
+    if r.returncode:
+        return False, (r.stderr or r.stdout or "").strip()[:300]
+    return True, (r.stdout or "").strip()
+
+
+_HOT_COUNT_RE = re.compile(r'"count"\s*:\s*(\d+)')
+
+
+def _hot_api_n(out, verb):
+    """Сколько пользователей тронул вызов по тому, что ядро сказало вслух.
+    None — строчки нет вовсе.
+
+    Замерено на живом ядре: `adu` и `rmu` заканчиваются с `returncode` 0 даже
+    когда не тронули ни одного человека (tag не найден, клиент отвергнут), а
+    итог написан отдельной строкой — `Added 1 user(s) in total.` /
+    `Removed 1 user(s) in total.`. Считать надо её, а не код возврата, иначе
+    панель доложит об успехе человеку, у которого доступа не появилось.
+    Строка ищется по всему stdout, потому что она стоит НЕ в конце: живое ядро
+    перемешивает её с `[Warning]`-строками, поэтому разбор всего ответа как JSON
+    был бы небезопасен, а число из этой фразы — безопасен."""
+    m = re.search(verb + r" (\d+) user", out, re.I)
+    return None if m is None else int(m.group(1))
+
+
+def _hot_apply_users(adds, rems, new_cfg):
+    """Подложить ядру разницу пользователей без рестарта: `(ok, почему нет)`.
+
+    Проверяются два независимых факта: сколько ядро сказало вслух (`_hot_api_n`)
+    и сколько людей числится во входе после вызова (`inboundusercount`). Коду
+    возврата доверия нет: на живом ядре и `adu`, и `rmu` отвечают 0, даже ничего
+    не сделав. Любой неуспех — False с названной ступенью, вызывающий честно
+    рестартует: конфиг на диске уже новый, рестарт доводит ядро до диска целиком,
+    в том числе после частичного применения. Ступень называется, а не сырой
+    вывод ядра: в тексте `adu` живьём есть адреса подписчиков, а журнал наружу
+    их носить не обязан."""
+    if not _xray_active():
+        return False, "ядро не активно"
+    ib_by_tag = {i.get("tag"): i for i in new_cfg.get("inbounds") or []}
+    by_add, by_rem = {}, {}
+    for tag, c in adds:
+        by_add.setdefault(tag, []).append(c)
+    for tag, e in rems:
+        by_rem.setdefault(tag, []).append(e)
+    for tag, cs in by_add.items():
+        ib = ib_by_tag.get(tag)
+        if not ib:
+            return False, "нет входа по метке"
+        # `adu` читает ОБЫЧНЫЙ конфиг-файл: вход нужен целиком (port/listen/
+        # protocol) и со ВСЕМИ его настройками (у vless обязателен
+        # `settings.decryption`), но с clients = только что добавленные, и всё
+        # это завёрнуто в `{"inbounds": [...]}`. Половинку или голый вход
+        # живое ядро отвергает.
+        ib = dict(ib)
+        ib["settings"] = dict(ib.get("settings") or {})
+        ib["settings"]["clients"] = cs
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(XRAY),
+                                   prefix="panel.adu.", suffix=".json")
+        os.close(fd)
+        try:
+            _save(tmp, {"inbounds": [ib]}, 0o600)
+            ok, out = _xray_api("adu", (tmp,))
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        if not ok or _hot_api_n(out, "Added") != len(cs):
+            return False, "подкладка не подтверждена"
+    for tag, es in by_rem.items():
+        ok, out = _xray_api("rmu", ("-tag=" + tag, *es))
+        if not ok or _hot_api_n(out, "Removed") != len(es):
+            return False, "снятие не подтверждено"
+    for tag in sorted(set(by_add) | set(by_rem)):
+        want = len((ib_by_tag.get(tag) or {}).get("settings", {}).get("clients") or [])
+        ok, out = _xray_api("inboundusercount", ("-tag=" + tag,))
+        m = _HOT_COUNT_RE.search(out or "")
+        if not ok or m is None or int(m.group(1)) != want:
+            return False, "счётчик пользователей не сошёлся"
+    return True, ""
+
+
 def _validate_and_apply(st, force_proto=None):
     """Проверяет candidate-конфиг через `xray run -test` на временном файле.
-    Если валиден — коммитит config.json и state.json и перезапускает xray.
-    Если нет — ничего не трогает (STATE на диске остаётся прежним). Возвращает (ok, err)."""
+    Если валиден — коммитит config.json и state.json и доводит до ядра: рестартом
+    либо (#367) — горячей подкладкой пользователей, когда разница двух конфигов
+    сводится к их составу. Если нет — ничего не трогает (STATE на диске остаётся
+    прежним). Возвращает (ok, err)."""
     # имя временного файла уникальное: с фиксированным два параллельных изменения
     # перетирали бы файл друг у друга, поток A проверял бы байты потока B, а на
     # диск клал свои — «проверено» без проверки
@@ -5344,8 +5824,38 @@ def _validate_and_apply(st, force_proto=None):
         try:
             with _xray_apply_gate() as waited:
                 prev = (_read_raw(XRAY), _read_raw(STATE))
+                # Рестарт обрывает ВСЕ соединения, поэтому прежде чем рестартовать,
+                # честно спрашиваем диска: а не состав ли одних пользователей мы
+                # перекладываем (#367).
+                delta = None
+                try:
+                    delta = _hot_users_delta(json.loads((prev[0] or b"").decode()), cfg)
+                except Exception:
+                    delta = None
                 _save(XRAY, cfg, 0o600)
                 _save(STATE, st)
+                hot = None
+                # почему рестарт, если hot-путь был возможен: ступень названа,
+                # иначе на боевом отказ выглядел бы как внезапная выборка
+                why = "не состав: вход, порт, транспорт или ключ"
+                if delta is not None:
+                    if not delta[0] and not delta[1]:
+                        hot = ("noop", 0, 0)
+                    else:
+                        ok, why = _hot_apply_users(delta[0], delta[1], cfg)
+                        if ok:
+                            hot = ("adu", len(delta[0]), len(delta[1]))
+                if hot is not None:
+                    _audit("xray_hot_apply", mode=hot[0], adds=hot[1], rems=hot[2])
+                    if waited > 2:
+                        _audit("xray_apply_contend", waited=round(waited, 1))
+                    return True, None
+                if delta is not None:
+                    # разница известна, но подложить её ядру не удалось: рестарт
+                    # доведёт ядро до нового диска целиком, в том числе после
+                    # частичного применения половины
+                    _audit("xray_hot_fallback", adds=len(delta[0]), rems=len(delta[1]),
+                           why=why)
                 try:
                     _xray_restart()
                 except subprocess.TimeoutExpired:
@@ -6240,6 +6750,7 @@ def _extimport_apply(st, items):
     """Пишем нормализованные items в state.inbounds (inbound создаём при необходимости)."""
     warnings, imported = [], 0
     per = {}
+    flow_refused = set()
     by_uuid = {c.get("uuid") for inb in (st.get("inbounds") or {}).values()
                for c in inb.get("clients", []) if c.get("uuid")}
     for it in items:
@@ -6282,8 +6793,15 @@ def _extimport_apply(st, items):
         if it.get("blocked"):
             c["blocked"] = True
             c["blocked_reason"] = it.get("blocked_reason") or "импорт: неактивен в источнике"
-        if proto in ("reality", "vless-xhttp-reality") and it.get("flow"):
-            inb["flow"] = it["flow"]
+        if it.get("flow") and proto in ("reality", "vless-xhttp-reality"):
+            # `vision` законен только на чистом tcp; на xhttp-транспорте он ломает
+            # рукопожатие («received real certificate»), вход не штампуем (#347).
+            if proto == "reality":
+                inb["flow"] = it["flow"]
+            elif proto not in flow_refused:
+                flow_refused.add(proto)
+                warnings.append("flow «%s» на %s не применён: vision годится только чистому tcp, ссылки соберём без flow" %
+                                (it["flow"], proto))
         inb.setdefault("clients", []).append(c)
         if u: by_uuid.add(u)
         imported += 1
@@ -6671,11 +7189,15 @@ if not os.path.exists(_LOGO_PNG):
 
 # Каталог приложений для страницы подписки (/p/<token>).
 # "link" — deep-link шаблон; плейсхолдеры: {sub} (URL-энкод), {`rawsub`} (как есть),
-#   {b64} (base64 подписки), {wgconf} (base64 личного конфига WireGuard).
+#   {b64} (base64 подписки).
 # "pay": платное приложение — в списке помещается ниже бесплатных, помечается «платно».
 # "wg"/"awg": карточка показывается только если у подписчика есть этот протокол.
-# Для WireGuard/AmneziaWG — импорт личного конфига (wgconf:// или скачивание .conf),
-# а не подписки.
+# Для WireGuard/AmneziaWG deep-link не обещаем никогда ("link": ""): схема
+# `wgconf://` была выдумана — ни WireGuard, ни AmneziaWG не регистрируют её ни на
+# одной платформе (сверено с манифестом `wireguard-android` и Info.plist
+# `wireguard-apple`), а клиент, который её слышит, принимает только файл или QR.
+# Промаз по несуществующей схеме молча съедал нажатие, и на Android скачки не было.
+# Значит карточка отдаёт .conf скачиванием — единственном путём, проверенным живьём.
 # Порядок = порядок на странице. INCY и Happ идут первыми в каждом списке: у них
 # обход РФ включён в саму подписку, человеку не нужно ничего настраивать.
 # На десктопах и ТВ deep-link не обещаем ("link": "") — карточка копирует
@@ -6694,8 +7216,8 @@ _SUB_APP_CATALOG = {
         {"name": "Shadowrocket", "ic": "S", "col": "#334155", "col2": "#64748b", "store": "https://apps.apple.com/app/shadowrocket/id932747118", "link": "shadowrocket://add/sub://{b64}?remark={name}", "pay": True},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
         {"name": "Loon", "ic": "L", "col": "#e11d48", "col2": "#f43f5e", "store": "https://apps.apple.com/app/loon/id1373567447", "link": "", "pay": True},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1441195209", "link": "wgconf://{wgconf}", "wg": True},
-        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "link": "wgconf://{awgconf}", "awg": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1441195209", "link": "", "wg": True},
+        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://apps.apple.com/app/amneziawg/id6478942365", "link": "", "awg": True},
     ],
     "android": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
@@ -6708,8 +7230,8 @@ _SUB_APP_CATALOG = {
         {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Hysteria2", "ic": "H", "col": "#e11d48", "col2": "#f97316", "store": "https://github.com/apernet/hysteria/releases", "link": "", "hy2": True},
         {"name": "Amnezia VPN", "ic": "A", "col": "#0ea5e9", "col2": "#818cf8", "store": "https://play.google.com/store/apps/details?id=org.amnezia.vpn", "link": "", "awg": True},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
-        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "link": "wgconf://{awgconf}", "awg": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "", "wg": True},
+        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "link": "", "awg": True},
     ],
     "windows": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
@@ -6721,7 +7243,7 @@ _SUB_APP_CATALOG = {
         {"name": "sing-box (GUI)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/GUI-for-Cores/GUI.for.SingBox/releases", "link": ""},
         {"name": "Nekoray", "ic": "N", "col": "#65a30d", "col2": "#84cc16", "store": "https://github.com/MatsuriDayo/nekoray/releases", "link": "nekoray://install-config?url={sub}"},
         {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
-        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "link": "wgconf://{awgconf}", "awg": True},
+        {"name": "AmneziaWG", "ic": "A", "col": "#06b6d4", "col2": "#6366f1", "store": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest", "link": "", "awg": True},
     ],
     "macos": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
@@ -6730,14 +7252,14 @@ _SUB_APP_CATALOG = {
         {"name": "Streisand", "ic": "S", "col": "#9333ea", "col2": "#d946ef", "store": "https://apps.apple.com/app/streisand/id6450534064", "link": ""},
         {"name": "FlClash", "ic": "F", "col": "#06b6d4", "col2": "#22d3ee", "store": "https://github.com/chen08209/FlClash/releases", "link": ""},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://apps.apple.com/app/wireguard/id1451685025", "link": "", "wg": True},
     ],
     "apple_tv": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://apps.apple.com/app/incy/id6756943388", "link": ""},
         {"name": "Happ", "ic": "H", "col": "#059669", "col2": "#84cc16", "store": "https://apps.apple.com/app/happ-proxy-utility-for-tv/id6748297274", "link": ""},
         {"name": "sing-box (SFT)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://apps.apple.com/app/sing-box-mt/id6785326793", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "Stash", "ic": "S", "col": "#7c3aed", "col2": "#a78bfa", "store": "https://apps.apple.com/app/stash-rule-based-proxy/id1596063349", "link": "stash://install-config?url={sub}#{name}", "pay": True},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://www.wireguard.com/install/", "link": "", "wg": True},
     ],
     "android_tv": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://play.google.com/store/apps/details?id=llc.itdev.incy", "link": "incy://import/{rawsub}#{name}"},
@@ -6746,7 +7268,7 @@ _SUB_APP_CATALOG = {
         {"name": "sing-box (SFA)", "ic": "S", "col": "#e11d48", "col2": "#fb7185", "store": "https://github.com/SagerNet/sing-box/releases", "link": "sing-box://import-remote-profile?url={sub}#{name}"},
         {"name": "NekoBox", "ic": "N", "col": "#65a30d", "col2": "#a3e635", "store": "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases", "link": "sn://subscription/?url={sub}&name={name}"},
         {"name": "Hiddify", "ic": "H", "col": "#0d9488", "col2": "#2dd4bf", "store": "https://play.google.com/store/apps/details?id=app.hiddify.com", "link": "hiddify://import/{rawsub}#{name}"},
-        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "wgconf://{wgconf}", "wg": True},
+        {"name": "WireGuard", "ic": "W", "col": "#2563eb", "col2": "#22d3ee", "store": "https://play.google.com/store/apps/details?id=com.wireguard.android", "link": "", "wg": True},
     ],
     "linux": [
         {"name": "INCY", "ic": "I", "col": "#4f46e5", "col2": "#06b6d4", "store": "https://github.com/INCY-DEV/incy-platforms/releases", "link": ""},
@@ -6858,7 +7380,6 @@ _SUB_TXT_RU = {
     "ft_sub": "Подписка:", "ft_page": "Ваша страница:",
     "tag_paid": "платно", "store_dl": "Скачать ↗",
     "js_first": "Сначала выберите приложение из списка.",
-    "js_wg_open": "%s: откроется импорт или скачается .conf.",
     "js_wg_dl": "%s: конфиг будет скачан как .conf.",
     "js_opening": "Открываем «%s…». Если не открылось — скопируйте подписку кнопкой ниже.",
     "js_ext": "«%s» — внешний клиент: установите из магазина (ссылка «Скачать») и импортируйте подписку через «Скопировать подписку».",
@@ -6961,7 +7482,6 @@ _SUB_TXT = {
     "ft_sub": "Subscription:", "ft_page": "Your page:",
     "tag_paid": "paid", "store_dl": "Download ↗",
     "js_first": "Pick an app from the list first.",
-    "js_wg_open": "%s: import will open or the .conf file will download.",
     "js_wg_dl": "%s: the config will download as a .conf file.",
     "js_opening": "Opening “%s…”. If nothing happened — copy the subscription with the button below.",
     "js_ext": "“%s” is a third-party client: install it from the store (the “Download” link) and import the subscription via “Copy subscription”.",
@@ -7064,7 +7584,6 @@ _SUB_TXT = {
     "ft_sub": "اشتراک:", "ft_page": "صفحه شما:",
     "tag_paid": "پولی", "store_dl": "دانلود ↗",
     "js_first": "اول یک اپ از لیست انتخاب کنید.",
-    "js_wg_open": "%s: یا وارد می‌شود یا فایل .conf دانلود می‌شود.",
     "js_wg_dl": "%s: کانفیگ به‌صورت فایل .conf دانلود می‌شود.",
     "js_opening": "در حال باز کردن «%s…». باز نشد، اشتراک را با دکمه پایین کپی کنید.",
     "js_ext": "«%s» یک کلاینت خارجی است: از فروشگاه (لینک «دانلود») نصب کنید و اشتراک را با «کپی اشتراک» وارد کنید.",
@@ -7166,7 +7685,6 @@ _SUB_TXT = {
     "ft_sub": "订阅：", "ft_page": "您的页面：",
     "tag_paid": "付费", "store_dl": "下载 ↗",
     "js_first": "请先从列表选择应用。",
-    "js_wg_open": "%s：将打开导入或下载 .conf 文件。",
     "js_wg_dl": "%s：配置将作为 .conf 文件下载。",
     "js_opening": "正在打开「%s…」。没反应请用下方按钮复制订阅。",
     "js_ext": "「%s」是第三方客户端：请从商店（“下载”链接）安装，再用「复制订阅」导入。",
@@ -7949,9 +8467,6 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     links = u.get("links") or {}
     wg_conf = links.get("wireguard") or ""
     awg_conf = links.get("amneziawg") or ""
-    def _b64(s):
-        return base64.urlsafe_b64encode(s.encode("utf-8")).decode().rstrip("=") if s else ""
-    wg_b64, awg_b64 = _b64(wg_conf), _b64(awg_conf)
     wg_url = f"{_pb(host, panel_port)}/api/wgconf/{tok}"
     awg_url = f"{_pb(host, panel_port)}/api/awgconf/{tok}"
     conf_blocks = []
@@ -8145,7 +8660,7 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     plats_json = json.dumps([[k, _SUB_PLATFORM_LABELS.get(k, k)] for k in cat], ensure_ascii=False)
     langnav = "".join('<a href="?lang=' + _esc(lk) + '"' + (' class="sel"' if lk == lang else "") +
                       '>' + _esc(ln) + '</a>' for lk, ln in _SUB_LANG_NAV)
-    js_keys = ("js_first js_wg_open js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
+    js_keys = ("js_first js_wg_dl js_opening js_ext js_happ js_copied js_copied_open "
                "js_nocopy js_manual js_forget_q js_forgot js_forget_err js_err js_net "
                "fam_add fam_name_prompt fam_edit fam_renamed fam_del_q fam_added fam_del_ok fam_err fam_copy_ok fam_full "
                "btn_add btn_install btn_how tag_paid store_dl qr_err").split()
@@ -8443,8 +8958,6 @@ const CATALOG=__CAT__;
 const SUB=__SUBJS__;
 const B64=__B64JS__;
 const NAME=__NAMEJS__;
-const WGCONF=__WGCONF__;
-const AWGCONF=__AWGCONF__;
 const WGDOWN=__WGDOWN__;
 const AWGDOWN=__AWGDOWN__;
 const PLATS=__PLATS__;
@@ -8457,12 +8970,11 @@ const HP=document.getElementById.bind(document);
 function hint(m,c){const h=HP('hint');h.textContent=m;h.style.color=c==="ok"?"var(--ok)":c==="bad"?"var(--bad)":(c||"");}
 function buildLink(a){return (a.link||'')
   .replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
-  .replace('{name}',encodeURIComponent(NAME)).replace('{wgconf}',WGCONF).replace('{awgconf}',AWGCONF);}
+  .replace('{name}',encodeURIComponent(NAME));}
 function selHint(){
   if(!cur){hint(L.js_first,'#fbbf24');return false;}
   if(cur.wg||cur.awg){
-    if(cur.link){hint(F(L.js_wg_open,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
-    else{hint(F(L.js_wg_dl,cur.wg?'WireGuard':'AmneziaWG'),'#7dd3fc');}
+    hint(F(L.js_wg_dl,cur.name),'#7dd3fc');
   }else if(cur.precopy){
     hint(L.js_happ,'#7dd3fc');
   }else if(cur.link){
@@ -8525,7 +9037,7 @@ document.addEventListener('DOMContentLoaded',function(){
   HP('addBtn').addEventListener('click',function(){
     if(!selHint())return;
     if(cur.wg||cur.awg){
-      location.href=cur.link?buildLink(cur):(cur.wg?WGDOWN:AWGDOWN);
+      location.href=cur.wg?WGDOWN:AWGDOWN;
       return;
     }
     if(cur.precopy){
@@ -8776,8 +9288,6 @@ var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute('cont
                 .replace("__SUBJS__", _js(sub_url))
                 .replace("__B64JS__", _js(sub64))
                 .replace("__NAMEJS__", _js(name_plain))
-                .replace("__WGCONF__", _js(wg_b64))
-                .replace("__AWGCONF__", _js(awg_b64))
                 .replace("__WGDOWN__", _js(wg_url))
                 .replace("__AWGDOWN__", _js(awg_url))
                 .replace("__CAT__", catalog_json)
@@ -12377,6 +12887,10 @@ def _perm_for(p, m):
     # право либо на то, либо на другое
     if p.startswith("/api/veil"):
         return ["proxy", "site"]
+    # единый мастер «Сайт, домен, сертификация» ведёт и домен с сертификатом (site),
+    # и развилку :443 со страницами-масками (proxy) — право либо на то, либо на другое
+    if p.startswith("/api/site"):
+        return ["proxy", "site"]
     if (p.startswith("/api/rotate") or p.startswith("/api/dynv6")
             or p.startswith("/api/globalping") or p.startswith("/api/fix/")):
         return ["rotation"]
@@ -14673,9 +15187,11 @@ _TW_SEED = ("71.18.85.0/24", "71.18.215.0/24", "71.18.222.0/24",
             "71.18.253.0/24", "95.130.85.0/24")
 
 
+
 def _tw_want():
-    """Желание оператора: вести адреса TikTok через туннель. Тот же конфиг, что у остальных переключателей."""
-    return bool(CFG_CACHE.get("tiktok_warp"))
+    """Желание оператора: вести адреса TikTok или хаба через туннель. Тот же конфиг,
+    что у остальных переключателей; звено нужно при любом из двух ключей."""
+    return bool(CFG_CACHE.get("tiktok_warp")) or bool(PRIV and PRIV.tw_want())
 
 
 def _tw_cmd(*a, **kw):
@@ -14809,6 +15325,9 @@ def _tw_blocks(ips):
             got.append(net)
     got = got[:_TW_CAP]
     for s in _TW_SEED:
+        if s not in got:
+            got.append(s)
+    for s in (PRIV.tw_blocks() if PRIV else ()):
         if s not in got:
             got.append(s)
     return got
@@ -15043,7 +15562,10 @@ def _tw_region(ip, direct):
     s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(4)
+        # туннельный рукопожатие через `Cloudflare` идёт 4–6 с (живой замер 13.10: 6.05 с
+        # до ответа), на четырёх секундах щуп гарантированно ловил `_ssl.c:1063`;
+        # прямой путь остаётся быстрым и судится впритык (#359)
+        s.settimeout(4 if direct else 12)
         if direct:
             try:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, _TW_BYPASS_MARK)
@@ -15227,6 +15749,8 @@ def _tw_view():
     return {"want": _tw_want(), "account": bool(_tw_registered()),
             "link": rc == 0, "ready": _tw_link_ready(nets), "up": bool(st.get("up")),
             "count": int(st.get("count") or 0), "nets": nets,
+            "tiktok_on": bool(CFG_CACHE.get("tiktok_warp")),
+            **(PRIV.tw_view(nets) if PRIV else {}),
             "region_tunnel": st.get("region_tunnel"),
             "region_direct": st.get("region_direct"),
             "probe_age": (int(time.time() - pat) if pat else None),
@@ -21030,26 +21554,283 @@ def _f2b_bootstrap():
     _f2b_nft("add", "table", "inet", "veil_bans")
     _f2b_nft("add", "chain", "inet", "veil_bans", "input",
              "{ type filter hook input priority -100; policy accept; }")
-    _f2b_nft("add", "set", "inet", "veil_bans", "b4", "{ type ipv4_addr; flags timeout; }")
-    _f2b_nft("add", "set", "inet", "veil_bans", "b6", "{ type ipv6_addr; flags timeout; }")
+    _f2b_nft("add", "set", "inet", "veil_bans", "b4", "{ type ipv4_addr; flags timeout,interval; }")
+    _f2b_nft("add", "set", "inet", "veil_bans", "b6", "{ type ipv6_addr; flags timeout,interval; }")
     _f2b_nft("add", "rule", "inet", "veil_bans", "input",
              'iifname != "lo" ip saddr @b4 drop')
     _f2b_nft("add", "rule", "inet", "veil_bans", "input",
              'iifname != "lo" meta nfproto ipv6 ip6 saddr @b6 drop')
     now = time.time()
+    # SSH-замок спрашивается ДО `_BANS_LOCK` и до записи: прежний бан, в который
+    # попал адрес хозяина, переживал рестарт панели и возвращался сам собой —
+    # именно так «сними бан» превращалось в «снова забанен после обновления».
+    k_known, k_ips, k_nets = _ssh_keep()
+    kept = []
     with _BANS_LOCK:
         for ip, v in list(BANS.items()):
             left = int(v.get("until") or 0) - now
             if left <= 0:
                 BANS.pop(ip, None)
                 continue
+            hit = _ssh_keep_hit(ip, k_ips, k_nets)
+            if hit:
+                BANS.pop(ip, None)
+                kept.append("%s (%s)" % (ip, hit))
+                continue
             fam = "b6" if ":" in ip else "b4"
             _f2b_nft("add", "element", "inet", "veil_bans", fam,
                      "{ " + ip + " timeout " + str(int(left)) + "s }")
         _bans_save()
+    # Снятое называется вслух: молчаливое исчезновение бана из списка человек
+    # прочёл бы как порчу файла, а не как работу замка. k_known в справке нужна,
+    # потому что при нечитаемом журнале снимается только явное попадание в
+    # защищённый адрес — ферменные баны хозяина уцелевают именно поэтому.
+    if kept:
+        _audit("ssh_keep_restore_dropped", count=len(kept),
+               ips=",".join(kept)[:400], known=k_known)
+        print("[ssh-keep] при старте снято банов: %d (%s); замок %s"
+              % (len(kept), "; ".join(kept),
+                 "измерен" if k_known else "не измерен — снято только явное попадание"),
+              flush=True)
+
+# ---------- SSH-замок: панель не имеет права перерезать вход на сервер ----------
+# Слово хозяина 13.10: «сделай так чтобы панель не блокировала доступ к впс по ssh
+# и блокировала только сканеры». Причина измерена до правки: боевой наблюдатель
+# забанил 212.47.41.129 и 212.47.41.131 («sweep half-open», 18.02 ч и 22.10 ч из
+# суток), а ступень наблюдения ни живых ssh-сеансов, ни списка оператора не
+# спрашивала никогда.
+_SSH_KEEP_WIN_S = 24 * 3600
+# Снимок пересобирается не чаще, чем раз в `_SSH_KEEP_TTL`: журнал и `ss` —
+# внешние процессы, а `_ban_ip` вызывается и из нити входа, и из тика свипа, и
+# из наблюдателя, который под штормом зовёт его на каждую заявку.
+_SSH_KEEP_TTL = 30.0
+_SSH_KEEP_LOCK = threading.Lock()
+_SSH_KEEP = {"t": 0.0, "ips": set(), "nets": [], "known": False, "why": ""}
+_SSH_KEEP_STAT = {"refused": 0, "last": "", "t": 0.0, "protected": 0}
+# Строка успешного входа — единственная, по которой замок отличает человека от
+# щупа: сканер её не пишет никогда. Объявлена здесь, а не внизу у счётчика
+# провалов, потому что детектор живёт в замке, а замок стоит перед `_ban_ip`;
+# прибор вырезает замок исполняемым куском и не имеет права тянуть порядок
+# объявлений из конца файла.
+_SSH_OK_RX = re.compile(r"Accepted (?:password|publickey|keyboard-interactive(?:/pam)?) "
+                        r"for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)")
+
+
+def _ssh_host(x):
+    """Литерал адреса из колонки `ss`: снять скобки ipv6 и маску отображения."""
+    s = str(x or "").strip().strip("[]")
+    if s.startswith("::ffff:"):
+        s = s[7:]
+    return s
+
+
+def _ssh_keep_add_net(spec, nets):
+    import ipaddress
+    s = str(spec or "").strip()
+    if not s:
+        return
+    try:
+        if "/" in s:
+            nets.append(ipaddress.ip_network(s, strict=False))
+        else:
+            a = ipaddress.ip_address(s)
+            nets.append(ipaddress.ip_network(u"%s/%d" % (s, a.max_prefixlen)))
+    except Exception:
+        pass
+
+
+def _ssh_live_peers():
+    """(адреса, с которых прямо сейчас сидят на ssh, измерено ли).
+
+    Порты берутся у живого сокета и из sshd-конфига, а не из зашитой `: 22`:
+    на боевом ssh слушает `:4141`, поэтому прежняя строка `sport = : 22` не
+    защищала ни одного живого сеанса (#366: бан 212.47.41.129 «sweep half-open»
+    при хозяйских входах по ssh).
+    """
+    try:
+        ports = {str(int(p)) for p in _ssh_effective_ports()}
+    except Exception:
+        ports = {"22"}
+    try:
+        r = subprocess.run(["ss", "-Htn", "state", "established"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return set(), False
+    if r.returncode != 0:
+        return set(), False
+    out = set()
+    for ln in (r.stdout or "").splitlines():
+        c = ln.split()
+        # колонки: Recv-Q Send-Q локал:порт гость:порт
+        if len(c) < 4 or c[2].rpartition(":")[2] not in ports:
+            continue
+        peer = _ssh_host(c[3].rpartition(":")[0])
+        if peer:
+            out.add(peer)
+    return out, True
+
+
+def _ssh_accepted_ips():
+    """(адреса успешных входов за окно, измерено ли).
+
+    Сканер строку `Accepted` не пишет по определению: он не знает ни пароля, ни
+    ключа. Поэтому замок судит по факту входа, а не по шуму рукопожатий, и это
+    и есть «банить только сканеров»: адрес хозяина, однажды вошедший по ssh,
+    защищён даже в ту минуту, когда он к ssh не подключён.
+    """
+    if not _SSHD_LIVE_UNITS[0] or time.time() - _SSH_PROBE_T[0] > 600:
+        _ssh_units_probe(max(1440, _SSH_KEEP_WIN_S // 60))
+    units = _SSHD_LIVE_UNITS[0]
+    if not units:
+        return set(), False
+    mins = max(1, _SSH_KEEP_WIN_S // 60)
+    args = ["journalctl", "--no-pager"]
+    for u in units:
+        args += ["-u", u]
+    # `-g` отсекает шторм чужих строк ДО разбора: под перебором суточное окно —
+    # десятки тысяч «Invalid user», а нужных строк в нём единицы.
+    args += ["--since", "%d minutes ago" % mins, "-o", "cat", "--grep=Accepted "]
+    ips = set()
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=25)
+        if r.returncode == 0:
+            for ln in (r.stdout or "").splitlines():
+                m = _SSH_OK_RX.search(ln)
+                if m:
+                    ips.add(m.group("ip").rstrip(".,;"))
+            return ips, True
+    except Exception:
+        pass
+    lines = _ssh_journal_lines(mins, units)
+    if lines is None:
+        return ips, False
+    for ln in lines:
+        m = _SSH_OK_RX.search(ln)
+        if m:
+            ips.add(m.group("ip").rstrip(".,;"))
+    return ips, True
+
+
+def _ssh_keep(force=False):
+    """Снять защищённые адреса и сети. Возвращает (измерено ли, адреса, сети).
+
+    `known=False` означает «чем измерять нет»: бан тогда ОТКАЗЫВАЕТСЯ, потому что
+    перерезать хозяину ssh дороже пропущенного сканера, а молчание замка видно
+    числом отказов, а не догадкой.
+    """
+    now = time.time()
+    with _SSH_KEEP_LOCK:
+        if not force and _SSH_KEEP["known"] and now - _SSH_KEEP["t"] <= _SSH_KEEP_TTL:
+            return True, set(_SSH_KEEP["ips"]), list(_SSH_KEEP["nets"])
+    ips = set()
+    nets = []
+    peers, peers_ok = _ssh_live_peers()
+    acc, acc_ok = _ssh_accepted_ips()
+    ips |= peers | acc
+    # руки оператора: то же поле, что в морде под подписью «не банить эти адреса»,
+    # плюс белый список наблюдателя — замок обязан читать ОДИН список, а не два
+    for x in str(CFG_CACHE.get("f2b_ssh_ignore") or "").replace(",", " ").split():
+        t = x.strip()
+        if not t:
+            continue
+        if "/" in t:
+            _ssh_keep_add_net(t, nets)
+        else:
+            ips.add(t)
+    for x in (CFG_CACHE.get("sweep_allow") or []):
+        _ssh_keep_add_net(x, nets)
+    for tok, meta in list(SESSIONS_META.items()):
+        if isinstance(meta, dict) and meta.get("ip") and \
+           float(SESSIONS.get(tok) or 0) > now:
+            ips.add(str(meta["ip"]))
+    known = bool(peers_ok or acc_ok)
+    with _SSH_KEEP_LOCK:
+        _SSH_KEEP["t"] = now
+        _SSH_KEEP["ips"] = ips
+        _SSH_KEEP["nets"] = nets
+        _SSH_KEEP["known"] = known
+        _SSH_KEEP["why"] = "" if known else "ни `ss`, ни журнал sshd не прочитаны"
+        _SSH_KEEP_STAT["protected"] = len(ips) + len(nets)
+    return known, ips, nets
+
+
+def _ssh_keep_hit(target, ips, nets):
+    """Попадание цели в защищённый адрес/сеть — ЧИСТОЕ сравнение, без суждения о
+    том, измерен ли замок. Нужен рестарту: снятый при запуске бан это не новый
+    бан, а прежний, и сбрасывать из-за нечитаемого журнала все ферменные баны
+    хозяин не просил.
+    """
+    import ipaddress
+    t = str(target or "").strip()
+    try:
+        if "/" in t:
+            tn = ipaddress.ip_network(t, strict=False)
+        else:
+            a = ipaddress.ip_address(t)
+            tn = ipaddress.ip_network(u"%s/%d" % (t, a.max_prefixlen))
+    except Exception:
+        # неразобранная цель не уходит в `nft`: замок молчит, а не врёт
+        return "цель не разбирается как адрес или сеть"
+    for addr in ips:
+        try:
+            if ipaddress.ip_address(addr) in tn:
+                return "защищённый адрес %s накрывается целью" % addr
+        except Exception:
+            continue
+    for n in nets:
+        try:
+            if tn.overlaps(n):
+                return "защищённая сеть %s пересекается с целью" % n
+        except Exception:
+            continue
+    return None
+
+
+def _ssh_keep_block(target, known, ips, nets):
+    """Причина, по которой банить `target` (адрес или префикс) нельзя, либо None.
+
+    Широкий бан сетки или веера отказывается, если внутрь попадает хоть один
+    защищённый адрес: иначе «не банить мой адрес» обходилось префиксом за один шаг.
+    """
+    if not known:
+        return "замок не измерен: " + _SSH_KEEP["why"]
+    return _ssh_keep_hit(target, ips, nets)
+
+
+def _ssh_keep_refuses(target):
+    """Причина, по которой бан цели нельзя выполнить, либо None.
+
+    Отдельная функция для тех, кто ПЕРЕД широким баном снимает более узкие:
+    наблюдатель обязан узнать ответ замка заранее, потому что снятого он уже не
+    вернёт, а отказ `_ban_ip` последовал бы уже после разбнивания фермы (#366).
+    """
+    known, ips, nets = _ssh_keep()
+    return _ssh_keep_block(str(target), known, ips, nets)
+
 
 def _ban_ip(ip, secs, reason):
-    """Общий бан IP через inet/veil_bans + bans.json. False = уже забанен."""
+    """Общий бан IP через inet/veil_bans + bans.json. False = уже забанен.
+
+    Первым делом SSH-замок: все ступени бана (`login fails`, `ssh fails`,
+    `devices:`, наблюдатель) идут отсюда, поэтому запрет живёт в ОДНОМ месте.
+    Прежняя защита спрашивалась каждой ступенью сама: fail2ban-lite смотрел на
+    живые сессии, а наблюдатель — ни на них, ни на список оператора.
+    """
+    known, ips, nets = _ssh_keep()
+    why = _ssh_keep_block(ip, known, ips, nets)
+    if why:
+        now = time.time()
+        with _SSH_KEEP_LOCK:
+            _SSH_KEEP_STAT["refused"] += 1
+            _SSH_KEEP_STAT["last"] = "%s (%s)" % (ip, reason)
+            loud = now - float(_SSH_KEEP_STAT["t"] or 0) > 60
+            if loud:
+                _SSH_KEEP_STAT["t"] = now
+        # под штормом одна заявка в минуту наружу, но счёт растётся всегда
+        if loud:
+            _audit("ssh_keep_refused", ip=ip, reason=reason, why=str(why)[:120])
+            print("[ssh-keep] бан %s (%s) ОТКАЗ: %s" % (ip, reason, why), flush=True)
+        return False
     with _BANS_LOCK:
         if ip in BANS:
             return False
@@ -21109,8 +21890,6 @@ _SSH_STAT = {"hits": 0, "banned": 0, "read": 0, "skipped": 0, "users": {}, "t": 
 # были объявлены мёртвыми, и автобан молчал при 261 провале в час.
 _SSH_FAIL_RX = re.compile(
     r"Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)")
-_SSH_OK_RX = re.compile(r"Accepted (?:password|publickey|keyboard-interactive(?:/pam)?) "
-                        r"for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)")
 _SSH_USER_RX = re.compile(r"\bfor (?:invalid user )?(?P<user>\S+)(?: from| port)")
 # Живость юнита меряется НЕ «е ли в выборке считаючий провал»: под подбором
 # последние сотни строк ssh.service — один шум (`Invalid user …`, `Disconnected
@@ -21211,21 +21990,13 @@ def _ssh_allowlist():
 
     Живые сессии снимаются так, чтобы НЕ банить адрес, с которого сидит сам
     оператор (иначе подбор чужого адреса превратился бы в отрезание хозяина).
+    Порт берётся у живого сокета и из sshd-конфига: прежняя зашитая `sport = : 22`
+    на боевом (:4141) не накрывала ни одного настоящего сеанса (#366).
     """
-    out = set()
-    try:
-        r = subprocess.run(["ss", "-H", "-tn", "state", "established", "(", "sport", "=", "22", ")"],
-                           capture_output=True, text=True, timeout=10).stdout
-        for ln in r.splitlines():
-            cols = ln.split()
-            if len(cols) >= 4:
-                peer = cols[3].rsplit(":", 1)[0].strip("[]")
-                if peer:
-                    out.add(peer)
-    except Exception:
-        pass
+    out, _ok = _ssh_live_peers()
     for x in (CFG_CACHE.get("f2b_ssh_ignore") or "").replace(",", " ").split():
-        out.add(x.strip())
+        if x.strip():
+            out.add(x.strip())
     return out
 
 
@@ -23896,9 +24667,16 @@ def _dynv6_update(force4=None, force6=None):
 
 # ---------- АВТОЗАМЕНА IP ПРИ ПАДЕНИИ ДОСТУПНОСТИ ИЗ РФ ----------
 
+# состояния монитора (#337): idle — мерит и всё в порядке; `suspect` — доступность
+# ниже порога, ждёт подтверждения окном; blind — сам замер не выполнен (Globalping
+# молчит): проценты в статусе устарели и решений о смене принимать нельзя.
+# Хороший замер в `suspect` обязан повториться дважды, прежде чем монитор сочтёт
+# восстановление: единственный просвет между блокировками иначе обнуляет окно
+# каждый раз и смена не наступает никогда (flapping-wipe, промер #335).
+_ROT_GOOD_CONFIRM = 2
 _ROT = {"ts": 0.0, "ok": 0, "total": 0, "pct": None, "state": "idle",
         "suspect_since": 0.0, "last_swap": 0.0, "ip": "", "error": "",
-        "events": [], "busy": False, "alerted": False}
+        "events": [], "busy": False, "alerted": False, "good_streak": 0}
 _ROT_LOCK = threading.Lock()
 
 
@@ -23934,7 +24712,9 @@ def _rot_conf():
         "enabled": bool(CFG_CACHE.get("rot_enabled")),
         "threshold": _num("rot_threshold", 50, 1, 100),
         "window_min": int(_num("rot_window_min", 5, 0, 180)),
-        "check_min": int(_num("rot_check_min", 15, 5, 240)),
+        # нижняя граница 3 минуты — решение хозяина от 11.10: «реакция быстро
+        # ~3–5 мин» (#337); потолок Globalping на анонимные замеры это позволяет
+        "check_min": int(_num("rot_check_min", 5, 3, 240)),
         "cooldown_min": int(_num("rot_cooldown_min", 30, 1, 1440)),
         "provider": prov,
         "pool": pool,
@@ -23997,6 +24777,25 @@ def _rot_pick_ip(cur):
     return cand[0]
 
 
+def _gp_connect_retry(fn, tries=3):
+    # Гигиена канала к API Globalping (промер 12.10): путь от боевого идёт через
+    # Fastly и периодически рвёт TLS на подъёме (Errno 104, handshake timeout) —
+    # это шорох канала, а не блокировка узла и не отказ провайдера измерений.
+    # Без повтора один такой сброс слепил монитор на целый тик. HTTP-ответы —
+    # не сюда: 429 ретраится своим порядком, остальные коды честные.
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(3 * (i + 1))
+    raise last
+
+
 def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200,
               reachable_only=False):
     """Серверная проверка доступности через Globalping (зонды из РФ). -> (ok, total, details)
@@ -24043,7 +24842,7 @@ def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200,
                     raise RuntimeError("Globalping ограничил частоту замеров (429), ждём окно")
                 time.sleep(ra)
                 waited += ra
-    d = _create()
+    d = _gp_connect_retry(_create)
     mid = (d.get("id") or "").strip()
     if not mid:
         raise RuntimeError("Globalping не вернул id измерения")
@@ -24083,6 +24882,87 @@ def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200,
                         "success": good,
                         "rtt": (round(rtt) if isinstance(rtt, (int, float)) else None)})
     return ok, len(results), details
+
+
+def _gp_tcp_probe(target, port, limit=10, wait_s=120):
+    """TCP-проба кандидата на смену: сколько зондов из РФ подняли соединение. -> (ok, total)
+
+    HTTP-проба голого адреса не годится: сертификат выдан на домен, на `ip:443`
+    рукопожатие рвётся именем, и живой адрес выглядел бы блокировкой. Блокировка
+    (#335) рвёт именно соединения — поэтому кандидат щупается голым TCP (#337).
+    Отказ провайдера — исключение: «не известно» не приравнивается к «не жив»,
+    слепого применения к первому кандидату, как в событии 20:44, больше нет."""
+    if not target:
+        raise RuntimeError("не задан адрес для пробы")
+    body = {"type": "tcp", "target": target,
+            "locations": [{"country": "RU", "limit": limit}],
+            "measurementOptions": {"port": int(port)}}
+
+    def _req(url, data=None):
+        req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                     headers={"Content-Type": "application/json",
+                                              "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+
+    d = _gp_connect_retry(
+        lambda: _req("https://api.globalping.io/v1/measurements", json.dumps(body).encode()))
+    mid = (d.get("id") or "").strip()
+    if not mid:
+        raise RuntimeError("Globalping не вернул id пробы")
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(4)
+        try:
+            dd = _req("https://api.globalping.io/v1/measurements/" + mid)
+        except Exception:
+            continue
+        if dd.get("status") == "finished":
+            results = dd.get("results") or []
+            if not results:
+                raise RuntimeError("Globalping: проба не дала результатов")
+            ok = 0
+            for r in results:
+                res = r.get("result") or {}
+                if res.get("connect") or res.get("established"):
+                    ok += 1
+            return ok, len(results)
+        if dd.get("status") == "failed":
+            raise RuntimeError("Globalping: TCP-проба не удалась")
+    raise RuntimeError("таймаут ожидания TCP-пробы Globalping")
+
+
+def _rot_pick_live(cfg, cur):
+    """Живой кандидат на смену: каждый щупается TCP-пробой из РФ до применения (#337).
+
+    Возвращает (ip, пояснение); отказ обязан быть назван: «менять некем»,
+    «все кандидаты блокированы» и «проба не выполнена» — три разные ситуации
+    с разными действиями хозяина. Кандидатов щупаем не больше трёх за тик —
+    смена сама по себе редка, а бюджет Globalping общий с монитором."""
+    cand = [ip for ip in _rot_candidates() if ip != cur]
+    if not cand:
+        return "", "нет свободных IP в пуле (текущий %s)" % (cur or "?")
+    last = (CFG_CACHE.get("rot_last_ip") or "").strip()
+    if last in cand:
+        try:
+            i = cand.index(last)
+            cand = cand[i + 1:] + cand[:i + 1]
+        except Exception:
+            pass
+    dead = []
+    errs = []
+    for ip in cand[:3]:
+        try:
+            ok, total = _gp_tcp_probe(ip, cfg["port"], limit=10)
+        except Exception as e:
+            errs.append("%s: %s" % (ip, str(e)[:60]))
+            continue
+        if total > 0 and ok * 100.0 / total > cfg["threshold"]:
+            return ip, "TCP-проба из РФ %d/%d" % (ok, total)
+        dead.append("%s %d/%d" % (ip, ok, total))
+    if dead:
+        return "", "ни один кандидат не отзывается из РФ (%s) — смена отложена" % "; ".join(dead)
+    return "", "проба кандидатов не выполнена (%s) — смена отложена" % "; ".join(errs)
 
 
 def _cf_api(method, path, body=None):
@@ -24294,6 +25174,76 @@ def _rot_apply(ip):
     return rep
 
 
+# Главный адрес машины задаёт порядок адресов в `netplan`: первый в списке —
+# исходный для исходящих соединений, его же называет `_pub_ip4`. Если
+# блокировка (#335) легла на главный, а DNS уже переведён на живой, машина
+# продолжает исходить мёртвым адресом (#337). Каталог переселяется в
+# песочницу #114 так же, как конфиги туннелей: прибор правит снимок в боксе.
+NETPLAN_DIR = os.path.join(SBX or "/etc/netplan", "")
+
+
+def _netplan_primary_fix(ip):
+    """Переставить главный адрес `netplan` на живой и применить. -> названная строка.
+
+    Файл пишется целиком из разобранного документа, снимок байтов держится до
+    успешного `netplan apply`; отказ применения или записи откатывает снимок.
+    Пустой адрес, нет парсера, адрес не найден, главный уже он — каждая ветка
+    названа словами: молчать хранитель не вправе (урок #264)."""
+    if not _is_pub_ip4(ip):
+        return "netplan: адрес %s не публичный IPv4 — порядок не тронут" % ip
+    try:
+        import yaml
+    except Exception:
+        return "netplan: парсер yaml недоступен — порядок не тронут"
+    try:
+        names = sorted(n for n in os.listdir(NETPLAN_DIR) if n.endswith(".yaml"))
+    except OSError:
+        return "netplan: каталог %s не читается — порядок не тронут" % NETPLAN_DIR
+    for name in names:
+        path = os.path.join(NETPLAN_DIR, name)
+        try:
+            raw = open(path, "r", encoding="utf-8").read()
+            doc = yaml.safe_load(raw)
+        except Exception:
+            continue
+        ethernets = ((doc or {}).get("network") or {}).get("ethernets") or {}
+        for ifname in sorted(ethernets):
+            conf = ethernets[ifname] or {}
+            addrs = conf.get("addresses") or []
+            bare = [str(a).split("/")[0] for a in addrs]
+            if ip not in bare:
+                continue
+            if bare[0] == ip:
+                return "netplan: главный адрес интерфейса %s уже %s" % (ifname, ip)
+            k = bare.index(ip)
+            conf["addresses"] = [addrs[k]] + [a for i, a in enumerate(addrs) if i != k]
+            try:
+                tmp = path + ".veil-tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(yaml.safe_dump(doc, sort_keys=False))
+                os.replace(tmp, path)
+            except Exception as e:
+                return "netplan: запись %s не удалась (%s) — порядок не тронут" % (name, str(e)[:80])
+            try:
+                rc = subprocess.run(["netplan", "apply"], capture_output=True,
+                                    timeout=90).returncode
+            except Exception as e:
+                rc = -1
+                err = str(e)[:80]
+            else:
+                err = ""
+            if rc != 0:
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(raw)
+                except Exception:
+                    return ("netplan: применение отклонено (rc %d %s), снимок %s вернуть не удалось — "
+                            "проверить вручную!" % (rc, err, name))
+                return "netplan: применение отклонено (rc %d %s), файл %s откачен" % (rc, err, name)
+            return "netplan: главный адрес %s → %s на %s" % (bare[0], ip, ifname)
+    return "netplan: адрес %s не найден в %s — порядок не тронут" % (ip, NETPLAN_DIR)
+
+
 def _rotate_ip(reason=""):
     """Одна замена IP. Возвращает (ok, сообщение)."""
     cfg = _rot_conf()
@@ -24304,10 +25254,12 @@ def _rotate_ip(reason=""):
     cur = _cf_current_ip() if cfg["provider"] in ("cloudflare", "both") else (_pub_ip4() or "")
     if not cur:
         cur = _pub_ip4() or ""
-    new = _rot_pick_ip(cur)
+    new, why = _rot_pick_live(cfg, cur)
     if not new:
-        return False, "нет свободных IP в пуле (текущий %s)" % (cur or "?")
+        return False, why
     rep = _rot_apply(new)
+    rep.append("проба: " + why)
+    rep.append(_netplan_primary_fix(new))
     CFG_CACHE["rot_last_ip"] = new
     _cfg_save()
     with _ROT_LOCK:
@@ -24354,11 +25306,21 @@ def _rot_tick():
         except Exception as e:
             with _ROT_LOCK:
                 _ROT["error"] = str(e)[:200]
-            _rot_event("проверка доступности не удалась: " + str(e)[:160], "err")
+                blind = _ROT["state"] != "blind"
+                _ROT["state"] = "blind"
+            # Событие — только на переходе: молчание Globalping на каждом тике
+            # иначе затопило бы журнал, а статус показывал бы устаревшие проценты
+            # как живые (#337 D).
+            if blind:
+                _rot_event("монитор ослеп: проверка доступности не удалась: " + str(e)[:160], "err")
             return
         if total <= 0:
             with _ROT_LOCK:
                 _ROT["error"] = "нет ответов от зондов"
+                blind = _ROT["state"] != "blind"
+                _ROT["state"] = "blind"
+            if blind:
+                _rot_event("монитор ослеп: нет ответов от зондов", "err")
             return
         pct = ok * 100.0 / total
         now = time.time()
@@ -24368,14 +25330,31 @@ def _rot_tick():
             suspect = _ROT["suspect_since"]
             alerted = _ROT.get("alerted", False)
         _gp_record_history(ok, total, cfg, details)
+        if state == "blind":
+            # Первый замер после молчания: проценты снова настоящие, решения о смене
+            # можно принимать заново.
+            _rot_event("монитор прозрел: %d/%d (%.0f%%)" % (ok, total, pct), "ok")
+            state = "idle"
         if pct > cfg["threshold"]:
+            if state == "suspect":
+                # Дебаунс (#337 A): единственный просвет между блокировками не
+                # обнуляет окно — восстановление подтверждается двумя замерами подряд,
+                # иначе смена не наступает никогда (flapping-wipe, промер #335).
+                with _ROT_LOCK:
+                    _ROT["good_streak"] = _ROT.get("good_streak", 0) + 1
+                    streak = _ROT["good_streak"]
+                if streak < _ROT_GOOD_CONFIRM:
+                    return
             if state != "idle":
                 _rot_event("доступность восстановилась: %d/%d (%.0f%%)" % (ok, total, pct), "ok")
             with _ROT_LOCK:
                 _ROT["state"] = "idle"
                 _ROT["suspect_since"] = 0.0
                 _ROT["alerted"] = False
+                _ROT["good_streak"] = 0
             return
+        with _ROT_LOCK:
+            _ROT["good_streak"] = 0
         if state != "suspect":
             _rot_event("доступность %.0f%% ≤ порога %.0f%% (%d/%d)" % (pct, cfg["threshold"], ok, total),
                        "warn")
@@ -24425,7 +25404,7 @@ def _rotate_loop():
     while True:
         try:
             cfg = _rot_conf()
-            iv = max(300, cfg["check_min"] * 60)
+            iv = max(180, cfg["check_min"] * 60)
             t0 = time.time()
             if cfg["enabled"] and not _mv_locked():
                 _rot_tick()
@@ -24441,7 +25420,7 @@ def _rotate_loop():
             # применяется в пределах минуты, без лишнего шума зондов.
             while True:
                 cfg = _rot_conf()
-                iv = max(300, cfg["check_min"] * 60)
+                iv = max(180, cfg["check_min"] * 60)
                 left = iv - (time.time() - t0)
                 if left <= 0:
                     break
@@ -25145,13 +26124,18 @@ def _veil_name_status(name, ours):
         return "ours", sorted(ips)
     return "foreign", sorted(ips)
 
-def _veil_name_plan(base=None, provider=None, labels=None):
+def _veil_name_plan(base=None, provider=None, labels=None, only=None):
     base = (base or _veil_base()).strip().lower()
     if not base or re.fullmatch(r"[0-9.]+", base) or ":" in base or "*" in base:
         return {"ok": False, "error": "не задан корректный домен панели (база)", "base": base}
     prov = (provider or _veil_provider(base)).strip().lower()
     ours = _our_ips()
-    want_labels = list(_VEIL_LABELS)
+    # `only` — выбор галочками мастера «ровно эти имена»; `None` прежнее поведение (трио).
+    # Разделены нарочно: прежние вызовы (маска, мюкс, установщик) зовут `labels` как
+    # ДОПОЛНЕНИЕ к троице, и сделать его отсекающим означало бы снять у живой подписки
+    # имя, под которым она уже ходит.
+    _only = [str(x or "").strip().lower() for x in (only or []) if str(x or "").strip()]
+    want_labels = list(_only) if _only else list(_VEIL_LABELS)
     for l in (labels or []):
         l = (l or "").strip().lower()
         if l and l not in want_labels:
@@ -25233,12 +26217,14 @@ def _veil_cert_ready(want, min_days=14):
     return bool(exp and exp > time.time() + min_days * 86400)
 
 
-def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base=None, labels=None):
+def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base=None, labels=None,
+                 only=None):
     """DNS-записи → ожидание резолва → выпуск SAN-серта (метод по провайдеру) → раздача TLS.
-    labels — доп. метки поддоменов к tg/vpn (выбранные галочками протоколы)."""
+    labels — доп. метки поддоменов к tg/vpn (выбранные галочками протоколы).
+    only — «ровно эти метки», выбор галочками мастера (#368); пусто — прежняя тройка."""
     if not confirm:
         raise RuntimeError("нужно подтверждение (confirm): изменятся DNS-записи и сертификат")
-    plan = _veil_name_plan(base, provider, labels)
+    plan = _veil_name_plan(base, provider, labels, only)
     if not plan.get("ok"):
         raise RuntimeError(plan.get("error") or "нет плана имён")
     base, prov, names = plan["base"], plan["provider"], plan["names"]
@@ -25463,6 +26449,405 @@ def _veil_center():
             "missing_dns": missing_dns, "missing_cert": missing_cert,
             "extras": [l for l in labels if l not in _VEIL_LABELS],
             "renumbered": bool(plan.get("renumbered"))}
+
+
+# ─────────────────── #368 (#319): единый мастер домена и сертификата ───────────────────
+# Слово хозяина 13.10: «у нас делает домены и получает сертификаты... Большой разброс по
+# вкладкам. Надо сделать всё единой функцией» — и порядок шагов назван им же: создать
+# домен галочками (под что), получить, потом сертификат с выбором источника и токеном,
+# потом https, маски и развилка. Инвентарь ДО правки измерен числом: у выпуска
+# сертификата пять входов (`/api/cert/issue`, `/api/veil/ensure`, `/api/webmux/apply`,
+# `/api/setup/auto`, `/api/front/apply`) на четырёх вкладках, у перевода домена на этот
+# сервер — три (`/api/dynv6/update`, `/api/rotate/swap`, `/api/migrate/dns`). Писатели при
+# этом давно ОДНИ, не хватало одного ЧТЕНИЯ состояния и одного порядка шагов: этот блок
+# ничего не пишет сам, он судит, что уже сделано, и каким шагом можно идти дальше.
+# Порядок и зависимость шагов — числа, а не догадка морды: шаг «можно» только когда
+# сняты его предшественники, а отказ назван строкой.
+_SITE_STEPS = ("domain", "names", "cert", "https", "mask", "mux")
+_SITE_CAPS = {"domain": "Домен панели", "names": "Поддомены", "cert": "Сертификат",
+              "https": "Панель по https", "mask": "Страницы-маски", "mux": "Развилка :443"}
+# Чего не хватает, когда шаг ещё нельзя нажимать. Ключ — ОТСУТСТВУЮЩИЙ предок, а не сам
+# шаг: читатель подставляет отказ (`_SITE_WHY[d]`) тому шагу, чей предок `d` не сделан,
+# поэтому отказ обязан называть ИМЕННО предка и куда к нему вернуться. Прежде строки были
+# сочинены как «почему стоит этот шаг» и читались по предку — на коробке с готовыми
+# поддоменами шаг «Панель по https» говорил «нужны поддомены», хотя поддомены были готовы,
+# а не хватало сертификата (измерено прогоном f88 ногами S4 и E14).
+_SITE_DEPS = {"domain": (), "names": ("domain",), "cert": ("names",),
+              "https": ("cert",), "mask": ("cert",), "mux": ("cert",)}
+_SITE_WHY = {"domain": "не задан домен панели (база) — впишите его первым шагом «Домен панели»",
+             "names": "не выпущены поддомены — нажмите шаг «Поддомены»: из них берёт имена сертификат",
+             "cert": "нет выпущенного сертификата — нажмите шаг «Сертификат»: панели, маске "
+                     "и развилке нечем закрывать TLS"}
+
+
+def _panel_domain_valid(domain):
+    """Правила имени базы — ОДНА пара на весь дом. До #368 они жили только внутри
+    `POST /api/settings`; мастер зовёт их же, иначе вторая морда могла бы пропустить
+    то, что первая честно отвергает (`http://` в поле домена = сломанная ссылка подписки).
+    Класс «вставили адрес целиком» назван ПЕРВЫМ, потому что он и есть человекочтимый
+    ответ: поле для домена, а человек принёс URL из адресной строки — ему надо сказать
+    «без http:// и пути», а не отругать за набор символов, который он не выбирал."""
+    if domain and (domain.startswith("http") or "/" in domain or " " in domain):
+        return "домен: только имя хоста, без http:// и пути"
+    if domain and not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?", domain):
+        return "недопустимый домен (разрешены буквы, цифры, точка и дефис)"
+    return None
+
+
+def _panel_domain_write(domain):
+    """Единственная запись базы в конфиг: пишет или снимает ключ и обязана отвечать честно
+    в обе стороны (реестр #288 пункт 7). Отказ записи откатывает ключ, чтобы конфиг и
+    ответ не расходились. Возвращает (ok, ошибка)."""
+    _dom_prev = CFG_CACHE.get("panel_domain")
+    if domain:
+        CFG_CACHE["panel_domain"] = domain
+    else:
+        CFG_CACHE.pop("panel_domain", None)
+    if not _cfg_save():
+        if _dom_prev is None:
+            CFG_CACHE.pop("panel_domain", None)
+        else:
+            CFG_CACHE["panel_domain"] = _dom_prev
+        _cfg_save()
+        return (False, "домен не сохранён: конфиг не записан (снимок не снял гонку)")
+    return (True, "")
+
+
+def _site_tls_probe(port):
+    """Живое петлевое TLS-рукопожатие к порту панели — ответ `(прошло, почему нет)`.
+    Физика коробки вынесена из `_site_https_state` отдельно и только потому, что у решения
+    читателя (какие файлы брать, чем шаг считается сделанным, каким словом назван отказ)
+    есть место и без настоящего сокета, а рукопожатие в промере подменяется подменной
+    (#368, ноги f88 S14/S15)."""
+    try:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        with socket.create_connection(("127.0.0.1", port), timeout=6) as s0:
+            with ctx.wrap_socket(s0) as ss0:
+                peer = ss0.getpeercert(True)
+        return (bool(peer), "" if peer else "рукопожатие прошло, а сертификат не отдан")
+    except Exception as e:
+        return (False, str(e)[:120])
+
+
+def _site_https_state():
+    """Что панель реально отдаёт по https ПРЯМО СЕЙЧАС: сохранённая пара файлов и живой
+    петлевой рукопожатие. `_WEB_CTX` пересобирается без рестарта (`_web_tls_ctx`), поэтому
+    промер имеет смысл — он меряет следствие, а не намерение."""
+    pc = (CFG_CACHE.get("panel_cert_path") or "").strip()
+    pk = (CFG_CACHE.get("panel_key_path") or "").strip()
+    if not (pc and pk):
+        pc = (CFG_CACHE.get("cert") or "").strip()
+        pk = (CFG_CACHE.get("cert_key") or "").strip()
+    out = {"cert_path": pc, "key_path": pk, "saved": bool(pc and pk),
+           "files": bool(pc and pk and os.path.exists(pc) and os.path.exists(pk)),
+           "served": _WEB_CTX is not None, "tls_ok": False, "port": 0, "error": ""}
+    try:
+        out["port"] = int(CFG_CACHE.get("panel_port") or 8444)
+    except (TypeError, ValueError):
+        out["port"] = 0
+    ok, err = _site_tls_probe(out["port"])
+    out["tls_ok"] = bool(ok)
+    out["error"] = err
+    return out
+
+
+def _site_wizard():
+    """Единое состояние всей работы о домене и сертификате — один читатель на шесть
+    шагов. Пишущего тут нет вовсе: имена и покрытие берёт `_veil_center`, сертификат —
+    `_cert_status`, маска — `_front_status`, развилка — `_mux_status`. Умышленно НЕ зовёт
+    `_mux_preview`: тот резолвит имена наружу, а этот вызов морда делает на каждой
+    отрисовке вкладки (граница заведена циклом #175 — «морде нельзя сетевого запроса на
+    критическом пути»). Каждый шаг несёт `n` — числа сделанного, `can` — можно ли идти,
+    и `why` — почему нельзя, названное."""
+    c = _veil_center()
+    out = {"ok": bool(c.get("ok")), "base": c.get("base") or "",
+           "provider": c.get("provider") or "", "error": c.get("error") or "",
+           "steps": [], "tokens": {}}
+    # Значения токенов наружу не идут никогда — только признак, задан ли.
+    out["tokens"] = {"dynv6": bool((CFG_CACHE.get("dynv6_token") or "").strip()),
+                     "cloudflare": bool((CFG_CACHE.get("cf_token") or "").strip())}
+    rows = [r for r in (c.get("names") or []) if isinstance(r, dict)]
+    ours = [r for r in rows if r.get("status") == "ours"]
+    foreign = [r for r in rows if r.get("status") == "foreign"]
+    cert = c.get("cert") or {}
+    exp = cert.get("expire")
+    days = None
+    if isinstance(exp, (int, float)) and exp > 0:
+        days = int((exp - time.time()) // 86400)
+    hs = _site_https_state()
+    try:
+        fs = _front_status() or {}
+    except Exception as e:
+        fs = {"domain": "", "active": False, "cert_ok": False, "https_ok": False,
+              "error": str(e)[:120]}
+    try:
+        ms = _mux_status() or {}
+    except Exception as e:
+        ms = {"applied": False, "error": str(e)[:120]}
+    facts = {
+        "domain": {"base": out["base"], "provider": out["provider"]},
+        "names": {"total": len(rows), "ours": len(ours), "foreign": len(foreign),
+                  "missing": len([x for x in (c.get("missing_dns") or [])]),
+                  "renumbered": bool(c.get("renumbered"))},
+        "cert": {"has": bool(cert.get("has")), "ready": bool(cert.get("ready")),
+                 "days": days, "san": len(cert.get("san") or []),
+                 "san_next": len(cert.get("san_next") or []),
+                 "budget": cert.get("budget"), "error": cert.get("error") or ""},
+        "https": {"saved": hs["saved"], "files": hs["files"], "served": hs["served"],
+                  "tls_ok": hs["tls_ok"], "port": hs["port"], "error": hs["error"]},
+        "mask": {"active": bool(fs.get("active")), "cert_ok": bool(fs.get("cert_ok")),
+                 "https_ok": bool(fs.get("https_ok")), "domain": fs.get("domain") or "",
+                 "enabled": bool(fs.get("enabled"))},
+        "mux": {"applied": bool(ms.get("applied")), "protos": len(ms.get("protos") or []),
+                "mp": bool(ms.get("mp")), "free443": bool(ms.get("free443"))},
+    }
+    done = {}
+    done["domain"] = bool(out["base"])
+    done["names"] = bool(rows) and len(ours) == len(rows) and not foreign
+    done["cert"] = bool(cert.get("ready"))
+    done["https"] = bool(hs["files"] and hs["tls_ok"])
+    done["mask"] = bool(fs.get("active") and fs.get("cert_ok"))
+    done["mux"] = bool(ms.get("applied"))
+    for sid in _SITE_STEPS:
+        why = ""
+        for d in _SITE_DEPS[sid]:
+            if not done.get(d):
+                why = _SITE_WHY[d]
+                break
+        # Источник выпуска требует свой токен: без него шаг физически не пройдёт,
+        # и честно названо какое именно имя отсутствует (значения не печатаются).
+        # Пустой источник назван ОТДЕЛЬНЫМ отказом: `_veil_provider` не угадывает его без
+        # всяких credentials, а прежняя строка молча подставляла «dynv6» и требовала токен
+        # dynv6 у базы, лежащей в чужой зоне, — человек вписывал бы не то.
+        if not why and sid == "cert":
+            prov = out["provider"]
+            if not prov:
+                why = ("источник выпуска не выбран: нет токена cloudflare и нет dynv6-хоста — "
+                       "впишите токен в шаге выпуска")
+            elif not out["tokens"].get(prov):
+                why = "не задан токен провайдера «" + prov + "» — впишите его в шаге выпуска"
+        out["steps"].append({"id": sid, "caption": _SITE_CAPS[sid],
+                             "state": "done" if done.get(sid) else "todo",
+                             "can": bool(done.get(sid) is False and not why),
+                             "why": why, "n": facts[sid]})
+    out["done_count"] = len([s for s in out["steps"] if s["state"] == "done"])
+    out["next"] = [s["id"] for s in out["steps"] if s["can"]]
+    out["https_url"] = (("https" if hs["tls_ok"] else "http") + "://" +
+                        (out["base"] or "127.0.0.1") + ":" + str(hs["port"] or 0))
+    out["names_rows"] = rows
+    # Алфавит галочек выпуска (хозяйский пункт 2: «под что хотим — https, tg, web, vpn и
+    # прочие поддомены; по умолчанию выбрано всё»). Alphabet — не выдуманный список, а
+    # то, что план называет СЕЙЧАС: троица `_VEIL_LABELS`, уже живущие в плане метки и
+    # `mp`, только если развилка его уже ведёт. Снятое имя сюда не возвращается: выпуск
+    # не отзывает запись, поэтому галочка «уже выпущено» несёт и запрет на снятие.
+    lab = {}
+    for r in rows:
+        l = str(r.get("label") or "").strip().lower()
+        if l and l not in lab:
+            lab[l] = r
+    alpha = list(_VEIL_LABELS)
+    for l in list(lab) + [str(x or "").strip().lower() for x in (c.get("extras") or [])]:
+        if l and l not in alpha:
+            alpha.append(l)
+    if "mp" not in alpha and (facts["mux"].get("mp") or "mp" in lab):
+        alpha.append("mp")
+    out["labels"] = [{"label": l,
+                      "name": (lab.get(l) or {}).get("name") or
+                              ((l + "." + out["base"]) if out["base"] else l),
+                      "issued": (lab.get(l) or {}).get("status") == "ours",
+                      "foreign": (lab.get(l) or {}).get("status") == "foreign",
+                      "checked": bool(l in _VEIL_LABELS or l in lab)} for l in alpha]
+    out["cert"] = cert
+    out["https"] = hs
+    out["mask"] = facts["mask"]
+    out["mux"] = facts["mux"]
+    return out
+
+
+def _site_https_apply(pair=None):
+    """Шаг «панель по https»: подключает сертификат к самой панели и пересобирает
+    `_WEB_CTX` на лету. Пары файлов не изобретает: по умолчанию берёт их у писателя
+    сертификата (`_cert_pathes`), а готовую пару человека (`{"cert":..,"key":..}`)
+    принимает тем же судом — файлы на носителе и покрытие базы. Этим закрыт второй вход
+    к сертификату панели в «Настройках» (хозяйский #319 пункт 6): прежняя ручка
+    `/api/network/settings` на запись путей рестартует `vpnpanel` и рвёт соединения
+    подписчиков, а пересборка контекста рестарта не требует. Отказ называется по классу:
+    нет серта, нет файлов, серт не покрывает базу, пара не названа целиком, в принятой
+    паре не читается ни одного имени."""
+    if pair:
+        if not isinstance(pair, dict):
+            return False, "пара не названа целиком: нужны и сертификат, и ключ"
+        cert = str((pair or {}).get("cert") or "").strip()
+        key = str((pair or {}).get("key") or "").strip()
+        dom = ""
+        if not (cert and key):
+            return False, "пара не названа целиком: нужны и сертификат, и ключ"
+    else:
+        cp = _cert_pathes()
+        cert, key = cp.get("cert") or "", cp.get("key") or ""
+        if not cert:
+            return False, "выпущенного сертификата нет — сначала шаг «Сертификат»"
+        dom = (cp.get("domain") or "").strip().lower()
+    if not (os.path.exists(cert) and os.path.exists(key)):
+        return False, "файлы сертификата не найдены на носителе: " + str(cert)[:80]
+    base = (_veil_base() or (CFG_CACHE.get("panel_domain") or "")).strip().lower()
+    names = [x for x in (_cert_dns_names(cert) or [])]
+    if dom and dom not in names:
+        names.append(dom)
+    if base and not names:
+        return False, ("в принятой паре не читается ни одного имени — панель не может "
+                       "проверить, что она покрывает базу «" + base[:64] + "»")
+    if base and names and not _host_covered_by(names, base):
+        if dom:
+            return False, ("сертификат выпущен на «" + str(dom)[:64] +
+                           "» и не покрывает базу «" + base[:64] + "» — расширьте выпуск")
+        return False, ("принятая пара покрывает только " +
+                      ", ".join(str(x)[:64] for x in names[:4]) +
+                      " — базы «" + base[:64] + "» в ней нет")
+    prev = tuple(CFG_CACHE.get(k) for k in
+                 ("panel_cert_path", "panel_key_path", "cert", "cert_key"))
+    CFG_CACHE["panel_cert_path"] = cert
+    CFG_CACHE["panel_key_path"] = key
+    CFG_CACHE["cert"] = cert
+    CFG_CACHE["cert_key"] = key
+    _cfg_save()
+    ctx = _web_tls_ctx()
+    if ctx is None:
+        # Проваленная пара не должна пережить этот вызов ни в памяти, ни на носителе:
+        # иначе следующий рестарт панели поднимется уже на ней и вход по https будет
+        # потерян, а чинить его придётся через SSH. Прежние пути возвращаются и живой
+        # контекст пересобирается из них.
+        for k, v in zip(("panel_cert_path", "panel_key_path", "cert", "cert_key"), prev):
+            if v is None:
+                CFG_CACHE.pop(k, None)
+            else:
+                CFG_CACHE[k] = v
+        _cfg_save()
+        _web_tls_ctx()
+        return False, ("сертификат не поднимается как TLS-контекст панели (файлы целы, "
+                       "но загрузка упала) — прежние пути возвращены на место")
+    _audit("site_https_apply", domain=dom or base, cert=cert)
+    return True, ""
+
+
+def _site_choice_guard(w, only):
+    """Суд над галочками выпуска ДО писателя. Возвращает строку отказа или `None`.
+    Три отказа названы, потому что молчаливый ноль здесь дороже ошибки: пустой выбор
+    (человек снял всё — выпускать нечего, а панель бы молча «сделала» шаг), несуществующая
+    метка (морда и план разошлись бы именами) и снятие УЖЕ выпущенного имени — выпуск не
+    отзывает DNS-запись, подпись под ней живёт в разданных ссылках, и снятая галочка
+    означала бы не отмену, а обман."""
+    sel = [str(x or "").strip().lower() for x in (only or []) if str(x or "").strip()]
+    if not sel:
+        return ("галочками не выбрано ни одного имени — выпускать нечего; "
+                "оставьте хотя бы одно")
+    alpha = [str(x.get("label") or "") for x in (w.get("labels") or [])]
+    alien = [l for l in sel if l not in alpha]
+    if alien:
+        return "план не знает таких имён: " + ", ".join(alien[:6])
+    issued = [str(x.get("label") or "") for x in (w.get("labels") or []) if x.get("issued")]
+    dropped = [l for l in issued if l not in sel]
+    if dropped:
+        return ("нельзя снять уже выпущенное имя: " + ", ".join(dropped[:6]) +
+                " — выпуск не отзывает запись, а подпись под ней живёт в ссылках подписчиков")
+    return None
+
+
+def _site_step(do=None, labels=None, protos=None, provider=None, domain=None, only=None,
+               confirm=False, https_pair=None):
+    """Один шаг мастера. Писателей не изобретает: зовёт ровно тех, что жили до правки —
+    `_panel_domain_write` (база, она же в `POST /api/settings`), `_veil_ensure` (записи
+    и/или сертификат), `_site_https_apply`, `_front_apply` (маска), `_mux_apply`
+    (развилка) — и после каждого возвращает НОВОЕ состояние мастера. Морда
+    судит сделанное числом, а не обещанием: `wizard.steps` пересобирается после писателя.
+    Отказа без причины тут не бывает: `can` снятый до вызова писателя называет, чего не
+    хватает, и к записи не подпускает. `only` — выбор галочками; снять уже выпущенное
+    имя нельзя, и это названо отдельно, потому что выпуск не отзывает запись."""
+    if not confirm:
+        return {"ok": False, "error": "нужно подтверждение (confirm): шаг меняет DNS-записи, "
+                                      "выпускает сертификат или перестраивает конфигурацию"}
+    w = _site_wizard()
+    step = None
+    for s in w["steps"]:
+        if s["id"] == do:
+            step = s
+    if step is None:
+        return {"ok": False, "error": "неизвестный шаг: " + str(do)[:40]}
+    if not step["can"]:
+        # Принесённая человеком пара — это и есть предок «сертификат»: он закрывает его
+        # фактом на диске, поэтому отказ по отсутствующему предку шагу https не преграда
+        # (файлы и покрытие базы всё равно судит `_site_https_apply`). Остальное отсекается
+        # как отсекалось: шаг, который человек не подтвердил, и шаг с другим отсутствующим
+        # предком. Сюда же проходит и повтор с новой парой на уже сделанном шаге — иначе
+        # сменить сертификат панели было бы нечем.
+        if not (do == "https" and https_pair and
+                (step["why"] == _SITE_WHY["cert"] or step["state"] == "done")):
+            return {"ok": False, "step": do, "error": step["why"] or "шаг уже сделан",
+                    "wizard": _site_wizard()}
+    rep = []
+    try:
+        if do == "domain":
+            nd = (domain or "").strip()
+            if not nd:
+                return {"ok": False, "step": do, "error": "не названо имя базы — впишите домен",
+                        "wizard": w}
+            bad = _panel_domain_valid(nd)
+            if bad:
+                return {"ok": False, "step": do, "error": bad, "wizard": w}
+            ok3, err3 = _panel_domain_write(nd)
+            if not ok3:
+                _audit("site_step", step=do, ok=False, err=err3[:160])
+                return {"ok": False, "step": do, "error": err3, "wizard": _site_wizard()}
+            rep = ["база панели: " + nd, "поддомены собираются из неё: tg." + nd +
+                   ", vpn." + nd + ", web." + nd]
+        elif do == "names":
+            cut = _site_choice_guard(w, only)
+            if cut:
+                return {"ok": False, "step": do, "error": cut, "wizard": w}
+            r = _veil_ensure(issue_cert=False, confirm=True, provider=provider,
+                             labels=labels, only=only) or {}
+            rep = [str(x) for x in (r.get("report") or [])]
+            rep.append("имена: " + ", ".join(str(v) for v in (r.get("names") or {}).values()))
+        elif do == "cert":
+            cut = _site_choice_guard(w, only)
+            if cut:
+                return {"ok": False, "step": do, "error": cut, "wizard": w}
+            r = _veil_ensure(issue_cert=True, confirm=True, provider=provider,
+                             labels=labels, only=only) or {}
+            rep = [str(x) for x in (r.get("report") or [])]
+            rep.append("сертификат: " + str(r.get("cert") or "не назван")[:120])
+        elif do == "https":
+            ok2, why = _site_https_apply(https_pair)
+            if not ok2:
+                _audit("site_step", step=do, ok=False, err=why[:160])
+                return {"ok": False, "step": do, "error": why, "wizard": _site_wizard()}
+            nw = _site_wizard()
+            rep = ["TLS-контекст панели пересобран на лету — рестарт не нужен",
+                   "адрес: " + nw["https_url"]]
+            if https_pair:
+                rep.append("панель взяла принятую пару: " +
+                           str(nw["https"]["cert_path"])[:80])
+        elif do == "mask":
+            r = _front_apply(domain or w.get("base") or "") or {}
+            rep = [str(x) for x in (r.get("report") or [])]
+        elif do == "mux":
+            r = _mux_apply(confirm=True, protos=protos) or {}
+            rep = [str(x) for x in (r.get("report") or [])]
+            mv = ", ".join(str((x or {}).get("label") or (x or {}).get("proto"))
+                           for x in (r.get("moved") or []) if isinstance(x, dict))
+            rep.append("за общий :443 ведут: " + (mv or "ничего"))
+    except Exception as e:
+        _audit("site_step", step=do, ok=False, err=type(e).__name__ + ": " + str(e)[:160])
+        return {"ok": False, "step": do, "error": str(e)[:300], "wizard": _site_wizard()}
+    after = _site_wizard()
+    st = after["steps"][[x["id"] for x in after["steps"]].index(do)] if do in [
+        x["id"] for x in after["steps"]] else None
+    _audit("site_step", step=do, ok=True, state=(st or {}).get("state") or "",
+           done=after.get("done_count"))
+    return {"ok": True, "step": do, "report": rep, "wizard": after}
 
 
 # ─────────────────────────── #160: автонастройка галочками ───────────────────────────
@@ -25819,6 +27204,13 @@ def _ddns_loop():
             _tg_mask_front_guard()
         except Exception as e:
             _MASK_FRONT_GUARD["error"] = str(e)[:120]
+        # #348: смена ядра уносит `dkms`-модуль `amneziawg` — интерфейс не
+        # поднимается, а `awg-quick` на месте и молчит. Хранитель дешёвый
+        # (два командных глаза на ядро), дорогую пересборку бережёт часом.
+        try:
+            _awg_dkms_guard()
+        except Exception as e:
+            _AWG_DKMS["error"] = str(e)[:120]
         day = datetime.date.today().isoformat()
         if day != last_day:
             last_day = day
@@ -26136,6 +27528,18 @@ def _bot_poll_loop():
             print("[bot] poll loop error: " + _bot_err_text(e), flush=True)
         time.sleep(2)
 
+# #361: приватное боевого узла — наблюдатель обметания (#335/#354/#357/#358) и хаб
+# Ajax (#355/#356). Файл живёт только на своих машинах, в релизный архив не попадает и
+# чужой установке просто не существует: без него панель теряет и ручки, и нитку, и
+# карточки в морде. Импорт — сюда, а не наверх: модуль берёт помощники панели, а они
+# все определены только к этой строке.
+try:
+    import veil_private as PRIV
+except ImportError:
+    PRIV = None
+if PRIV:
+    PRIV.bind(sys.modules[__name__])
+
 if not SBX:  # #309: в песочнице харнесса эти нити не заводятся (см. `_tg_web_guard_loop`)
     threading.Thread(target=_ddns_loop, daemon=True).start()
     threading.Thread(target=_rotate_loop, daemon=True).start()
@@ -26148,6 +27552,10 @@ if not SBX:  # #309: в песочнице харнесса эти нити не
     threading.Thread(target=_limits_loop, daemon=True).start()
     threading.Thread(target=_bot_poll_loop, daemon=True).start()
     threading.Thread(target=_rulesets_loop, daemon=True).start()
+    # #335/#361: нить наблюдателя живёт только вместе с приватным модулем — без него
+    # панели нечем наблюдать и нечего банить.
+    if PRIV:
+        PRIV.start_threads()
 
 def _stats():
     st = _load(STATE) or {}
@@ -29543,6 +30951,10 @@ class H(http.server.BaseHTTPRequestHandler):
         g = _perm_gate(self, p, "GET")
         if g:
             return self._send(*g)
+        if PRIV:  # #361: приватные ручки — только когда модуль на месте
+            _r = PRIV.api_get(self, p)
+            if _r is not None:
+                return self._send(*_r)
         if p == "/api/term":
             u = _auth_user(self)
             up = (self.headers.get("Upgrade") or "").lower()
@@ -30209,6 +31621,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 content = f.read()
             style = (CFG_CACHE.get("ui_style") or "new").strip().lower()
             content = content.replace(b"__UI_STYLE__", b"classic" if style == "classic" else b"new")
+            if PRIV:  # #361: карточки приватных функций в морде живёт только с модулем
+                content = PRIV.inject_html(content)
             etag = '"' + hashlib.sha256(content).hexdigest()[:32] + '"'
             if (self.headers.get("If-None-Match") or "").strip() == etag:
                 self.send_response(304)
@@ -30803,6 +32217,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 "f2b_ssh_enabled": bool(CFG_CACHE.get("f2b_ssh_enabled", True)),
                 "f2b_ssh_threshold": int(CFG_CACHE.get("f2b_ssh_threshold") or 10),
                 "f2b_ssh_ignore": CFG_CACHE.get("f2b_ssh_ignore", ""),
+                # #366: замок обязан быть видимым. Без чисел «вас не баним» и
+                # «нечем мерить, баны стоят» для оператора выглядят одинаково,
+                # а «добавить мой адрес» без адреса хозяина был бы нечем.
+                "ssh_client_ip": _req_client_ip(self),
+                "ssh_keep": dict(_SSH_KEEP_STAT, known=bool(_SSH_KEEP["known"]),
+                                 why=str(_SSH_KEEP["why"]),
+                                 ports=list(_ssh_effective_ports()),
+                                 win_min=_SSH_KEEP_WIN_S // 60),
                 "ssh_ban_live": dict(_SSH_STAT, users=len(_SSH_STAT.get("users") or {})),
                 "synfix_enabled": bool(CFG_CACHE.get("synfix_enabled", True)),
                 # #170: портов стало несколько. `synfix_port_live` оставлено одиночным
@@ -30894,36 +32316,81 @@ class H(http.server.BaseHTTPRequestHandler):
                 "uptime": uptime,
             })
         if p == "/api/online":
-            # #303: «Клиенты в сети» — не одна цифра, а список кто именно: имя,
-            # протоколы и число устройств. Судит соединения Xray; подписчики без
-            # активного соединения в окно не попадают.
+            # #303 задал окно «Клиенты в сети», #322 наполнил его правдой:
+            # раньше судил один Xray и не отвечал, ЧТО ИМЕННО запущено. Теперь
+            # по строке на подписчика: какие протоколы живут сейчас (зеленью),
+            # какие просто доступны (приглушённо) и когда была последняя
+            # активность. Ни рестартов, ни записей — четыре читалки снимка.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             raw_st = _load(STATE)
             if self._refuse_unshapable(raw_st): return
             st = _state_view(raw_st or {})
+            snap = _online_snapshot()
             who = {}
             for proto, inb in (st.get("inbounds") or {}).items():
                 try:
                     grp = _proto_meta(proto).get("group") or proto
                 except Exception:
                     grp = proto
-                lbl = PROTO_LABELS.get(grp) or grp
+                lbl = PROTO_LABELS.get(grp) or _GROUP_LABELS.get(grp) or grp
                 for c in inb.get("clients", []) or []:
                     u = c.get("uuid")
                     if not u:
                         continue
-                    w = who.setdefault(u, {"name": c.get("name") or "", "protos": []})
+                    w = who.setdefault(u, {"name": c.get("name") or "", "protos": [],
+                                           "tags": {}, "pubs": {"wg": set(), "awg": set()}})
                     if lbl not in w["protos"]:
                         w["protos"].append(lbl)
+                    if grp in ("wg", "awg"):
+                        pub = c.get("client_public_key") or ""
+                        if pub:
+                            w["pubs"][grp].add(pub)
+                    else:
+                        # тег инбаунда строит `_inbound` ровно по ключу входа (3130),
+                        # поэтому access-лог называет протокол без перевода
+                        w["tags"][proto] = lbl
             out = []
             devices = 0
             for u, w in who.items():
-                n = int(_online_count(u) or 0)
+                running = []
+                n = 0
+                last = 0.0
+                xd = int(snap["xray"].get(u) or 0)
+                if xd > 0 or _acc_live(snap, u):
+                    # открыт сейчас — числом устройств; закрыт, но свежий accept —
+                    # присутствие с одним устройством, адресную ручку мерять нечем
+                    n += xd if xd > 0 else 1
+                    tag, ts = snap["acc"].get(u) or ("", 0.0)
+                    lbl = w["tags"].get(tag)
+                    if lbl is None and len(w["tags"]) == 1:
+                        lbl = next(iter(w["tags"].values()))
+                    if lbl is not None and lbl not in running:
+                        running.append(lbl)
+                    if ts > last:
+                        last = ts
+                for grp, lbl in (("wg", _GROUP_LABELS.get("wg", "wg")),
+                                 ("awg", _GROUP_LABELS.get("awg", "awg"))):
+                    ages = [a for pub in (w["pubs"][grp] & set(snap["tun"].get(grp) or {}))
+                            for a in [snap["tun"][grp][pub]]]
+                    if ages:
+                        n += len(ages)
+                        if lbl not in running:
+                            running.append(lbl)
+                        # время последнего рукопожатия пиера: снимок минус его возраст
+                        ts = snap["at"] - min(ages)
+                        if ts > last:
+                            last = ts
+                mt = int(snap["mt"].get(w["name"]) or 0) if w["name"] else 0
+                if mt > 0:
+                    n += mt
+                    if "MTProto Proxy" not in running:
+                        running.append("MTProto Proxy")
                 if n <= 0:
                     continue
                 devices += n
                 out.append({"name": w["name"], "protos": ", ".join(w["protos"]),
-                            "devices": n})
+                            "running": running, "devices": n,
+                            "last": int(last) if last else 0})
             out.sort(key=lambda x: (x["name"], x["protos"]))
             return self._send(200, {"list": out, "online": devices, "clients": len(who)})
         if p == "/api/bans":
@@ -31025,6 +32492,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/veil/center":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _veil_center())
+        if p == "/api/site/wizard":
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _site_wizard())
         if p == "/api/setup/plan":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -31241,6 +32711,10 @@ class H(http.server.BaseHTTPRequestHandler):
             g = _perm_gate(self, p, "POST")
             if g:
                 return self._send(*g)
+            if PRIV:  # #361: приватные ручки — только когда модуль на месте
+                _r = PRIV.api_post(self, p)
+                if _r is not None:
+                    return self._send(*_r)
             # Гео-базы xray — то же долгое качаемое (28 МБ, до 90 с на файл) и
             # тоже state.json не читают: под замком они держали бы тик панели.
             # Базы меняются на лету и xray их перечитывает сам при ближайшем
@@ -33411,7 +34885,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if "enabled" in b:
                     CFG_CACHE["rot_enabled"] = bool(b.get("enabled"))
                 for key, lo, hi in (("rot_threshold", 1, 100), ("rot_window_min", 0, 180),
-                                    ("rot_check_min", 5, 240), ("rot_cooldown_min", 1, 1440),
+                                    ("rot_check_min", 3, 240), ("rot_cooldown_min", 1, 1440),
                                     ("rot_port", 1, 65535)):
                     if key not in b:
                         continue
@@ -33511,7 +34985,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     _audit("ip_rotate_manual", to=ip, provider=cfg["provider"])
                     return self._send(200, {"ok": True, "applied": rep, "ip": ip})
                 ok, msg = _rotate_ip("вручную из панели")
-                return self._send(200 if ok else 400, {"ok": ok, "message": msg[:400]})
+                # Морда в `api()` читает только `error`: отказ (кулдаун, «некем менять»,
+                # проба не отзывается) без этого поля приходил как пустая HTTP 400
+                # и хозяин не видел причины (#337 C).
+                return self._send(200 if ok else 400,
+                                  {"ok": ok, "error": msg[:400], "message": msg[:400]})
             if p == "/api/rotate/cloudflare/test":
                 try:
                     b0 = self._body() or {}
@@ -33579,6 +35057,26 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _veil_ensure(b.get("names"), b.get("provider"),
                                                        bool(b.get("issue_cert", True)),
                                                        bool(b.get("confirm")), b.get("base"), labels))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/site/step":
+                try:
+                    b = self._body() or {}
+                    _lb = [str(x).strip().lower() for x in (b.get("labels") or []) if str(x or "").strip()] or None
+                    _on = [str(x).strip().lower() for x in (b.get("only") or []) if str(x or "").strip()] or None
+                    _pr = [str(x).strip().lower() for x in (b.get("protos") or []) if str(x or "").strip()] or None
+                    # Готовая пара файлов для шага https: пути читаются как строки
+                    # ограниченной длины, значений в них быть не может — это имена на
+                    # носителе, а не секрет.
+                    _hp = b.get("https_pair")
+                    _hp = ({"cert": str(_hp.get("cert") or "")[:600],
+                            "key": str(_hp.get("key") or "")[:600]}
+                           if isinstance(_hp, dict) else None)
+                    return self._send(200, _site_step(do=b.get("do"), labels=_lb, protos=_pr,
+                                                      provider=b.get("provider"),
+                                                      domain=b.get("domain"), only=_on,
+                                                      https_pair=_hp,
+                                                      confirm=bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/webmux/revert":
@@ -34014,8 +35512,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 sni = _field(body, 'sni').strip()
                 proto = _field(body, 'proto').strip()
                 domain = _field(body, 'domain').strip()
-                if domain and not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?", domain):
-                    return self._send(400, {"error": "недопустимый домен (разрешены буквы, цифры, точка и дефис)"})
+                _dom_err = _panel_domain_valid(domain)
+                if _dom_err:
+                    return self._send(400, {"error": _dom_err})
                 port = body.get("port")
                 if port is not None:
                     try: port = int(port)
@@ -34027,8 +35526,6 @@ class H(http.server.BaseHTTPRequestHandler):
                     _sni_check = _sni_ok(sni)
                     if _sni_check is not True:
                         return self._send(400, {"error": _sni_check})
-                if domain and (domain.startswith("http") or "/" in domain or " " in domain):
-                    return self._send(400, {"error": "Домен: только имя хоста (без http:// и пути)"})
                 if port is not None and not (0 < port < 65536):
                     return self._send(400, {"error": "Порт: 1-65535"})
                 st = _load(STATE, {}) or {}
@@ -34073,20 +35570,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     # Реестр #288 пункт 7: запись домена обязана отвечать честно —
                     # и когда спасена («domain»: значение), и когда снята (пустая
                     # строка). Отказ сохранения откатывает ключ обратно, чтобы
-                    # конфиг и ответ не расходились.
-                    _dom_prev = CFG_CACHE.get("panel_domain")
-                    if domain:
-                        CFG_CACHE["panel_domain"] = domain
-                    else:
-                        CFG_CACHE.pop("panel_domain", None)
-                    if not _cfg_save():
-                        if _dom_prev is None:
-                            CFG_CACHE.pop("panel_domain", None)
-                        else:
-                            CFG_CACHE["panel_domain"] = _dom_prev
-                        _cfg_save()
-                        return self._send(500, {"error": "домен не сохранён: "
-                                                "конфиг не записан (снимок не снял гонку)"})
+                    # конфиг и ответ не расходились. #368: те же правила читает шаг
+                    # мастера, поэтому писатель вынесен один (`_panel_domain_write`).
+                    ok3, err3 = _panel_domain_write(domain)
+                    if not ok3:
+                        return self._send(500, {"error": err3})
                 if "fp" in body:
                     fp = (str(body["fp"] or "")).strip().lower()
                     if fp:
@@ -34214,6 +35702,20 @@ class H(http.server.BaseHTTPRequestHandler):
                     v = str(body["f2b_ssh_ignore"] or "")
                     if len(v) > 4000:
                         return self._send(400, {"error": "f2b_ssh_ignore: слишком длинный список"})
+                    bad = []
+                    for x in v.replace(",", " ").split():
+                        try:
+                            if "/" in x:
+                                ipaddress.ip_network(x, strict=False)
+                            else:
+                                ipaddress.ip_address(x)
+                        except Exception:
+                            bad.append(x[:40])
+                    if bad:
+                        # «добавить» в морде обязан называть причину, а не молча
+                        # проглатывать опечатку: список = адрес или сеть, иначе
+                        # замок держит строку, которую он никогда не накроет
+                        return self._send(400, {"error": "не адрес и не сеть: " + ", ".join(bad[:4])})
                     CFG_CACHE["f2b_ssh_ignore"] = v
                     f2b_changed = True
                 for fk, fmin, fmax in (("f2b_threshold", 1, 1000),
