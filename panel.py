@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import base64, json, os, subprocess, secrets, hashlib, uuid as uuidlib, re, ssl, sys, time, threading, socket, hmac, struct
 import contextlib
-import ssl, socketserver, http.server
+import ssl, socketserver, http.server, http.client
 import urllib.parse, urllib.request, urllib.error
 import shutil, tarfile, tempfile, datetime, gzip
 import select
@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.7"
+VERSION = "2.17.8"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -4792,6 +4792,36 @@ def _fam_orphan(st, member_key):
         c.update(back)
     return True, {"uuid": mu, "name": name, "was_parent": pu, "tariff": back or None}
 
+def _fam_make(st, key):
+    """Сделать обычную подписку хозяйской (#133).
+
+    Флаг `fam_host` заводился только в диалоге создания (галочка «семейная
+    подписка») либо в момент пришивания первого участника — `_fam_add` и
+    `_fam_adopt` штампуют его сами. Кто создан без флажка, оставался одиноким
+    до пересоздания подписки с новым ключом и новым URL. Штамп ничего не меняет
+    в xray: участники получат свои uuid и ключи позже, кнопкой «＋ Член семьи»,
+    поэтому ручка не дергает перезагрузку входов. -> (ok, dict | текст ошибки)."""
+    if not st:
+        return False, "нет состояния"
+    host = _fam_resolve_parent(st, (key or "").strip())
+    if host is None:
+        return False, "подписка не найдена (или это участник чужой семьи)"
+    if host.get("fam_host"):
+        return False, "это уже семейная подписка"
+    hu = host.get("uuid") or ""
+    if not hu:
+        # без uuid штамп нечем сверять по всем входам — молча проштамповали бы ноль
+        return False, "у подписки пустой uuid"
+    n = 0
+    for _proto, _inb in _inb_entries(st):
+        for _hc in (_inb.get("clients") or []):
+            if isinstance(_hc, dict) and _hc.get("uuid") == hu:
+                _hc["fam_host"] = 1
+                n += 1
+    if not n:
+        return False, "ни одной записи подписки не проштамповано"
+    return True, {"uuid": hu, "name": (host.get("name") or "").strip()[:40]}
+
 def _fam_esc(s):
     # Тот же экран, что `_esc` внутри `_sub_page_html`: строка семьи уезжает и в
     # страницу, и в JSON-ответ ручки, поэтому экранировщик живёт на уровне модуля.
@@ -5160,7 +5190,8 @@ def _online_count(email):
 # только чтение, без рестартов и записей:
 #  · `xray api statsgetallonlineusers` — кто открыт сейчас, и `statsonlineiplist`
 #    на каждого: разные адреса входа и есть разные устройства;
-#  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл последний accept;
+#  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл последний
+#    accept и когда началась текущая цепь accept'ов — это «время в сети» (#375);
 #  · `wg`/`awg show … latest-handshakes` — возраст рукопожатия туннельного пиера;
 #  · telemt `/v1/stats/users` — текущие MTProto-соединения по имени пользователя.
 # Снимок живёт 10 секунд: морда опрашивает чаще, а коробку каждый раз трогать
@@ -5172,7 +5203,16 @@ _ONLINE_TUN_WIN = 180.0          # WG/AWG-пиер считается живым
 _ONLINE_ACC_TAIL = 512 * 1024    # сколько байт хвоста лога читать за один снимок
 _ONLINE_DEV_MAX = 24             # сколько онлайн-подписчиков пересчитать по адресам
 _ONLINE_ACC_WIN = 600.0          # свежий accept и есть присутствие, когда обработчик закрыт
-_ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "tun": {}, "mt": {}}
+_ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "acc_start": {}, "acc_dev": {}, "tun": {}, "mt": {}}
+# {(почта, адрес входа): [начало цепи, последний accept]} — память цепей между
+# снимками (#377): хвост лога конечен и при трафике ест начало цепи. Пустой
+# адрес — цепь уровня почты (запасной путь `since`)
+_ONLINE_CHAIN = {}
+_ONLINE_ACC_BOOT = 96 * 1024 * 1024   # всего байт на обратный скан при подъёме панели (#378)
+_ONLINE_ACC_BOOT_CH = 8 * 1024 * 1024  # один чанк обратного скана
+# память цепей умирает с процессом, поэтому скан досевает начала ровно один
+# раз на процесс — каждый снимок файл заново не перечитывает
+_ONLINE_BOOT_DONE = False
 
 def _xray_devices(email):
     """Число разных адресов входа подписчика = число устройств.
@@ -5235,12 +5275,21 @@ def _xray_online_map():
     return out
 
 def _acc_last_tags():
-    """{uuid: (тег последнего accept, метка времени)} по хвосту access-лога.
+    """({uuid: (тег последнего accept, метка времени)}, {uuid: метка начала цепи},
+    {uuid: {адрес входа: [начало цепи, последний accept]}}).
+
     `_DEV_POS` НЕ трогается: курсор строк принадлежит хранителю устройств,
-    этот читатель — гость, он откусывает только хвост файла."""
+    этот читатель — гость, он откусывает только хвост файла. Цепь — accept'ы
+    одного подписчика, идущие подряд с зазором не шире `_ONLINE_ACC_WIN`:
+    у XHTTP цепь и есть текущая сессия опроса входа, у долгоживущего TCP —
+    цепь из одной строки, момент подъёма соединения. Начало цепи и есть
+    «время в сети»: честный нижний край, начало прошлой за `_ONLINE_ACC_TAIL`
+    хвост не видит."""
     out = {}
+    start = {}
+    dev = {}
     if SBX:
-        return out
+        return out, start, dev
     try:
         sz = os.path.getsize(_XRAY_ACCESS)
         with open(_XRAY_ACCESS, "r", errors="replace") as f:
@@ -5249,7 +5298,9 @@ def _acc_last_tags():
                 f.readline()       # огрызок строки, начавшейся до отсечки
             data = f.read()
     except OSError:
-        return out
+        return out, start, dev
+    seen = {}
+    seen_dev = {}
     for line in data.splitlines():
         if " accepted " not in line:
             continue
@@ -5268,7 +5319,166 @@ def _acc_last_tags():
         prev = out.get(email)
         if prev is None or ts >= prev[1]:
             out[email] = (tag, ts)
-    return out
+        if ts > 0:
+            seen.setdefault(email, []).append(ts)
+            host = _acc_from_host(line)
+            if host:
+                seen_dev.setdefault((email, host), []).append(ts)
+    for email, ts_list in seen.items():
+        chain = sorted(ts_list)
+        first = chain[-1]
+        for t in reversed(chain[:-1]):
+            if first - t > _ONLINE_ACC_WIN:
+                break
+            first = t
+        start[email] = first
+    for (email, host), ts_list in seen_dev.items():
+        chain = sorted(ts_list)
+        first = chain[-1]
+        for t in reversed(chain[:-1]):
+            if first - t > _ONLINE_ACC_WIN:
+                break
+            first = t
+        dev.setdefault(email, {})[host] = [first, chain[-1]]
+    return out, start, dev
+
+def _acc_hold(chain, acc, start, dev, now):
+    """Держит начало цепи между снимками — иначе хвост лога его съедает (#377).
+
+    Хвост конечен: при дневном трафике начало цепи сидит на краю файла и
+    ползёт вперёд быстрее часов — девять часов сессии выглядят как «20 минут»
+    и прибавляются не по времени, а по объёму лога. Панель помнит между
+    снимками: если начало хвостовой цепи склеивается с сохранённым последним
+    accept'ом не дальше `_ONLINE_ACC_WIN`, начало остаётся там, где панель
+    видела его впервые; зазор шире окна сбрасывает цепь, ключ без свежего
+    accept'а окно покидает. Рестарт не обнуляет: при подъёме панели начала
+    цепей досевает обратный скан `_acc_boot` (#378), а без него край хвоста
+    остаётся честным нижним краем. Пустой адрес входа — цепь уровня почты,
+    она кормит `since`.
+    Чистая: состояние только в переданном `chain`, ноги передают свой словарь.
+    """
+    s2 = dict(start)
+    d2 = {e: dict(h) for e, h in dev.items()}
+    for key in [k for k, v in chain.items() if now - v[1] > _ONLINE_ACC_WIN]:
+        chain.pop(key, None)
+    for email, hosts in d2.items():
+        for host, pr in hosts.items():
+            prev = chain.get((email, host))
+            if prev is not None:
+                pr = [min(pr[0], prev[0]) if pr[0] - prev[1] <= _ONLINE_ACC_WIN else pr[0], pr[1]]
+                hosts[host] = pr
+            chain[(email, host)] = pr
+    for email, first in list(s2.items()):
+        last = (acc.get(email) or ("", 0.0))[1]
+        if last <= 0:
+            continue
+        prev = chain.get((email, ""))
+        if prev is not None and first - prev[1] <= _ONLINE_ACC_WIN:
+            first = min(first, prev[0])
+            s2[email] = first
+        chain[(email, "")] = [first, last]
+    return s2, d2
+
+def _acc_boot_step(pending, stamps, win, closed):
+    """Тянет начала цепей свежих ключей назад по меткам одного чанка.
+
+    Ключи из `closed` больше не тянутся: цепь, закрытая разрывом в живом
+    слое, не открывается старыми строками. Метки чанка идут от новых к
+    старым; пока зазор от текущего начала не шире окна, начало уезжает на
+    старшую метку, первый зазор шире окна закрывает цепь на теперешнем
+    начале. Мутирует `pending` и `closed` — ноги подают свои словари."""
+    for key, ts_list in stamps.items():
+        if key in closed or key not in pending:
+            continue
+        pr = pending[key]
+        for t in sorted(ts_list, reverse=True):
+            if pr[0] - t > win:
+                closed.add(key)
+                break
+            pr[0] = t
+
+def _acc_boot(chain, dev, start, acc, now, read_back):
+    """Сеет память цепей при подъёме панели — рестарт не обнуляет «время в сети» (#378).
+
+    Память цепей умирает с процессом, а хвост видит только `_ONLINE_ACC_TAIL`
+    байт: после рестарта десятичасовая сессия начиналась заново с края хвоста
+    и показывала минуты вместо часов. Обратный скан тянет начала цепей свежих
+    ключей назад через чанки, которые даёт `read_back`, пока каждый ключ не
+    закроется разрывом; ключ, дошедший до края файла или бюджета, остаётся с
+    началом на последней прочитанной метке — нижняя честная граница. `chain`
+    заполняется только где пусто (память держит перевес), возвращает число
+    посеянных ключей. Хозяин видел это числа: `38` минут вместо `624`."""
+    pending = {}
+    for email, hosts in (dev or {}).items():
+        for host, pr in hosts.items():
+            if pr[1] >= now - _ONLINE_ACC_WIN:
+                pending[(email, host)] = [pr[0], pr[1]]
+    for email, first in (start or {}).items():
+        last = (acc.get(email) or ("", 0.0))[1]
+        if last >= now - _ONLINE_ACC_WIN and (email, "") not in pending:
+            pending[(email, "")] = [first, last]
+    closed = set()
+    if pending:
+        for data in read_back:
+            stamps = {}
+            for line in data.splitlines():
+                if " accepted " not in line:
+                    continue
+                email = _acc_email(line)
+                if not email:
+                    continue
+                try:
+                    ts = datetime.datetime.strptime(
+                        line[:19].replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
+                except ValueError:
+                    continue
+                if ts <= 0:
+                    continue
+                host = _acc_from_host(line)
+                for key in ((email, host), (email, "")) if host else ((email, ""),):
+                    if key in pending and key not in closed:
+                        stamps.setdefault(key, []).append(ts)
+            _acc_boot_step(pending, stamps, _ONLINE_ACC_WIN, closed)
+            if len(closed) >= len(pending):
+                break
+    n = 0
+    for key, pr in pending.items():
+        if key not in chain:
+            chain[key] = pr
+            n += 1
+    return n
+
+def _acc_boot_gen(files, tail, budget, chunk):
+    """Обратный читатель access-лога: чанки строк от края хвоста назад, потом
+    по повёрнутым файлам от конца к началу.
+
+    `files` — от нового к старым; у самого нового первые `tail` байт уже
+    прочитаны снимком, повторять незачем. Огрызок строки на границе чанка
+    снят — его начало в прежнем чанке (так же делает хвостовая читалка).
+    Бюджет `budget` и размер чанка `chunk` считываются здесь; отказ файла
+    останавливает скан, а не превращает его в ошибку ручки."""
+    left = budget
+    for i, path in enumerate(files):
+        try:
+            sz = os.path.getsize(path)
+        except OSError:
+            continue
+        pos = sz - (tail if i == 0 else 0)
+        while pos > 0 and left > 0:
+            st = max(0, pos - min(chunk, left))
+            try:
+                with open(path, "rb") as f:
+                    f.seek(st)
+                    raw = f.read(pos - st)
+            except OSError:
+                return
+            pos = st
+            left -= len(raw)
+            if st > 0:
+                nl = raw.find(b"\n")
+                raw = raw[nl + 1:] if nl >= 0 else b""
+            if raw:
+                yield raw.decode("utf-8", "replace")
 
 def _acc_live(snap, email):
     """Свежий accept подписчика: (тег инбаунда, возраст, метка времени) или `None`.
@@ -5349,11 +5559,21 @@ def _online_snapshot(force=False):
     Источники опрашиваются по очереди и изолированно: отказ одного не гасит
     остальные и не превращает окно в 500."""
     now = time.time()
+    global _ONLINE_BOOT_DONE
     snap = _ONLINE_SNAP
     if not force and snap["at"] and now - snap["at"] < _ONLINE_SNAP_TTL:
         return snap
     snap["xray"] = _xray_online_map()
-    snap["acc"] = _acc_last_tags()
+    acc, start, dev = _acc_last_tags()
+    if not _ONLINE_BOOT_DONE and not SBX:
+        # подъём панели не обнуляет «время в сети»: начала цепей досеивает
+        # обратный скан лога, ровно один раз на процесс (#378)
+        _ONLINE_BOOT_DONE = True
+        _acc_boot(_ONLINE_CHAIN, dev, start, acc, now, _acc_boot_gen(
+            (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
+            _ONLINE_ACC_TAIL, _ONLINE_ACC_BOOT, _ONLINE_ACC_BOOT_CH))
+    start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now)
+    snap["acc"], snap["acc_start"], snap["acc_dev"] = acc, start, dev
     snap["tun"] = _wg_awg_live_peers()
     snap["mt"] = _mt_live_users()
     snap["at"] = now
@@ -6822,6 +7042,183 @@ def _is_incy_client(ua="", xclient=""):
     # Его подписка — открытые ссылки/база, НЕ sing-box outbound'ы.
     return "incy" in (ua or "").lower() or (xclient or "").lower() == "incy"
 
+# ---------- #387: ручной список обхода (напрямую), плюс к гео-базе ----------
+# Слово хозяина 15.10: приложение «Вкусно — и точка» видит использование VPN.
+# Причина названная: адресов бэкенда приложения в гео-базе нет, трафик идёт
+# туннелем и приложение видит адрес узла. Лечение — то же, что у обхода по
+# гео-базе, только списком хозяина: домены и адреса уходят напрямую ещё на
+# телефоне, наружу показывается домашний адрес абонента, а не адрес узла.
+# Правило кладём в то, что его носить умеет: полный конфиг sing-box и профиль
+# маршрута для клиентов на ядре Xray. Base64-ссылки и WireGuard правил не несут —
+# честная граница записана в карточку морды.
+# Серверную ветку ru_bypass не трогаем: после снятия общего WARP (2.15.0) у
+# серверного xray единственный исходящий и так direct — правило-пустышка.
+
+_BD_MAX_DOM = 64        # доменов в хозяйском списке
+_BD_MAX_IP = 128        # адресов/сетей в хозяйском списке
+_BD_MAX_PER = 24        # подобранных адресов на один домен
+_BD_MAX_TOTAL = 256     # адресов в правиле суммарно
+_BD_TTL = 1800          # возраст снимка подбора, после которого мерить заново
+_BD_LOOP = 300          # период фонового подбора, секунд
+_BD_RES = f"{BASE}/bypass_resolved.json"
+
+def _bd_addrinfo(host):
+    return socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)
+
+# Индирект для прибора: нога подставляет заготовленный ответ вместо живой сети.
+BD_RESOLVER = _bd_addrinfo
+
+_BD_LOCK = threading.Lock()
+_BD_CACHE = {"at": 0, "map": {}}
+try:
+    _bd_r = _load(_BD_RES, None)
+    if isinstance(_bd_r, dict):
+        _BD_CACHE["at"] = int(_bd_r.get("at") or 0)
+        _bd_m = _bd_r.get("map")
+        if isinstance(_bd_m, dict):
+            _BD_CACHE["map"] = {str(k): [str(x) for x in (v or []) if isinstance(x, str)]
+                                for k, v in _bd_m.items()}
+except Exception:
+    pass
+
+def _bd_cfg():
+    bd = CFG_CACHE.get("bypass_direct")
+    if not isinstance(bd, dict):
+        return [], []
+    doms = [str(x) for x in (bd.get("domains") or []) if isinstance(x, str) and x.strip()]
+    ips = [str(x) for x in (bd.get("ips") or []) if isinstance(x, str) and x.strip()]
+    return doms, ips
+
+def _bypass_norm(body):
+    """Хозяйский список из тела запроса -> (снимок, None) или (None, названный отказ).
+    Домены — строчными, без `*.` и точек по краям; голый адрес становится маской
+    /32 (четвёртый) или /128 (шестой), маска проверяется `ipaddress`."""
+    if not isinstance(body, dict):
+        return None, "нужен JSON-объект с полями domains и ips"
+    for k in ("domains", "ips"):
+        if k in body and not isinstance(body[k], list):
+            return None, "поле %s обязано списком" % k
+    doms, seen = [], set()
+    for d in (body.get("domains") or []):
+        s = str(d if d is not None else "").strip().lower()
+        if s.startswith("*."):
+            s = s[2:]
+        s = s.strip(".")
+        if not s:
+            continue
+        if ":" in s or "/" in s or re.fullmatch(r"[0-9.]+", s):
+            # голую четвёрку в поле доменов не принимаем: правило по окончанию с
+            # таким значением не совпадёт никогда, а хозяин решит, что добавил адрес
+            return None, "это адрес или сеть, а не домен: " + s
+        if not re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)+", s):
+            return None, "не домен: " + s
+        if s not in seen:
+            seen.add(s)
+            doms.append(s)
+    ips, iseen = [], set()
+    for a in (body.get("ips") or []):
+        s = str(a if a is not None else "").strip().lower()
+        if not s:
+            continue
+        try:
+            if "/" in s:
+                canon = str(ipaddress.ip_network(s, strict=False))
+            else:
+                addr = ipaddress.ip_address(s)
+                canon = str(addr) + ("/32" if addr.version == 4 else "/128")
+        except ValueError:
+            return None, "не адрес и не сеть: " + s
+        if canon not in iseen:
+            iseen.add(canon)
+            ips.append(canon)
+    if len(doms) > _BD_MAX_DOM:
+        return None, "слишком длинный список доменов: %d, максимум %d" % (len(doms), _BD_MAX_DOM)
+    if len(ips) > _BD_MAX_IP:
+        return None, "слишком длинный список адресов: %d, максимум %d" % (len(ips), _BD_MAX_IP)
+    return {"domains": doms, "ips": ips}, None
+
+def _bypass_resolve(force=False):
+    """Подобр адреса доменов хозяйского списка. Едет только из фонового потока или
+    по кнопке: резолвер может стоять, а генерация подписки обязана отдавать снятое,
+    а не ждать. Четвёрка и шестёрка берутся из одного системного ответа — коробка
+    стоит в стране и называет российские окончания сервисов. Возвращает число
+    обновлённых доменов."""
+    now = int(time.time())
+    with _BD_LOCK:
+        fresh = (now - _BD_CACHE["at"]) < _BD_TTL and not force
+    if fresh:
+        return 0
+    if SBX and BD_RESOLVER is _bd_addrinfo:
+        # песочница харнесса: без подставленного резолвера живую сеть не трогаем
+        return 0
+    doms, _ips = _bd_cfg()
+    m = {}
+    n = 0
+    for d in doms:
+        try:
+            got = []
+            for it in BD_RESOLVER(d):
+                ip = str(it[4][0])
+                if ip not in got:
+                    got.append(ip)
+                if len(got) >= _BD_MAX_PER:
+                    break
+            m[d] = got
+            n += 1
+        except Exception:
+            with _BD_LOCK:
+                prev = _BD_CACHE["map"].get(d)
+            if prev:
+                m[d] = prev
+    with _BD_LOCK:
+        _BD_CACHE["at"] = now
+        _BD_CACHE["map"] = m
+        snap = {"at": now, "map": dict(m)}
+    try:
+        _save(_BD_RES, snap)
+    except Exception:
+        pass
+    return n
+
+def _bd_refresh():
+    try:
+        _bypass_resolve(force=True)
+    except Exception as e:
+        print("bypass resolve: " + str(e)[:120], flush=True)
+
+def _bypass_loop():
+    while True:
+        try:
+            _bypass_resolve()
+        except Exception as e:
+            print("bypass resolve: " + str(e)[:120], flush=True)
+        time.sleep(_BD_LOOP)
+
+def _bd_lists():
+    """(домены, маски) для вставки в правила клиентской подписки: список хозяина
+    плюс подобранное. Горячий путь: читает только память и кэш."""
+    doms, ips = _bd_cfg()
+    with _BD_LOCK:
+        res = [list(v) for v in _BD_CACHE["map"].values()] if doms else []
+    out = []
+    # и хозяйский адрес, и подобранный приводим к маске: `ip_cidr` без неё ядро
+    # бракует, а без дубля одно и то же окончание не попало бы в правило дважды
+    for x in ips + [y for lst in res for y in lst]:
+        c = x if "/" in x else (x + "/32" if ":" not in x else x + "/128")
+        if c not in out:
+            out.append(c)
+    return doms, out[:_BD_MAX_TOTAL]
+
+def _bypass_view():
+    doms, ips = _bd_cfg()
+    with _BD_LOCK:
+        at = _BD_CACHE["at"]
+        m = dict(_BD_CACHE["map"])
+    res = {d: m.get(d, []) for d in doms}
+    return {"domains": doms, "ips": ips,
+            "resolved": {"at": at, "count": sum(len(v) for v in res.values()), "map": res},
+            "limits": {"domains": _BD_MAX_DOM, "ips": _BD_MAX_IP, "total": _BD_MAX_TOTAL}}
+
 def _routing_profile_b64(base=""):
     """Профиль маршрутизации (split-tunnel) для Xray-клиентов INCY и Happ —
     у них одинаковая схема JSON-профиля. Возвращает base64(JSON) или None.
@@ -6846,22 +7243,28 @@ def _routing_profile_b64(base=""):
     # на тот же VPS (петля) и MTProto/webproxy-ссылка не подключается —
     # то самое «вписать IP в исключительные маршруты», только из коробки.
     own = _own_direct_ips()
+    # #387: хозяйский ручной список — домены и подобранные адреса идут напрямую
+    # вместе с гео-базой. Профиль судит домен как подстроку (так судит ядро),
+    # поэтому короткое имя захватит и окончания — за это отвечает морда честной границей.
+    bd_dom, bd_ip = _bd_lists()
     dom = (CFG_CACHE.get("panel_domain") or "").strip()
     own_sites = [dom] if dom and ":" not in dom and not re.fullmatch(r"[0-9.]+", dom) else []
     if split == "ru":
         # РФ напрямую, остальное через туннель
         fields = {"GlobalProxy": "true",
-                  "DirectSites": ["geosite:category-ru"] + own_sites,
-                  "DirectIp": ["geoip:ru"] + private + own}
+                  "DirectSites": ["geosite:category-ru"] + own_sites + bd_dom,
+                  "DirectIp": ["geoip:ru"] + private + own + bd_ip}
     elif split == "ir":
         # только иранские сервисы через туннель, остальное напрямую
         # (geosite:ir в зеркале отсутствует — опираемся на geoip:ir)
         fields = {"GlobalProxy": "false",
                   "ProxyIp": ["geoip:ir"]}
     else:
-        if not own:
+        if not own and not bd_ip and not bd_dom:
             return None
-        fields = {"GlobalProxy": "true", "DirectIp": private + own}
+        fields = {"GlobalProxy": "true", "DirectIp": private + own + bd_ip}
+        if bd_dom:
+            fields["DirectSites"] = bd_dom
     prof = {"Name": "Veil", "LastUpdated": int(time.time()),
             "DomainStrategy": "IPIfNonMatch",
             "Geoipurl": _u("geoip-ru.dat", "geoip.dat"),
@@ -14206,6 +14609,10 @@ def _tg_mp_ipv6_want():
 
 _IP6PUB = {"t": 0.0, "v": ""}
 
+_V6_LISTEN = {"ok": None}   # поднялся ли в6-слушатель панели на порту `8443`: `None` —
+                            # ещё не мерили (загрузка не дошла или слушатель заведён
+                            # только на петлевой адрес), False — отказ, True — поднят
+
 def _pub_ip6_echo():
     """IPv6 таким, каким его видит внешнее эхо, — и только. В отличие от `_pub_ip6()`
     здесь НЕЛЬЗЯ откатываться на адрес интерфейса: адрес чёрнодырового v6 (провайдер
@@ -15185,13 +15592,90 @@ _TW_DOH = ("https://dns.google/resolve?name=%s&type=A",
 # фронт Akamai, куда телефон ходил при просмотре.
 _TW_SEED = ("71.18.85.0/24", "71.18.215.0/24", "71.18.222.0/24",
             "71.18.253.0/24", "95.130.85.0/24")
+# #388: ручной список хозяина в том же туннеле — домены подбираются смотрителем,
+# хозяйские маски кладутся как есть. Потолки меньше обходных (#387): список делит
+# бюджет `allowed-ips` с покрытием TikTok.
+_WM_MAX_DOM = 16
+_WM_MAX_IP = 64
 
+
+
+def _wm_cfg():
+    """Хозяйский список для туннеля (#388): (домены, маски). Форма та же, что у
+    обхода #387; без ключа в конфиге — два пустых списка."""
+    wm = CFG_CACHE.get("warp_manual")
+    if not isinstance(wm, dict):
+        return [], []
+    doms = [str(x) for x in (wm.get("domains") or []) if isinstance(x, str) and x.strip()]
+    ips = [str(x) for x in (wm.get("ips") or []) if isinstance(x, str) and x.strip()]
+    return doms, ips
+
+
+def _wm_nonempty():
+    doms, ips = _wm_cfg()
+    return bool(doms or ips)
+
+
+def _wm_norm(body):
+    """Список из тела запроса -> (снимок, None) или (None, названный отказ).
+    Разбор формы общий с обходом #387; сверх его рамок — потолок списка и
+    отказ шестого семейства: звено `tkw0` несёт только четвёрку."""
+    norm, err = _bypass_norm(body)
+    if err:
+        return None, err
+    if len(norm["domains"]) > _WM_MAX_DOM:
+        return None, "слишком длинный список доменов: %d, максимум %d" % (
+            len(norm["domains"]), _WM_MAX_DOM)
+    if len(norm["ips"]) > _WM_MAX_IP:
+        return None, "слишком длинный список адресов: %d, максимум %d" % (
+            len(norm["ips"]), _WM_MAX_IP)
+    v6 = [x for x in norm["ips"] if ":" in x]
+    if v6:
+        return None, "через туннель идёт только четвёртое семейство: " + v6[0]
+    return norm, None
+
+
+def _wm_exact(ips):
+    """Хозяйские маски как есть: голый адрес — /32, сеть — своим блоком.
+    Шестёрка и мусор отбрасываются: в таблицу 204 их положить некуда."""
+    out = []
+    for s in ips:
+        try:
+            n = ipaddress.ip_network(str(s).strip(), strict=False)
+        except ValueError:
+            continue
+        if n.version != 4:
+            continue
+        c = str(n)
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _wm_view():
+    doms, ips = _wm_cfg()
+    st = _load(_TW_STATE, {}) or {}
+    return {"domains": doms, "ips": ips,
+            "limits": {"domains": _WM_MAX_DOM, "ips": _WM_MAX_IP},
+            "up": bool(st.get("up")), "count": int(st.get("count") or 0),
+            "error": st.get("error") or _TW_ERR}
+
+
+def _tw_tiktok_on():
+    """Одно слово для смотрителя: вести ли адреса TikTok. Ровно те же два источника,
+    что у старого `_tw_want`, — вместе с ручным списком они дают общее желание."""
+    return bool(CFG_CACHE.get("tiktok_warp")) or bool(PRIV and PRIV.tw_want())
 
 
 def _tw_want():
-    """Желание оператора: вести адреса TikTok или хаба через туннель. Тот же конфиг,
-    что у остальных переключателей; звено нужно при любом из двух ключей."""
-    return bool(CFG_CACHE.get("tiktok_warp")) or bool(PRIV and PRIV.tw_want())
+    """Желание оператора: вести адреса через туннель — TikTok, хабы приватного
+    модуля или ручной список #388. Тот же конфиг, что у остальных переключателей;
+    звено нужно при любом из них. Список читается напрямую: смотритель выжимает
+    эту функцию вместе с `CFG_CACHE` и без соседей по блоку."""
+    wm = CFG_CACHE.get("warp_manual")
+    manual = bool(isinstance(wm, dict)
+                  and ((wm.get("domains") or []) or (wm.get("ips") or [])))
+    return _tw_tiktok_on() or manual
 
 
 def _tw_cmd(*a, **kw):
@@ -15293,11 +15777,14 @@ def _tw_doh_ips(tpl, domain):
         return []
 
 
-def _tw_resolve(prev):
+def _tw_resolve(prev, doms=None):
     """Свежий срез адресов плюс прошлый: каждый взгляд (локальный резолвер, Google DoH,
-    Cloudflare DoH) даёт свой пул, и взгляд телефона обязан попасть в покрытие целиком."""
+    Cloudflare DoH) даёт свой пул, и взгляд телефона обязан попасть в покрытие целиком.
+    `doms` — набор доменов мера; без него прежнее покрытие TikTok (#388 зовёт со своим)."""
+    if doms is None:
+        doms = list(_TW_DOMAINS)
     ips = []
-    for d in _TW_DOMAINS:
+    for d in doms:
         views = []
         try:
             views.append([ai[4][0] for ai in
@@ -15315,19 +15802,26 @@ def _tw_resolve(prev):
     return ips
 
 
-def _tw_blocks(ips):
+def _tw_blocks(ips, tik=True, exact=()):
     """/24-блоки адресов плюс семена: внутри блока Akamai ротирует подмножества как
-    хочет, поэтому покрытие судится блоком, а не отдельным адресом."""
+    хочет, поэтому покрытие судится блоком, а не отдельным адресом.
+
+    `tik` — класть ли семена и блоки приватного модуля (покрытие TikTok);
+    `exact` — хозяйские маски #388, они идут поверх потолка своим отрезком."""
     got = []
     for ip in ips:
         net = ".".join(ip.split(".")[:3]) + ".0/24"
         if net not in got:
             got.append(net)
     got = got[:_TW_CAP]
-    for s in _TW_SEED:
-        if s not in got:
-            got.append(s)
-    for s in (PRIV.tw_blocks() if PRIV else ()):
+    if tik:
+        for s in _TW_SEED:
+            if s not in got:
+                got.append(s)
+        for s in (PRIV.tw_blocks() if PRIV else ()):
+            if s not in got:
+                got.append(s)
+    for s in exact:
         if s not in got:
             got.append(s)
     return got
@@ -15608,8 +16102,12 @@ def _tw_region(ip, direct):
 
 def _tw_probe(force=False):
     """Диагноз «что видит TikTok»: два щупа против одного покрытого адреса — напрямую
-    (с меткой) и через туннель. Явной проверке `force` обходит черед по TTL."""
+    (с меткой) и через туннель. Явной проверке `force` обходит черед по TTL.
+    Без запроса на TikTok не мерим: при одном ручном списке щуп к семенному адресу
+    ничего про наше звено не говорит и только зря ходит в сеть."""
     global _TW_PROBE_AT
+    if not _tw_tiktok_on():
+        return
     now = time.time()
     if not force and now - _TW_PROBE_AT < _TW_PROBE_TTL:
         return
@@ -15696,15 +16194,29 @@ def _tw_tick():
             _save(_TW_STATE, st, 0o600)
             return
     now = time.time()
-    prev = _tw_seen_ips()
-    if now - _TW_RES_AT >= _TW_RES_TTL:
+    # #388: набор доменов меры — покрытие TikTok только когда его просили, плюс
+    # хозяйские домены. Изменился набор — мерим сейчас и прошлый пул не наследуем:
+    # в нём остались блоки снятого сервиса, а по ним судить нынешнее покрытие нельзя.
+    tik = _tw_tiktok_on()
+    mdoms, mips = _wm_cfg()
+    doms = list(_TW_DOMAINS) if tik else []
+    for d in mdoms:
+        if d not in doms:
+            doms.append(d)
+    exact = _wm_exact(mips)
+    seen = _load(_TW_SEEN, {}) or {}
+    fp = ",".join(doms)
+    stale = seen.get("set") != fp
+    prev = _tw_seen_ips() if not stale else []
+    if stale or now - _TW_RES_AT >= _TW_RES_TTL:
         _TW_RES_AT = now
-        ips = _tw_resolve(prev)
+        ips = _tw_resolve(prev, doms)
         if ips:
-            _save(_TW_SEEN, {"ips": ips[:_TW_CAP * 8], "at": int(now)}, 0o600)
+            _save(_TW_SEEN, {"ips": ips[:_TW_CAP * 8], "at": int(now),
+                             "set": fp}, 0o600)
     else:
         ips = prev
-    if not ips and not prev and st.get("up"):
+    if not ips and not prev and not exact and st.get("up"):
         # резолв не дал ничего вообще (ни свежего, ни прошлого): живое звено не
         # трогаем — переживёт один плохой тик (заплата 262-265)
         _TW_ERR = ""
@@ -15712,7 +16224,7 @@ def _tw_tick():
         _save(_TW_STATE, st, 0o600)
         _tw_probe()
         return
-    nets = _tw_blocks(ips)
+    nets = _tw_blocks(ips, tik, exact)
     rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
     age = _tw_handshake_age()
     rebuilt = (rc != 0 or not _tw_link_ready(nets))
@@ -15721,7 +16233,7 @@ def _tw_tick():
         age = _tw_handshake_age()
     else:
         err = _tw_sync(nets, reg)
-    tgt = _tw_covered_ip(ips, nets) or "71.18.85.9"
+    tgt = _tw_covered_ip(ips, nets) or ("71.18.85.9" if tik else "")
     if err == "" and (age is None or age > 4 * int(_TW_KEEP)) and not _tw_carries(tgt):
         # молчание судим пакетом, а не отсутствием рукопожатия: `wg` шлёт инициацию
         # только когда появится трафик или сторожевой пакет
@@ -15746,7 +16258,8 @@ def _tw_view():
     rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
     nets = list(st.get("nets") or [])
     pat = float(st.get("probe_at") or 0)
-    return {"want": _tw_want(), "account": bool(_tw_registered()),
+    return {"want": _tw_want(), "tiktok_want": _tw_tiktok_on(),
+            "account": bool(_tw_registered()),
             "link": rc == 0, "ready": _tw_link_ready(nets), "up": bool(st.get("up")),
             "count": int(st.get("count") or 0), "nets": nets,
             "tiktok_on": bool(CFG_CACHE.get("tiktok_warp")),
@@ -15758,6 +16271,704 @@ def _tw_view():
             "error": st.get("error") or _TW_ERR,
             "probe_error": st.get("probe_error") or "",
             "bypass": _tw_bypass_present(), "ts": st.get("ts")}
+
+
+# ---------- #384/#385: в какой стране видят наш адрес (сервис по образцу чужого сканера) ----------
+# Слово хозяина 14.10: «надо этот или подобный сервис реализовать в панеле,
+# он стоит по адресу https://ipregion.vrnt.xyz». Цикл #384 снял первую половину
+# контракта (12 строк). Слово хозяина 15.10, после проверки на тестовой коробке:
+# «там больше ответов должно быть» — полный контракт эталона: заголовок с адресами,
+# страной регистрации и номером автономной сети, двадцать популярных сервисов
+# в двух колонках (по ответу на адрес каждого семейства), три строки раздачи
+# и семнадцать гео-служб. Щупы, судьи и таблицы сняты с текста чужого сканера
+# один в один; чужой скрипт на коробке не исполняется, транспорт — кодом панели.
+# Идентификаторы в щупах — публичные клиентские константы официальных приложений
+# самих сервисов; своих секретов панель в щупы не кладёт.
+# Семейство канала задаётся явно: щуп колонки шестого семейства обязан идти к
+# сервису по каналу шестого семейства, иначе сервис приписал бы нам адрес четвёрки.
+# У служб, принимающих адрес параметром, шестая колонка меряется по четвёртому
+# каналу (образец называет их списком адресов шестого семейства поверх четвёрки).
+# Полный обход — до ста запросов подряд; меряет поток-демон и пишет строку по
+# готовности, повтор до истечения `_IR_TTL` ничего не перемеряет, явный `check`
+# обходит черёд (образец #338). Отказ одного щупа — служебное слово в ячейке,
+# остальные отвечают (образец #384, контракт пятый).
+_IR_TTL = 300.0
+_IR_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
+_IR_CAP = 4000000
+_IR_HOPS = 5
+_IR_ST = ("Denied", "Rate-limit", "Server error", "N/A")
+_IR_LOCK = threading.Lock()
+_IR = {"at": 0.0, "running": False, "error": "",
+       "addr": {"4": "", "6": ""},
+       "header": {"v4": "", "v6": "", "reg4": "", "reg6": "", "asn": ""},
+       "custom": [], "cdn": [], "geo": []}
+_IR_IATA = {}
+
+
+def _ir_st(t):
+    return t in _IR_ST
+
+
+def _ir_split(url):
+    m = re.match(r"(https?)://([^/:]+)(?::(\d+))?(/.*)?$", url)
+    if not m:
+        raise ValueError("щуп: адрес не разобран")
+    scheme, host, port, path = m.group(1), m.group(2), m.group(3), m.group(4) or "/"
+    return scheme, host, int(port) if port else (443 if scheme == "https" else 80), path
+
+
+def _ir_connect(host, port, fam, timeout, tls):
+    """Канал строго своего семейства: адресная лента фильтруется до подъёма сокета."""
+    want = socket.AF_INET if fam == 4 else socket.AF_INET6
+    try:
+        infos = socket.getaddrinfo(host, port, want, socket.SOCK_STREAM)
+    except OSError:
+        raise OSError("нет адресов нужного семейства у " + host)
+    last = None
+    for af, styp, proto, _canon, sa in infos:
+        s = None
+        try:
+            s = socket.socket(af, styp, proto)
+            s.settimeout(timeout)
+            s.connect(sa)
+            if tls:
+                s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
+            return s
+        except OSError as e:
+            last = e
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+    raise last or OSError("нет канала к " + host)
+
+
+def _ir_hop(method, url, headers, body, fam, timeout):
+    scheme, host, port, path = _ir_split(url)
+    tls = scheme == "https"
+    sock = _ir_connect(host, port, fam, timeout, tls)
+    cls = http.client.HTTPSConnection if tls else http.client.HTTPConnection
+    conn = cls(host, port=port, timeout=timeout)
+    conn.sock = sock
+    try:
+        hdrs = {"User-Agent": _IR_UA, "Accept": "*/*"}
+        for k, v in headers:
+            hdrs[k] = v
+        if body is not None and "Content-Type" not in hdrs:
+            hdrs["Content-Type"] = "application/json"
+        conn.request(method, path, body=body, headers=hdrs)
+        resp = conn.getresponse()
+        text = resp.read(_IR_CAP).decode("utf-8", "replace")
+        htext = "HTTP/1.%d %s %s\n" % (resp.version % 10, resp.status, resp.reason)
+        for k, v in resp.getheaders():
+            htext += "%s: %s\n" % (k, v)
+        return resp.status, (resp.getheader("Location") or ""), text, htext
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _ir_fetch(method, url, headers=(), body=None, timeout=8, fam=4, ctype=None):
+    """Один щуп с переходом по цепочке перенаправлений (как `curl` с `--location`).
+    Служебное слово отказа (`Denied`, `Rate-limit`, `Server error`, `N/A`) выдаётся
+    по коду ответа, как это делала функция `status_from_http_code` образца.
+    Запрос без тела (`HEAD`) отвечает текстом заголовков, как `curl --head`."""
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    hd = tuple(headers)
+    if ctype:
+        hd = hd + (("Content-Type", ctype),)
+    cur, m = url, method
+    code, text, htext = 0, "", ""
+    for _ in range(_IR_HOPS):
+        code, loc, text, h1 = _ir_hop(m, cur, hd, data, fam, timeout)
+        htext += h1
+        if code in (301, 302, 303, 307, 308) and loc:
+            if code in (301, 302, 303):
+                m, data = "GET", None
+            cur = urllib.parse.urljoin(cur, loc)
+            continue
+        break
+    if code == 403:
+        return "Denied"
+    if code == 429:
+        return "Rate-limit"
+    if 500 <= code < 600:
+        return "Server error"
+    if 400 <= code < 600:
+        return "N/A"
+    return htext if method == "HEAD" else text
+
+
+def _ir_j(text, skip=0):
+    """Разбор ответа как json; `skip` — отрезать первые строки (у `YouTube` префикс-мусор)."""
+    return json.loads("\n".join(text.splitlines()[skip:]))
+
+
+def _ir_jp(text, path):
+    """Чтение поля по образцу `jq -r`: снятое поле — слово «null», как печатал его образец."""
+    if _ir_st(text):
+        return text
+    try:
+        obj = _ir_j(text)
+    except Exception:
+        return ""
+    for seg in path.split("."):
+        if obj is None:
+            return "null"
+        try:
+            obj = obj[int(seg)] if seg.isdigit() else obj[seg]
+        except Exception:
+            return "null"
+    if obj is None or obj == "":
+        return "null"
+    return str(obj)
+
+
+def _ir_plain(text):
+    if _ir_st(text):
+        return text
+    if "<html" in text:
+        return ""
+    return text.strip()
+
+
+def _ir_rx(text, pattern):
+    if _ir_st(text):
+        return text
+    m = re.search(pattern, text)
+    return m.group(1) if m else ""
+
+
+def _ir_pj(path):
+    def judge(t):
+        return _ir_jp(t, path)
+    return judge
+
+
+def _ir_h1(method, url, headers=(), body=None, tmo=8, judge=None, ctype=None):
+    def run(fam):
+        return judge(_ir_fetch(method, url, headers, body, tmo, fam, ctype))
+    return run
+
+
+def _ir_x_google(t):
+    return _ir_rx(t, 'name="region" value="([^"]*)"')
+
+
+def _ir_x_youtube(t):
+    if _ir_st(t):
+        return t
+    try:
+        j = _ir_j(t, skip=2)
+        return str(j[0][2][0][0][1])
+    except Exception:
+        return ""
+
+
+def _ir_x_premium(t):
+    if _ir_st(t):
+        return t
+    return "No" if re.search(r"(?i)premium is not available in your country", t) else "Yes"
+
+
+def _ir_x_signup(t):
+    if _ir_st(t):
+        return t
+    try:
+        j = _ir_j(t)
+        st = str(j.get("status"))
+        return "No" if st in ("120", "320") or j.get("is_country_launched") is False else "Yes"
+    except Exception:
+        return ""
+
+
+def _ir_x_daccess(t):
+    if _ir_st(t):
+        return t
+    try:
+        j = _ir_j(t)
+        sess = (((j.get("extensions") or {}).get("sdk") or {}).get("session") or {})
+        return "Yes" if not j.get("errors") and sess.get("inSupportedLocation") is True else "No"
+    except Exception:
+        return ""
+
+
+def _ir_x_guest(t):
+    return "No" if _ir_st(t) else "Yes"
+
+
+def _ir_x_steam(t):
+    return _ir_rx(t, r"steamCountry=([^%;]*)")
+
+
+def _ir_x_ps(t):
+    return _ir_rx(t, r"country=([^;]*)")
+
+
+def _ir_x_ms(t):
+    return _ir_rx(t, '"sRequestCountry":"([^"]*)"')
+
+
+_IR_DISNEY_TOKEN = "ZGlzbmV5JmFuZHJvaWQmMS4wLjA.bkeb0m230uUhv8qrAXuNu39tbE_mD5EEhM_NAcohjyA"
+_IR_DISNEY_BODY = ('{"query":"mutation registerDevice($registerDevice: RegisterDeviceInput!) '
+                   '{ registerDevice(registerDevice: $registerDevice) { __typename } }",'
+                   '"variables":{"registerDevice":{"applicationRuntime":"android","attributes":'
+                   '{"operatingSystem":"Android","operatingSystemVersion":"13"},"deviceFamily":'
+                   '"android","deviceLanguage":"en","deviceProfile":"phone","devicePlatformId":'
+                   '"android"}},"operationName":"registerDevice"}')
+_IR_TWITCH_BODY = ('[{"operationName":"VerifyEmail_CurrentUser","variables":{},'
+                   '"extensions":{"persistedQuery":{"version":1,'
+                   '"sha256Hash":"f9e7dcdf7e99c314c82d8f7f725fab5f99d1df3d7359b53c9ae122deec590198"}}}]')
+_IR_REDDIT_BASIC = "b2hYcG9xclpZdWIxa2c6"
+_IR_REDDIT_UA = "Reddit/Version 2025.29.0/Build 2529021/Android 13"
+_IR_REDDIT_GQL = ('{"operationName":"UserLocation","variables":{},'
+                  '"extensions":{"persistedQuery":{"version":1,'
+                  '"sha256Hash":"f07de258c54537e24d7856080f662c1b1268210251e5789c8c08f20d76cc8ab2"}}}')
+_IR_NETFLIX_URL = ("https://api.fast.com/netflix/speedtest/v2?https=true&"
+                   "token=YXNkZmFzZGxmbnNkYWZoYXNkZmhrYWxm&urlCount=1")
+_IR_SPOTIFY_URL = ("https://spclient.wg.spotify.com/signup/public/v1/account/?validate=1&"
+                   "key=142b583129b2df829de3656f9eb484e6")
+_IR_SPOTIFY_CLIENT = "9a8d2f0ce77a4e248bb71fefcb557637"
+_IR_SOCS = "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjUwNzMwLjA1X3AwGgJlbiACGgYIgPC_xAY"
+_IR_GEMINI_MD = "https://ai.google.dev/gemini-api/docs/available-regions.md.txt"
+_IR_CLDR = "https://cdn.jsdelivr.net/npm/cldr-localenames-full/main/en/territories.json"
+_IR_APC = "https://www.air-port-codes.com/api/v1/single"
+_IR_APC_AUTH = "96dc04b3fb"
+_IR_MM_URL = "https://geoip.maxmind.com/geoip/v2.1/city/me"
+_IR_MM_HDR = (("Referer", "https://www.maxmind.com"),)
+_IR_CF_HDR = (("Referer", "https://speed.cloudflare.com"),)
+_IR_STOP = ("the", "of", "and", "republic", "island", "islands", "saint", "st")
+
+
+def _ir_words(s):
+    return frozenset(w for w in re.split(r"[^A-Za-z]+", (s or "").lower())
+                     if w and w not in _IR_STOP)
+
+
+def _ir_j_gemini(cc, md, cldr_raw, api_raw):
+    """Судья списка стран `Gemini`: имя страны совпадает словом в слове списка образца."""
+    supported = [_ir_words(line[2:]) for line in (md or "").splitlines() if line.startswith("- ")]
+    names = []
+    try:
+        terr = _ir_j(cldr_raw)["main"]["en"]["localeDisplayNames"]["territories"]
+        names += [v for k, v in terr.items() if str(k).startswith(cc)]
+    except Exception:
+        pass
+    try:
+        nm = _ir_j(api_raw).get("name")
+        if nm:
+            names.append(nm)
+    except Exception:
+        pass
+    return "Yes" if any(_ir_words(n) in supported for n in names) else "No"
+
+
+def _h_reddit(fam):
+    t = _ir_fetch("POST", "https://www.reddit.com/auth/v2/oauth/access-token/loid",
+                  (("Authorization", "Basic " + _IR_REDDIT_BASIC), ("User-Agent", _IR_REDDIT_UA)),
+                  '{"scopes":["email"]}', 8, fam)
+    if _ir_st(t):
+        return t
+    tok = _ir_jp(t, "access_token")
+    if tok in ("", "null"):
+        return "null"
+    t2 = _ir_fetch("POST", "https://gql-fed.reddit.com",
+                   (("Authorization", "Bearer " + tok), ("User-Agent", _IR_REDDIT_UA)),
+                   _IR_REDDIT_GQL, 8, fam)
+    return _ir_jp(t2, "data.userLocation.countryCode")
+
+
+def _h_gemini(fam):
+    cc = _h_google(fam)
+    if _ir_st(cc):
+        return cc
+    if not cc or cc == "null":
+        return ""
+    md = _ir_fetch("GET", _IR_GEMINI_MD, (), None, 8, fam)
+    if _ir_st(md) or not md:
+        return ""
+    cldr = _ir_fetch("GET", _IR_CLDR, (), None, 8, 4)
+    api = _ir_fetch("GET", "https://countries.dev/alpha/" + cc, (), None, 8, 4)
+    return _ir_j_gemini(cc, md, cldr, api)
+
+
+def _ir_iata_loc(code):
+    if not code or code == "null":
+        return ""
+    if code in _IR_IATA:
+        return _IR_IATA[code]
+    try:
+        t = _ir_fetch("POST", _IR_APC,
+                      (("APC-Auth", _IR_APC_AUTH), ("Referer", "https://www.air-port-codes.com/")),
+                      "iata=" + code, 8, 4, "application/x-www-form-urlencoded")
+        v = _ir_jp(t, "airport.country.iso")
+    except Exception:
+        v = ""
+    _IR_IATA[code] = v
+    return v
+
+
+def _h_cf_cdn(fam):
+    t = _ir_fetch("GET", "https://speed.cloudflare.com/meta", _IR_CF_HDR, None, 8, fam)
+    if _ir_st(t):
+        return t
+    iata = _ir_jp(t, "colo.iata")
+    return "%s (%s)" % (_ir_iata_loc(iata) or "null", iata)
+
+
+def _h_yt_cdn(fam):
+    t = _ir_fetch("GET", "https://redirector.googlevideo.com/report_mapping?di=no", (), None, 8, fam)
+    if _ir_st(t):
+        return t
+    parts = t.split()
+    iata = ""
+    if len(parts) >= 3:
+        tok = parts[2].split("-")
+        if len(tok) >= 2:
+            iata = tok[1][:3].upper()
+    if not iata:
+        return ""
+    return "%s (%s)" % (_ir_iata_loc(iata) or "null", iata)
+
+
+_h_google = _ir_h1("GET", "https://accounts.google.com/v3/signin/identifier?flowName=GlifSetupAndroid",
+                  (), None, 8, _ir_x_google)
+_h_youtube = _ir_h1("GET", "https://www.youtube.com/sw.js_data", (), None, 8, _ir_x_youtube)
+_h_twitch = _ir_h1("POST", "https://gql.twitch.tv/gql",
+                   (("Client-Id", "kimne78kx3ncx6brgo4mv6wki5h1ko"),), _IR_TWITCH_BODY, 8,
+                   _ir_pj("0.data.requestInfo.countryCode"))
+_h_chatgpt = _ir_h1("POST", "https://ab.chatgpt.com/v1/initialize",
+                    (("Statsig-Api-Key", "client-zUdXdSTygXJdzoE0sWTkP8GKTVsUMF2IRM7ShVO2JAG"),),
+                    "{}", 8, _ir_pj("derived_fields.country"))
+_h_netflix = _ir_h1("GET", _IR_NETFLIX_URL, (), None, 8, _ir_pj("client.location.country"))
+_h_spotify = _ir_h1("GET", _IR_SPOTIFY_URL, (("X-Client-Id", _IR_SPOTIFY_CLIENT),), None, 8,
+                    _ir_pj("country"))
+_h_disney = _ir_h1("POST", "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql",
+                   (("Authorization", "Bearer " + _IR_DISNEY_TOKEN),), _IR_DISNEY_BODY, 10,
+                   _ir_pj("extensions.sdk.session.location.countryCode"))
+_h_signup = _ir_h1("GET", _IR_SPOTIFY_URL, (("X-Client-Id", _IR_SPOTIFY_CLIENT),), None, 8,
+                   _ir_x_signup)
+_h_daccess = _ir_h1("POST", "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql",
+                    (("Authorization", "Bearer " + _IR_DISNEY_TOKEN),), _IR_DISNEY_BODY, 10,
+                    _ir_x_daccess)
+_h_premium = _ir_h1("GET", "https://www.youtube.com/premium",
+                    (("Cookie", "SOCS=" + _IR_SOCS), ("Accept-Language", "en-US,en;q=0.9")),
+                    None, 10, _ir_x_premium)
+_h_guest = _ir_h1("GET", "https://www.reddit.com", (), None, 8, _ir_x_guest)
+_h_apple = _ir_h1("GET", "https://gspe1-ssl.ls.apple.com/pep/gcc", (), None, 8, _ir_plain)
+_h_steam = _ir_h1("HEAD", "https://store.steampowered.com", (), None, 8, _ir_x_steam)
+_h_tiktok = _ir_h1("GET", "https://www.tiktok.com/api/v1/web-cookie-privacy/config?appId=1988",
+                   (), None, 8, _ir_pj("body.appProps.region"))
+_h_ookla = _ir_h1("GET", "https://www.speedtest.net/api/js/config-sdk", (), None, 8,
+                  _ir_pj("location.countryCode"))
+_h_jetbrains = _ir_h1("GET", "https://data.services.jetbrains.com/geo", (), None, 8,
+                      _ir_pj("code"))
+_h_playstation = _ir_h1("HEAD", "https://www.playstation.com", (), None, 8, _ir_x_ps)
+_h_microsoft = _ir_h1("GET", "https://login.live.com", (), None, 8, _ir_x_ms)
+_h_nf_cdn = _ir_h1("GET", _IR_NETFLIX_URL, (), None, 8, _ir_pj("targets.0.location.country"))
+
+# Популярные сервисы: имя и мера. Порядок и имена — как в таблице образца;
+# строка «проверка поиска на капчу» в образце исключена и здесь её нет.
+_IR_CUSTOM = (
+    ("Google", _h_google),
+    ("YouTube", _h_youtube),
+    ("Twitch", _h_twitch),
+    ("ChatGPT", _h_chatgpt),
+    ("Netflix", _h_netflix),
+    ("Spotify", _h_spotify),
+    ("Reddit", _h_reddit),
+    ("Disney+", _h_disney),
+    ("Gemini Supported", _h_gemini),
+    ("Reddit (Guest Access)", _h_guest),
+    ("YouTube Premium", _h_premium),
+    ("Spotify Signup", _h_signup),
+    ("Disney+ Access", _h_daccess),
+    ("Apple", _h_apple),
+    ("Steam", _h_steam),
+    ("Tiktok", _h_tiktok),
+    ("Ookla Speedtest", _h_ookla),
+    ("JetBrains", _h_jetbrains),
+    ("PlayStation", _h_playstation),
+    ("Microsoft", _h_microsoft),
+)
+
+# Раздача: ближайший узел доставки меряется по коду аэропорта (`iata`); страна
+# узла снимается по справочнику аэродромов, канал всегда четвёртый (образец).
+_IR_CDN = (
+    ("Cloudflare CDN", _h_cf_cdn),
+    ("YouTube CDN", _h_yt_cdn),
+    ("Netflix CDN", _h_nf_cdn),
+)
+
+# Гео-службы: имя, метод, адрес с `{ip}`, заголовки, вид ответа, судья,
+# признак «адрес шестого семейства по четвёртому каналу», источник адреса.
+_IR_GEO = (
+    ("maxmind.com", "GET", _IR_MM_URL, _IR_MM_HDR, "json", _ir_pj("country.iso_code"), False, "me"),
+    ("rdap.db.ripe.net", "GET", "https://rdap.db.ripe.net/ip/{ip}", (), "json",
+     _ir_pj("country"), False, "ip"),
+    ("ipinfo.io", "GET", "https://ipinfo.io/widget/demo/{ip}", (), "json",
+     _ir_pj("data.country"), True, "ip"),
+    ("cloudflare.com", "GET", "https://speed.cloudflare.com/meta", _IR_CF_HDR, "json",
+     _ir_pj("country"), False, "me"),
+    ("ipregistry.co", "GET", "https://api.ipregistry.co/{ip}?hostname=true&key=sb69ksjcajfs4c",
+     (("Origin", "https://ipregistry.co"),), "json", _ir_pj("location.country.code"), False, "ip"),
+    ("ipapi.co", "GET", "https://ipapi.co/{ip}/json", (), "json", _ir_pj("country"), False, "ip"),
+    ("ifconfig.co", "GET", "https://ifconfig.co/country-iso?ip={ip}", (), "plain",
+     _ir_plain, False, "ip"),
+    ("ip2location.io", "GET", "https://api.ip2location.io/?ip={ip}", (), "json",
+     _ir_pj("country_code"), False, "ip"),
+    ("iplocation.com", "POST", "https://iplocation.com", (), "json",
+     _ir_pj("country_code"), True, "preferred"),
+    ("country.is", "GET", "https://api.country.is/{ip}", (), "json", _ir_pj("country"), False, "ip"),
+    ("geoapify.com", "GET",
+     "https://api.geoapify.com/v1/ipinfo?&ip={ip}&apiKey=b8568cb9afc64fad861a69edbddb2658",
+     (), "json", _ir_pj("country.iso_code"), False, "ip"),
+    ("geojs.io", "GET", "https://get.geojs.io/v1/ip/country.json?ip={ip}", (), "json",
+     _ir_pj("0.country"), False, "ip"),
+    ("ipapi.is", "GET", "https://api.ipapi.is/?q={ip}", (), "json",
+     _ir_pj("location.country_code"), True, "ip"),
+    ("ipbase.com", "GET", "https://api.ipbase.com/v2/info?ip={ip}", (), "json",
+     _ir_pj("data.location.country.alpha2"), False, "ip"),
+    ("ipquery.io", "GET", "https://api.ipquery.io/{ip}", (), "json", _ir_pj("location.country_code"), False, "ip"),
+    ("ipwho.is", "GET", "https://ipwho.is/{ip}", (), "json", _ir_pj("country_code"), True, "ip"),
+    ("ip-api.com", "GET", "https://demo.ip-api.com/json/{ip}?fields=countryCode",
+     (("Origin", "https://ip-api.com"),), "json", _ir_pj("countryCode"), True, "ip"),
+)
+_IR_TOTAL = len(_IR_CUSTOM) + len(_IR_CDN) + len(_IR_GEO)
+
+_IR_ID_HOSTS = ("ident.me", "ifconfig.me", "api64.ipify.org", "ifconfig.co")
+
+
+def _ir_identity(fam):
+    """Свой адрес наружу по каналу нужного семейства; первая служба, ответившая
+    адресом этого семейства, и есть мера (список образца)."""
+    for host in _IR_ID_HOSTS:
+        try:
+            t = _ir_fetch("GET", "https://" + host, (), None, 6, fam).strip()
+        except Exception:
+            continue
+        if fam == 4 and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", t):
+            return t
+        if fam == 6 and ":" in t and re.fullmatch(r"[0-9a-fA-F:.]+", t):
+            return t
+    return ""
+
+
+def _ir_reg_country(fam):
+    try:
+        t = _ir_fetch("GET", _IR_MM_URL, _IR_MM_HDR, None, 8, fam)
+        return _ir_jp(t, "registered_country.names.en")
+    except Exception:
+        return ""
+
+
+def _ir_asn():
+    try:
+        t = _ir_fetch("GET", _IR_MM_URL, _IR_MM_HDR, None, 8, 4)
+        num = _ir_jp(t, "traits.autonomous_system_number")
+        org = _ir_jp(t, "traits.autonomous_system_organization")
+        if num in ("", "null"):
+            return ""
+        return "AS%s %s" % (num, org)
+    except Exception:
+        return ""
+
+
+def _ir_mask4(ip):
+    p = ip.split(".")
+    return "%s.%s.*.*" % (p[0], p[1]) if len(p) == 4 else ip
+
+
+def _ir_mask6(ip):
+    g = ip.split(":")
+    for i in range(len(g)):
+        if g[i] == "":
+            g[i] = "0"
+    return ":".join(g[:3]) + "::" if len(g) >= 3 else ip
+
+
+def _h_geo(row, fam):
+    name, method, tpl, headers, _fmt, judge, over4, ipmode = row
+    tfam = 4 if (fam == 6 and over4) else fam
+    body = None
+    if ipmode == "me":
+        url = tpl
+    else:
+        ip = _IR["addr"]["4"] if ipmode == "preferred" else _IR["addr"][str(fam)]
+        if not ip:
+            return ""
+        url = tpl.replace("{ip}", ip)
+        if ipmode == "preferred":
+            body = "ip=" + ip
+    return judge(_ir_fetch(method, url, headers, body, 8, tfam,
+                           "application/x-www-form-urlencoded" if body else None))
+
+
+def _ir_probe(force=False):
+    """Меряет полный обход потоком-демоном; строка приезжает по готовности своей.
+    Колонка семейства без снятого адреса не меряется вовсе — служебное слово в ней
+    честная граница, а не обещание."""
+    now = time.time()
+    with _IR_LOCK:
+        if _IR["running"]:
+            return
+        if not force and now - _IR["at"] < _IR_TTL:
+            return
+        _IR["running"] = True
+        _IR["at"] = now
+        _IR["custom"] = []
+        _IR["cdn"] = []
+        _IR["geo"] = []
+        _IR["error"] = ""
+
+    def one():
+        addr = {"4": "", "6": ""}
+        hdr = {"v4": "", "v6": "", "reg4": "", "reg6": "", "asn": ""}
+        try:
+            addr["4"] = _ir_identity(4)
+            addr["6"] = _ir_identity(6)
+            if addr["4"]:
+                hdr["v4"] = _ir_mask4(addr["4"])
+                hdr["reg4"] = _ir_reg_country(4)
+                hdr["asn"] = _ir_asn()
+            if addr["6"]:
+                hdr["v6"] = _ir_mask6(addr["6"])
+                hdr["reg6"] = _ir_reg_country(6)
+        except Exception as e:
+            _IR["error"] = str(e)[:120] or type(e).__name__
+        with _IR_LOCK:
+            _IR["addr"] = addr
+            _IR["header"] = hdr
+
+        def cell(run, fam):
+            t0 = time.time()
+            if not addr[str(fam)]:
+                return "N/A", 0
+            try:
+                v = run(fam)
+            except Exception:
+                v = ""
+            if not v:
+                v = "N/A"
+            return v, int((time.time() - t0) * 1000)
+
+        def sweep(items, key):
+            for name, run in items:
+                v4, ms4 = cell(run, 4)
+                v6, ms6 = cell(run, 6)
+                with _IR_LOCK:
+                    _IR[key].append({"name": name, "v4": v4, "v6": v6, "ms4": ms4, "ms6": ms6})
+
+        sweep(_IR_CUSTOM, "custom")
+        sweep(_IR_CDN, "cdn")
+        geo_rows = []
+        for row in _IR_GEO:
+            geo_rows.append((row[0], (lambda r: (lambda fam: _h_geo(r, fam)))(row)))
+        sweep(geo_rows, "geo")
+        with _IR_LOCK:
+            _IR["running"] = False
+            _IR["at"] = time.time()
+
+    threading.Thread(target=one, daemon=True).start()
+
+
+def _ir_view():
+    """Снимок для морды: только чтение, ничего не меряет. Адреса — замаскированные,
+    как их печатает образец."""
+    with _IR_LOCK:
+        done = len(_IR["custom"]) + len(_IR["cdn"]) + len(_IR["geo"])
+        return {"at": int(_IR["at"]) if _IR["at"] else None, "running": _IR["running"],
+                "header": dict(_IR["header"]), "done": done,
+                "v4ok": bool(_IR["addr"]["4"]), "v6ok": bool(_IR["addr"]["6"]),
+                "custom": [dict(r) for r in _IR["custom"]],
+                "cdn": [dict(r) for r in _IR["cdn"]],
+                "geo": [dict(r) for r in _IR["geo"]],
+                "error": _IR["error"], "total": _IR_TOTAL}
+
+
+# ---------- MJ: вкл/выкл разрешения скачивания торрентов (#386) ----------
+# Хозяин просит кнопку: «в панель надо добавить кнопку вкл/выкл разрешения на
+# скачивания торрентов». Гашение стоит на хуке `forward`, а не `input`: торрент-поток
+# клиентов проходит через пересылку ядра, а `input` — это сама коробка (панель, `SSH`,
+# входы `xray`); задеть их нельзя. `WG`-порт `51820` в набор не входит, `UDP`-оболочка
+# туннеля остаётся целой, поэтому гашение бьёт по обычным клиентам вне туннеля и по
+# `DHT`, но не по туннельному транспорту. Называем меру честно: это сдерживание по
+# стандартным портам протокола, а не гарантия — клиент со случайным портом и обфускацией
+# через фильтр портов пройдёт.
+_TORRENT_PORTS = "6881-6889, 51413"
+_TORRENT_TABLE = ("inet", "veil_torrent")
+_TORRENT_CHAIN = "tfwd"
+
+
+def _torrent_allowed():
+    """Разрешено ли скачивание по настройки хозяина; по умолчанию разрешено — выпуск
+    правила ничего не меняет, пока хозяин сам не выключит."""
+    v = CFG_CACHE.get("torrent_allow")
+    return True if v is None else bool(v)
+
+
+def _torrent_apply():
+    """Пересобрать таблицу под нынешнее разрешение (#386). Разрешение — таблицы нет
+    вовсе: пустая таблица с дефолтом `accept` всё равно что её отсутствие, но её
+    присутствие при выключенном гашении сбивает с толку при ручной проверке.
+    Под песочницей живой `nft` не трогаем — тот же завет, что у `_ensure_wg_net`."""
+    if SBX:
+        return
+    _f2b_nft("delete", "table", *_TORRENT_TABLE)
+    if _torrent_allowed():
+        return
+    _f2b_nft("add", "table", *_TORRENT_TABLE)
+    _f2b_nft("add", "chain", *_TORRENT_TABLE, _TORRENT_CHAIN,
+             "{ type filter hook forward priority -100; policy accept; }")
+    # обе оговорки — по порту назначения и по порту источника: пир, принявший
+    # соединение с своего стандартного порта, гасится тем же набором; `iifname != "lo"`
+    # бережёт локальную петлю и собственные проверки панели.
+    for f in ("dport", "sport"):
+        _f2b_nft("add", "rule", *_TORRENT_TABLE, _TORRENT_CHAIN,
+                 'iifname != "lo" meta l4proto { tcp, udp } th %s { %s } counter drop'
+                 % (f, _TORRENT_PORTS))
+
+
+def _torrent_view():
+    """Живое состояние для морды: разрешение из настроек, что реально стоит в таблице,
+    и счётчик сброшенных пакетов. `live=None` — `nft` не ответил, это не «пусто»."""
+    d = {"allowed": _torrent_allowed(), "ports": _TORRENT_PORTS,
+         "live": None, "rules": 0, "dropped": None}
+    if SBX:
+        d["live"] = False
+        return d
+    try:
+        r = subprocess.run(["nft", "-j", "list", "table", *_TORRENT_TABLE],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return d
+    if r.returncode != 0:
+        # таблицы нет: при разрешении это норма, при запрете — провал применения;
+        # морда судит о несовпадении парой `allowed`/`live`, выдумывать здесь «живо»
+        # незачем.
+        d["live"] = False
+        return d
+    try:
+        data = json.loads(r.stdout)
+    except Exception:
+        return d
+    drops = 0
+    rules = 0
+    for row in data.get("nftables", []):
+        rule = row.get("rule")
+        if not rule:
+            continue
+        rules += 1
+        for item in rule.get("expr", []):
+            if isinstance(item, dict) and "counter" in item:
+                drops += int(item["counter"].get("packets", 0))
+    d["live"] = bool(rules)
+    d["rules"] = rules
+    d["dropped"] = drops
+    return d
 
 
 # ---------- ME: вход в сеть Telegram и его аварийные пути (#218) ----------
@@ -22477,6 +23688,19 @@ def _strip_port(addr):
         return addr[1:j] if j > 0 else addr
     return addr.rsplit(":", 1)[0] if addr.count(":") == 1 else addr
 
+def _acc_from_host(line):
+    """Адрес входа accept-строки без порта. Xray пишет и `from 1.2.3.4:56`,
+    и `from tcp:1.2.3.4:56` — обе формы разведены. По этому ключу цепь
+    accept'ов делится на устройство (#376): разные устройства идут с разных
+    адресов; за петлёй маски адрес общий и разделение нечем мерить."""
+    m = _ACC_RE.match(line)
+    if not m:
+        return ""
+    tok = m.group(1)
+    if tok.startswith("tcp:") or tok.startswith("udp:"):
+        tok = tok[4:]
+    return _strip_port(tok)
+
 def _dev_seen(email, ip, now):
     """Отметить подключение IP у клиента. Новый IP попадает в «роуминг» к самому
     давно затихшему устройству того же клиента, если пауза похожа на смену сети."""
@@ -23232,6 +24456,17 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
     if dom and ":" not in dom and not re.fullmatch(r"[0-9.]+", dom):
         rules.append({"domain": [dom], "action": "direct"} if modern else
                      {"domain": [dom], "outbound": "direct"})
+    # #387: хозяйский ручной список — домены и подобранные адреса мимо туннеля.
+    # `domain_suffix` берёт само имя и все его окончания. В режиме `ir` не льём:
+    # там туннелем считается совпавшее с гео-базой, а список хозяина — про «мимо»,
+    # смешивать смыслы нельзя.
+    bd_dom, bd_ip = _bd_lists() if split != "ir" else ([], [])
+    if bd_dom:
+        rules.append({"domain_suffix": bd_dom, "action": "direct"} if modern else
+                     {"domain_suffix": bd_dom, "outbound": "direct"})
+    if bd_ip:
+        rules.append({"ip_cidr": bd_ip, "action": "direct"} if modern else
+                     {"ip_cidr": bd_ip, "outbound": "direct"})
     final = first
     if rule_sets:
         matched = [x["tag"] for x in rule_sets]
@@ -23272,6 +24507,10 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
     dns_rules = []
     if split == "ru" and any(x["tag"] == "geosite-ru" for x in rule_sets):
         dns_rules.append({"rule_set": ["geosite-ru"], "server": "local-dns"})
+    if bd_dom:
+        # список хозяина резолвит российский резолвер: он называет российские
+        # окончания сервисов — тот же смысл, что у правила «мимо» выше
+        dns_rules.append({"domain_suffix": bd_dom, "server": "local-dns"})
     if dns_rules:
         dns["rules"] = dns_rules
     tun_in = {"type": "tun", "tag": "tun-in", "interface_name": "veiltun",
@@ -24632,6 +25871,12 @@ def _dynv6_update(force4=None, force6=None):
     # #343: в dynv6-базу идёт только эхом подтверждённый v6 при включённом
     # переключателе; адрес интерфейса — не обещание, что узел живёт по v6.
     ip6 = _ip6_to_publish()
+    # цикл #383: AAAA базы обязана вести не только в живой транспорт (мера #343),
+    # но и в живого слушателя: если в6-сокет панели отвергнут, адрес ведёт в
+    # отказ, и дуальностэковый клиент висит там, где браузер по v4 открывается.
+    # Гасит только подтверждённый отказ; `None` — не мерили, нечем и гасить.
+    if ip6 and _V6_LISTEN["ok"] is False:
+        ip6 = ""
     if force4:
         ip4 = str(force4)
     if force6:
@@ -24647,6 +25892,7 @@ def _dynv6_update(force4=None, force6=None):
     ok = body.lower().startswith("addresses updated")
     _DDNS.update(configured=True, host=host, ipv4=ip4, ipv6=ip6,
                  response=body, error="" if ok else body)
+    _DDNS["listen6"] = ("да" if _V6_LISTEN["ok"] else "отказ") if _V6_LISTEN["ok"] is not None else "не мерили"
     if ok:
         _DDNS["updated"] = time.time()
         if not CFG_CACHE.get("panel_domain"):
@@ -24659,6 +25905,18 @@ def _dynv6_update(force4=None, force6=None):
                 _DDNS["wg_rec"] = "ошибка: " + str(e)[:120]
             else:
                 _DDNS["wg_rec"] = "ok"
+        if ip6:
+            _DDNS["aaaa_drop"] = ""
+        else:
+            # цикл #383: нечего публиковать — и у базы старая AAAA осиротела
+            # (контракт #343 про ложь до `veil`-имён доходил, а основной хост
+            # оставался за спиной)
+            try:
+                if _dynv6_ensure_host(host, None, None, drop_ip6=True):
+                    _DDNS["aaaa_drop"] = "снята"
+                    _audit("dynv6_aaaa_drop", host=host)
+            except Exception as e:
+                _DDNS["aaaa_drop"] = "ошибка: " + str(e)[:120]
     else:
         _DDNS["error"] = "dynv6: " + body
         raise RuntimeError("dynv6: " + body[:200])
@@ -27552,6 +28810,8 @@ if not SBX:  # #309: в песочнице харнесса эти нити не
     threading.Thread(target=_limits_loop, daemon=True).start()
     threading.Thread(target=_bot_poll_loop, daemon=True).start()
     threading.Thread(target=_rulesets_loop, daemon=True).start()
+    # #387: подбор адресов хозяйского списка обхода; читает кэш, сеть трогает только тут.
+    threading.Thread(target=_bypass_loop, daemon=True).start()
     # #335/#361: нить наблюдателя живёт только вместе с приватным модулем — без него
     # панели нечем наблюдать и нечего банить.
     if PRIV:
@@ -32001,7 +33261,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"host": conf["host"], "configured": bool(conf["host"] and conf["token"]),
                                     "updated": _DDNS.get("updated"), "error": _DDNS.get("error"),
                                     "response": _DDNS.get("response"), "ipv4": _DDNS.get("ipv4"),
-                                    "ipv6": _DDNS.get("ipv6"), "veil": dict(_VEIL_GUARD)})
+                                    "ipv6": _DDNS.get("ipv6"),
+                                    "listen6": _DDNS.get("listen6"), "veil": dict(_VEIL_GUARD)})
         if p == "/api/cert/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _cert_status())
@@ -32319,8 +33580,11 @@ class H(http.server.BaseHTTPRequestHandler):
             # #303 задал окно «Клиенты в сети», #322 наполнил его правдой:
             # раньше судил один Xray и не отвечал, ЧТО ИМЕННО запущено. Теперь
             # по строке на подписчика: какие протоколы живут сейчас (зеленью),
-            # какие просто доступны (приглушённо) и когда была последняя
-            # активность. Ни рестартов, ни записей — четыре читалки снимка.
+            # когда была последняя активность (`last`) и когда началась текущая
+            # цепь — «время в сети» (`since`, #375), у каждого устройства —
+            # своё (`devs`, #376). Слово хозяина 14.10: из
+            # окна убран перечёнт «доступны: …» — он спорил с «Запущен» и
+            # плодил шум. Ни рестартов, ни записей — четыре читалки снимка.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             raw_st = _load(STATE)
             if self._refuse_unshapable(raw_st): return
@@ -32355,6 +33619,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 running = []
                 n = 0
                 last = 0.0
+                since = 0.0
+                devs = []
                 xd = int(snap["xray"].get(u) or 0)
                 if xd > 0 or _acc_live(snap, u):
                     # открыт сейчас — числом устройств; закрыт, но свежий accept —
@@ -32368,6 +33634,17 @@ class H(http.server.BaseHTTPRequestHandler):
                         running.append(lbl)
                     if ts > last:
                         last = ts
+                    # «время в сети» — начало текущей цепи accept'ов, нижний
+                    # край: хвост дальше `_ONLINE_ACC_TAIL` начала не видит;
+                    # туннельному и MTProto пиеру начала мерять нечем — 0
+                    cst = (snap.get("acc_start") or {}).get(u) or 0.0
+                    if cst > 0:
+                        since = cst
+                    # #376: у каждого адреса входа своя цепь — своё «время в
+                    # сети»; в окно попадает адрес, чей последний accept свеж
+                    for _h, pr in ((snap.get("acc_dev") or {}).get(u) or {}).items():
+                        if pr[1] >= snap["at"] - _ONLINE_ACC_WIN:
+                            devs.append(int(pr[0]))
                 for grp, lbl in (("wg", _GROUP_LABELS.get("wg", "wg")),
                                  ("awg", _GROUP_LABELS.get("awg", "awg"))):
                     ages = [a for pub in (w["pubs"][grp] & set(snap["tun"].get(grp) or {}))
@@ -32376,7 +33653,16 @@ class H(http.server.BaseHTTPRequestHandler):
                         n += len(ages)
                         if lbl not in running:
                             running.append(lbl)
-                        # время последнего рукопожатия пиера: снимок минус его возраст
+                        # #379: туннельному пиеру «время в сети» мерить нечем, поэтому
+                        # его рукопожатие в `devs` не ложится. `latest-handshakes`
+                        # обнуляется ротацией ключа каждые ~2 мин (замер 14.10 на боевом:
+                        # активный пиер сдвинул метку на `240` с за `140` с стенного
+                        # времени), значит его возраст — след последнего обмена, а не
+                        # начало цепи; access-лога туннеля нет, досеять начало нечем.
+                        # Морда на пустом `devs` честно показывает «—» (контракт #375),
+                        # а счётчик устройств и чип протокола остаются. Время последней
+                        # активности (`last`) названо меткой рукопожатия — это факт, а не
+                        # выдуманная длительность.
                         ts = snap["at"] - min(ages)
                         if ts > last:
                             last = ts
@@ -32390,9 +33676,16 @@ class H(http.server.BaseHTTPRequestHandler):
                 devices += n
                 out.append({"name": w["name"], "protos": ", ".join(w["protos"]),
                             "running": running, "devices": n,
-                            "last": int(last) if last else 0})
+                            "last": int(last) if last else 0,
+                            "since": int(since) if since else 0,
+                            "devs": sorted(set(devs))})
             out.sort(key=lambda x: (x["name"], x["protos"]))
-            return self._send(200, {"list": out, "online": devices, "clients": len(who)})
+            # `at` — секунда самого снимка (#377): морда обязана мерять длительности
+            # от неё, а не от своих часов при каждой отрисовке. Страница, которую
+            # не перезагружали, иначе крутит «время в сети» вверх вечно: замёрзшее
+            # утро 7 ч 43 мин само доехало до 9 ч 17 мин
+            return self._send(200, {"list": out, "online": devices, "clients": len(who),
+                                    "at": int(snap["at"])})
         if p == "/api/bans":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             now = time.time()
@@ -32465,6 +33758,28 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _tw_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/ipregion":
+            # #384: снятый ранее замер щупов страны; ничего не мерит, только отдаёт.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _ir_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/torrent":
+            # #386: разрешение скачивания и что реально стоит в живой таблице.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _torrent_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/bypass":
+            # #387: хозяйский список обхода и что подобрано по доменам.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _bypass_view())
+        if p == "/api/warp_manual":
+            # #388: хозяйский список через WARP и что смотритель успел поставить.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _wm_view())
         if p == "/api/webproxy/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _webproxy_status())
@@ -34303,6 +35618,19 @@ class H(http.server.BaseHTTPRequestHandler):
                        was_parent_uuid=res["was_parent"])
                 return self._send(200, {"ok": True, "member": res})
 
+            if p == "/api/clients/family/make":
+                b = self._body() or {}
+                key = (_field(b, "uuid") or _field(b, "sub_token")).strip()
+                if not key:
+                    return self._send(400, {"error": "uuid не указан"})
+                st = _load(STATE)
+                if not st: return self._send(404, {"error": "нет состояния"})
+                ok, res = _fam_make(st, key)
+                if not ok: return self._send(400, {"error": res})
+                _save(STATE, st)
+                _audit("family_make", uuid=res["uuid"], name=res["name"])
+                return self._send(200, {"ok": True, "host": res})
+
             if p == "/api/clients/delete":
                 b = self._body()
                 u = b.get("uuid")
@@ -36030,6 +37358,53 @@ class H(http.server.BaseHTTPRequestHandler):
                     print("[tiktok-route] " + str(e), flush=True)
                 v = _tw_view()
                 return self._send(200, v)
+            if p == "/api/ipregion":
+                # #384: `check` — мерить сейчас, минуя черёд и свежесть. Ответ приходит
+                # сразу: строки дописывает поток, морда их дочитывает опросом GET.
+                b = self._body()
+                if not b.get("check"):
+                    return self._send(400, {"error": "нужно поле check"})
+                _ir_probe(force=True)
+                _audit("ipregion_check", rows=_IR_TOTAL)
+                return self._send(200, _ir_view())
+            if p == "/api/torrent":
+                # #386: `on` — слово хозяина; применяем сразу, таблица обязана совпадать
+                # с разрешением в тот же момент, что и ответ морде.
+                b = self._body()
+                if "on" not in b:
+                    return self._send(400, {"error": "нужно поле on"})
+                CFG_CACHE["torrent_allow"] = bool(b.get("on"))
+                _cfg_save()
+                _audit("torrent_allow", on=CFG_CACHE["torrent_allow"])
+                _torrent_apply()
+                return self._send(200, _torrent_view())
+            if p == "/api/bypass":
+                # #387: полная замена списка словом хозяина. Подписки пересобираются
+                # на каждый запрос, рестарт узла не нужен; подбор адресов по доменам
+                # отдаёт фоновому потоку — резолвер может стоять, ручка ждать не смеет.
+                norm, err = _bypass_norm(self._body())
+                if err:
+                    return self._send(400, {"error": err})
+                CFG_CACHE["bypass_direct"] = norm
+                _cfg_save()
+                _audit("bypass_direct", domains=len(norm["domains"]), ips=len(norm["ips"]))
+                threading.Thread(target=_bd_refresh, daemon=True).start()
+                return self._send(200, _bypass_view())
+            if p == "/api/warp_manual":
+                # #388: полная замена ручного списка туннеля словом хозяина. Шаг
+                # смотрителя делаем сразу, как у переключателя TikTok: звено обязано
+                # начать догонять список в тот же момент, что и ответ морде.
+                norm, err = _wm_norm(self._body())
+                if err:
+                    return self._send(400, {"error": err})
+                CFG_CACHE["warp_manual"] = norm
+                _cfg_save()
+                _audit("warp_manual", domains=len(norm["domains"]), ips=len(norm["ips"]))
+                try:
+                    _tw_tick()
+                except Exception as e:
+                    print("[warp-manual] " + str(e), flush=True)
+                return self._send(200, _wm_view())
             if p == "/api/front/apply":
                 b = self._body()
                 try:
@@ -36390,6 +37765,21 @@ class S(socketserver.ThreadingTCPServer):
             return
         super().handle_error(request, client_address)
 
+class S6(S):
+    """В6-слушатель панели (цикл #383). На живых коробках `net.ipv6.bindv6only`
+    чаще `0`, и тогда привязка в6-сокета к `[::]` забрала бы и v4-порт, влетев
+    в конфликт с занятым `0.0.0.0:8443` — потому сокету велят принимать только
+    в6 до привязки. Флага `v6only` у `socketserver` в этом интерпретаторе нет
+    (промерено на `3.14`), опцию ставим сами."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        except OSError:
+            pass
+        super().server_bind()
+
 if __name__ == "__main__":
     import sys
     if "--dns01-hook" in sys.argv:
@@ -36443,6 +37833,12 @@ if __name__ == "__main__":
         _synfix_apply()
     except Exception as e:
         print("synfix init: " + str(e), flush=True)
+    try:
+        # #386: гашение торрентов обязано переживать рестарт коробки — панель стартует
+        # после поднятия сети, таблица к тому моменту пуста; разрешение живёт в настройках.
+        _torrent_apply()
+    except Exception as e:
+        print("torrent init: " + str(e), flush=True)
     try:
         st = _load(STATE)
         xc = _load(XRAY)
@@ -36529,6 +37925,22 @@ if __name__ == "__main__":
     # истории не имели никакого автора.
     _audit("panel_boot", version=VERSION, pid=os.getpid())
     threading.Thread(target=_nodes_poll_loop, daemon=True).start()
+    # Цикл #383: домен публикует AAAA — значит по в6 обязаны пускать. Заводим
+    # отдельный в6-слушатель, не трогая v4-сокет: тот сидит на `0.0.0.0`, а
+    # наш принимает только в6. Петлевой `panel_bind` оператора не расширяем
+    # наружу и не трогаем: там доменом владеет фасад, а не панель. Отказ
+    # поднять в6-сокет — не повод ронять загрузившуюся панель: называем его
+    # в консоль, а хранитель AAAA увидит отказ по `_V6_LISTEN` и снимет ложь.
+    _v6srv = None
+    if bind == "0.0.0.0":
+        try:
+            _v6srv = S6(("::", port), H)
+            _V6_LISTEN["ok"] = True
+        except OSError as e:
+            _V6_LISTEN["ok"] = False
+            print("v6-слушатель: отказ: " + str(e)[:160], flush=True)
+    if _v6srv is not None:
+        threading.Thread(target=_v6srv.serve_forever, daemon=True).start()
     with S((bind, port), H) as srv:
         srv.serve_forever()
 

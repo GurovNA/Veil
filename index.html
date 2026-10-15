@@ -1592,6 +1592,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick="setJump('setIps')">📋 IP сервера</button>
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
       <button class="tiny sec" onclick="setJump('setTikTok')">🎵 TikTok</button>
+      <button class="tiny sec" onclick="setJump('setIpRegion')">🌍 В какой стране меня видят</button>
+      <button class="tiny sec" onclick="setJump('setTorrent')">🧲 Торренты</button>
 <!--veil:btns-->
       <button class="tiny sec" onclick="setJump('setBk')">💾 Бэкапы</button>
       <button class="tiny sec" onclick="setJump('setXray')">⚙️ Ядро Xray</button>
@@ -1683,6 +1685,20 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div></details>
       <p class=mut style="margin:4px 0 0;font-size:12px">Rule-set'ы зеркалируются с upstream раз в сутки и раздаются панелью из <code>/rulesets/</code>.</p>
       <p class=mut id=rsState style="margin:4px 0 0;font-size:12px">—</p>
+    </div>
+    <div style="margin:12px 0">
+      <label for=bdText>Ручной список обхода — домены и адреса поверх российского справочника (напрямую, мимо VPN)</label>
+      <textarea id=bdText rows=5 placeholder="один домен или адрес на строку:&#10;vkusno-retreat.ru&#10;77.88.55.242&#10;185.129.100.0/24" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем.</b> Российский справочник знает не всё: приложение «Вкусно — и точка» или банк могут стоять на адресах, которых в базе нет, — их трафик идёт через VPN, а приложение видит адрес узла и ругается на VPN. Сюда дописывают именно те домены и адреса, которые надо пустить напрямую.</p>
+        <p><b>Как работает.</b> Панель сама подбирает адреса доменов из списка (обновление каждые пять минут) и кладёт правило в подписку клиента. Телефон пускает эти адреса напрямую, без туннеля — наружу показывается домашний адрес абонента, а не адрес узла. После сохранения пересылать ссылки заново не нужно: они подтянут правило при ближайшей загрузке.</p>
+        <p><b>Честная граница.</b> Правило уезжает только в подписки, которые его носят: полные конфиги sing-box и профили раздельного туннеля для клиентов на ядре Xray. Обычные ссылки-наборы и WireGuard правил не несут. Правило по домену берёт и все его окончания — короткое имя захватит соседний домен с таким же хвостом, имена пишите полно.</p>
+      </div></details>
+      <p class=mut id=bdState style="margin:4px 0 0;font-size:12px">—</p>
+      <div style="margin-top:8px">
+        <button class="tiny sec" id=bdBtn onclick=saveBypass()>Сохранить список</button>
+      </div>
+      <div class=msg id=bdMsg></div>
     </div>
     <div style="margin:12px 0">
       <label><input type=checkbox id=geoAuto> Автообновление гео-баз Xray — раз в сутки</label>
@@ -1873,6 +1889,49 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick=checkTikTok() id=twCheckBtn>🔎 Проверить, что видит TikTok</button>
     </div>
     <div class=msg id=twMsg></div>
+    </div>
+    <div class="card set-block" id=setWarpManual>
+    <h3 style="margin:0 0 8px">Ручной список через WARP</h3>
+    <label for=wmText>Домены и адреса, которые панель поведёт через туннель WARP (список заменяется целиком)</label>
+    <textarea id=wmText rows=5 placeholder="один домен или адрес на строку:&#10;example-service.com&#10;142.250.74.110&#10;185.199.108.0/24" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Тот же туннель, что ведёт адреса TikTok (карточка выше), можно направить и на любые другие сервисы: панель добавит в него адреса из твоего списка и сама подберёт все адреса по доменам — резолвит тремя взглядами (локальный, Google, Cloudflare) и обновляет каждые пять минут, как и покрытие TikTok.</p>
+        <p><b>Что не задето.</b> Через туннель идут только перечисленные адреса и подобранные по доменам, и только четвёртым семейством; шестое семейство список не принимает. Снятие последних строк из списка убирает их блоки из туннеля на ближайшем шаге смотрителя. Граница та же, что у фикса TikTok: это маршрутизация адресов, а не гарантия — сервис может отвечать с адресов, которых нет ни в подборе, ни в списке.</p>
+        <p><b>Кнопка «Сохранить список»</b> применяет слово целиком: делает шаг смотрителя сразу, не дожидаясь ближайшего тика, и показывает, поднято ли звено и сколько блоков стоит в туннеле.</p>
+      </div></details>
+    <p class=mut id=wmState style="margin:4px 0 0;font-size:12px">—</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <button class="tiny sec" id=wmBtn onclick=saveWarpManual()>Сохранить список</button>
+    </div>
+    <div class=msg id=wmMsg></div>
+    </div>
+    <div class="card set-block" id=setIpRegion>
+    <h3 style="margin:0 0 8px">В какой стране видят наш адрес</h3>
+    <p class=mut style="margin:0 0 10px"><span id=irState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Сервисы (стриминги, банки, соцсети) решают, пускать ли клиента, по тому, в какой стране они видят адрес сервера. Эта проверка опрашивает <b>сам сервис</b> — тот же ответ, что видит приложение клиента — и показывает, какой сервис в какой стране нас видит и открыт ли он там. Тем же снимком видно, каким адресом нас регистрируют гео-службы, к какому аэропорту привязан ближайший узел раздачи и какой номер носит наша автономная сеть.</p>
+        <p><b>Что именно меряется.</b> Двадцать популярных сервисов, три узла раздачи и семнадцать гео-служб, у каждого — ответ по обоим каналам: четвёртому и шестому семейству. Адреса в шапке замаскированы, как их печатает образец: целиком адрес не показывается. Своих секретов тут нет — только публичные вопросы, какие делает приложение на телефоне.</p>
+        <p><b>Кнопка «Проверить сейчас»</b> запускает полный обход: до ста запросов подряд, от доли секунды до десяти секунд на вопрос; вся проверка идёт несколько минут, строки подрастают по готовности. Без нажатия панель показывает последний снимок (он живёт 5 минут). Значение «N/A» в колонке значит, что адреса нужного семейства у коробки нет или служба не ответила. Ответы сервисов идут напрямую с сервера, вне клиентских цепей; клиентов проверка не касается.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <button class="tiny sec" onclick=checkIpRegion() id=irBtn>🔎 Проверить сейчас</button>
+    </div>
+    <div class=msg id=irMsg></div>
+    <div id=irHead class=mut style="font-size:12px;line-height:1.6;margin-top:8px"></div>
+    <div id=irTable class=mut style="font-size:12px;line-height:1.6;margin-top:8px"></div>
+    </div>
+    <div class="card set-block" id=setTorrent>
+    <h3 style="margin:0 0 8px">Разрешение на скачивание торрентов</h3>
+    <p class=mut style="margin:0 0 10px"><span id=torState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что это.</b> Переключатель гасит торрент-скачивание на пути клиентов. Когда разрешение выключено, пересылаемые соединения на стандартные порты протокола (6881–6889 и 51413, в обе стороны) отбрасываются; включено — правило снимается и трафик идёт как шёл.</p>
+        <p><b>Честная граница.</b> Это сдерживание по стандартным портам, а не гарантия на сто процентов: клиент со случайным портом и обфускацией через фильтр портов пройдёт.</p>
+        <p><b>Что не трогается.</b> Правило стоит только на пересылаемом пути между сетями; сама коробка (панель, вход по ключу, входы прокси) и туннельные порты клиентов вне набора. После рестарта коробки панель ставит правило заново, если разрешение выключено.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=torOn onchange=saveTorrent(this.checked)> Разрешить скачивание торрентов</label>
+    </div>
+    <div class=msg id=torMsg></div>
     </div>
 <!--veil:ajax-->
     <div class="card set-block" id=setBk>
@@ -2914,7 +2973,7 @@ function subSettings(uu){
   showEdit(Object.assign({},c,{proto:p0}));
 }
 function famOrphan(muuid,nmv){
-  if(!confirm('Вывести «'+nmv+'» из семьи?\n\nСсылка, ключ и подключённые устройства останутся у человека — он просто снова платит сам за себя. Тариф вернётся его собственный, тот, что был до посадки в семью.'))return;
+  if(!confirm(tr('Вывести «%s» из семьи?\n\nСсылка, ключ и подключённые устройства останутся у человека — он просто снова платит сам за себя. Тариф вернётся его собственный, тот, что был до посадки в семью.').replace('%s',nmv)))return;
   api('/api/clients/family/orphan',{method:'POST',body:JSON.stringify({member_uuid:muuid})})
     .then(function(r){ loadSub(); const t=r&&r.member&&r.member.tariff;
       toast(t?'Выведено из семьи — вернулся его собственный тариф':'Выведено из семьи (своего прежнего тарифа не было — задайте лимит и срок в настройках)','ok'); })
@@ -3045,6 +3104,11 @@ function subCard(c, kids){
           return '<span class="uc-chip" title="заходов за 7 дней · последний: '+(ago||'—')+'">'+lb+' · '+n+(ago?' · '+ago:'')+'</span>';
         }).join(' ')+'</div></details>'
     : '';
+  // --- обычную подписку можно сделать семейной (#133): штамп `fam_host` без
+  // пересоздания — человек сохраняет ссылку и ключи, секция «Семья» появляется ---
+  const famMakeBtn = (!c.family_of && !fam)
+    ? '<button class="uc-raw" title="Сделать эту подписку хозяйской семьи: у неё появится секция «Семья», в которую добавляют участников со своими ссылками. Ссылка и ключи этой подписки не изменятся" onclick="famMake(\''+tok+'\',\''+jsStr(c.uuid||'')+'\')">👨‍👩‍👧 Сделать семейной</button>'
+    : '';
   return '<div class="uc" data-sub="'+escapeHtml(c.sub_token||'')+'">'
     + '<div class="uc-top">'
       + '<span class="uc-dot'+(c.online>0?' on':'')+'" title="'+(c.online>0?'онлайн':'офлайн')+'"></span>'
@@ -3074,6 +3138,7 @@ function subCard(c, kids){
         +'<option value="singbox"'+(c.fmt==='singbox'?' selected':'')+'>sing-box</option></select>'
       + '<a class="uc-raw" href="'+escapeHtml(_su)+'" target="_blank">🌐 сырая</a>'
       + '<a class="uc-raw" href="'+escapeHtml(_pu)+'" target="_blank">страница</a>'
+      + famMakeBtn
     + '</div>'
   + '</div>';
 }
@@ -3122,10 +3187,10 @@ async function subRotate(tok,nm){
   }catch(e){ toast(e.message,'err'); }
 }
 async function famAdd(tok){
-  let nmv = prompt('Имя участника семьи (например «Жена», «Сын»):','');
+  let nmv = prompt(tr('Имя участника семьи (например «Жена», «Сын»):'),'');
   if(nmv===null) return;
   nmv = nmv.trim();
-  if(!nmv){ toast('Имя не может быть пустым','err'); return; }
+  if(!nmv){ toast(tr('Имя не может быть пустым'),'err'); return; }
   try{
     await api('/api/clients/family/add',{method:'POST',body:JSON.stringify({sub_token:tok,name:nmv})});
     await loadSub();
@@ -3135,17 +3200,22 @@ async function famAdd(tok){
     const host=Array.from(document.querySelectorAll('#subUsersList .uc')).find(el=>el.dataset.sub===tok);
     const det=host&&host.querySelector('details.uc-fam');
     if(det)det.open=true;
-    toast('Участник «'+nmv+'» добавлен — у него своя ссылка подписки; отправьте её ему','ok');
+    toast(tr('Участник «%s» добавлен — у него своя ссылка подписки; отправьте её ему').replace('%s',nmv),'ok');
   }
   catch(e){ toast(e.message,'err'); }
 }
 async function famDelMember(muuid,nmv){
-  if(!confirm('Удалить участника '+nmv+'? Его ссылка перестанет работать немедленно. Уже потраченный им трафик останется в общем расходе семьи.')) return;
-  try{ const d=await api('/api/clients/family/del',{method:'POST',body:JSON.stringify({member_uuid:muuid})}); await loadSub(); if(d&&d.warn){toast('Слот освобождён, но Xray не применил конфиг — при первой возможности перезагрузите подписки: '+d.warn,'err');} else toast('Участник удалён','ok'); }
+  if(!confirm(tr('Удалить участника %s? Его ссылка перестанет работать немедленно. Уже потраченный им трафик останется в общем расходе семьи.').replace('%s',nmv))) return;
+  try{ const d=await api('/api/clients/family/del',{method:'POST',body:JSON.stringify({member_uuid:muuid})}); await loadSub(); if(d&&d.warn){toast(tr('Слот освобождён, но Xray не применил конфиг — при первой возможности перезагрузите подписки: ') + d.warn,'err');} else toast(tr('Участник удалён'),'ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 async function famDevLimit(muuid,v){
-  try{ await api('/api/clients/family/devlimit',{method:'POST',body:JSON.stringify({member_uuid:muuid,max_devices:parseInt(v,10)||0})}); toast('Лимит устройств участника обновлён','ok'); }
+  try{ await api('/api/clients/family/devlimit',{method:'POST',body:JSON.stringify({member_uuid:muuid,max_devices:parseInt(v,10)||0})}); toast(tr('Лимит устройств участника обновлён'),'ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function famMake(tok,u){
+  if(!confirm(tr('Сделать эту подписку семейной? Её ссылка и ключи не изменятся; участников добавляют кнопкой «＋ Член семьи».'))) return;
+  try{ await api('/api/clients/family/make',{method:'POST',body:JSON.stringify({uuid:u,sub_token:tok})}); await loadSub(); toast(tr('Подписка стала семейной — добавьте участника'),'ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 
@@ -5534,7 +5604,7 @@ async function editAdopt(){
   const mu=sel.value;
   if(!mu){ toast('Сначала выберите подписку','err'); return; }
   const nm=(sel.options[sel.selectedIndex]||{}).text||'её';
-  if(!confirm('Присоединить «'+nm+'» к семье этой подписки?\n\nТариф станет общим с семьёй (расход и срок складываются), ссылка человека и подключённые им устройства останутся его собственными. Его прежний тариф сохранён — при выводе из семьи вернётся он.'))return;
+  if(!confirm(tr('Присоединить «%s» к семье этой подписки?\n\nТариф станет общим с семьёй (расход и срок складываются), ссылка человека и подключённые им устройства останутся его собственными. Его прежний тариф сохранён — при выводе из семьи вернётся он.').replace('%s',nm)))return;
   try{
     await api('/api/clients/family/adopt',{method:'POST',body:JSON.stringify({uuid:editUuid,member_uuid:mu})});
     toast('Подписка присоединена к семье','ok');
@@ -5543,7 +5613,7 @@ async function editAdopt(){
 }
 async function editOrphan(){
   if(!editUuid)return;
-  if(!confirm('Вывести эту подписку из семьи?\n\nСсылка, ключ и устройства останутся у человека. Тариф вернётся его собственный — тот, что был до посадки в семью.'))return;
+  if(!confirm(tr('Вывести эту подписку из семьи?\n\nСсылка, ключ и устройства останутся у человека. Тариф вернётся его собственный — тот, что был до посадки в семью.')))return;
   try{
     const r=await api('/api/clients/family/orphan',{method:'POST',body:JSON.stringify({member_uuid:editUuid})});
     const back=r&&r.member&&r.member.tariff;
@@ -6716,9 +6786,9 @@ async function loadTikTok(){
   if(!el) return;
   try{
     const d=await api('/api/tiktok_warp');
-    if(on) on.checked=!!d.want;
+    if(on) on.checked=!!d.tiktok_on;
     const rt=String(d.region_tunnel||'').toUpperCase(), rd=String(d.region_direct||'').toUpperCase();
-    if(!d.want){ el.textContent='Выключено — TikTok видит сервер как есть.'; return; }
+    if(!d.tiktok_want){ el.textContent='Выключено — TikTok видит сервер как есть.'; return; }
     if(d.up&&d.ready&&rt&&rt!=='RU') el.innerHTML='🎵 <b>TikTok через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; TikTok видит <b>'+esc(rt)+'</b>'+(rd?(' вместо '+esc(rd)):'')+'.';
     else if(d.up&&rt==='RU') el.innerHTML='🎵 <b style="color:var(--warn)">Туннель поднят, а TikTok всё ещё видит RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.';
     else if(d.up) el.innerHTML='🎵 <b>TikTok через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.';
@@ -6747,6 +6817,179 @@ async function checkTikTok(){
   }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
   if(b) b.disabled=false;
   loadTikTok();
+}
+function irCell(v,ms){
+  let s;
+  if(!v||v==='null'||v==='N/A') s='<span class=mut>N/A</span>';
+  else if(v==='Denied'||v==='Server error'||v==='No') s='<b style="color:var(--warn)">'+esc(v)+'</b>';
+  else if(v==='Rate-limit') s='<b style="color:#d9a441">'+esc(v)+'</b>';
+  else if(v==='Yes') s='<b style="color:var(--ok)">'+esc(v)+'</b>';
+  else s=esc(v);
+  return s+(ms>0?('&nbsp;<span class=mut style="font-size:11px">'+ms+'</span>'):'');
+}
+function irTbl(title,rows){
+  if(!rows||!rows.length) return '';
+  return '<div style="margin-top:10px"><b style="font-size:13px">'+title+'</b>'+
+    '<table style="width:100%"><thead><tr><th style="text-align:left">Сервис</th><th style="text-align:left">IPv4</th><th style="text-align:left">IPv6</th></tr></thead><tbody>'+
+    rows.map(r=>'<tr><td>'+esc(r.name)+'</td><td>'+irCell(r.v4,r.ms4)+'</td><td>'+irCell(r.v6,r.ms6)+'</td></tr>').join('')+'</tbody></table></div>';
+}
+function renderIpRegion(d){
+  const st=$('irState'), tb=$('irTable'), hd=$('irHead');
+  if(!st||!tb) return;
+  if(d.error) st.innerHTML='<b style="color:var(--warn)">Опрос не ответил:</b> '+esc(d.error);
+  else if(d.running) st.textContent='Опрашиваю сервисы… отвечают '+(d.done||0)+' из '+(d.total||0)+'.';
+  else if(d.at) st.textContent='Последний опрос: '+fmtZ(d.at)+' — отвечают '+(d.done||0)+' из '+(d.total||0)+'.';
+  else st.textContent='Опрос ещё не делался — нажми «Проверить сейчас».';
+  if(hd){
+    const h=d.header||{};
+    const p=[];
+    if(h.v4) p.push('IPv4 <b>'+esc(h.v4)+'</b>'+(h.reg4?' · зарегистрирован в <b>'+esc(h.reg4)+'</b>':''));
+    else p.push('четвёртый адрес наружу не найден');
+    if(h.v6) p.push('IPv6 <b>'+esc(h.v6)+'</b>'+(h.reg6?' · зарегистрирован в <b>'+esc(h.reg6)+'</b>':''));
+    else p.push('шестой адрес наружу не найден');
+    if(h.asn) p.push('сеть <b>'+esc(h.asn)+'</b>');
+    hd.innerHTML=p.join(' · ');
+  }
+  const n=(d.custom||[]).length+(d.cdn||[]).length+(d.geo||[]).length;
+  if(!n){ tb.innerHTML=d.running?'<span class=mut>Опрос идёт, строки появятся по готовности.</span>':'<span class=mut>Таблица пуста.</span>'; return; }
+  tb.innerHTML=irTbl('Популярные сервисы',d.custom)+irTbl('Раздача',d.cdn)+irTbl('Гео-службы',d.geo);
+}
+async function loadIpRegion(){
+  const st=$('irState');
+  if(!st) return;
+  try{ renderIpRegion(await api('/api/ipregion')); }
+  catch(e){ st.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+let irPoll=null;
+async function checkIpRegion(){
+  const m=$('irMsg'), b=$('irBtn');
+  if(m) m.textContent='опрашиваю сервисы…';
+  if(b) b.disabled=true;
+  try{
+    renderIpRegion(await api('/api/ipregion',{method:'POST',body:JSON.stringify({check:true})}));
+    let n=0;
+    if(irPoll) clearInterval(irPoll);
+    irPoll=setInterval(async()=>{
+      n++;
+      try{
+        const d=await api('/api/ipregion');
+        renderIpRegion(d);
+        if(m) m.textContent=d.running?('опрос идёт: отвечено '+(d.done||0)+' из '+(d.total||0)):'готово.';
+        if(!d.running||n>=90){ clearInterval(irPoll); irPoll=null; if(b) b.disabled=false; }
+      }catch(e){ clearInterval(irPoll); irPoll=null; if(b) b.disabled=false; }
+    },2000);
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); if(b) b.disabled=false; }
+}
+function renderTorrent(d){
+  const st=$('torState'), on=$('torOn');
+  if(!st) return;
+  if(on) on.checked=!!d.allowed;
+  const cnt=(typeof d.dropped==="number")?('<b>'+d.dropped+'</b> сброшено пакетов'):'счётчик не измерен';
+  if(d.allowed){
+    st.textContent='Разрешено — правило не стоит, торрент-трафик идёт как шёл.';
+  } else if(d.live){
+    st.innerHTML='Выключено — правило стоит живо ('+d.rules+' шт., '+cnt+'). Порты: '+esc(d.ports)+'.';
+  } else if(d.live===false){
+    st.innerHTML='<b style="color:var(--warn)">Выключено, но правила не живые</b> — таблица пуста; нажми переключатель дважды или перезапусти панель.';
+  } else {
+    st.textContent='Выключено — проверка живой таблицы не ответила.';
+  }
+}
+async function loadTorrent(){
+  const st=$('torState');
+  if(!st) return;
+  try{ renderTorrent(await api('/api/torrent')); }
+  catch(e){ st.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveTorrent(onv){
+  const m=$('torMsg');
+  if(m) m.textContent=onv?'снимаю правило…':'ставлю правило…';
+  try{
+    const d=await api('/api/torrent',{method:'POST',body:JSON.stringify({on:!!onv})});
+    renderTorrent(d);
+    if(m) m.textContent=onv?'разрешено — скачивание не гасится':'запрещено — стандартные порты гасятся на пересылаемом пути';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  loadTorrent();
+}
+function renderBypass(d){
+  const st=$('bdState');
+  if(!st) return;
+  const r=d.resolved||{};
+  const nd=(d.domains||[]).length, ni=(d.ips||[]).length;
+  const lim=d.limits||{};
+  if(!nd && !ni){ st.textContent='Список пуст — обход идёт по одному справочнику.'; return; }
+  st.innerHTML='Добавлено: доменов <b>'+nd+'</b>, адресов и сетей <b>'+ni+'</b>; по доменам подобрано <b>'+(r.count||0)+'</b> адресов'
+    +(lim.domains?(' (максимум '+lim.domains+' доменов, '+lim.ips+' адресов)'):'')+'.';
+}
+async function loadBypass(){
+  const st=$('bdState');
+  if(!st) return;
+  try{
+    const d=await api('/api/bypass');
+    const ta=$('bdText');
+    if(ta && document.activeElement!==ta) ta.value=(d.domains||[]).concat(d.ips||[]).join('\n');
+    renderBypass(d);
+  }
+  catch(e){ st.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveBypass(){
+  const m=$('bdMsg'), ta=$('bdText'), b=$('bdBtn');
+  if(!ta) return;
+  const body={domains:[], ips:[]};
+  for(const s of ta.value.split('\n').map(x=>x.trim()).filter(Boolean)){
+    if(/^[0-9.]+(\/[0-9]+)?$/.test(s) || s.indexOf(':')>=0 || /^[0-9a-f:.]+\/[0-9]+$/.test(s)) body.ips.push(s);
+    else body.domains.push(s);
+  }
+  if(m){ m.textContent='сохраняю…'; m.className='msg'; }
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/bypass',{method:'POST',body:JSON.stringify(body)});
+    renderBypass(d);
+    if(m){ m.textContent='сохранено — подписки подтянут правило при ближайшей загрузке; подбор адресов обновлён'; m.className='msg ok'; }
+    loadBypass();
+  }catch(e){ if(m){ m.textContent='не получилось: '+String(e).slice(0,160); m.className='msg err'; } }
+  if(b) b.disabled=false;
+}
+function renderWarpManual(d){
+  const st=$('wmState');
+  if(!st) return;
+  const nd=(d.domains||[]).length, ni=(d.ips||[]).length;
+  const lim=d.limits||{};
+  if(!nd && !ni){ st.textContent='Список пуст — через туннель идёт только покрытие TikTok, если оно включено.'; return; }
+  st.innerHTML='Добавлено: доменов <b>'+nd+'</b>, адресов и сетей <b>'+ni+'</b>; '
+    +(d.up?('туннель поднят, блоков в нём <b>'+(d.count||0)+'</b>'):'туннель не поднят')
+    +(d.error?(' — '+esc(d.error)):'')
+    +(lim.domains?(' (максимум '+lim.domains+' доменов, '+lim.ips+' адресов)'):'')+'.';
+}
+async function loadWarpManual(){
+  const st=$('wmState');
+  if(!st) return;
+  try{
+    const d=await api('/api/warp_manual');
+    const ta=$('wmText');
+    if(ta && document.activeElement!==ta) ta.value=(d.domains||[]).concat(d.ips||[]).join('\n');
+    renderWarpManual(d);
+  }
+  catch(e){ st.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveWarpManual(){
+  const m=$('wmMsg'), ta=$('wmText'), b=$('wmBtn');
+  if(!ta) return;
+  const body={domains:[], ips:[]};
+  for(const s of ta.value.split('\n').map(x=>x.trim()).filter(Boolean)){
+    if(/^[0-9.]+(\/[0-9]+)?$/.test(s) || s.indexOf(':')>=0 || /^[0-9a-f:.]+\/[0-9]+$/.test(s)) body.ips.push(s);
+    else body.domains.push(s);
+  }
+  if(m){ m.textContent='сохраняю и применяю…'; m.className='msg'; }
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/warp_manual',{method:'POST',body:JSON.stringify(body)});
+    renderWarpManual(d);
+    if(m){ m.textContent=(body.domains.length||body.ips.length)?'список сохранён — смотритель применил его шаг за шагом, блоки доменов догонят на ближайшей мере':'список пуст — туннель разберёт на ближайшем шаге'; m.className='msg ok'; }
+    loadWarpManual();
+    loadTikTok();
+  }catch(e){ if(m){ m.textContent='не получилось: '+String(e).slice(0,160); m.className='msg err'; } }
+  if(b) b.disabled=false;
 }
 
 async function saveDcThreshold(){
@@ -8564,7 +8807,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();if(window.veilAjax)veilAjax();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -8835,6 +9078,15 @@ document.addEventListener('touchcancel',()=>{PTR=null;ptrMove(null);},{passive:t
 // ---------- Клиенты в сети: окно «кто именно» (#303), «что запущено» (#322) ----------
 let ONLINE_TIMER=null;
 const _runChip='display:inline-block;padding:1px 8px;margin:1px 4px 1px 0;border-radius:999px;background:#166534;border:1px solid #2f9e5c;color:#eafff2;font-size:12.5px;font-weight:600';
+function _dur(s){
+  s=Math.max(0,Math.floor(s));
+  if(s<60) return 'меньше минуты';
+  const sMin=Math.floor(s/60);
+  if(sMin<60) return sMin+' мин';
+  const h=Math.floor(sMin/60), m=sMin%60;
+  if(h<24) return h+' ч '+m+' мин';
+  return Math.floor(h/24)+' дн '+(h%24)+' ч';
+}
 async function onlineLoad(){
   const el=$('onlineList'), sum=$('onlineSum'), b=$('onlineRefreshBtn');
   if(!el||!sum)return;
@@ -8842,17 +9094,24 @@ async function onlineLoad(){
   try{
     const d=await api('/api/online');
     const list=(d&&d.list)||[];
+    // длительности меряются от секунды снимка `at`, а не от часов браузера (#377):
+    // и начало цепи, и часы ответа — серверные, их разность не ползёт,
+    // когда страницу не обновляли. Без `at` (старая панель) — прежний путь
+    const at=(d&&d.at)?Number(d.at):Math.floor(Date.now()/1000);
     sum.textContent='в сети '+((d&&d.online)||0)+' устройств · '+list.length+' клиентов из '+((d&&d.clients)||0);
     if(!list.length){el.innerHTML='<div class=mut>Сейчас в сети никого нет.</div>';return;}
-    el.innerHTML='<table class=data><tr><th>Имя</th><th>Запущен</th><th>Устройств</th></tr>'
+    el.innerHTML='<table class=data><tr><th>Имя</th><th>Запущен</th><th>В сети</th><th>Устройств</th></tr>'
       +list.map(r=>{
         const run=r.running||[];
         let cell;
         if(run.length)cell=run.map(x=>'<span style="'+_runChip+'">'+escapeHtml(x)+'</span>').join('');
         else cell='<span class=mut>не запущен'+(r.last?(' · последний: '+escapeHtml(_ago(new Date(r.last*1000).toISOString()))):'')+'</span>';
-        const avail=(r.protos||'').split(', ').filter(x=>x&&run.indexOf(x)<0);
-        if(avail.length)cell+='<div class=mut style="margin-top:2px">доступны: '+escapeHtml(avail.join(', '))+'</div>';
-        return '<tr><td>'+escapeHtml(r.name||'—')+'</td><td>'+cell+'</td><td>'+(r.devices||1)+'</td></tr>';
+        // «время в сети» — начало текущей цепи accept'ов (#375); у каждого
+        // устройства своя цепь по адресу входа и своё время (#376); туннельному
+        // и MTProto пиеру начала мерять нечем — честное «—», а не выдуманное число
+        const dv=(r.devs||[]).filter(s=>s>0);
+        const net=dv.length?dv.map(s=>_dur(at-s)).join(' · '):((run.length&&r.since)?_dur(at-r.since):'—');
+        return '<tr><td>'+escapeHtml(r.name||'—')+'</td><td>'+cell+'</td><td>'+net+'</td><td>'+(r.devices||1)+'</td></tr>';
       }).join('')
       +'</table>';
   }catch(e){
@@ -8969,7 +9228,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}
