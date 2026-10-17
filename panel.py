@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.8"
+VERSION = "2.17.9"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -397,6 +397,7 @@ PROTOCOLS = [
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS",       "group": "trojan",  "net": "grpc",     "tls": True},
     {"id": "trojan-reality",      "label": "Trojan + TCP + Reality",    "group": "trojan",  "net": "tcp",      "tls": False},
     {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
+    {"id": "shadowsocks-tcp-tls", "label": "Shadowsocks AEAD + TCP + TLS",            "group": "ss",      "net": "tcp",      "tls": True},
     {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
     {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
     {"id": "amneziawg",           "label": "AmneziaWG",                               "group": "awg",     "net": "udp",      "tls": False},
@@ -427,6 +428,7 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443,
 "trojan-grpc-tls": 21443, "shadowsocks": 22443,
+           "shadowsocks-tcp-tls": 26443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
            "trojan-reality": 25443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
@@ -1533,6 +1535,147 @@ def _unit_active(svc):
                               capture_output=True, timeout=10).returncode == 0
     except Exception:
         return False
+
+# Живые слушатели узла — одной меркой на весь дашборд (#416).
+_LISTEN_SNAP = {"at": 0.0, "tcp": {}, "udp": {}}
+_LISTEN_SNAP_TTL = 5.0
+_LOOP_ADDRS = ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1")
+
+def _listen_snapshot():
+    """Кто слушает на узле прямо сейчас: {порт: {адреса}} для TCP и для UDP.
+
+    Строка «Статус протоколов» судила один ответ `_unit_active("xray")` на все
+    строки сразу: юнит жив — значит «Активен» и вход, который ядро не подняло
+    (#416, на боевом таких строк было `3` из `18`). Мера берётся с порта самого
+    входа: tcp/grpc/xhttp/ws видны в TCP, WireGuard, AmneziaWG и Hysteria2 — в
+    UDP. Адрес держим отдельно, чтобы отличить вход, запертый на петлевом
+    интерфейсе (#158), от того, что честно слушает наружу; вход за петлёй,
+    которого развилка :443 не ведёт, до подписчика не доходит. Снимок живёт
+    `_LISTEN_SNAP_TTL` секунд: дашборд опрашивают часто, а `ss` на забитой
+    коробке может не вернуться."""
+    now = time.time()
+    if _LISTEN_SNAP["at"] and now - _LISTEN_SNAP["at"] < _LISTEN_SNAP_TTL:
+        return _LISTEN_SNAP["tcp"], _LISTEN_SNAP["udp"]
+    tcp, udp = {}, {}
+    try:
+        out = subprocess.run(["ss", "-lunt"], capture_output=True, text=True,
+                             timeout=8).stdout
+    except Exception:
+        return _LISTEN_SNAP["tcp"], _LISTEN_SNAP["udp"]
+    # Шапка задаёт столбцы: `ss -lunt` печатает Netid, и состояние с адресом
+    # уезжают на единицу относительно вывода без протокола.
+    idx_state, idx_local = 1, 4
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) < 5:
+            continue
+        if cols[0] in ("Netid", "State"):
+            try:
+                idx_state = cols.index("State")
+                idx_local = cols.index("Local")
+            except ValueError:
+                pass
+            continue
+        if len(cols) <= max(idx_state, idx_local):
+            continue
+        state = cols[idx_state]
+        local = cols[idx_local]
+        cut = local.rfind(":")
+        if cut < 0:
+            continue
+        try:
+            port = int(local[cut + 1:])
+        except ValueError:
+            continue
+        bucket = tcp if state == "LISTEN" else udp
+        if state not in ("LISTEN", "UNCONN"):
+            continue
+        bucket.setdefault(port, set()).add(local[:cut].strip("[]").split("%")[0])
+    _LISTEN_SNAP["at"] = now
+    _LISTEN_SNAP["tcp"], _LISTEN_SNAP["udp"] = tcp, udp
+    return tcp, udp
+
+def _mux_served_ports():
+    """Порты входов, которые развилка :443 ведёт наружу по SNI (#152).
+    Без этого списка петлевой вход выглядел бы мёртвым, хотя подписчик
+    доходит до него через общий фронт."""
+    ms = _load(_MUX_STATE, {}) or {}
+    if not isinstance(ms, dict) or not ms.get("applied"):
+        return set()
+    ports = set()
+    for e in (ms.get("entries") or []):
+        try:
+            ports.add(int((e or {}).get("port")))
+        except (TypeError, ValueError):
+            continue
+    return ports
+
+def _inbound_state(port, off, unit_up, tcp_p, udp_p, muxed):
+    """Честное слово о строке протокола на дашборде (#416): `off` — вход снят
+    владельцем, `dead` — ядро его не подняло, `local` — слушает только петлевой
+    адрес и не ведётся через развилку :443, `on` — до входа можно дойти.
+
+    Прежняя строка судила один ответ `_unit_active("xray")` на все протоколы
+    разом: юнит жив — «Активен» и тот вход, которого ядро не слушает. Мера
+    переехала на порт самого входа; TCP и UDP смотрятся вместе, потому что
+    WireGuard, AmneziaWG и Hysteria2 живут в UDP и в TCP-снимке их нет. Пустой
+    снимок (нет `ss`, отказ) ничего не красит — тогда судим по юниту."""
+    if off:
+        return "off"
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        return "on" if unit_up else "dead"
+    if not tcp_p and not udp_p:
+        return "on" if unit_up else "dead"
+    addrs = (tcp_p.get(p) or set()) | (udp_p.get(p) or set())
+    if not addrs:
+        return "dead"
+    if p not in muxed and all(a in _LOOP_ADDRS for a in addrs):
+        return "local"
+    return "on"
+
+def _reach_snapshot():
+    """Порты, до которых снаружи не дойти: слушают только петлевой адрес и не
+    ведутся развилкой :443. Снимок берётся один на всю выдачу ссылок.
+
+    Мерка та же, что у строки протокола на дашборде (#416), но вопрос другой:
+    отдавать ли человеку ссылку. #158 запишет незашифрованный вход за петлевой
+    адрес, а `_pub_port` без мюкса и без ручного адреса несёт в ссылку
+    собственный порт входа — подписчик получил бы заведомо мёртвую ссылку (#414).
+    Пустой снимок (нет `ss`, отказ инструмента) не запрещает ничего: молчание
+    меры не имеет права гасить подписку."""
+    try:
+        tcp_p, udp_p = _listen_snapshot()
+    except Exception:
+        return set()
+    if not tcp_p and not udp_p:
+        return set()
+    try:
+        muxed = _mux_served_ports()
+    except Exception:
+        muxed = set()
+    addrs = {}
+    for src in (tcp_p, udp_p):
+        for port, a in src.items():
+            addrs.setdefault(port, set()).update(a)
+    return {p for p, a in addrs.items()
+            if a and p not in muxed and all(x in _LOOP_ADDRS for x in a)}
+
+def _link_reachable(inb, client, unreachable):
+    """Дойдёт ли ССЫЛКА на этот вход: адрес входа (`_pub_port`) или адрес,
+    который подписчику выдал оператор (`ep_host`, цикл #232, и ручной `link_host`
+    с `link_port`), обязан быть досягаем. Слово хозяина о внешнем адресе
+    разбираем без замера: за проксируемую панелью строчку она и отвечает."""
+    if client and (client.get("ep_host") or client.get("ep_port")):
+        return True
+    if inb.get("link_host") or inb.get("link_port") or inb.get("_mux_enabled"):
+        return True
+    try:
+        port = int(inb.get("port"))
+    except (TypeError, ValueError):
+        return True
+    return port not in unreachable
 
 def _hash(salt, pw):
     # старый формат (sha256 за проход) — нужен только для проверки унаследованных hash'ей
@@ -2839,6 +2982,34 @@ def _wg_keyless_heal(st):
             changed = True
     return changed
 
+def _ss_personalize(st):
+    """Цикл #414: у `shadowsocks` пароль был один на вход. Порт без шифрования
+    оставался поверхностью подбора, а подобранный секрет открывал трафик СРАЗУ
+    всех подписчиков входа; утечка ссылки одного не отключала никого. По слову
+    хозяина пароль стал персональным. Доходит только то, что жило до правки:
+    записям без своего пароля выдаём новый тем же приёмом, что перевыпуск ключей
+    у туннелей (#313) — один раз под замком состояния, а не на каждую загрузку
+    страницы. Общий пароль входа при этом не трогается: он уходит из конфига сам,
+    когда на него не опирается ни одна запись (см. `_inbound`). Ссылки подписчиков
+    меняются — старая ссылка на общий секрет перестаёт работать, свежая лежит в
+    подписке `/sub/<токен>`."""
+    if not st:
+        return False
+    inbs = st.get("inbounds")
+    if not isinstance(inbs, dict):
+        return False
+    changed = False
+    for proto, inb in inbs.items():
+        if not str(proto).startswith("shadowsocks") or not isinstance(inb, dict):
+            continue
+        for c in inb.get("clients") or []:
+            if not isinstance(c, dict) or c.get("password"):
+                continue
+            c["password"] = secrets.token_urlsafe(18)
+            _audit("ss_password_personalized", proto=proto, name=c.get("name"))
+            changed = True
+    return changed
+
 def _proto_of(st):
     if not st: return "reality"
     a = st.get("active")
@@ -2878,7 +3049,10 @@ def _new_inbound(proto):
         inb.update({"private_key": priv, "public_key": pub,
                     "sid": secrets.token_hex(4), "sni": "www.samsung.com",
                     "dest": "www.samsung.com:443"})
-    if proto == "shadowsocks":
+    if proto.startswith("shadowsocks"):
+        # #418: общий секрет входа остаётся запасью для записей без личного
+        # пароля (#414); форма одна для обоих вариантов — и для клинтекста,
+        # и для TLS-фронта
         inb["password"] = secrets.token_urlsafe(12)
     if proto == "hysteria2":
         cp = _cert_pathes()
@@ -3224,12 +3398,28 @@ def _stream_settings(proto, inb):
             "certificates": [{"certificateFile": inb.get("cert"), "keyFile": inb.get("key")}]}
     return _deep_merge(ss, adv)
 
+def _cleartext_public(proto, meta):
+    """#158: вход без TLS/Reality-слоя наружу не выставляется — у `ws`-входов
+    идентификатор клиента идёт по каналу открытым текстом и любой, кто
+    слушает сеть, снимает подписку; у `shadowsocks` порт остаётся поверхностью
+    подбора пароля. Такой вход садится на петлевой адрес и живёт за TLS-фронтом.
+    Reality и Hysteria2 шифруют сам транспорт, туннельные входы обходятся
+    без streamSettings — они остаются публичными. Явный публичный `listen`
+    в ручном блоке перебивается, а не обходится: смысл входа тот же."""
+    if meta.get("tls") or "reality" in proto:
+        return False
+    return proto not in ("hysteria2", "wireguard", "amneziawg")
+
+
 def _inbound(proto, inb):
     meta = _proto_meta(proto)
     # blocked (лимит/срок/ручное отключение) — клиент НЕ попадает в конфиг:
     # ядро не знает его id — соединения отваливаются сразу после перезаписи
     cs = [c for c in inb["clients"] if not c.get("blocked")]
-    ib = {"listen": inb.get("listen") or "0.0.0.0", "port": inb["port"], "tag": proto}
+    listen = inb.get("listen") or "0.0.0.0"
+    if _cleartext_public(proto, meta) and listen not in ("127.0.0.1", "::1", "localhost"):
+        listen = "127.0.0.1"
+    ib = {"listen": listen, "port": inb["port"], "tag": proto}
     if proto == "hysteria2":
         ib["protocol"] = "hysteria"
         ib["settings"] = {"version": 2, "clients": [
@@ -3262,8 +3452,26 @@ def _inbound(proto, inb):
         ib["sniffing"] = sn
     if proto.startswith("shadowsocks"):
         ib["protocol"] = "shadowsocks"
-        ib["settings"] = {"method": inb.get("method") or "aes-256-gcm",
-                          "password": inb.get("password") or "", "network": "tcp,udp"}
+        meth = inb.get("method") or "aes-256-gcm"
+        # #414: пароль у подписчика свой, ядро видит список клиентов, а не один
+        # секрет на вход. Общий пароль выходит в конфиг ровно до тех пор, пока
+        # хоть одна запись на него опирается: снятый раньше он убил бы ссылку
+        # того, кто ещё не получил персональный (state.json правится и из-за
+        # панели, и руками, и импортом из чужой).
+        shared = inb.get("password") or ""
+        cl = [{"method": meth, "password": c.get("password") or shared,
+               "email": c["uuid"]} for c in cs]
+        sett = {"method": meth, "network": "tcp,udp", "clients": cl}
+        if shared and any(not c.get("password") for c in cs):
+            sett["password"] = shared
+        ib["settings"] = sett
+        if _proto_meta(proto)["tls"]:
+            # #418: ветка выходит раньше общего сборщика — TLS-фронт навешивается
+            # здесь, тем же мета-движком `_stream_settings`, что и у остальных
+            # защищённых входов; под SNI-мюксом `_mux_apply` подменит серт, ключ
+            # и адрес на петлевые (план мюкса читает `tls` из матрицы — вариант
+            # попадает в него сам)
+            ib["streamSettings"] = _stream_settings(proto, inb)
         return ib
     if proto.startswith("trojan"):
         ib["protocol"] = "trojan"
@@ -3288,7 +3496,18 @@ def _inbound(proto, inb):
             for c in _uniq_uuid(cs)],
             "decryption": "none"}
     ib["streamSettings"] = _stream_settings(proto, inb)
-    return _deep_merge(ib, inb.get("_adv_ib"))
+    ib = _deep_merge(ib, inb.get("_adv_ib"))
+    # #158: последний смотр — судим по выпущенному конфигу, а не по номенклатуре
+    # матрицы: ручной `_adv` мог вывернуть слой в `none` у входа, чей протокол
+    # числится защищённым, а `_adv_ib` — вернуть публичный адрес. Любой
+    # транспортный вход, реально оставшийся без шифрования, садится на петлю;
+    # истерия и туннельные протоколы уходят раньше и сюда не доходят.
+    # Петлевой адрес не перекраиваем: петля и есть петля, какой бы формы ни.
+    ss = ib.get("streamSettings")
+    if isinstance(ss, dict) and str(ss.get("security") or "none").lower() == "none" \
+            and ib.get("listen") not in ("127.0.0.1", "::1", "localhost"):
+        ib["listen"] = "127.0.0.1"
+    return ib
 
 _INBOUND_EDIT_KEYS = ("sni", "snis", "dest", "sid", "sids", "path", "host",
                       "service", "mode", "alpn", "sniff", "flow", "mtu",
@@ -5203,6 +5422,7 @@ _ONLINE_TUN_WIN = 180.0          # WG/AWG-пиер считается живым
 _ONLINE_ACC_TAIL = 512 * 1024    # сколько байт хвоста лога читать за один снимок
 _ONLINE_DEV_MAX = 24             # сколько онлайн-подписчиков пересчитать по адресам
 _ONLINE_ACC_WIN = 600.0          # свежий accept и есть присутствие, когда обработчик закрыт
+_ONLINE_ACC_KEEP = 3600.0        # час тишины цепь не рвёт: экран погас, трафик молчит (#412)
 _ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "acc_start": {}, "acc_dev": {}, "tun": {}, "mt": {}}
 # {(почта, адрес входа): [начало цепи, последний accept]} — память цепей между
 # снимками (#377): хвост лога конечен и при трафике ест начало цепи. Пустой
@@ -5213,27 +5433,174 @@ _ONLINE_ACC_BOOT_CH = 8 * 1024 * 1024  # один чанк обратного с
 # память цепей умирает с процессом, поэтому скан досевает начала ровно один
 # раз на процесс — каждый снимок файл заново не перечитывает
 _ONLINE_BOOT_DONE = False
+# цепь, потерянная памятью между снимками, досевается не чаще раза в
+# `_ONLINE_RESEED_TTL` секунд на ключ и с меньшим бюджетом, чем при подъёме (#401)
+_ONLINE_RESEED = {}              # {ключ: метка последнего досева}
+_ONLINE_RESEED_TTL = 900.0
+_ONLINE_RESEED_BUDGET = 32 * 1024 * 1024
+# память цепей живёт ещё и на диске (#409): обратный скан — лучший догадчик,
+# а диск называет начало цепи, виденный панелью вживую. Рестарт, потеря
+# процесса, проеденный бюджет скана — «время в сети» больше не спрыгивает:
+# при подъёме цепи загружаются с диска, скан досевает только то, чего там нет
+_ONLINE_CHAIN_FILE = f"{BASE}/online_chain.json"
+_ONLINE_CHAIN_FLUSH_TTL = 60.0            # писать не чаще, даже если цепи движутся
+_ONLINE_CHAIN_DEAD = _ONLINE_ACC_KEEP   # дальше горизонта жизни цепи на диск не ложатся (#412)
+_CHAIN_LOCK = threading.Lock()
+_CHAIN_ST = {"at": 0.0, "fp": None, "loaded": False}
+# {uuid: {адрес входа без порта}} — подписчики с открытым обработчиком прямо
+# сейчас (#410): у опросных протоколов живой клиент не порождает новых
+# accept'ов, и без этой меры цепь остывала у него на глазах
+_XRAY_LIVE = {}
+_ONLINE_KEEP_TTL = 180.0   # ход хранителя цепей — втрое чаще окна присутствия `600` с (#410)
+# горизонт жизни цепи остужает ключ за час, и начало теряется вместе с ним (#413):
+# лента на боевом мерит паузы между accept'ами одного ключа длиннее часа
+# (`63` за `61.8` ч ленты, из них `12` длиннее шести часов), а обратный скан
+# через такой разрыв не идёт — он закрывается на первом зазоре шире горизонта.
+# Полка хранит накопленное соединённое время, а не старт в wall-clock, поэтому
+# возвращает клиенту уже отсиданные минуты и не приписывает ему часы простоя.
+_ONLINE_COLD_KEEP = 24 * 3600.0   # дальше этого срока возвращение считается новой сессией
+_ONLINE_COLD = {}                 # {(почта, адрес входа): [накопленное время, последний accept]}
+_ONLINE_COLD_FILE = f"{BASE}/online_chain_cold.json"
+_COLD_ST = {"at": 0.0, "fp": None, "loaded": False}
+
+def _chain_encode(chain, now):
+    """Память цепей в сериализуемый словарь; остывшие ключи не пишутся.
+    Чистая: ничего не мутирует."""
+    out = {}
+    for (email, host), pr in chain.items():
+        if now - pr[1] > _ONLINE_CHAIN_DEAD:
+            continue
+        out[email + "\x00" + host] = [pr[0], pr[1]]
+    return out
+
+def _chain_decode(data, chain):
+    """Словарь с диска в память цепей, заполняя только пустые ключи —
+    память держит перевес. Кривые записи пропускаются молча. Мутирует
+    переданный `chain`, возвращает число посеянных ключей."""
+    n = 0
+    if not isinstance(data, dict):
+        return 0
+    for k, v in data.items():
+        try:
+            email, _, host = str(k).partition("\x00")
+            first, last = float(v[0]), float(v[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not email or last <= 0:
+            continue
+        key = (email, host)
+        if key not in chain:
+            chain[key] = [first, last]
+            n += 1
+    return n
+
+def _chain_keepwarm(chain, live, now):
+    """Подогревает цепи подписчиков, у которых обработчик открыт прямо сейчас (#410).
+
+    XHTTP и опросные протоколы держат соединение, не порождая новых accept'ов:
+    мера по логу считает такого клиента замолчавшим, ключ остывает и выбрасывается,
+    «время в сети» спрыгивает на край хвоста — хозяин видел это как «слетело».
+    Пока `statsgetallonlineusers` называет подписчика открытым, метка последнего
+    accept'а его цепей сдвигается на `now`; начало не трогается. Ничего не
+    создаёт: подогрев продлевает только цепи, которые память уже знает, иначе
+    окно показывало бы сессии, которых панель никогда не видела. Возвращает
+    число подогретых ключей. Чистая: мутирует только переданный `chain`."""
+    n = 0
+    for email, hosts in (live or {}).items():
+        pr = chain.get((email, ""))
+        if pr is not None and pr[1] < now:
+            pr[1] = now
+            n += 1
+        for host in hosts:
+            pr = chain.get((email, host))
+            if pr is not None and pr[1] < now:
+                pr[1] = now
+                n += 1
+    return n
+
+def _chain_flush(path, chain, now, st, ttl, enc=None):
+    """Атомарная запись памяти цепей на диск при движении отпечатка, но не
+    чаще `ttl` подряд: замолчавшая цепь не перекладывается, а после `ttl`
+    одна запись обновляет стамп и на тихом носителе. `st` — {"at": метка
+    последней успешной попытки, "fp": отпечаток записанного}, мутируется
+    при успехе; возвращает True, когда файл переписан. Черновик пишется под
+    своим замком с правами `0600` — ключами цепей стоят почты подписчиков.
+    `enc` — готовый словарь для записи (холодная полка), иначе кодируется
+    `chain`."""
+    if enc is None:
+        enc = _chain_encode(chain, now)
+    fp = hashlib.sha1(json.dumps(enc, sort_keys=True).encode()).hexdigest()
+    if fp == st.get("fp") and now - st.get("at", 0.0) < ttl:
+        return False
+    tmp = path + ".tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(enc, f, ensure_ascii=False, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    st["at"] = now
+    st["fp"] = fp
+    return True
+
+def _chain_cold_encode(cold, now, keep):
+    """Холодная полка в сериализуемый словарь; записи старше `keep` не
+    пишутся. Чистая: ничего не мутирует."""
+    out = {}
+    for (email, host), cl in cold.items():
+        if now - cl[1] > keep:
+            continue
+        out[email + "\x00" + host] = [cl[0], cl[1]]
+    return out
+
+def _chain_cold_flush(path, cold, now, st, ttl):
+    """Холодная полка на диске — тем же писателем, что и тёплые цепи (#413)."""
+    return _chain_flush(path, None, now, st, ttl,
+                        enc=_chain_cold_encode(cold, now, _ONLINE_COLD_KEEP))
+
+def _chain_cold_lift(cold, key, last, keep):
+    """Начало цепи, продолженное с холодной полки, или `None` (#413).
+
+    Полка держит накопленное соединённое время, поэтому началом становится
+    `метка нового accept'а минус отсиданные секунды`: пауза в «время в сети» не
+    входит, а возвращение позже `keep` считается новой сессией. Ничего не
+    мутирует."""
+    cl = cold.get(key)
+    if cl is None or cl[1] <= 0 or last - cl[1] > keep:
+        return None
+    return last - cl[0]
 
 def _xray_devices(email):
-    """Число разных адресов входа подписчика = число устройств.
+    """(число разных адресов входа подписчика, множество этих адресов без портов).
     Отказ меры не оставляет клиента невидимым: присутствие известно из
-    общего списка, поэтому 1 — честный нижний край, а не выдуманное число."""
+    общего списка, поэтому 1 — честный нижний край, а не выдуманное число;
+    множество при отказе пусто — подогреву цепей там взяться нечем. Адреса
+    нужны памяти цепей: открытый обработчик без новых accept'ов остывает,
+    а по живому списку его видно (#410)."""
     try:
         r = subprocess.run(
             ["xray", "api", "statsonlineiplist", "--server", f"127.0.0.1:{_STATS_PORT}",
              "-email", email],
             capture_output=True, text=True, timeout=8)
         if r.returncode != 0:
-            return 1
+            return 1, set()
         ips = (json.loads(r.stdout) or {}).get("ips")
     except Exception:
-        return 1
+        return 1, set()
     if not isinstance(ips, dict) or not ips:
-        return 1
-    return len(ips)
+        return 1, set()
+    return len(ips), {_strip_port(a) for a in ips}
 
 def _xray_online_map():
-    """{uuid подписчика: число открытых устройств}.
+    """{uuid подписчика: число открытых устройств}; параллельно строит `_XRAY_LIVE`
+    — {uuid: {адрес входа}} открытых сейчас обработчиков (#410).
     Прежний `statsquery` живая сборка `xray` (26.3.27) для этих строк глуха:
     CLI не знает флага `includeOnlineValue` и в выдаче есть только трафик —
     `user>>>email>>>online` там не появляется никогда. Из-за этого окно
@@ -5242,8 +5609,11 @@ def _xray_online_map():
     и по одному `statsonlineiplist` на каждого — разные адреса входа это и
     есть разные устройства. Больше `_ONLINE_DEV_MAX` адресов не переписываются:
     присутствие известно, а число остаётся 1 — иначе опрос толпы подписчиков
-    превратился бы в толпу процессов. Под песочницей источник молчит: живого
-    узла прогон не спрашивает."""
+    превратился бы в толпу процессов; таких живых список знает без адресов.
+    Живой список меняется целиком на каждый успешный вызов: отказ меры живых
+    не выдумывает, подогрев встаёт на паузу до следующего успеха. Под
+    песочницей прогона узел не спрашивается и список не трогается."""
+    global _XRAY_LIVE
     if SBX:
         return {}
     try:
@@ -5251,13 +5621,16 @@ def _xray_online_map():
             ["xray", "api", "statsgetallonlineusers", "--server", f"127.0.0.1:{_STATS_PORT}"],
             capture_output=True, text=True, timeout=8)
         if r.returncode != 0:
+            _XRAY_LIVE = {}
             return {}
         d = json.loads(r.stdout)
     except Exception:
+        _XRAY_LIVE = {}
         return {}
     emails = []
     arr = d.get("users")
     if not isinstance(arr, list):
+        _XRAY_LIVE = {}
         return {}
     for s in arr:
         parts = [x for x in str(s).split(">>>") if x]
@@ -5268,10 +5641,15 @@ def _xray_online_map():
         if e and e not in emails:
             emails.append(e)
     out = {}
+    live = {}
     for e in emails[:_ONLINE_DEV_MAX]:
-        out[e] = _xray_devices(e)
+        n, hosts = _xray_devices(e)
+        out[e] = n
+        live[e] = hosts
     for e in emails[_ONLINE_DEV_MAX:]:
         out[e] = 1
+        live[e] = set()
+    _XRAY_LIVE = live
     return out
 
 def _acc_last_tags():
@@ -5280,7 +5658,7 @@ def _acc_last_tags():
 
     `_DEV_POS` НЕ трогается: курсор строк принадлежит хранителю устройств,
     этот читатель — гость, он откусывает только хвост файла. Цепь — accept'ы
-    одного подписчика, идущие подряд с зазором не шире `_ONLINE_ACC_WIN`:
+    одного подписчика, идущие подряд с зазором не шире `_ONLINE_ACC_KEEP`:
     у XHTTP цепь и есть текущая сессия опроса входа, у долгоживущего TCP —
     цепь из одной строки, момент подъёма соединения. Начало цепи и есть
     «время в сети»: честный нижний край, начало прошлой за `_ONLINE_ACC_TAIL`
@@ -5328,7 +5706,7 @@ def _acc_last_tags():
         chain = sorted(ts_list)
         first = chain[-1]
         for t in reversed(chain[:-1]):
-            if first - t > _ONLINE_ACC_WIN:
+            if first - t > _ONLINE_ACC_KEEP:
                 break
             first = t
         start[email] = first
@@ -5336,47 +5714,101 @@ def _acc_last_tags():
         chain = sorted(ts_list)
         first = chain[-1]
         for t in reversed(chain[:-1]):
-            if first - t > _ONLINE_ACC_WIN:
+            if first - t > _ONLINE_ACC_KEEP:
                 break
             first = t
         dev.setdefault(email, {})[host] = [first, chain[-1]]
     return out, start, dev
 
-def _acc_hold(chain, acc, start, dev, now):
+def _acc_hold(chain, acc, start, dev, now, live=None, cold=None):
     """Держит начало цепи между снимками — иначе хвост лога его съедает (#377).
 
     Хвост конечен: при дневном трафике начало цепи сидит на краю файла и
     ползёт вперёд быстрее часов — девять часов сессии выглядят как «20 минут»
     и прибавляются не по времени, а по объёму лога. Панель помнит между
     снимками: если начало хвостовой цепи склеивается с сохранённым последним
-    accept'ом не дальше `_ONLINE_ACC_WIN`, начало остаётся там, где панель
-    видела его впервые; зазор шире окна сбрасывает цепь, ключ без свежего
-    accept'а окно покидает. Рестарт не обнуляет: при подъёме панели начала
-    цепей досевает обратный скан `_acc_boot` (#378), а без него край хвоста
-    остаётся честным нижним краем. Пустой адрес входа — цепь уровня почты,
-    она кормит `since`.
-    Чистая: состояние только в переданном `chain`, ноги передают свой словарь.
+    accept’ом не дальше `_ONLINE_ACC_KEEP`, начало остаётся там, где панель
+    видела его впервые; зазор шире этого горизонта сбрасывает цепь, ключ без
+    движения дольше горизонта окно покидает. Присутствие при этом мерит
+    `_ONLINE_ACC_WIN` — это свежесть accept’а, а не длительность сессии. Раньше
+    горизонт жизни цепи и окно присутствия были одним числом `600`: телефон с
+    погасшим экраном молчит часами, не отключаясь, а панель чистила такую цепь
+    на 601-й секунде и восстанавливала её началом с края ленты — хозяин мерил
+    это как «слетело» (#412). Рестарт не обнуляет: при подъёме панели начала
+    цепей досевает обратный скан `_acc_boot` (#378), а
+    без него край хвоста остаётся честным нижним краем. Пустой адрес входа —
+    цепь уровня почты, она кормит `since`.
+    Живой обработчик кормит склейку без новых accept'ов (#410): у опросных
+    протоколов клиент часами держит соединение и не порождает строк лога,
+    поэтому хвост про него молчит и цепь остывала у хозяина на глазах.
+    `live` — мера присутствия от `_xray_online_map` ({почта: {адрес входа без
+    порта}}): если цепь ключа свежа в памяти (её `последний` не дальше
+    `_ONLINE_ACC_WIN`, подогрев хранителя греет и её), а в хвосте ключа нет,
+    начало перекладывается в снимок из памяти. Ключей, которых нет ни в
+    хвосте, ни в памяти, `live` не создаёт: присутствие без цепи остаётся
+    только числом устройств.
+    `cold` — холодная полка накопленного времени (#413): ключ, выброшенный
+    этим же горизонтом, уходит на неё и при возвращении продолжает цепь её
+    временем, а не краем ленты. Полка мутируется только здесь — выбросом
+    остывших ключей и их записью; `None` отключает полку вовсе (песочница).
+    Чистая: состояние только в переданных `chain` и `cold`, ноги передают
+    свои словари.
     """
     s2 = dict(start)
     d2 = {e: dict(h) for e, h in dev.items()}
-    for key in [k for k, v in chain.items() if now - v[1] > _ONLINE_ACC_WIN]:
+    for key in [k for k, v in chain.items() if now - v[1] > _ONLINE_ACC_KEEP]:
+        if cold is not None:
+            v = chain[key]
+            cold[key] = [v[1] - v[0], v[1]]
         chain.pop(key, None)
+    if cold is not None:
+        for key in [k for k, v in cold.items() if now - v[1] > _ONLINE_COLD_KEEP]:
+            cold.pop(key, None)
     for email, hosts in d2.items():
         for host, pr in hosts.items():
-            prev = chain.get((email, host))
+            key = (email, host)
+            prev = chain.get(key)
             if prev is not None:
-                pr = [min(pr[0], prev[0]) if pr[0] - prev[1] <= _ONLINE_ACC_WIN else pr[0], pr[1]]
+                # #409: шов симметричен — разрыв судится по границе отрезков
+                # (память и хвост могут идти в любом порядке), а начало берётся
+                # самым глубоким из двух: край ленты — нижняя граница, начало
+                # из памяти панель видела вживую
+                if prev[1] + _ONLINE_ACC_KEEP < pr[0] or pr[1] + _ONLINE_ACC_KEEP < prev[0]:
+                    pr = [pr[0], pr[1]]
+                else:
+                    pr = [min(pr[0], prev[0]), pr[1]]
                 hosts[host] = pr
-            chain[(email, host)] = pr
+            if cold is not None:
+                cand = _chain_cold_lift(cold, key, pr[1], _ONLINE_COLD_KEEP)
+                if cand is not None and cand < pr[0]:
+                    pr = [cand, pr[1]]
+                    hosts[host] = pr
+            chain[key] = pr
     for email, first in list(s2.items()):
         last = (acc.get(email) or ("", 0.0))[1]
         if last <= 0:
             continue
         prev = chain.get((email, ""))
-        if prev is not None and first - prev[1] <= _ONLINE_ACC_WIN:
+        if (prev is not None and prev[1] + _ONLINE_ACC_KEEP >= first
+                and last + _ONLINE_ACC_KEEP >= prev[0]):
             first = min(first, prev[0])
             s2[email] = first
+        if cold is not None:
+            cand = _chain_cold_lift(cold, (email, ""), last, _ONLINE_COLD_KEEP)
+            if cand is not None and cand < first:
+                s2[email] = first = cand
         chain[(email, "")] = [first, last]
+    for email, hosts in (live or {}).items():
+        pr = chain.get((email, ""))
+        if email not in s2 and pr is not None and pr[1] >= now - _ONLINE_ACC_WIN:
+            s2[email] = pr[0]
+        cur = d2.get(email)
+        for host in hosts:
+            if cur is not None and host in cur:
+                continue
+            prh = chain.get((email, host))
+            if prh is not None and prh[1] >= now - _ONLINE_ACC_WIN:
+                d2.setdefault(email, {})[host] = [prh[0], prh[1]]
     return s2, d2
 
 def _acc_boot_step(pending, stamps, win, closed):
@@ -5384,20 +5816,25 @@ def _acc_boot_step(pending, stamps, win, closed):
 
     Ключи из `closed` больше не тянутся: цепь, закрытая разрывом в живом
     слое, не открывается старыми строками. Метки чанка идут от новых к
-    старым; пока зазор от текущего начала не шире окна, начало уезжает на
-    старшую метку, первый зазор шире окна закрывает цепь на теперешнем
-    начале. Мутирует `pending` и `closed` — ноги подают свои словари."""
+    старым; метки теперешнего начала или новее пропускаются — начало уезжает
+    только назад (#411, иначе лечение по существующему ключу прыгнуло бы к
+    краю хвоста). Пока зазор от текущего начала не шире переданного горизонта
+    `win`, начало уезжает на старшую метку, первый зазор шире горизонта
+    закрывает цепь на теперешнем начале. Мутирует `pending` и `closed` — ноги
+    подают свои словари."""
     for key, ts_list in stamps.items():
         if key in closed or key not in pending:
             continue
         pr = pending[key]
         for t in sorted(ts_list, reverse=True):
+            if t >= pr[0]:
+                continue
             if pr[0] - t > win:
                 closed.add(key)
                 break
             pr[0] = t
 
-def _acc_boot(chain, dev, start, acc, now, read_back):
+def _acc_boot(chain, dev, start, acc, now, read_back, heal_existing=False):
     """Сеет память цепей при подъёме панели — рестарт не обнуляет «время в сети» (#378).
 
     Память цепей умирает с процессом, а хвост видит только `_ONLINE_ACC_TAIL`
@@ -5407,16 +5844,32 @@ def _acc_boot(chain, dev, start, acc, now, read_back):
     закроется разрывом; ключ, дошедший до края файла или бюджета, остаётся с
     началом на последней прочитанной метке — нижняя честная граница. `chain`
     заполняется только где пусто (память держит перевес), возвращает число
-    посеянных ключей. Хозяин видел это числа: `38` минут вместо `624`."""
+    посеянных ключей. Хозяин видел это числа: `38` минут вместо `624`.
+    `heal_existing` (#411): начало, уже сидящее в памяти или на носителе, но
+    придвинутое к краю хвоста чисткой за время простоя процесса, скан по
+    отсутствию не лечит — ключ-то не пустой. При подъёме панели (ровно один
+    раз на процесс) свежие ключи цепи забираются в тот же обратный скан, и их
+    начало уезжает назад только глубже; перевес памяти над краем хвоста
+    остаётся, разрыв шире окна закрывает цепь на теперешнем начале. Досев
+    `_acc_reseed` лечением не занимается: он сеет только потерянные, а скан по
+    всем живым ключам каждый снимок жрал бы бюджет зря."""
     pending = {}
     for email, hosts in (dev or {}).items():
         for host, pr in hosts.items():
-            if pr[1] >= now - _ONLINE_ACC_WIN:
+            if pr[1] >= now - _ONLINE_ACC_KEEP:
                 pending[(email, host)] = [pr[0], pr[1]]
     for email, first in (start or {}).items():
         last = (acc.get(email) or ("", 0.0))[1]
-        if last >= now - _ONLINE_ACC_WIN and (email, "") not in pending:
+        if last >= now - _ONLINE_ACC_KEEP and (email, "") not in pending:
             pending[(email, "")] = [first, last]
+    healed = set()
+    if heal_existing:
+        for key, v in chain.items():
+            # перевес памяти: скан стартует от начала цепи, а не от края хвоста,
+            # и тянет его назад; остаток хвоста по тому же ключу не важен
+            if now - v[1] <= _ONLINE_ACC_KEEP:
+                pending[key] = list(v)
+                healed.add(key)
     closed = set()
     if pending:
         for data in read_back:
@@ -5438,14 +5891,17 @@ def _acc_boot(chain, dev, start, acc, now, read_back):
                 for key in ((email, host), (email, "")) if host else ((email, ""),):
                     if key in pending and key not in closed:
                         stamps.setdefault(key, []).append(ts)
-            _acc_boot_step(pending, stamps, _ONLINE_ACC_WIN, closed)
+            _acc_boot_step(pending, stamps, _ONLINE_ACC_KEEP, closed)
             if len(closed) >= len(pending):
                 break
     n = 0
     for key, pr in pending.items():
-        if key not in chain:
+        cur = chain.get(key)
+        if cur is None:
             chain[key] = pr
             n += 1
+        elif key in healed and pr[0] < cur[0]:
+            cur[0] = pr[0]
     return n
 
 def _acc_boot_gen(files, tail, budget, chunk):
@@ -5479,6 +5935,38 @@ def _acc_boot_gen(files, tail, budget, chunk):
                 raw = raw[nl + 1:] if nl >= 0 else b""
             if raw:
                 yield raw.decode("utf-8", "replace")
+
+def _acc_reseed(chain, dev, start, acc, now, cooldown, read_back):
+    """Досевает цепи, потерянные памятью между снимками (#401).
+
+    Хвост видит свежий accept ключа, а `_ONLINE_CHAIN` его не держит — так
+    выглядит потеря цепи (ложный purge или пропуск строки читалкой). Без
+    досева `_acc_hold` посадит такой ключ на край хвоста и «время в сети»
+    спрыгнет с пяти часов на пятьдесят минут. Досевает только потерянные и
+    не остывшие после недавнего досева ключи — тем же обратным сканом, что
+    и подъём панели, но с меньшим бюджетом и не чаще
+    `_ONLINE_RESEED_TTL` секунд на ключ.
+    Чистая: мутирует только переданные `chain` и `cooldown`, ноги подают
+    свои словари; `read_back` — ленивый генератор, без потерь не читает."""
+    d = {}
+    s = {}
+    for email, hosts in (dev or {}).items():
+        for host, pr in hosts.items():
+            k = (email, host)
+            if (k not in chain and pr[1] >= now - _ONLINE_ACC_WIN
+                    and now - cooldown.get(k, 0.0) >= _ONLINE_RESEED_TTL):
+                d.setdefault(email, {})[host] = pr
+                cooldown[k] = now
+    for email, first in (start or {}).items():
+        k = (email, "")
+        last = (acc.get(email) or ("", 0.0))[1]
+        if (k not in chain and last >= now - _ONLINE_ACC_WIN
+                and now - cooldown.get(k, 0.0) >= _ONLINE_RESEED_TTL):
+            s[email] = first
+            cooldown[k] = now
+    if not d and not s:
+        return 0
+    return _acc_boot(chain, d, s, acc, now, read_back)
 
 def _acc_live(snap, email):
     """Свежий accept подписчика: (тег инбаунда, возраст, метка времени) или `None`.
@@ -5565,19 +6053,94 @@ def _online_snapshot(force=False):
         return snap
     snap["xray"] = _xray_online_map()
     acc, start, dev = _acc_last_tags()
-    if not _ONLINE_BOOT_DONE and not SBX:
-        # подъём панели не обнуляет «время в сети»: начала цепей досеивает
-        # обратный скан лога, ровно один раз на процесс (#378)
-        _ONLINE_BOOT_DONE = True
-        _acc_boot(_ONLINE_CHAIN, dev, start, acc, now, _acc_boot_gen(
-            (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
-            _ONLINE_ACC_TAIL, _ONLINE_ACC_BOOT, _ONLINE_ACC_BOOT_CH))
-    start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now)
+    if not SBX:
+        # память цепей целиком под одним замком: подъём с диска, подогрев,
+        # досев и запись не разъезжаются с хранителем (#410)
+        with _CHAIN_LOCK:
+            if not _CHAIN_ST["loaded"]:
+                # подъём панели начинает с диска: цепи, виденные живой панелью,
+                # переживают гибель процесса (#409); скан ниже досевает только пустое
+                _CHAIN_ST["loaded"] = True
+                try:
+                    with open(_ONLINE_CHAIN_FILE) as f:
+                        _chain_decode(json.load(f), _ONLINE_CHAIN)
+                except Exception:
+                    pass
+                if not _COLD_ST["loaded"]:
+                    # накопленное время остывших цепей живёт на своей полке (#413)
+                    _COLD_ST["loaded"] = True
+                    try:
+                        with open(_ONLINE_COLD_FILE) as f:
+                            _chain_decode(json.load(f), _ONLINE_COLD)
+                    except Exception:
+                        pass
+            _chain_keepwarm(_ONLINE_CHAIN, _XRAY_LIVE, now)
+            if not _ONLINE_BOOT_DONE:
+                # подъём панели не обнуляет «время в сети»: начала цепей досеивает
+                # обратный скан лога, ровно один раз на процесс (#378). Тот же скан
+                # лечит уже сидящие в цепи придвинутые к краю начала (#411)
+                _ONLINE_BOOT_DONE = True
+                _acc_boot(_ONLINE_CHAIN, dev, start, acc, now, _acc_boot_gen(
+                    (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
+                    _ONLINE_ACC_TAIL, _ONLINE_ACC_BOOT, _ONLINE_ACC_BOOT_CH),
+                    heal_existing=True)
+            # потерянная между снимками цепь не должна садиться на край хвоста:
+            # обратный скан возвращает её настоящее начало (#401)
+            _acc_reseed(_ONLINE_CHAIN, dev, start, acc, now, _ONLINE_RESEED,
+                        _acc_boot_gen(
+                            (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
+                            _ONLINE_ACC_TAIL, _ONLINE_RESEED_BUDGET, _ONLINE_ACC_BOOT_CH))
+            start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now,
+                                   _XRAY_LIVE, _ONLINE_COLD)
+            # память цепей переписывается на диск, когда движется (#409):
+            # гибель процесса больше не сдвигает «время в сети» к краю хвоста
+            _chain_flush(_ONLINE_CHAIN_FILE, _ONLINE_CHAIN, now, _CHAIN_ST,
+                         _ONLINE_CHAIN_FLUSH_TTL)
+            # остывшее время, снятое с цепей этим же ходом, успевает улечься на
+            # полку до гибели процесса (#413)
+            _chain_cold_flush(_ONLINE_COLD_FILE, _ONLINE_COLD, now, _COLD_ST,
+                              _ONLINE_CHAIN_FLUSH_TTL)
+    else:
+        start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now)
     snap["acc"], snap["acc_start"], snap["acc_dev"] = acc, start, dev
     snap["tun"] = _wg_awg_live_peers()
     snap["mt"] = _mt_live_users()
     snap["at"] = now
     return snap
+
+def _online_keep_once(now=None):
+    """Один ход хранителя цепей (#410): спросить xray, подогреть открытые
+    цепи и оставить их на диске. Окно не рисуется — `acc`/`start`/`dev`
+    снимка не трогаются, подогрев двигает только `последний` уже живых
+    ключей. Под песочницей не ходит: чужой носитель не греет и не читает.
+    Возвращает число подогретых цепей."""
+    if SBX:
+        return 0
+    if now is None:
+        now = time.time()
+    _xray_online_map()
+    with _CHAIN_LOCK:
+        n = _chain_keepwarm(_ONLINE_CHAIN, _XRAY_LIVE, now)
+        if n:
+            _chain_flush(_ONLINE_CHAIN_FILE, _ONLINE_CHAIN, now, _CHAIN_ST,
+                         _ONLINE_CHAIN_FLUSH_TTL)
+    return n
+
+def _online_keep_loop():
+    """Хранитель цепей «Клиенты в сети» (#410).
+
+    Снимок рисуется, только когда кто-то открывает окно: ночью цепь
+    подписчика с открытым обработчиком и тихим опросным протоколом остывала
+    до утра, склейщик выбрасывал ключ за окно и «время в сети» слетало, хотя
+    клиент не отключался. Хранитель ходит втрое чаще окна `_ONLINE_ACC_WIN`,
+    спрашивает xray и держит открытые цепи свежими на диске; утро поднимает
+    настоящее начало, а не край хвоста."""
+    while True:
+        try:
+            time.sleep(_ONLINE_KEEP_TTL)
+            _online_keep_once()
+        except Exception:
+            time.sleep(30)
 
 _STATE_TOKENS_LOCK = threading.Lock()
 
@@ -5666,6 +6229,7 @@ def _subs_summary(st, for_display=False):
     ipv6 = _my_ipv6()
     users = {}
     _ensure_identities(st)
+    unreachable = _reach_snapshot()
     for proto, inb in _inb_map(st).items():
         # вызывающих этот агрегат — десять ручек, включая публичные /p/ и /sb/:
         # битый вход не должен стоить им всем страницы
@@ -5703,7 +6267,11 @@ def _subs_summary(st, for_display=False):
             # есть).
             if c.get("fam_host"):
                 u["fam_host"] = True
-            if not inb.get("disabled"):
+            # #414: вход, который слушает только петлевой адрес и не ведётся
+            # развилкой :443, для подписчика мёртв — ссылка несёт его собственный
+            # порт. Ссылку на такой вход не выдаём, мерка та же, что у строки
+            # протокола на дашборде (#416).
+            if not inb.get("disabled") and _link_reachable(inb, c, unreachable):
                 try:
                     u["links"][proto] = _link(inb, host, c, proto)
                 except Exception:
@@ -6259,9 +6827,20 @@ def _link(inb, host, client, proto, std=False):
                 f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"
                 "")
     if proto.startswith("shadowsocks"):
-        cred = (inb.get("method") or "aes-256-gcm") + ":" + (inb.get("password") or "")
+        # #414: ссылку несёт пароль подписчика, а не общий секрет входа.
+        cred = ((inb.get("method") or "aes-256-gcm") + ":" +
+                (client.get("password") or inb.get("password") or ""))
         raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
-        return f"ss://{raw}@{host}:{_port}#{urllib.parse.quote(name)}"
+        tail = ""
+        if meta["tls"]:
+            # #418: клиент обязан знать, что стучится под TLS: без этих параметров
+            # v2rayN/INCY шлют клинтекст и рукопожатие не складывается никогда.
+            # `sni` — домен входа (в мюксе — маска `vpn.<база>`), при адресе-
+            # литерале (#239) он остаётся доменом: сертификат и SNI-политика
+            # у входа общие, различается только сетевой путь.
+            tail = "?" + urllib.parse.urlencode(
+                {"type": "tcp", "security": "tls", "sni": _dom})
+        return f"ss://{raw}@{host}:{_port}{tail}#{urllib.parse.quote(name)}"
     if proto.startswith("vmess"):
         add = host.strip("[]")
         if std:
@@ -6690,7 +7269,9 @@ def _import_from_links(st, text):
                 c["uuid"] = u
             elif u:
                 warnings.append(base + ": uuid занят на " + proto + ", назначен новый")
-            if proto.startswith("trojan") and it.get("password"):
+            if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and it.get("password"):
+                # #414: у `shadowsocks` пароль теперь личный у записи, поэтому
+                # вставленная ссылка переносит его на подписчика, а не на вход.
                 c["password"] = it["password"]
             if proto == "hysteria2" and it.get("auth"):
                 c["auth"] = it["auth"]
@@ -6767,7 +7348,9 @@ def _import_from_json(st, data):
                 u = ""
             if u and not any(x.get("uuid") == u for x in inb.get("clients", [])):
                 c["uuid"] = u
-            if proto.startswith("trojan") and cc.get("password") is not None:
+            if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and cc.get("password") is not None:
+                # #414: пароль подписчика `shadowsocks` переезжает вместе с записью,
+                # иначе на новой коробке ссылка того же человека станет другой.
                 c["password"] = cc["password"]
             if proto == "hysteria2" and cc.get("auth"):
                 c["auth"] = cc["auth"]
@@ -6808,7 +7391,8 @@ _EXTIMP_PROTO_MAP = {
     "trojan": {"tls|ws": "trojan-ws-tls", "tls|tcp": "trojan-tcp-tls", "tls|grpc": "trojan-grpc-tls",
                "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-reality", "reality|*": "trojan-reality",
                "tls|*": "trojan-tcp-tls"},
-    "shadowsocks": {"*|*": "shadowsocks"},
+    "shadowsocks": {"tls|tcp": "shadowsocks-tcp-tls", "tls|*": "shadowsocks-tcp-tls",
+                    "*|*": "shadowsocks"},
     "hysteria2": {"*|*": "hysteria2"},
 }
 
@@ -7004,7 +7588,9 @@ def _extimport_apply(st, items):
         else:
             c = _new_client(nm, proto, inb)
             if u: c["uuid"] = u
-        if proto.startswith("trojan") and it.get("password"):
+        if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and it.get("password"):
+            # #414: у `shadowsocks` слово подписчика своё, источник несёт его в
+            # том же поле — иначе импорт присвоил бы запись к общему секрету входа.
             c["password"] = it["password"]
         if proto == "hysteria2" and it.get("password"):
             c["auth"] = it["password"]
@@ -7550,9 +8136,15 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
             ob["pre_shared_key"] = psk
         return ob
     if proto.startswith("shadowsocks"):
-        return {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
-                "method": inb.get("method") or "aes-256-gcm",
-                "password": inb.get("password") or ""}
+        ob = {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
+              "method": inb.get("method") or "aes-256-gcm",
+              # #414: пароль подписчика, общий секрет входа — только запасной
+              "password": c.get("password") or inb.get("password") or ""}
+        if meta["tls"]:
+            # #418: тот же общий TLS-слой, что у остального семейства: `server_name`
+            # — домен входа, без него sing-box молча не поднимет рукопожатие
+            ob["tls"] = _tls()
+        return ob
     if proto == "hysteria2":
         return {"type": "hysteria2", "tag": tag, "server": host, "server_port": port,
                 "password": c.get("auth") or c["uuid"],
@@ -8464,6 +9056,9 @@ _QR_ECB = {0: 1, 1: 0, 2: 3, 3: 2}           # служебные биты ур�
 _QR_MAX_BYTES = 2953                         # ёмкость v40-L: больше в QR не помещается ничего
 _QR_SCALE = 6                                # пикселей на модуль в SVG
 _QR_CACHE = {}                               # payload -> svg: ручка публичная, генерация не бесплатна
+_QR_DISK_DIR = os.path.join(BASE, "qr")      # svg на носителе: сборка обязана переживать рестарт панели
+_QR_DISK_TTL = 30 * 86400                    # секунд: неназванный за месяц payload считаем снятым
+_QR_DISK_MAX = 512                           # файлов в кэше: осиротевшие токены не должны растить папку
 
 _QR_EXP = [0] * 512
 _QR_LOG = [0] * 256
@@ -8785,15 +9380,91 @@ def _qr_encode(text, ec=_QR_AUTO, force_ver=None, force_mask=None):
             "stream": stream, "rows": ["".join(str(x) for x in row) for row in m]}
 
 
+def _qr_disk_path(text):
+    """Имя файла кэша на носителе: отпечаток payload с ключом аватаров, не сам payload.
+
+    В payload сидит подписочный токен — ставить credential в имя файла нельзя
+    (именно так имя аватара уже уезжало в auth.log, #72), поэтому здесь HMAC,
+    как в `_avatar_derived_path`.
+    """
+    k = _avatar_key(True)
+    if not k:
+        return ""
+    h = hmac.new(bytes.fromhex(k), text.encode("utf-8", "replace"),
+                 hashlib.sha256).hexdigest()[:40]
+    return os.path.join(_QR_DISK_DIR, h + ".svg")
+
+
+def _qr_cache_put(text, svg):
+    _QR_CACHE[text] = svg
+    while len(_QR_CACHE) > 64:
+        _QR_CACHE.pop(next(iter(_QR_CACHE)), None)
+
+
+def _qr_disk_sweep(now):
+    """Снятие по TTL и потолку плюс пережитки погибшей записи: токены снятых
+    подписчиков не должны растить папку бесконечно."""
+    try:
+        names = os.listdir(_QR_DISK_DIR)
+    except OSError:
+        return
+    live = []
+    for nm in names:
+        p = os.path.join(_QR_DISK_DIR, nm)
+        try:
+            mt = os.stat(p).st_mtime
+        except OSError:
+            continue
+        if ".tmp" in nm:
+            if now - mt > 3600:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            continue
+        if not nm.endswith(".svg"):
+            continue
+        if now - mt > _QR_DISK_TTL:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        else:
+            live.append((mt, p))
+    live.sort()
+    while len(live) > _QR_DISK_MAX:
+        try:
+            os.unlink(live.pop(0)[1])
+        except OSError:
+            pass
+
+
 def _qr_svg(text, scale=_QR_SCALE, quiet=4):
     """SVG: белый лист, чёрные модули, тихая зона в 4 модуля. Никаких id —
     на странице может быть несколько кодов, и id поссорились бы.
-    Возвращает "" для текста, который в QR не влазит или пуст."""
+    Возвращает "" для текста, который в QR не влазит или пуст.
+    Порядок «память → диск → сборка»: собранный код переживает рестарт панели,
+    тап по QR после рестарта не ждёт перебор масок и Рида—Соломона. Любая
+    неполадка диска молча пропускается — отдача не смеет зависеть от кэша."""
     if not text:
         return ""
     hit = _QR_CACHE.get(text)
     if hit is not None:
         return hit
+    p = _qr_disk_path(text)
+    if p:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                disk = f.read()
+        except OSError:
+            disk = ""
+        if disk.startswith("<svg ") and disk.endswith("</svg>"):
+            _qr_cache_put(text, disk)
+            try:
+                os.utime(p, None)
+            except OSError:
+                pass
+            return disk
     res = _qr_encode(text)
     if res is None:
         return ""
@@ -8817,10 +9488,539 @@ def _qr_svg(text, scale=_QR_SCALE, quiet=4):
            'viewBox="0 0 %d %d" shape-rendering="crispEdges">'
            '<rect width="%d" height="%d" fill="#fff"/>'
            '<path fill="#000" d="%s"/></svg>' % (g, g, g, g, g, g, "".join(d)))
-    _QR_CACHE[text] = svg
-    while len(_QR_CACHE) > 64:
-        _QR_CACHE.pop(next(iter(_QR_CACHE)), None)
+    _qr_cache_put(text, svg)
+    if p:
+        tmp = p + ".tmp%08x.%d" % (secrets.randbits(32), threading.get_ident())
+        try:
+            _mkdir_private(_QR_DISK_DIR)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, svg.encode("utf-8"))
+            finally:
+                os.close(fd)
+            os.replace(tmp, p)
+        except OSError:
+            pass
+        finally:
+            try:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
+        try:
+            _qr_disk_sweep(time.time())
+        except OSError:
+            pass
     return svg
+
+# #381: статичный слой страницы подписки — CSS и JS — вынесен из шаблона в
+# отдельные кэшируемые файлы. Прежде эти два блока (скрипт 26 499 Б и стиль
+# 17 083 Б) ехали инлайн при каждом показе страницы; сама страница по праву
+# не кэшируется (живёт по токену, no-store там не случаен), поэтому человек
+# на мобильном скачивал ~43 КБ заново при каждом открытии. Байты зафиксированы
+# на загрузке модуля; данные страницы (блок const, lastK, FAMMAX) остаются в
+# инлайн-бутстрапе перед этими файлами: связки верхнего уровня классического
+# скрипта общие для всех последующих скриптов страницы.
+_SUB_CSS = """
+:root{--bg:#0a122a;--ink:#e8ecf7;--ink2:#eef2ff;--ink3:#cbd5f1;--mut:#8b94b5;--note:#58618a;
+--card:rgba(18,23,42,.72);--tilebg:rgba(22,29,52,.75);--chipbg:rgba(22,29,52,.6);--appsel:rgba(19,33,58,.92);
+--line:rgba(66,84,130,.45);--line2:rgba(94,109,166,.6);--trackbg:rgba(10,15,33,.8);--ckbg:rgba(10,15,33,.5);
+--confbg:rgba(30,58,138,.5);--confbgh:rgba(30,58,138,.85);--confink:#bfe3ff;--onaccent:#04101f;
+--ok:#4ade80;--bad:#fb7185;--store:#60a5fa;--accent3:#a5b4fc;--fam:#c4b5fd;--sky:#7dd3fc;--danger:#fca5a5;--warn:#fbbf24;
+--ghost:rgba(255,255,255,.07);--ghosth:rgba(255,255,255,.14);--ghostb:rgba(255,255,255,.16)}
+html[data-theme=light]{--bg:#eef2fb;--ink:#0f1730;--ink2:#1b2440;--ink3:#3a4468;--mut:#5b6584;--note:#6a7392;
+--card:rgba(255,255,255,.82);--tilebg:rgba(240,244,253,.9);--chipbg:rgba(233,238,250,.85);--appsel:rgba(219,234,254,.95);
+--line:rgba(96,120,180,.35);--line2:rgba(100,116,160,.5);--trackbg:rgba(180,195,225,.45);--ckbg:rgba(255,255,255,.7);
+--confbg:rgba(219,234,254,.8);--confbgh:rgba(191,219,254,.95);--confink:#0c3a66;
+--ok:#15803d;--bad:#be123c;--store:#2563eb;--accent3:#4f46e5;--fam:#6d28d9;--sky:#0369a1;--danger:#b91c1c;--warn:#92400e;
+--ghost:rgba(15,23,48,.05);--ghosth:rgba(15,23,48,.1);--ghostb:rgba(15,23,48,.18)}
+html[data-theme=light] .blob{opacity:.28}
+html[data-theme=light] .card{box-shadow:0 30px 80px -24px rgba(15,23,48,.25)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0}
+body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink);
+  background:var(--bg);display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
+.bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.45;animation:drift 18s ease-in-out infinite}
+.b1{width:52vmax;height:52vmax;left:-18vmax;top:-20vmax;background:radial-gradient(circle,#24407f,transparent 65%)}
+.b2{width:46vmax;height:46vmax;right:-16vmax;top:20%;background:radial-gradient(circle,#0e6f8f,transparent 65%);animation-delay:-6s}
+.b3{width:40vmax;height:40vmax;left:12%;bottom:-22vmax;background:radial-gradient(circle,#143f5e,transparent 65%);animation-delay:-11s}
+@keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(4vmax,-3vmax) scale(1.06)}66%{transform:translate(-3vmax,3vmax) scale(.96)}}
+.ray{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
+  background:radial-gradient(900px 600px at 50% -12%,rgba(56,189,248,.10),transparent 60%)}
+.page{width:100%;max-width:460px;position:relative;z-index:1}
+.hbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
+  grid-template-areas:"logo br pill" "logo br th";
+  column-gap:11px;row-gap:6px;align-items:center;margin-bottom:18px;padding:0 2px}
+.hbar .lg{grid-area:logo;align-self:center;width:40px;height:40px;border-radius:12px;object-fit:cover;box-shadow:0 8px 20px -6px rgba(34,211,238,.5)}
+.hbar .br{grid-area:br;align-self:center;min-width:0;display:flex;flex-direction:column;justify-content:center}
+.hbar .br b{font-size:15px;font-weight:800;letter-spacing:3px;line-height:1}
+.hbar .br span{font-size:10.5px;color:var(--mut);letter-spacing:.3px;margin-top:3px;overflow-wrap:anywhere}
+.th{grid-area:th;justify-self:end;display:flex;align-items:flex-end;gap:4px}
+[dir=rtl] .th{justify-self:start}
+.langs{display:grid;grid-template-columns:repeat(2,min-content);gap:4px}
+.tbtn{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;padding:0;cursor:pointer;
+  border-radius:999px;border:1px solid var(--line);background:var(--chipbg);color:var(--mut);transition:.15s}
+.tbtn:hover{color:var(--ink);border-color:#3b82f6}
+.tbtn svg{width:15px;height:15px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.tbtn .sun{display:none}
+html[data-theme=light] .tbtn .sun{display:block}
+html[data-theme=light] .tbtn .moon{display:none}
+.langs a{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);text-decoration:none;
+  padding:6px 8px;border-radius:999px;border:1px solid var(--line);background:var(--chipbg);text-align:center}
+.langs a.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent}
+.hbar .pill{grid-area:pill;justify-self:end;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
+  font-size:12px;font-weight:700;white-space:nowrap}
+.pill.ok{background:rgba(74,222,128,.1);color:var(--ok);border:1px solid rgba(74,222,128,.35)}
+.pill.off{background:rgba(251,113,133,.1);color:var(--bad);border:1px solid rgba(251,113,133,.35)}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.pill.ok i{animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.card{background:var(--card);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:24px;overflow:hidden;
+  box-shadow:0 30px 80px -24px rgba(0,0,0,.8)}
+.head{display:flex;align-items:center;gap:14px;padding:20px 20px 16px;
+  background:linear-gradient(180deg,rgba(59,130,246,.16),rgba(34,211,238,.04) 60%,transparent)}
+.ava{width:64px;height:64px;border-radius:20px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  font-size:30px;font-weight:800;color:var(--onaccent);position:relative;
+  background:linear-gradient(135deg,#3b82f6,#22d3ee);box-shadow:0 14px 30px -8px rgba(34,211,238,.5)}
+.ava img{width:100%;height:100%;object-fit:cover;display:block;position:relative;border-radius:20px}
+.avawrap{display:flex;flex-direction:column;align-items:center;gap:6px;flex:0 0 auto}
+.avactl{display:flex;gap:6px}
+.avabtn{width:26px;height:26px;border-radius:9px;border:1px solid var(--ghostb);cursor:pointer;
+  background:var(--ghost);color:var(--ink2);font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
+.avabtn:hover{background:var(--ghosth)}
+.ava .ring{position:absolute;inset:-3px;border-radius:23px;border:2px solid transparent;pointer-events:none;
+  border-top-color:rgba(125,211,252,.9);animation:spin 7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.meta{min-width:0}
+.meta .name{font-size:22px;font-weight:800;color:var(--ink);margin:0;line-height:1.2;word-break:break-word}
+.meta .sub{font-size:12.5px;color:var(--mut);margin-top:6px;word-break:break-word}
+.meta .sub b{color:var(--accent3);font-weight:600}
+.chip-fam{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:var(--fam);
+  background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.4);border-radius:999px;padding:3px 10px}
+.famdev{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;color:var(--fam);cursor:pointer;
+  background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.35);border-radius:99px;padding:5px 6px}
+.famadd{display:block;width:100%;margin-top:12px;padding:10px;border-radius:13px;cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:700;color:var(--fam);border:1px dashed rgba(139,92,246,.5);
+  background:rgba(139,92,246,.07)}
+.famadd:disabled{opacity:.5;cursor:default}
+.famcopy,.famqr,a.devx{color:var(--sky);background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
+  text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.famcopy:hover,.famqr:hover,a.devx:hover{background:rgba(56,189,248,.18)}
+/* QR поверх страницы: белый лист обязателен — сканер читает чёрные модули
+   только на светлом, тёмная тема страницы для этого не годится */
+.qrlayer{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
+  background:rgba(4,8,20,.86);padding:22px}
+.qrlayer.on{display:flex}
+.qrbox{background:#fff;border-radius:20px;padding:16px 16px 13px;max-width:min(360px,86vw);
+  text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+.qrbox img{display:block;width:100%;height:auto;image-rendering:pixelated}
+.qrname{color:#111a33;font-size:13px;font-weight:700;margin-top:11px;word-break:break-word}
+.qrhint{color:#4b5878;font-size:11.5px;margin-top:5px;line-height:1.5}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 20px 0}
+.stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:var(--tilebg);
+  border:1px solid var(--line);overflow:hidden}
+.stat::before{content:'';position:absolute;inset:auto 0 0 0;height:2px;
+  background:linear-gradient(90deg,#3b82f6,#22d3ee);opacity:.6}
+.stat svg{width:14px;height:14px;stroke:var(--store);stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;margin-bottom:8px}
+.stat .lb{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+.stat b{display:block;font-size:14px;font-weight:700;color:var(--ink2);margin-top:5px;line-height:1.35;word-break:break-word}
+.stat b .dim{color:var(--mut);font-weight:400;font-size:11px}
+.barwrap{padding:14px 20px 16px}
+.track{height:10px;border-radius:99px;background:var(--trackbg);box-shadow:inset 0 2px 6px rgba(0,0,0,.5);
+  overflow:hidden;position:relative}
+.track i{display:block;height:100%;border-radius:99px;transition:width .6s cubic-bezier(.4,0,.2,1);position:relative;
+  background:linear-gradient(90deg,#2563eb,#22d3ee,#34d399);background-size:200% 100%;animation:flows 3.5s linear infinite}
+@keyframes flows{to{background-position:200% 0}}
+.tl{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px}
+.tl span{font-size:11.5px;color:var(--mut)}
+.tl b{font-size:12px;color:var(--ink3);font-weight:600}
+.confs{display:flex;gap:9px;padding:0 20px 6px;flex-wrap:wrap}
+.confs:empty{display:none}
+.btn-conf{flex:1;min-width:150px;display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  padding:11px 10px;border-radius:13px;text-decoration:none;font-size:12.5px;font-weight:600;color:var(--confink);
+  background:var(--confbg);border:1px solid rgba(59,130,246,.45);transition:.15s}
+.btn-conf:hover{border-color:#3b82f6;background:var(--confbgh)}
+.btn-conf svg{width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.rt{font-size:12.5px;color:var(--ink3);line-height:1.65;background:var(--tilebg);
+  border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.rt b{color:var(--ink3)}
+.rt ul{margin:8px 0 0;padding-inline-start:18px}
+.rt li{margin:5px 0}
+.rt code{color:var(--sky);font-size:11px;background:var(--chipbg);padding:1px 5px;border-radius:5px}
+.devlist{display:flex;flex-direction:column;gap:8px}
+.devr{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--tilebg);
+  border:1px solid var(--line);border-radius:14px;padding:10px 12px}
+.devi{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
+.devi b{font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.devi span{font-size:11px;color:var(--mut);overflow-wrap:anywhere}
+.devx{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:var(--danger);
+  background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.35);border-radius:10px;padding:7px 12px;transition:.15s}
+.devx:hover{background:rgba(251,113,133,.2)}
+.devx:disabled{opacity:.5;cursor:default}
+.devnote{font-size:11px;color:var(--note);margin-top:10px;line-height:1.55}
+.usmore{margin-top:8px}
+.usmore>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600;color:var(--mut);
+  padding:6px 2px;user-select:none}
+.usmore>summary::-webkit-details-marker{display:none}
+.usmore>summary:hover{color:var(--ink2)}
+.usmore[open]>summary{color:var(--ink2)}
+.usmore>.devlist{margin-top:6px}
+.sec{padding:18px 20px 20px}
+h2{font-size:13px;color:var(--ink3);text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
+  display:flex;align-items:center}
+h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-inline-start:12px}
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip-p{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;
+  font-size:12.5px;font-weight:600;color:var(--ink3);border:1px solid var(--line);background:var(--chipbg);transition:.15s}
+.chip-p:hover{color:var(--ink);border-color:#3b82f6}
+.chip-p.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent;font-weight:700;
+  box-shadow:0 8px 20px -8px rgba(34,211,238,.6)}
+.apps{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:420px){.apps{grid-template-columns:1fr}}
+.app{display:flex;align-items:center;gap:11px;padding:11px;border-radius:16px;cursor:pointer;
+  background:var(--tilebg);border:1px solid var(--line);transition:.15s;min-width:0}
+.app:hover{border-color:#3b82f6;transform:translateY(-1px)}
+.app.sel{border-color:#22d3ee;background:var(--appsel);
+  box-shadow:0 0 0 1px #22d3ee inset,0 10px 24px -12px rgba(34,211,238,.5)}
+.ic{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  font-size:17px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 6px 14px -6px rgba(0,0,0,.6)}
+.ic img{width:100%;height:100%;object-fit:cover;border-radius:11px;display:block}
+.inf{min-width:0;flex:1}
+.inf b{display:block;font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tags{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
+.tags a.store{font-size:10.5px;color:var(--store);text-decoration:none;font-weight:600}
+.tags a.store:active{opacity:.7}
+.tag{font-size:9px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:999px;text-transform:uppercase}
+.tag.pay{color:var(--warn);border:1px solid rgba(251,191,36,.45);background:rgba(251,191,36,.1)}
+.tag.cfg{color:var(--sky);border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
+.ck{width:21px;height:21px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;color:transparent;border:1px solid var(--line2);background:var(--ckbg);transition:.15s}
+.app.sel .ck{color:var(--onaccent);background:#22d3ee;border-color:#22d3ee;box-shadow:0 0 12px rgba(34,211,238,.7)}
+.btn{width:100%;padding:15px;border-radius:15px;border:0;cursor:pointer;font-size:15px;font-weight:800;letter-spacing:.2px;
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:.15s;font-family:inherit}
+.btn svg{width:16px;height:16px;stroke:currentColor;stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.btn-add{background:linear-gradient(90deg,#2563eb,#22d3ee);color:var(--onaccent);position:relative;overflow:hidden;
+  box-shadow:0 14px 34px -10px rgba(34,211,238,.6)}
+.btn-add::after{content:'';position:absolute;top:0;bottom:0;width:40%;left:-60%;transform:skewX(-20deg);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:sheen 3.4s ease-in-out infinite}
+@keyframes sheen{0%,60%{left:-60%}100%{left:130%}}
+.btn-add:active{transform:scale(.985)}
+.btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+.btn-row .btn-copy{flex:1;background:var(--tilebg);color:var(--ink3);border:1px solid var(--line)}
+.btn-row .btn-copy:hover{border-color:#3b82f6;color:var(--ink2)}
+/* Узкий экран. Кнопки в row flex не сжимаются ниже своего min-content (min-width:auto
+   по умолчанию), поэтому третья кнопка рядом с «Скопировать подписку» и «Поделиться»
+   не умещается в ~332px вьюпорта и вылезает за него — ряд обязан переноситься.
+   Строка семьи с ▦ ужата тем же правилом: четыре glyph-кнопки + select впритык. */
+@media (max-width:420px){
+ .btn-row{gap:8px}
+ .btn-row .btn-copy{padding:13px 10px;font-size:13.5px;gap:7px}
+ .devr{gap:6px;padding:9px 10px}
+ .devx{padding:6px 9px}
+ .famdev{padding:5px 5px;font-size:11px}
+}
+.action{max-width:460px;padding-top:18px;position:relative;z-index:1;width:100%}
+.hint{font-size:12px;color:var(--mut);margin-top:12px;line-height:1.55;text-align:center;min-height:18px}
+.footer{font-size:11px;color:var(--note);margin:18px 4px 0;text-align:center;line-height:1.9;word-break:break-all;position:relative;z-index:1}
+.footer b{font-weight:600;color:var(--mut)}
+.footer code{color:var(--note);font-size:10px}
+.fade{animation:rise .5s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (min-width:760px){
+.page{max-width:680px}
+.action{max-width:680px}
+.apps{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.apps{grid-template-columns:1fr 1fr}}
+.stats{grid-template-columns:repeat(4,1fr)}
+.head{padding:24px 26px 18px}
+.stats,.barwrap,.confs{padding-left:26px;padding-right:26px}
+.sec{padding:20px 26px 24px}
+.meta .name{font-size:24px}
+}
+"""
+_SUB_JS = """
+function F(s){var a=[].slice.call(arguments,1);return String(s).replace(/%s/g,function(){return a.shift()});}
+let cur=null;
+const HP=document.getElementById.bind(document);
+function hint(m,c){const h=HP('hint');h.textContent=m;h.style.color=c==="ok"?"var(--ok)":c==="bad"?"var(--bad)":(c||"");}
+function buildLink(a){return (a.link||'')
+  .replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
+  .replace('{name}',encodeURIComponent(NAME));}
+function selHint(){
+  if(!cur){hint(L.js_first,'#fbbf24');return false;}
+  if(cur.wg||cur.awg){
+    hint(F(L.js_wg_dl,cur.name),'#7dd3fc');
+  }else if(cur.precopy){
+    hint(L.js_happ,'#7dd3fc');
+  }else if(cur.link){
+    hint(F(L.js_opening,cur.name));
+  }else{
+    hint(F(L.js_ext,cur.name),'#fbbf24');
+  }
+  return true;
+}
+function app(a){
+  const d=document.createElement('div');d.className='app fade';
+  d.style.animationDelay=Math.min((CATALOG[lastK]||[]).indexOf(a)*.03,.3)+'s';
+  const ic=document.createElement('span');ic.className='ic';
+  const _letter=String(a.ic||(a.name||'?')[0]).toUpperCase();
+  ic.textContent=_letter;
+  ic.style.background='linear-gradient(135deg,'+(a.col||'#3b82f6')+' 0%,'+(a.col2||'#22d3ee')+' 100%)';
+  if(a.img){const im=document.createElement('img');im.src=a.img;im.alt='';im.onerror=function(){im.remove();ic.textContent=_letter;};ic.textContent='';ic.appendChild(im);}
+  const inf=document.createElement('div');inf.className='inf';
+  const b=document.createElement('b');b.textContent=a.name;
+  const tg=document.createElement('div');tg.className='tags';
+  if(a.pay){const p=document.createElement('span');p.className='tag pay';p.textContent=L.tag_paid;tg.appendChild(p);}
+  else if(a.wg||a.awg){const p=document.createElement('span');p.className='tag cfg';p.textContent='.conf';tg.appendChild(p);}
+  if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent=L.store_dl;
+    x.addEventListener('click',function(e){e.stopPropagation();});tg.appendChild(x);}
+  inf.appendChild(b);inf.appendChild(tg);
+  const ck=document.createElement('span');ck.className='ck';ck.textContent='✓';
+  d.appendChild(ic);d.appendChild(inf);d.appendChild(ck);
+  d.addEventListener('click',function(){
+    cur=a;
+    Array.prototype.forEach.call(d.parentNode.children,function(e){e.classList.remove('sel');});
+    d.classList.add('sel');selHint();
+  });
+  return d;
+}
+function render(){
+  const box=HP('apps');box.innerHTML='';
+  const arr=CATALOG[lastK]||[];
+  arr.forEach(a=>box.appendChild(app(a)));
+  if(arr.indexOf(cur)<0)cur=arr[0]||null;
+  if(cur){const el=box.children[arr.indexOf(cur)];if(el)el.classList.add('sel');}
+  selHint();
+  const lbl=HP('addLbl');
+  if(cur&&cur.link)lbl.textContent=L.btn_add;
+  else if(cur&&(cur.wg||cur.awg))lbl.textContent=L.btn_install;
+  else if(cur)lbl.textContent=L.btn_how;
+  else lbl.textContent=L.btn_add;
+}
+function renderChips(){
+  const box=HP('chips');box.innerHTML='';
+  for(const e of PLATS){
+    const k=e[0],lb=e[1];
+    const c=document.createElement('div');c.className='chip-p'+(k===lastK?' sel':'');c.textContent=lb;
+    c.addEventListener('click',function(){lastK=k;cur=null;renderChips();render();});
+    box.appendChild(c);
+  }
+}
+document.addEventListener('DOMContentLoaded',function(){
+  renderChips();
+  render();
+  HP('addBtn').addEventListener('click',function(){
+    if(!selHint())return;
+    if(cur.wg||cur.awg){
+      location.href=cur.wg?WGDOWN:AWGDOWN;
+      return;
+    }
+    if(cur.precopy){
+      var _lk=buildLink(cur);
+      if(navigator.clipboard){navigator.clipboard.writeText(SUB).then(function(){location.href=_lk;})
+        .catch(function(){location.href=_lk;});}
+      else{location.href=_lk;}
+      return;
+    }
+    if(cur.link){location.href=buildLink(cur);return;}
+    if(navigator.clipboard){
+      navigator.clipboard.writeText(SUB).then(function(){
+        hint(F(L.js_copied_open,cur.name),'ok');
+      }).catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
+  });
+  HP('copyBtn').addEventListener('click',function(){
+    if(navigator.clipboard){
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
+        .catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
+  });
+  HP('shareBtn').addEventListener('click',function(){
+    if(navigator.share){
+      navigator.share({title:NAME,text:NAME,url:SUB}).catch(function(){hint(L.js_manual);});
+    }else if(navigator.clipboard){
+      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
+        .catch(function(){hint(L.js_nocopy);});
+    }else{hint(L.js_nocopy);}
+  });
+  /* QR. Картинку просим только по нажатию: иначе каждый показ страницы стоил
+     бы серверу лишнего запроса, а человеку — трафика. Привязка по кнопке —
+     функцией: строку семьи морда может вставить и после размечивания
+     страницы, и её кнопка QR обязана получить обработчик там же (#306). */
+  var QRL=HP('qrLayer'), QRI=HP('qrImg'), QRC=HP('qrName');
+  function qrBtnBind(btn){
+    if(btn.dataset.qrbound)return;
+    btn.dataset.qrbound="1";
+    if(!QRL||!QRI)return;
+    btn.addEventListener('click',function(e){
+      e.preventDefault();
+      var src=btn.getAttribute('data-qr')||'';
+      if(!src){hint(L.qr_err,'bad');return;}
+      if(QRI.getAttribute('src')!==src)QRI.src=src;
+      QRC.textContent=btn.getAttribute('data-qr-t')||'';
+      QRL.className='qrlayer on';
+    });
+  }
+  (function(){
+    if(!QRL||!QRI)return;
+    function close(){QRL.className='qrlayer';}
+    Array.prototype.forEach.call(document.querySelectorAll('[data-qr]'),qrBtnBind);
+    QRI.addEventListener('error',function(){close();hint(L.qr_err,'bad');});
+    QRL.addEventListener('click',function(e){if(e.target===QRL||e.target===QRI)close();});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
+  })();
+  /* Забывание устройства — ТОЛЬКО кнопки с data-forget. Класс .devx описывает
+     вид, а не намерение: семейные 🔗/👤/✕ тоже носят .devx и поднимали этот
+     confirm. */
+  Array.prototype.forEach.call(document.querySelectorAll('.devx[data-forget]'),function(btn){
+    btn.addEventListener('click',function(){
+      var ip=btn.getAttribute('data-ip');
+      if(!confirm(L.js_forget_q))return;
+      btn.disabled=true;
+      fetch('/p/'+encodeURIComponent(TOK)+'/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})})
+        .then(function(r){return r.json();})
+        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint(L.js_forgot,'ok');} else {hint(F(L.js_forget_err,(j&&j.error)||L.js_err),'bad'); btn.disabled=false;} })
+        .catch(function(){hint(L.js_net,'bad'); btn.disabled=false;});
+    });
+  });
+  function famPost(act,body,cb){
+    fetch('/p/'+encodeURIComponent(TOK)+'/family/'+act,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();})
+      .then(function(j){cb(j&&j.ok?null:((j&&j.error)||L.js_err),j);})
+      .catch(function(){cb(L.js_net,null);});
+  }
+  function famRowBind(row){
+    if(row.dataset.bound)return;
+    row.dataset.bound="1";
+    Array.prototype.forEach.call(row.querySelectorAll('[data-qr]'),qrBtnBind);
+    var mu=row.getAttribute('data-m');
+    var sel=row.querySelector('.famdev');
+    if(sel)sel.addEventListener('change',function(){
+      sel.disabled=true;
+      famPost('devlimit',{member_uuid:mu,max_devices:parseInt(sel.value,10)||0},function(err){
+        sel.disabled=false; if(err)hint(F(L.fam_err,err),'bad');});
+    });
+    var cp=row.querySelector('.famcopy');
+    if(cp)cp.addEventListener('click',function(){
+      var lk=cp.getAttribute('data-l')||'';
+      if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'ok');},function(){prompt('',lk);});}
+      else{prompt('',lk);}
+    });
+    var rn=row.querySelector('.famren');
+    if(rn)rn.addEventListener('click',function(){
+      var nm=prompt(L.fam_name_prompt,rn.getAttribute('data-n')||'');
+      if(nm===null)return;
+      nm=(nm||'').trim(); if(!nm)return;
+      rn.disabled=true;
+      famPost('rename',{member_uuid:mu,name:nm},function(err,j){
+        rn.disabled=false;
+        if(err){hint(F(L.fam_err,err),'bad');return;}
+        /* Имя на строке — то, что вернул сервер, а не то, что набрал человек:
+           пределы и обрезка живут на ручке, и морда не должна врать раньше неё. */
+        var nm2=(j&&j.name)||nm, b=row.querySelector('.devi b');
+        if(b)b.textContent=nm2;
+        rn.setAttribute('data-n',nm2);
+        hint(L.fam_renamed,'ok');
+      });
+    });
+    var del=row.querySelector('.famdel');
+    if(del)del.addEventListener('click',function(){
+      if(!confirm(L.fam_del_q))return;
+      del.disabled=true;
+      famPost('del',{member_uuid:mu},function(err){
+        if(err){del.disabled=false;hint(F(L.fam_err,err),'bad');}
+        else{row.remove();hint(L.fam_del_ok,'ok');}
+      });
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.famr'),famRowBind);
+  var famAdd=document.querySelector('.famadd');
+  if(famAdd)famAdd.addEventListener('click',function(){
+    var nm=prompt(L.fam_name_prompt,'');
+    if(nm===null)return;
+    nm=(nm||'').trim(); if(!nm)return;
+    famAdd.disabled=true;
+    famPost('add',{name:nm},function(err,j){
+      if(err){famAdd.disabled=false;hint(F(L.fam_err,err),'bad');return;}
+      /* Участник появляется на странице сразу: ручка вернула готовую строку,
+         и морда вставляет её, как это уже делает обработчик переименования.
+         Прежняя схема «перезагрузись через 700 мс» молча глоталась частью
+         мобильных браузеров после диалога, и человек не видел участника,
+         пока не обновлял страницу сам (#306). */
+      var sec=famAdd.closest('.sec'), list=sec&&sec.querySelector('.devlist');
+      var raw=(j&&j.member&&j.member.row)||'';
+      if(!list||!raw){hint(L.fam_added,'ok');location.reload();return;}
+      var t=document.createElement('template');
+      t.innerHTML=raw;
+      var row=t.content.firstElementChild;
+      if(!row||!row.classList.contains('famr')){hint(L.fam_added,'ok');location.reload();return;}
+      var empty=list.querySelector('.devr:not(.famr)');
+      if(empty)empty.remove();
+      list.appendChild(row);
+      famRowBind(row);
+      if(list.querySelectorAll('.famr').length>=5){
+        var note=document.createElement('div');
+        note.className='devnote';
+        note.textContent=F(L.fam_full.replace('%d','%s'),FAMMAX);
+        famAdd.replaceWith(note);
+      }else{famAdd.disabled=false;}
+      hint(L.fam_added,'ok');
+    });
+  });
+  (function(){
+    var f=document.getElementById('avaFile'),b=document.getElementById('avaBtn'),rb=document.getElementById('avaRm');
+    if(!f||!b)return;
+    function post(body,after){
+      b.disabled=true; if(rb)rb.disabled=true;
+      fetch('/p/'+encodeURIComponent(TOK)+'/avatar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(function(r){return r.json();})
+        .then(function(j){ b.disabled=false; if(rb)rb.disabled=false;
+          if(j&&j.ok){after&&after(j);}else{hint(j&&j.error||L.ava_err,'bad');} })
+        .catch(function(){ b.disabled=false; if(rb)rb.disabled=false; hint(L.js_net,'bad'); });
+    }
+    b.addEventListener('click',function(){f.click();});
+    f.addEventListener('change',function(){
+      var file=f.files&&f.files[0]; f.value='';
+      if(!file)return;
+      if(file.size>5*1024*1024){hint(L.ava_big,'bad');return;}
+      var fr=new FileReader();
+      fr.onload=function(){
+        var im=new Image();
+        im.onload=function(){
+          try{
+            var s=Math.min(im.width,im.height)||1,cv=document.createElement('canvas');
+            cv.width=cv.height=192;
+            var x=cv.getContext('2d');
+            x.drawImage(im,(im.width-s)/2,(im.height-s)/2,s,s,0,0,192,192);
+            post({img:cv.toDataURL('image/png')},function(){location.reload();});
+          }catch(e){hint(L.ava_err,'bad');}
+        };
+        im.onerror=function(){hint(L.ava_bad,'bad');};
+        im.src=fr.result;
+      };
+      fr.onerror=function(){hint(L.ava_bad,'bad');};
+      fr.readAsDataURL(file);
+    });
+    if(rb)rb.addEventListener('click',function(){ if(confirm(L.ava_rm_tip)) post({},function(){location.reload();}); });
+  })();
+});
+(function(){var b=document.getElementById('thBtn');if(!b)return;
+b.addEventListener('click',function(){var d=document.documentElement;
+var t=d.dataset.theme==='light'?'dark':'light';d.dataset.theme=t;
+try{localStorage.setItem('veil-theme',t)}catch(e){}
+var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute('content',t==='light'?'#eef2fb':'#0a122a');});})();
+"""
+_SUB_CSS_B = _SUB_CSS.encode("utf-8")
+_SUB_JS_B = _SUB_JS.encode("utf-8")
+_SUB_CSS_GZ = gzip.compress(_SUB_CSS_B, 6)
+_SUB_JS_GZ = gzip.compress(_SUB_JS_B, 6)
+_SUB_CSS_ETAG = '"%s"' % hashlib.sha256(_SUB_CSS_B).hexdigest()[:32]
+_SUB_JS_ETAG = '"%s"' % hashlib.sha256(_SUB_JS_B).hexdigest()[:32]
+_SUB_ASSET_V = hashlib.sha256(_SUB_CSS_B + _SUB_JS_B).hexdigest()[:16]
 
 def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pact=None):
     if lang not in _SUB_LANGS:
@@ -9077,227 +10277,8 @@ var t=(s==="light"||s==="dark")?s:
 (window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");
 document.documentElement.dataset.theme=t;
 var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute("content",t==="light"?"#eef2fb":"#0a122a");}catch(e){}})();</script>
-<title>__NAMEHT__ · __TTL__</title><style>
-:root{--bg:#0a122a;--ink:#e8ecf7;--ink2:#eef2ff;--ink3:#cbd5f1;--mut:#8b94b5;--note:#58618a;
---card:rgba(18,23,42,.72);--tilebg:rgba(22,29,52,.75);--chipbg:rgba(22,29,52,.6);--appsel:rgba(19,33,58,.92);
---line:rgba(66,84,130,.45);--line2:rgba(94,109,166,.6);--trackbg:rgba(10,15,33,.8);--ckbg:rgba(10,15,33,.5);
---confbg:rgba(30,58,138,.5);--confbgh:rgba(30,58,138,.85);--confink:#bfe3ff;--onaccent:#04101f;
---ok:#4ade80;--bad:#fb7185;--store:#60a5fa;--accent3:#a5b4fc;--fam:#c4b5fd;--sky:#7dd3fc;--danger:#fca5a5;--warn:#fbbf24;
---ghost:rgba(255,255,255,.07);--ghosth:rgba(255,255,255,.14);--ghostb:rgba(255,255,255,.16)}
-html[data-theme=light]{--bg:#eef2fb;--ink:#0f1730;--ink2:#1b2440;--ink3:#3a4468;--mut:#5b6584;--note:#6a7392;
---card:rgba(255,255,255,.82);--tilebg:rgba(240,244,253,.9);--chipbg:rgba(233,238,250,.85);--appsel:rgba(219,234,254,.95);
---line:rgba(96,120,180,.35);--line2:rgba(100,116,160,.5);--trackbg:rgba(180,195,225,.45);--ckbg:rgba(255,255,255,.7);
---confbg:rgba(219,234,254,.8);--confbgh:rgba(191,219,254,.95);--confink:#0c3a66;
---ok:#15803d;--bad:#be123c;--store:#2563eb;--accent3:#4f46e5;--fam:#6d28d9;--sky:#0369a1;--danger:#b91c1c;--warn:#92400e;
---ghost:rgba(15,23,48,.05);--ghosth:rgba(15,23,48,.1);--ghostb:rgba(15,23,48,.18)}
-html[data-theme=light] .blob{opacity:.28}
-html[data-theme=light] .card{box-shadow:0 30px 80px -24px rgba(15,23,48,.25)}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0}
-body{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink);
-  background:var(--bg);display:flex;justify-content:center;padding:28px 14px 56px;position:relative}
-.bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-.blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.45;animation:drift 18s ease-in-out infinite}
-.b1{width:52vmax;height:52vmax;left:-18vmax;top:-20vmax;background:radial-gradient(circle,#24407f,transparent 65%)}
-.b2{width:46vmax;height:46vmax;right:-16vmax;top:20%;background:radial-gradient(circle,#0e6f8f,transparent 65%);animation-delay:-6s}
-.b3{width:40vmax;height:40vmax;left:12%;bottom:-22vmax;background:radial-gradient(circle,#143f5e,transparent 65%);animation-delay:-11s}
-@keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(4vmax,-3vmax) scale(1.06)}66%{transform:translate(-3vmax,3vmax) scale(.96)}}
-.ray{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.3;
-  background:radial-gradient(900px 600px at 50% -12%,rgba(56,189,248,.10),transparent 60%)}
-.page{width:100%;max-width:460px;position:relative;z-index:1}
-.hbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
-  grid-template-areas:"logo br pill" "logo br th";
-  column-gap:11px;row-gap:6px;align-items:center;margin-bottom:18px;padding:0 2px}
-.hbar .lg{grid-area:logo;align-self:center;width:40px;height:40px;border-radius:12px;object-fit:cover;box-shadow:0 8px 20px -6px rgba(34,211,238,.5)}
-.hbar .br{grid-area:br;align-self:center;min-width:0;display:flex;flex-direction:column;justify-content:center}
-.hbar .br b{font-size:15px;font-weight:800;letter-spacing:3px;line-height:1}
-.hbar .br span{font-size:10.5px;color:var(--mut);letter-spacing:.3px;margin-top:3px;overflow-wrap:anywhere}
-.th{grid-area:th;justify-self:end;display:flex;align-items:flex-end;gap:4px}
-[dir=rtl] .th{justify-self:start}
-.langs{display:grid;grid-template-columns:repeat(2,min-content);gap:4px}
-.tbtn{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;padding:0;cursor:pointer;
-  border-radius:999px;border:1px solid var(--line);background:var(--chipbg);color:var(--mut);transition:.15s}
-.tbtn:hover{color:var(--ink);border-color:#3b82f6}
-.tbtn svg{width:15px;height:15px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.tbtn .sun{display:none}
-html[data-theme=light] .tbtn .sun{display:block}
-html[data-theme=light] .tbtn .moon{display:none}
-.langs a{font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--mut);text-decoration:none;
-  padding:6px 8px;border-radius:999px;border:1px solid var(--line);background:var(--chipbg);text-align:center}
-.langs a.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent}
-.hbar .pill{grid-area:pill;justify-self:end;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;
-  font-size:12px;font-weight:700;white-space:nowrap}
-.pill.ok{background:rgba(74,222,128,.1);color:var(--ok);border:1px solid rgba(74,222,128,.35)}
-.pill.off{background:rgba(251,113,133,.1);color:var(--bad);border:1px solid rgba(251,113,133,.35)}
-.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
-.pill.ok i{animation:pulse 1.8s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.card{background:var(--card);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid var(--line);border-radius:24px;overflow:hidden;
-  box-shadow:0 30px 80px -24px rgba(0,0,0,.8)}
-.head{display:flex;align-items:center;gap:14px;padding:20px 20px 16px;
-  background:linear-gradient(180deg,rgba(59,130,246,.16),rgba(34,211,238,.04) 60%,transparent)}
-.ava{width:64px;height:64px;border-radius:20px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  font-size:30px;font-weight:800;color:var(--onaccent);position:relative;
-  background:linear-gradient(135deg,#3b82f6,#22d3ee);box-shadow:0 14px 30px -8px rgba(34,211,238,.5)}
-.ava img{width:100%;height:100%;object-fit:cover;display:block;position:relative;border-radius:20px}
-.avawrap{display:flex;flex-direction:column;align-items:center;gap:6px;flex:0 0 auto}
-.avactl{display:flex;gap:6px}
-.avabtn{width:26px;height:26px;border-radius:9px;border:1px solid var(--ghostb);cursor:pointer;
-  background:var(--ghost);color:var(--ink2);font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
-.avabtn:hover{background:var(--ghosth)}
-.ava .ring{position:absolute;inset:-3px;border-radius:23px;border:2px solid transparent;pointer-events:none;
-  border-top-color:rgba(125,211,252,.9);animation:spin 7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.meta{min-width:0}
-.meta .name{font-size:22px;font-weight:800;color:var(--ink);margin:0;line-height:1.2;word-break:break-word}
-.meta .sub{font-size:12.5px;color:var(--mut);margin-top:6px;word-break:break-word}
-.meta .sub b{color:var(--accent3);font-weight:600}
-.chip-fam{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:var(--fam);
-  background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.4);border-radius:999px;padding:3px 10px}
-.famdev{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;color:var(--fam);cursor:pointer;
-  background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.35);border-radius:99px;padding:5px 6px}
-.famadd{display:block;width:100%;margin-top:12px;padding:10px;border-radius:13px;cursor:pointer;
-  font:inherit;font-size:12.5px;font-weight:700;color:var(--fam);border:1px dashed rgba(139,92,246,.5);
-  background:rgba(139,92,246,.07)}
-.famadd:disabled{opacity:.5;cursor:default}
-.famcopy,.famqr,a.devx{color:var(--sky);background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);
-  text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
-.famcopy:hover,.famqr:hover,a.devx:hover{background:rgba(56,189,248,.18)}
-/* QR поверх страницы: белый лист обязателен — сканер читает чёрные модули
-   только на светлом, тёмная тема страницы для этого не годится */
-.qrlayer{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;
-  background:rgba(4,8,20,.86);padding:22px}
-.qrlayer.on{display:flex}
-.qrbox{background:#fff;border-radius:20px;padding:16px 16px 13px;max-width:min(360px,86vw);
-  text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.55)}
-.qrbox img{display:block;width:100%;height:auto;image-rendering:pixelated}
-.qrname{color:#111a33;font-size:13px;font-weight:700;margin-top:11px;word-break:break-word}
-.qrhint{color:#4b5878;font-size:11.5px;margin-top:5px;line-height:1.5}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 20px 0}
-.stat{position:relative;border-radius:16px;padding:12px 13px 14px;background:var(--tilebg);
-  border:1px solid var(--line);overflow:hidden}
-.stat::before{content:'';position:absolute;inset:auto 0 0 0;height:2px;
-  background:linear-gradient(90deg,#3b82f6,#22d3ee);opacity:.6}
-.stat svg{width:14px;height:14px;stroke:var(--store);stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;margin-bottom:8px}
-.stat .lb{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
-.stat b{display:block;font-size:14px;font-weight:700;color:var(--ink2);margin-top:5px;line-height:1.35;word-break:break-word}
-.stat b .dim{color:var(--mut);font-weight:400;font-size:11px}
-.barwrap{padding:14px 20px 16px}
-.track{height:10px;border-radius:99px;background:var(--trackbg);box-shadow:inset 0 2px 6px rgba(0,0,0,.5);
-  overflow:hidden;position:relative}
-.track i{display:block;height:100%;border-radius:99px;transition:width .6s cubic-bezier(.4,0,.2,1);position:relative;
-  background:linear-gradient(90deg,#2563eb,#22d3ee,#34d399);background-size:200% 100%;animation:flows 3.5s linear infinite}
-@keyframes flows{to{background-position:200% 0}}
-.tl{display:flex;justify-content:space-between;align-items:baseline;margin-top:8px}
-.tl span{font-size:11.5px;color:var(--mut)}
-.tl b{font-size:12px;color:var(--ink3);font-weight:600}
-.confs{display:flex;gap:9px;padding:0 20px 6px;flex-wrap:wrap}
-.confs:empty{display:none}
-.btn-conf{flex:1;min-width:150px;display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  padding:11px 10px;border-radius:13px;text-decoration:none;font-size:12.5px;font-weight:600;color:var(--confink);
-  background:var(--confbg);border:1px solid rgba(59,130,246,.45);transition:.15s}
-.btn-conf:hover{border-color:#3b82f6;background:var(--confbgh)}
-.btn-conf svg{width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.rt{font-size:12.5px;color:var(--ink3);line-height:1.65;background:var(--tilebg);
-  border:1px solid var(--line);border-radius:14px;padding:12px 14px}
-.rt b{color:var(--ink3)}
-.rt ul{margin:8px 0 0;padding-inline-start:18px}
-.rt li{margin:5px 0}
-.rt code{color:var(--sky);font-size:11px;background:var(--chipbg);padding:1px 5px;border-radius:5px}
-.devlist{display:flex;flex-direction:column;gap:8px}
-.devr{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--tilebg);
-  border:1px solid var(--line);border-radius:14px;padding:10px 12px}
-.devi{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
-.devi b{font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.devi span{font-size:11px;color:var(--mut);overflow-wrap:anywhere}
-.devx{flex:0 0 auto;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;color:var(--danger);
-  background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.35);border-radius:10px;padding:7px 12px;transition:.15s}
-.devx:hover{background:rgba(251,113,133,.2)}
-.devx:disabled{opacity:.5;cursor:default}
-.devnote{font-size:11px;color:var(--note);margin-top:10px;line-height:1.55}
-.usmore{margin-top:8px}
-.usmore>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600;color:var(--mut);
-  padding:6px 2px;user-select:none}
-.usmore>summary::-webkit-details-marker{display:none}
-.usmore>summary:hover{color:var(--ink2)}
-.usmore[open]>summary{color:var(--ink2)}
-.usmore>.devlist{margin-top:6px}
-.sec{padding:18px 20px 20px}
-h2{font-size:13px;color:var(--ink3);text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px;font-weight:700;
-  display:flex;align-items:center}
-h2::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-inline-start:12px}
-.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:none}
-.chips::-webkit-scrollbar{display:none}
-.chip-p{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;
-  font-size:12.5px;font-weight:600;color:var(--ink3);border:1px solid var(--line);background:var(--chipbg);transition:.15s}
-.chip-p:hover{color:var(--ink);border-color:#3b82f6}
-.chip-p.sel{color:var(--onaccent);background:linear-gradient(90deg,#3b82f6,#22d3ee);border-color:transparent;font-weight:700;
-  box-shadow:0 8px 20px -8px rgba(34,211,238,.6)}
-.apps{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-@media (max-width:420px){.apps{grid-template-columns:1fr}}
-.app{display:flex;align-items:center;gap:11px;padding:11px;border-radius:16px;cursor:pointer;
-  background:var(--tilebg);border:1px solid var(--line);transition:.15s;min-width:0}
-.app:hover{border-color:#3b82f6;transform:translateY(-1px)}
-.app.sel{border-color:#22d3ee;background:var(--appsel);
-  box-shadow:0 0 0 1px #22d3ee inset,0 10px 24px -12px rgba(34,211,238,.5)}
-.ic{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  font-size:17px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 6px 14px -6px rgba(0,0,0,.6)}
-.ic img{width:100%;height:100%;object-fit:cover;border-radius:11px;display:block}
-.inf{min-width:0;flex:1}
-.inf b{display:block;font-size:13px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tags{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
-.tags a.store{font-size:10.5px;color:var(--store);text-decoration:none;font-weight:600}
-.tags a.store:active{opacity:.7}
-.tag{font-size:9px;font-weight:700;letter-spacing:.4px;padding:2px 7px;border-radius:999px;text-transform:uppercase}
-.tag.pay{color:var(--warn);border:1px solid rgba(251,191,36,.45);background:rgba(251,191,36,.1)}
-.tag.cfg{color:var(--sky);border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.08)}
-.ck{width:21px;height:21px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  font-size:11px;font-weight:800;color:transparent;border:1px solid var(--line2);background:var(--ckbg);transition:.15s}
-.app.sel .ck{color:var(--onaccent);background:#22d3ee;border-color:#22d3ee;box-shadow:0 0 12px rgba(34,211,238,.7)}
-.btn{width:100%;padding:15px;border-radius:15px;border:0;cursor:pointer;font-size:15px;font-weight:800;letter-spacing:.2px;
-  display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:.15s;font-family:inherit}
-.btn svg{width:16px;height:16px;stroke:currentColor;stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
-.btn-add{background:linear-gradient(90deg,#2563eb,#22d3ee);color:var(--onaccent);position:relative;overflow:hidden;
-  box-shadow:0 14px 34px -10px rgba(34,211,238,.6)}
-.btn-add::after{content:'';position:absolute;top:0;bottom:0;width:40%;left:-60%;transform:skewX(-20deg);
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:sheen 3.4s ease-in-out infinite}
-@keyframes sheen{0%,60%{left:-60%}100%{left:130%}}
-.btn-add:active{transform:scale(.985)}
-.btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
-.btn-row .btn-copy{flex:1;background:var(--tilebg);color:var(--ink3);border:1px solid var(--line)}
-.btn-row .btn-copy:hover{border-color:#3b82f6;color:var(--ink2)}
-/* Узкий экран. Кнопки в row flex не сжимаются ниже своего min-content (min-width:auto
-   по умолчанию), поэтому третья кнопка рядом с «Скопировать подписку» и «Поделиться»
-   не умещается в ~332px вьюпорта и вылезает за него — ряд обязан переноситься.
-   Строка семьи с ▦ ужата тем же правилом: четыре glyph-кнопки + select впритык. */
-@media (max-width:420px){
- .btn-row{gap:8px}
- .btn-row .btn-copy{padding:13px 10px;font-size:13.5px;gap:7px}
- .devr{gap:6px;padding:9px 10px}
- .devx{padding:6px 9px}
- .famdev{padding:5px 5px;font-size:11px}
-}
-.action{max-width:460px;padding-top:18px;position:relative;z-index:1;width:100%}
-.hint{font-size:12px;color:var(--mut);margin-top:12px;line-height:1.55;text-align:center;min-height:18px}
-.footer{font-size:11px;color:var(--note);margin:18px 4px 0;text-align:center;line-height:1.9;word-break:break-all;position:relative;z-index:1}
-.footer b{font-weight:600;color:var(--mut)}
-.footer code{color:var(--note);font-size:10px}
-.fade{animation:rise .5s ease both}
-@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-@media (min-width:760px){
-.page{max-width:680px}
-.action{max-width:680px}
-.apps{grid-template-columns:repeat(3,1fr)}
-@media (max-width:900px){.apps{grid-template-columns:1fr 1fr}}
-.stats{grid-template-columns:repeat(4,1fr)}
-.head{padding:24px 26px 18px}
-.stats,.barwrap,.confs{padding-left:26px;padding-right:26px}
-.sec{padding:20px 26px 24px}
-.meta .name{font-size:24px}
-}
-</style></head><body>
+<title>__NAMEHT__ · __TTL__</title><link rel="stylesheet" href="/p/sub.css?v=__ASSETV__">
+</head><body>
 <div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 <div class="ray"></div>
 <div class="page">
@@ -9366,278 +10347,9 @@ const AWGDOWN=__AWGDOWN__;
 const PLATS=__PLATS__;
 const TOK=__TOK__;
 const L=__LJS__;
-function F(s){var a=[].slice.call(arguments,1);return String(s).replace(/%s/g,function(){return a.shift()});}
-let cur=null;
+const FAMMAX=__FAMMAX__;
 let lastK=__PLATDEFAULT__;
-const HP=document.getElementById.bind(document);
-function hint(m,c){const h=HP('hint');h.textContent=m;h.style.color=c==="ok"?"var(--ok)":c==="bad"?"var(--bad)":(c||"");}
-function buildLink(a){return (a.link||'')
-  .replace('{b64}',B64).replace('{rawsub}',SUB).replace('{sub}',encodeURIComponent(SUB))
-  .replace('{name}',encodeURIComponent(NAME));}
-function selHint(){
-  if(!cur){hint(L.js_first,'#fbbf24');return false;}
-  if(cur.wg||cur.awg){
-    hint(F(L.js_wg_dl,cur.name),'#7dd3fc');
-  }else if(cur.precopy){
-    hint(L.js_happ,'#7dd3fc');
-  }else if(cur.link){
-    hint(F(L.js_opening,cur.name));
-  }else{
-    hint(F(L.js_ext,cur.name),'#fbbf24');
-  }
-  return true;
-}
-function app(a){
-  const d=document.createElement('div');d.className='app fade';
-  d.style.animationDelay=Math.min((CATALOG[lastK]||[]).indexOf(a)*.03,.3)+'s';
-  const ic=document.createElement('span');ic.className='ic';
-  const _letter=String(a.ic||(a.name||'?')[0]).toUpperCase();
-  ic.textContent=_letter;
-  ic.style.background='linear-gradient(135deg,'+(a.col||'#3b82f6')+' 0%,'+(a.col2||'#22d3ee')+' 100%)';
-  if(a.img){const im=document.createElement('img');im.src=a.img;im.alt='';im.onerror=function(){im.remove();ic.textContent=_letter;};ic.textContent='';ic.appendChild(im);}
-  const inf=document.createElement('div');inf.className='inf';
-  const b=document.createElement('b');b.textContent=a.name;
-  const tg=document.createElement('div');tg.className='tags';
-  if(a.pay){const p=document.createElement('span');p.className='tag pay';p.textContent=L.tag_paid;tg.appendChild(p);}
-  else if(a.wg||a.awg){const p=document.createElement('span');p.className='tag cfg';p.textContent='.conf';tg.appendChild(p);}
-  if(a.store){const x=document.createElement('a');x.href=a.store;x.target='_blank';x.rel='noopener';x.className='store';x.textContent=L.store_dl;
-    x.addEventListener('click',function(e){e.stopPropagation();});tg.appendChild(x);}
-  inf.appendChild(b);inf.appendChild(tg);
-  const ck=document.createElement('span');ck.className='ck';ck.textContent='✓';
-  d.appendChild(ic);d.appendChild(inf);d.appendChild(ck);
-  d.addEventListener('click',function(){
-    cur=a;
-    Array.prototype.forEach.call(d.parentNode.children,function(e){e.classList.remove('sel');});
-    d.classList.add('sel');selHint();
-  });
-  return d;
-}
-function render(){
-  const box=HP('apps');box.innerHTML='';
-  const arr=CATALOG[lastK]||[];
-  arr.forEach(a=>box.appendChild(app(a)));
-  if(arr.indexOf(cur)<0)cur=arr[0]||null;
-  if(cur){const el=box.children[arr.indexOf(cur)];if(el)el.classList.add('sel');}
-  selHint();
-  const lbl=HP('addLbl');
-  if(cur&&cur.link)lbl.textContent=L.btn_add;
-  else if(cur&&(cur.wg||cur.awg))lbl.textContent=L.btn_install;
-  else if(cur)lbl.textContent=L.btn_how;
-  else lbl.textContent=L.btn_add;
-}
-function renderChips(){
-  const box=HP('chips');box.innerHTML='';
-  for(const e of PLATS){
-    const k=e[0],lb=e[1];
-    const c=document.createElement('div');c.className='chip-p'+(k===lastK?' sel':'');c.textContent=lb;
-    c.addEventListener('click',function(){lastK=k;cur=null;renderChips();render();});
-    box.appendChild(c);
-  }
-}
-document.addEventListener('DOMContentLoaded',function(){
-  renderChips();
-  render();
-  HP('addBtn').addEventListener('click',function(){
-    if(!selHint())return;
-    if(cur.wg||cur.awg){
-      location.href=cur.wg?WGDOWN:AWGDOWN;
-      return;
-    }
-    if(cur.precopy){
-      var _lk=buildLink(cur);
-      if(navigator.clipboard){navigator.clipboard.writeText(SUB).then(function(){location.href=_lk;})
-        .catch(function(){location.href=_lk;});}
-      else{location.href=_lk;}
-      return;
-    }
-    if(cur.link){location.href=buildLink(cur);return;}
-    if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){
-        hint(F(L.js_copied_open,cur.name),'ok');
-      }).catch(function(){hint(L.js_nocopy);});
-    }else{hint(L.js_nocopy);}
-  });
-  HP('copyBtn').addEventListener('click',function(){
-    if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
-        .catch(function(){hint(L.js_nocopy);});
-    }else{hint(L.js_nocopy);}
-  });
-  HP('shareBtn').addEventListener('click',function(){
-    if(navigator.share){
-      navigator.share({title:NAME,text:NAME,url:SUB}).catch(function(){hint(L.js_manual);});
-    }else if(navigator.clipboard){
-      navigator.clipboard.writeText(SUB).then(function(){hint(L.js_copied,'ok');})
-        .catch(function(){hint(L.js_nocopy);});
-    }else{hint(L.js_nocopy);}
-  });
-  /* QR. Картинку просим только по нажатию: иначе каждый показ страницы стоил
-     бы серверу лишнего запроса, а человеку — трафика. Привязка по кнопке —
-     функцией: строку семьи морда может вставить и после размечивания
-     страницы, и её кнопка QR обязана получить обработчик там же (#306). */
-  var QRL=HP('qrLayer'), QRI=HP('qrImg'), QRC=HP('qrName');
-  function qrBtnBind(btn){
-    if(btn.dataset.qrbound)return;
-    btn.dataset.qrbound="1";
-    if(!QRL||!QRI)return;
-    btn.addEventListener('click',function(e){
-      e.preventDefault();
-      var src=btn.getAttribute('data-qr')||'';
-      if(!src){hint(L.qr_err,'bad');return;}
-      if(QRI.getAttribute('src')!==src)QRI.src=src;
-      QRC.textContent=btn.getAttribute('data-qr-t')||'';
-      QRL.className='qrlayer on';
-    });
-  }
-  (function(){
-    if(!QRL||!QRI)return;
-    function close(){QRL.className='qrlayer';}
-    Array.prototype.forEach.call(document.querySelectorAll('[data-qr]'),qrBtnBind);
-    QRI.addEventListener('error',function(){close();hint(L.qr_err,'bad');});
-    QRL.addEventListener('click',function(e){if(e.target===QRL||e.target===QRI)close();});
-    document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
-  })();
-  /* Забывание устройства — ТОЛЬКО кнопки с data-forget. Класс .devx описывает
-     вид, а не намерение: семейные 🔗/👤/✕ тоже носят .devx и поднимали этот
-     confirm. */
-  Array.prototype.forEach.call(document.querySelectorAll('.devx[data-forget]'),function(btn){
-    btn.addEventListener('click',function(){
-      var ip=btn.getAttribute('data-ip');
-      if(!confirm(L.js_forget_q))return;
-      btn.disabled=true;
-      fetch('/p/'+encodeURIComponent(TOK)+'/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})})
-        .then(function(r){return r.json();})
-        .then(function(j){ if(j&&j.ok){var row=btn.closest('.devr'); if(row) row.remove(); hint(L.js_forgot,'ok');} else {hint(F(L.js_forget_err,(j&&j.error)||L.js_err),'bad'); btn.disabled=false;} })
-        .catch(function(){hint(L.js_net,'bad'); btn.disabled=false;});
-    });
-  });
-  function famPost(act,body,cb){
-    fetch('/p/'+encodeURIComponent(TOK)+'/family/'+act,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(r){return r.json();})
-      .then(function(j){cb(j&&j.ok?null:((j&&j.error)||L.js_err),j);})
-      .catch(function(){cb(L.js_net,null);});
-  }
-  function famRowBind(row){
-    if(row.dataset.bound)return;
-    row.dataset.bound="1";
-    Array.prototype.forEach.call(row.querySelectorAll('[data-qr]'),qrBtnBind);
-    var mu=row.getAttribute('data-m');
-    var sel=row.querySelector('.famdev');
-    if(sel)sel.addEventListener('change',function(){
-      sel.disabled=true;
-      famPost('devlimit',{member_uuid:mu,max_devices:parseInt(sel.value,10)||0},function(err){
-        sel.disabled=false; if(err)hint(F(L.fam_err,err),'bad');});
-    });
-    var cp=row.querySelector('.famcopy');
-    if(cp)cp.addEventListener('click',function(){
-      var lk=cp.getAttribute('data-l')||'';
-      if(navigator.clipboard){navigator.clipboard.writeText(lk).then(function(){hint(L.fam_copy_ok,'ok');},function(){prompt('',lk);});}
-      else{prompt('',lk);}
-    });
-    var rn=row.querySelector('.famren');
-    if(rn)rn.addEventListener('click',function(){
-      var nm=prompt(L.fam_name_prompt,rn.getAttribute('data-n')||'');
-      if(nm===null)return;
-      nm=(nm||'').trim(); if(!nm)return;
-      rn.disabled=true;
-      famPost('rename',{member_uuid:mu,name:nm},function(err,j){
-        rn.disabled=false;
-        if(err){hint(F(L.fam_err,err),'bad');return;}
-        /* Имя на строке — то, что вернул сервер, а не то, что набрал человек:
-           пределы и обрезка живут на ручке, и морда не должна врать раньше неё. */
-        var nm2=(j&&j.name)||nm, b=row.querySelector('.devi b');
-        if(b)b.textContent=nm2;
-        rn.setAttribute('data-n',nm2);
-        hint(L.fam_renamed,'ok');
-      });
-    });
-    var del=row.querySelector('.famdel');
-    if(del)del.addEventListener('click',function(){
-      if(!confirm(L.fam_del_q))return;
-      del.disabled=true;
-      famPost('del',{member_uuid:mu},function(err){
-        if(err){del.disabled=false;hint(F(L.fam_err,err),'bad');}
-        else{row.remove();hint(L.fam_del_ok,'ok');}
-      });
-    });
-  }
-  Array.prototype.forEach.call(document.querySelectorAll('.famr'),famRowBind);
-  var famAdd=document.querySelector('.famadd');
-  if(famAdd)famAdd.addEventListener('click',function(){
-    var nm=prompt(L.fam_name_prompt,'');
-    if(nm===null)return;
-    nm=(nm||'').trim(); if(!nm)return;
-    famAdd.disabled=true;
-    famPost('add',{name:nm},function(err,j){
-      if(err){famAdd.disabled=false;hint(F(L.fam_err,err),'bad');return;}
-      /* Участник появляется на странице сразу: ручка вернула готовую строку,
-         и морда вставляет её, как это уже делает обработчик переименования.
-         Прежняя схема «перезагрузись через 700 мс» молча глоталась частью
-         мобильных браузеров после диалога, и человек не видел участника,
-         пока не обновлял страницу сам (#306). */
-      var sec=famAdd.closest('.sec'), list=sec&&sec.querySelector('.devlist');
-      var raw=(j&&j.member&&j.member.row)||'';
-      if(!list||!raw){hint(L.fam_added,'ok');location.reload();return;}
-      var t=document.createElement('template');
-      t.innerHTML=raw;
-      var row=t.content.firstElementChild;
-      if(!row||!row.classList.contains('famr')){hint(L.fam_added,'ok');location.reload();return;}
-      var empty=list.querySelector('.devr:not(.famr)');
-      if(empty)empty.remove();
-      list.appendChild(row);
-      famRowBind(row);
-      if(list.querySelectorAll('.famr').length>=5){
-        var note=document.createElement('div');
-        note.className='devnote';
-        note.textContent=F(L.fam_full.replace('%d','%s'),__FAMMAX__);
-        famAdd.replaceWith(note);
-      }else{famAdd.disabled=false;}
-      hint(L.fam_added,'ok');
-    });
-  });
-  (function(){
-    var f=document.getElementById('avaFile'),b=document.getElementById('avaBtn'),rb=document.getElementById('avaRm');
-    if(!f||!b)return;
-    function post(body,after){
-      b.disabled=true; if(rb)rb.disabled=true;
-      fetch('/p/'+encodeURIComponent(TOK)+'/avatar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-        .then(function(r){return r.json();})
-        .then(function(j){ b.disabled=false; if(rb)rb.disabled=false;
-          if(j&&j.ok){after&&after(j);}else{hint(j&&j.error||L.ava_err,'bad');} })
-        .catch(function(){ b.disabled=false; if(rb)rb.disabled=false; hint(L.js_net,'bad'); });
-    }
-    b.addEventListener('click',function(){f.click();});
-    f.addEventListener('change',function(){
-      var file=f.files&&f.files[0]; f.value='';
-      if(!file)return;
-      if(file.size>5*1024*1024){hint(L.ava_big,'bad');return;}
-      var fr=new FileReader();
-      fr.onload=function(){
-        var im=new Image();
-        im.onload=function(){
-          try{
-            var s=Math.min(im.width,im.height)||1,cv=document.createElement('canvas');
-            cv.width=cv.height=192;
-            var x=cv.getContext('2d');
-            x.drawImage(im,(im.width-s)/2,(im.height-s)/2,s,s,0,0,192,192);
-            post({img:cv.toDataURL('image/png')},function(){location.reload();});
-          }catch(e){hint(L.ava_err,'bad');}
-        };
-        im.onerror=function(){hint(L.ava_bad,'bad');};
-        im.src=fr.result;
-      };
-      fr.onerror=function(){hint(L.ava_bad,'bad');};
-      fr.readAsDataURL(file);
-    });
-    if(rb)rb.addEventListener('click',function(){ if(confirm(L.ava_rm_tip)) post({},function(){location.reload();}); });
-  })();
-});
-(function(){var b=document.getElementById('thBtn');if(!b)return;
-b.addEventListener('click',function(){var d=document.documentElement;
-var t=d.dataset.theme==='light'?'dark':'light';d.dataset.theme=t;
-try{localStorage.setItem('veil-theme',t)}catch(e){}
-var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute('content',t==='light'?'#eef2fb':'#0a122a');});})();
-</script></body></html>"""
+</script><script src="/p/sub.js?v=__ASSETV__"></script></body></html>"""
     payblock = ""
     if not u.get("family_of"):  # участник не платит — тарифом владеет хозяин
         try:
@@ -9698,7 +10410,8 @@ var m=document.querySelector('meta[name=theme-color]');if(m)m.setAttribute('cont
                 .replace("__LJS__", ljs_json)
                 .replace("__FAMMAX__", str(_FAMILY_MAX))
                 .replace("__TOK__", _js(u["sub_token"]))
-                .replace("__PLATDEFAULT__", _js(plat_default)))
+                .replace("__PLATDEFAULT__", _js(plat_default))
+                .replace("__ASSETV__", _SUB_ASSET_V))
 
 def _read_raw(path):
     try:
@@ -9817,15 +10530,18 @@ def _proto_dup(pr):
     второй туннель — на другом телефоне, для другой задачи. У туннельных протоколов
     пара ключей, у `trojan` — пароль, у `hysteria2` — строка авторизации: всё это
     лежит в самой записи, поэтому вторая запись даёт вторую ОТДЕЛЬНУЮ ссылку.
-    У `vless`/`vmess`/`reality` ссылку несёт идентификатор подписчика, у `shadowsocks`
-    — общий пароль входа: там вторая запись обязана нести ДРУГОЙ АДРЕС входа
-    (`ep_host`), иначе она повторила бы первую ссылку байт в байт. Входов, где
-    нельзя ни того ни другого, панель не множит — отказ называется на месте правки."""
+    У `vless`/`vmess`/`reality` ссылку несёт идентификатор подписчика; у `shadowsocks`
+    с цикла #414 — его собственный пароль, как у трояна, поэтому и там вторая запись
+    отличается ключом. Входов, где нельзя ни того ни другого, панель не множит —
+    отказ называется на месте правки."""
     p = str(pr or "")
     if p in ("wireguard", "amneziawg", "hysteria2") or p.startswith("trojan"):
         return "cred"
-    if (p.startswith("vless") or p.startswith("vmess") or p == "reality"
-            or p.startswith("shadowsocks")):
+    if p.startswith("shadowsocks"):
+        # #414: пароль перестал быть общим на вход — вторая запись отличается
+        # им же, как запись трояна, а не адресом входа.
+        return "cred"
+    if (p.startswith("vless") or p.startswith("vmess") or p == "reality"):
         return "ep"
     return ""
 
@@ -9887,6 +10603,10 @@ def _rec_mark(proto, c):
         m = str(c.get("client_public_key") or c.get("uuid") or "")
     elif str(proto or "").startswith("trojan"):
         m = str(c.get("password") or c.get("uuid") or "")
+    elif str(proto or "").startswith("shadowsocks"):
+        # #414: пароль стал персональным — вторая запись отличается им, а не
+        # адресом входа, как отличалась, когда секрет был общий на весь вход.
+        m = str(c.get("password") or c.get("uuid") or "")
     elif proto == "hysteria2":
         m = str(c.get("auth") or c.get("uuid") or "")
     else:
@@ -9921,6 +10641,10 @@ def _new_client(name, proto=None, inb=None, **kw):
     except Exception: c["max_devices"] = 0
     if proto and proto.startswith("trojan"):
         c["password"] = secrets.token_urlsafe(12)
+    if proto and proto.startswith("shadowsocks"):
+        # #414: слово хозяина — персональные пароли подписчиков; здесь же
+        # граница, через которую идут все места создания записи.
+        c["password"] = secrets.token_urlsafe(18)
     if proto == "hysteria2":
         c["auth"] = secrets.token_hex(16)
     if proto == "wireguard" and inb is not None:
@@ -14142,7 +14866,7 @@ _NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "trojan-reality", "hys
                         "vless-xhttp-tls", "vless-ws-tls", "vless-tcp-tls", "vless-grpc-tls", "vless-ws",
                         "trojan-tcp-tls", "trojan-ws-tls", "trojan-grpc-tls",
                         "vmess-ws-tls", "vmess-tcp-tls", "vmess-ws",
-                        "shadowsocks", "wireguard", "amneziawg")
+                        "shadowsocks-tcp-tls", "shadowsocks", "wireguard", "amneziawg")
 
 def _deploy_client_to_nodes(st, u):
     """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (`deployed`, skipped)."""
@@ -23283,11 +24007,14 @@ def _f2b_unban(ip):
 # ---------- MTProto SYN-защита (nftables; порт логики MTPROTO_FIX_By_MEKO v3) ----------
 # Публичный MTProto-порт круглосуточно сканируют каталогизаторы Telegram-прокси.
 # Ограничить SYN-флуд просто — ломается Telegram iOS: он агрессивно шлёт дубли
-# SYN (`retransmit` быстрее лимита). Поэтому три слоя, как в MEKO:
+# SYN (`retransmit` быстрее лимита). Поэтому четыре слоя:
 #  1) SYN с TCP-опциями iOS (отпечаток в заголовке) — accept без лимита;
-#  2) все остальные — 600 SYN в минуту на источник с запасом 40 пакетов
+#  2) SYN Telegram Desktop — окно 64240 с timestamp-опцией (замер #408 на живом
+#     трафике; шум сканеров идёт без `TS` и с подставным `mss`, поэтому `TS` обязателен)
+#     — accept без лимита. V4-only, как и iOS-слой: зеркало не вешали.
+#  3) все остальные — 600 SYN в минуту на источник с запасом 40 пакетов
 #     (поднял цикл #205 с прежних 54; причина стоит у констант);
-#  3) сверх — reject «хост недоступен»: сканер видит фильтруемый порт.
+#  4) сверх — reject «хост недоступен»: сканер видит фильтруемый порт.
 # Таблица inet veil_synfix пересобирается панелью при старте, при изменении набора
 # защищаемых портов (#170: их несколько — слушатель telemt и общий :443, когда на него
 # включён маршрут имени прокси, плюс то, что дописал оператор) и раз в минуту при дрейфе.
@@ -23389,8 +24116,8 @@ _SYNFIX_BURST = 40
 
 # Комплект правил, который обязан стоять в таблице ровно по одному разу: копия сверх —
 # это остаток прежней сборки или гонка двух процессов (#181).
-_SYNFIX_MARKS = ("local_accept", "local6_accept", "ios_accept", "other_accept",
-                 "other6_accept", "other_reject", "other6_reject")
+_SYNFIX_MARKS = ("local_accept", "local6_accept", "ios_accept", "desktop_accept",
+                 "other_accept", "other6_accept", "other_reject", "other6_reject")
 
 
 def _synfix_stale(txt, want):
@@ -23458,6 +24185,15 @@ def _synfix_apply():
                  'tcp dport %s tcp flags & (syn|ack) == syn '
                  '@th,108,20 0x2ffff @th,160,16 0x204 @th,192,16 0x103 '
                  '@th,224,24 0x10108 @th,320,32 0x4020000 counter accept comment "ios_accept"'
+                 % dports)
+        # Desktop-слой (#150): замера #408 — SYN клиента Desktop идут с окном 64240
+        # и timestamp-опцией; без TS этот отпечаток подделывает сканерный шум, поэтому
+        # опция обязательна. Старое ядро может не разобрать правило — _f2b_nft молча
+        # проглотит отказ, остальные слои встанут, а отсутствие правила не зовёт тик
+        # на пересборку (G6): таблица не загонится в мусор каждую минуту.
+        _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
+                 'tcp dport %s tcp flags & (syn|ack) == syn tcp window 64240 '
+                 'tcp option timestamp exists counter accept comment "desktop_accept"'
                  % dports)
         _f2b_nft("add", "rule", "inet", "veil_synfix", "input",
                  'tcp dport %s tcp flags & (syn|ack) == syn '
@@ -24382,6 +25118,7 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
     outs = []
     eps = []
     tags = []
+    unreachable = _reach_snapshot()
     split = (CFG_CACHE.get("split_tunnel") or "off").strip().lower()
     for proto, inb in (st.get("inbounds") or {}).items():
         if proto == "amneziawg":
@@ -24394,6 +25131,10 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
         for c in inb.get("clients", []):
             if not isinstance(c, dict): continue
             if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
+                continue
+            # #414: исходящий на вход, до которого снаружи не дойти, подписчику
+            # не нужен — конфиг с мёртвым сервером выглядит рабочим
+            if not _link_reachable(inb, c, unreachable):
                 continue
             try:
                 ob = _singbox_outbound(proto, inb, c, host, modern)
@@ -28530,6 +29271,11 @@ def _limits_loop():
                         except Exception as e:
                             print("[wgheal] " + str(e), flush=True)
                         try:
+                            if _ss_personalize(st):
+                                _save(STATE, st)
+                        except Exception as e:
+                            print("[sspersonal] " + str(e), flush=True)
+                        try:
                             if _traffic_tick(st):
                                 _save(STATE, st)
                         except Exception as e:
@@ -28812,6 +29558,9 @@ if not SBX:  # #309: в песочнице харнесса эти нити не
     threading.Thread(target=_rulesets_loop, daemon=True).start()
     # #387: подбор адресов хозяйского списка обхода; читает кэш, сеть трогает только тут.
     threading.Thread(target=_bypass_loop, daemon=True).start()
+    # #410: хранитель цепей «Клиенты в сети» — греет открытые обработчики,
+    # пока окно никто не открывает; иначе ночная цепь остывает до утра.
+    threading.Thread(target=_online_keep_loop, daemon=True).start()
     # #335/#361: нить наблюдателя живёт только вместе с приватным модулем — без него
     # панели нечем наблюдать и нечего банить.
     if PRIV:
@@ -32316,6 +33065,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 _sb_tags = {}
                 node_links = {}
                 _ensure_identities(st)
+                unreachable = _reach_snapshot()
                 for proto, inb in (st.get("inbounds") or {}).items():
                     for c in inb.get("clients", []):
                         match = (not sub_path) or (c.get("sub_token") == sub_path) or \
@@ -32341,7 +33091,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                         tg_links.append(l)
                             except Exception:
                                 pass
-                        if not inb.get("disabled"):
+                        if not inb.get("disabled") and _link_reachable(inb, c, unreachable):
                             try:
                                 # Ключ — протокол плюс различник записи (#239): пока
                                 # на протокол была одна копия, «одна ссылка на протокол»
@@ -32618,6 +33368,38 @@ class H(http.server.BaseHTTPRequestHandler):
 
         if p.startswith("/pay/") or p == "/shop":
             return _pay_handle_public(self, p)
+
+        if p == "/p/sub.css" or p == "/p/sub.js":
+            # #381: статичный слой страницы подписки отдельными GET-файлами. Право здесь
+            # не нужно: в этих байтах нет ни токена, ни данных подписчика. Ответ несёт и
+            # версионный отпечаток в URL, и ETag с 304 — повторное открытие страницы по
+            # мобильному каналу обходится без скачивания 43 КБ.
+            css = p.endswith(".css")
+            etag = _SUB_CSS_ETAG if css else _SUB_JS_ETAG
+            if (self.headers.get("If-None-Match") or "").strip() == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Vary", "Accept-Encoding")
+                self._sec_headers()
+                self.end_headers()
+                return None
+            raw, zipped = (_SUB_CSS_B, _SUB_CSS_GZ) if css else (_SUB_JS_B, _SUB_JS_GZ)
+            use_gz = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+            b = zipped if use_gz else raw
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             ("text/css" if css else "application/javascript") + "; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", etag)
+            if use_gz:
+                self.send_header("Content-Encoding", "gzip")
+            self._sec_headers()
+            self.end_headers()
+            self.wfile.write(b)
+            return None
 
         if p.startswith("/p/") and p.endswith("/qr"):
             # QR подписки отдельной картинкой: сканер клиента наводит камеру на
@@ -33553,13 +34335,27 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     grp = proto
                 key = (grp, inb.get("port"))
-                agg[key] = agg.get(key, 0) + n
-            for (grp, port), n in sorted(agg.items(), key=lambda kv: -kv[1]):
+                row = agg.get(key)
+                if row is None:
+                    row = agg[key] = {"clients": 0, "inb": 0, "off": 0}
+                row["clients"] += n
+                row["inb"] += 1
+                if inb.get("disabled"):
+                    row["off"] += 1
+            tcp_p, udp_p = _listen_snapshot()
+            muxed = _mux_served_ports()
+            for (grp, port), row in sorted(agg.items(), key=lambda kv: -kv[1]["clients"]):
+                state = _inbound_state(port, row["off"] == row["inb"], running,
+                                       tcp_p, udp_p, muxed)
                 protos.append({"proto": grp, "label": _grp_lbl.get(grp, grp),
-                               "clients": n, "port": port, "running": running})
+                               "clients": row["clients"], "port": port,
+                               "state": state, "running": state == "on"})
             if tg_running:
+                # telemt сам поднимает свой порт: юнит жив — слушатель есть, и
+                # отдельная мера порта тут только плодит ложь при медленном старте.
                 protos.append({"proto": "mtproto", "label": "MTProto Proxy",
-                               "clients": 0, "port": None, "running": True})
+                               "clients": 0, "port": None,
+                               "state": "on", "running": True})
             return self._send(200, {
                 "days": days,
                 "today": int(_TRAFFIC_DAYS.get(today_k) or 0),
@@ -34691,7 +35487,14 @@ class H(http.server.BaseHTTPRequestHandler):
                         inb.pop("disabled", None)
                     return self._send(400, {"error": err or "конфиг не принят"})
                 _audit("proto_toggle", proto=proto, disabled=want)
-                return self._send(200, {"ok": True, "proto": proto, "disabled": want})
+                res = {"ok": True, "proto": proto, "disabled": want}
+                if not want and not _link_reachable(inb, {}, _reach_snapshot()):
+                    # #414: включить вход и смолчать, что подписчик до него не
+                    # дойдёт, — тот же обман, что мёртвая ссылка в выдаче.
+                    res["warning"] = ("вход слушает только петлевой адрес (#158), "
+                                      "развилка :443 его не ведёт — ссылок этому "
+                                      "протоколу в подписке не будет")
+                return self._send(200, res)
             if p == "/api/inbound/enable":
                 # «Не задействован» в морде — это не заевший тумблер, а транспорт,
                 # входа под который у панели нет вовсе. Раньше его доставали только
@@ -35811,6 +36614,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     c["uuid"] = new_uuid
                     if proto.startswith("trojan"):
                         c["password"] = secrets.token_urlsafe(12)
+                    if proto.startswith("shadowsocks"):
+                        # #414: пароль больше не общий на вход — поворот вериты
+                        # обязан коснуться и его, иначе ссылка прежняя.
+                        c["password"] = secrets.token_urlsafe(18)
                     if proto == "hysteria2":
                         c["auth"] = secrets.token_hex(16)
                     if proto in ("wireguard", "amneziawg"):

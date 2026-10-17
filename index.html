@@ -421,7 +421,9 @@ body.ui-new .pname2{flex:1;min-width:0;font-size:13.5px;font-weight:600;white-sp
 body.ui-new .pname2 small{display:block;color:var(--mut2);font-weight:400;font-size:11px}
 body.ui-new .pstat2{flex:none;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px}
 body.ui-new .pstat2.on{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);border:1px solid color-mix(in srgb,var(--ok) 40%,transparent)}
-body.ui-new .pstat2.off{color:var(--err);background:color-mix(in srgb,var(--err) 12%,transparent);border:1px solid color-mix(in srgb,var(--err) 40%,transparent)}
+body.ui-new .pstat2.off{color:var(--mut);background:color-mix(in srgb,var(--mut) 12%,transparent);border:1px solid color-mix(in srgb,var(--mut) 40%,transparent)}
+body.ui-new .pstat2.dead{color:var(--err);background:color-mix(in srgb,var(--err) 12%,transparent);border:1px solid color-mix(in srgb,var(--err) 40%,transparent)}
+body.ui-new .pstat2.local{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid color-mix(in srgb,var(--warn) 40%,transparent)}
 body.ui-new .rings{display:flex;justify-content:space-around;gap:10px;margin-top:6px}
 body.ui-new .ring{text-align:center}
 body.ui-new .ring .gauge{width:64px;height:64px;margin:0 auto}
@@ -787,7 +789,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <details class=expl style="margin:0 2px"><summary>Объяснить простым языком</summary><div>
       <p><b>Зачем эта страница.</b> Это витрина здоровья сервера: один взгляд — и понятно, всё ли живое. Лечить и настраивать — не здесь, а в соответствующих вкладках; сюда заходишь смотреть.</p>
-      <p><b>На что смотреть в первую очередь.</b> «Статус протоколов» — если напротив протокола зелёный, он работает и принимает клиентов. «Клиенты онлайн» — сколько людей подключены прямо сейчас. «Трафик за сутки» — сколько сервер прогнал сегодня. Три кольца (Процессор / Память / Диск) — нагрузка машины: жёлтый — присмотреть, <b>красный диск — срочно разбираться</b> (кончится место — упадёт всё).</p>
+      <p><b>На что смотреть в первую очередь.</b> «Статус протоколов» — слово тут читается с порта самого входа, а не с запущенной службы: зелёный — порт слушает наружу и клиент до него дойдёт, серый «Снят» — вход убран владельцем, жёлтый «Только петля» — ядро подняло вход лишь на внутреннем адресе и снаружи до него не дойти, красный «Не слушает» — служба жива, а этого порта нет. «Клиенты онлайн» — сколько людей подключены прямо сейчас. «Трафик за сутки» — сколько сервер прогнал сегодня. Три кольца (Процессор / Память / Диск) — нагрузка машины: жёлтый — присмотреть, <b>красный диск — срочно разбираться</b> (кончится место — упадёт всё).</p>
       <p><b>График трафика</b> — сколько сервер прогнал за 30 дней: резкий всплеск = кто-то качает много (карточки людей — во вкладке «🔗 Подписка»). <b>«Последние события»</b> — журнал того, что делала панель и админы.</p>
       <p><b>Быстрые действия</b> — кнопки «на каждый день»: добавить клиента, перезапустить Xray (чинит зависший VPN без перезагрузки сервера), открыть диагностику или журналы. Что-то сломалось? Жми «🩺 Диагностика сервера» — она сама прощупает порты, службы и доступность.</p>
     </div></details>
@@ -1752,7 +1754,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div id=bansList style="margin-top:8px;font-size:12px"></div>
     </div>
     <div style="margin:12px 0">
-      <label><input type=checkbox id=synfixEnabled> SYN-защита MTProto-портов (nftables) — порты от ботов, iOS не ломается <span class=mut id=synfixState style="font-size:12px"></span></label>
+      <label><input type=checkbox id=synfixEnabled> SYN-защита MTProto-портов (nftables) — порты от ботов, iOS и Telegram Desktop не ломаются <span class=mut id=synfixState style="font-size:12px"></span></label>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
         <label for=synfixPorts style="font-size:12px">Дополнительно защищать порты</label>
         <input id=synfixPorts type=text placeholder="например: 8443, 50000" style="flex:1;min-width:180px;font-size:12px">
@@ -1761,7 +1763,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <p class=mut style="margin:6px 0 0;font-size:12px" id=synfixHelp>Порты прокси панель берёт сама и дописывать их сюда не нужно: этот список — только то, что вы хотите добавить сверх прокси.</p>
       <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Проблема:</b> MTProto-прокси «торчат» в интернет открытыми портами, и боты-сканеры круглосуточно стучатся в них тысячами запросов. Хочешь прикрыть дверь лимитом на все входящие — и первым делом ломаешь iPhone: приложение Telegram на iOS переподключается к прокси агрессивно, шлёт повторные запросы быстрее любого лимита.</p>
-        <p><b>Что делает эта функция:</b> панель различает запросы по «отпечатку»: iPhone пропускается всегда без ограничений, всем остальным — до 600 новых соединений в минуту с одного адреса (с всплеском в 40: реальный клиент, который переподключается пачкой, проходит спокойно), а кто стучится чаще — получает «хост недоступен», и сканер теряет интерес. Прежний бюджет (54 в минуту, всплеск 1) снимается как замеренная душега: приложение на компьютере поднимает соединение несколько раз подряд при старте и попадало под собственную защиту.</p>
+        <p><b>Что делает эта функция:</b> панель различает запросы по «отпечатку»: iPhone пропускается всегда без ограничений, так же узнаётся и клиент Telegram Desktop — по размеру окна `64240` с временной отметкой `timestamp` (без отметки такой отпечаток подделывает сканерный шум, поэтому она обязательна); всем остальным — до 600 новых соединений в минуту с одного адреса (с всплеском в 40: реальный клиент, который переподключается пачкой, проходит спокойно), а кто стучится чаще — получает «хост недоступен», и сканер теряет интерес. Прежний бюджет (54 в минуту, всплеск 1) снимается как замеренная душега: приложение на компьютере поднимает соединение несколько раз подряд при старте и попадало под собственную защиту.</p>
         <p><b>Какие порты под защитой.</b> Список собирается сам из живых входов прокси: его публичный слушатель (обычно 7443) и общий порт 443, когда включён маршрут MTProto на :443 — тогда клиенты с новых ссылок стучатся именно туда. Сюда же можно дописать свои порты, если на узле висит что-то ещё, что вы хотите закрыть от сканеров.</p>
         <p><b>Осторожно с 443.</b> Общий порт 443 служит не только прокси: через него же идут сайт и веб-прокси. Лимит считается на адрес источника, поэтому у посетителей из одной большой сети (мобильный оператор, офисный NAT, общедомовой роутер) суммарные новые соединения могут упереться в 600 в минуту. Панель снимает 443 из-под защиты, как только маршрут MTProto выключен, — если сайт начал жаловаться на «хост недоступен», галочку маршрута или этот порт надо убрать.</p>
         <p><b>Безопасно ли?</b> Да: правила не трогают вход в панель, VPN-протоколы и сайт-заглушку на других портах, а свои адреса (включая loopback и собственные IP сервера) проходят всегда — иначе панель проверяла бы сама себя и попадала под лимит. Панель пересобирает правила при смене портов, при включении и снятии маршрута прокси и раз в минуту, если таблица исчезла (например после перезагрузки сервера).</p>
@@ -5500,10 +5502,12 @@ let editProtosCand=null;
 async function editProtoFill(c){
   // #228 → #239: не галочки, а строка действия — выбрать протокол, количество
   // и нажать «+ добавить». Множится всё, чему есть чем различиться: запись с
-  // собственным ключом (туннели, `trojan`, `hysteria2`) сама по себе, а протокол
-  // с общим ключом (`vless`, `vmess`, `reality`, `shadowsocks`) различается
+  // собственным ключом (туннели, `trojan`, `hysteria2`, `shadowsocks`) сама по
+  // себе, а протокол с общим ключом (`vless`, `vmess`, `reality`) различается
   // адресом входа — панель сама кладёт следующей записи домен, IPv6 и IPv4
-  // узла. `cap` — сколько таких записей влезает на одного человека.
+  // узла. `shadowsocks` переехал в первый лагерь: с #414 у подписчика свой
+  // пароль, а не один секрет на вход. `cap` — сколько таких записей влезает на
+  // одного человека.
   const blk=$('editProtosBlock'), box=$('editProtos');
   if(!blk||!box)return;
   box.innerHTML=''; blk.hidden=true; editProtosCand=null;
@@ -5826,7 +5830,9 @@ function mi_render(){
   if(!tun){const sv=c.sniff===true?'true':(c.sniff===false?'false':'');
     r+=_advSel('mi_sniff','Sniffing',sv,[['','по умолчанию'],['true','включить'],['false','выключить']]);}
   if(grp==='ss'){r+=_advSel('mi_method','Метод шифрования',c.method||'',[['','заводской (aes-256-gcm)'],['aes-256-gcm','aes-256-gcm'],['aes-128-gcm','aes-128-gcm'],['chacha20-ietf-poly1305','chacha20-ietf-poly1305']]);
-    r+=_advInp('mi_password','Пароль','',c.has_password?'уже стоит — пусто не менять':'6–128 символов без пробелов')+_advBtn('mi_password','','password','выпустить');}
+    // #414: слово подписчика теперь личное; общий пароль входа — запасное и в
+    // конфиг выходит только пока на него опирается хоть одна запись.
+    r+=_advInp('mi_password','Общий пароль (запасной)','',c.has_password?'уже стоит — пусто не менять':'подписчикам выдаются личные')+_advBtn('mi_password','','password','выпустить');}
   if(tun){
     r+=_advInp('mi_private_key','Закрытый ключ туннеля','',c.has_private_key?'уже стоит — пусто не менять':'панель выпустит сама')+_advBtn('mi_private_key','mi_public_key','wg','выпустить пару');
     r+=_advInp('mi_public_key','Открытый ключ для сверки','',c.public_key?('сейчас: '+c.public_key):'пусто — посчитается');
@@ -8908,6 +8914,13 @@ function renderDashEvents(a,l){
   }).join('');
 }
 const DASH_PROTO_ICONS={reality:'R',vless:'V',vmess:'M',trojan:'T',ss:'S',hy2:'H',wg:'W',awg:'A',amneziawg:'A',mtproto:'MT'};
+// Слово о строке берётся из состояния порта входа (#416), а не из ответа юнита xray.
+const DASH_PROTO_STATES={
+  on:['on','Активен','порт входа слушает наружу — до него можно дойти'],
+  off:['off','Снят','вход снят владельцем и не поднят ядром'],
+  dead:['dead','Не слушает','юнит жив, но ядро не подняло порт этого входа'],
+  local:['local','Только петля','вход слушает на петлевом адресе и не ведётся через развилку :443 — подписчик до него не доходит']
+};
 function renderDashProtos(list){
   const box=$('dProtos'); if(!box)return;
   if(!list.length){box.innerHTML='<span class=mut>Протоколы не настроены</span>';return;}
@@ -8915,7 +8928,8 @@ function renderDashProtos(list){
     const sub=[];
     if(p.port)sub.push('порт '+p.port);
     if(p.clients)sub.push(p.clients+(p.clients==1?' \u043A\u043B\u0438\u0435\u043D\u0442':' \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432'));
-    const stat=p.running?'<span class="pstat2 on">Активен</span>':'<span class="pstat2 off">Остановлен</span>';
+    const st=DASH_PROTO_STATES[p.state]||(p.running?DASH_PROTO_STATES.on:DASH_PROTO_STATES.dead);
+    const stat='<span class="pstat2 '+st[0]+'" title="'+escapeHtml(st[2])+'">'+st[1]+'</span>';
     return '<div class="prow2" style="--gc:'+groupColor(p.proto)+'"><div class=pico2>'+(DASH_PROTO_ICONS[p.proto]||'•')+'</div>'+
       '<div class=pname2>'+escapeHtml(p.label)+(sub.length?'<small>'+escapeHtml(sub.join(' · '))+'</small>':'')+'</div>'+stat+'</div>';
   }).join('');
