@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.9"
+VERSION = "2.17.10"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -377,9 +377,9 @@ def run_protocol_self_test():
 # ==================================================
 
 LOGO_FILE = f"{BASE}/logo.bin"
-_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "ss", "hy2", "wg", "awg")
+_GROUP_ORDER = ("reality", "vless", "vmess", "trojan", "hy2", "wg", "awg")
 _GROUP_LABELS = {"reality": "Reality", "vless": "VLESS", "vmess": "VMess",
-                 "trojan": "Trojan", "ss": "Shadowsocks",
+                 "trojan": "Trojan",
                  "hy2": "Hysteria2", "wg": "WireGuard", "awg": "AmneziaWG"}
 PROTOCOLS = [
     {"id": "reality",             "label": "VLESS + Reality",                         "group": "reality", "ui_group": "vless", "net": "tcp",       "tls": False},
@@ -396,8 +396,6 @@ PROTOCOLS = [
     {"id": "trojan-tcp-tls",      "label": "Trojan + TCP + TLS",        "group": "trojan",  "net": "tcp",      "tls": True},
     {"id": "trojan-grpc-tls",     "label": "Trojan + gRPC + TLS",       "group": "trojan",  "net": "grpc",     "tls": True},
     {"id": "trojan-reality",      "label": "Trojan + TCP + Reality",    "group": "trojan",  "net": "tcp",      "tls": False},
-    {"id": "shadowsocks",         "label": "Shadowsocks AEAD (aes-256-gcm)",          "group": "ss",      "net": "tcp",      "tls": False},
-    {"id": "shadowsocks-tcp-tls", "label": "Shadowsocks AEAD + TCP + TLS",            "group": "ss",      "net": "tcp",      "tls": True},
     {"id": "hysteria2",           "label": "Hysteria2",                               "group": "hy2",     "net": "udp",      "tls": False},
     {"id": "wireguard",           "label": "WireGuard",                               "group": "wg",      "net": "udp",      "tls": False},
     {"id": "amneziawg",           "label": "AmneziaWG",                               "group": "awg",     "net": "udp",      "tls": False},
@@ -427,8 +425,7 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443,
-"trojan-grpc-tls": 21443, "shadowsocks": 22443,
-           "shadowsocks-tcp-tls": 26443,
+"trojan-grpc-tls": 21443,
            "vless-xhttp-tls": 23443, "vless-xhttp-reality": 24443,
            "trojan-reality": 25443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
@@ -504,12 +501,13 @@ def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 # ---------- часовой пояс ----------
-# Касается только того, что читает человек. Храним по-прежнему UTC: `expiry`, `ts`
-# в журнале и ключи суточной статистики — это данные, и у них нет пояса. Иначе
-# подписчик, переехавший из UTC+3 в UTC+7, потерял бы сутки срока, а журнал
-# перестал бы сходиться с прогонами харнессов. Границы циклов сброса трафика
-# (`_cycle_key`) тоже остаются в UTC — смена пояса не должна бесплатно обнулять
-# или дважды считать накатанный трафик.
+# Касается только того, что читает человек. Храним по-прежнему UTC: `expiry` и `ts`
+# в журнале — это данные, и у них нет пояса. Иначе подписчик, переехавший из UTC+3
+# в UTC+7, потерял бы сутки срока, а журнал перестал бы сходиться с прогонами
+# харнессов. Границы циклов сброса трафика (`_cycle_key`) тоже остаются в UTC —
+# смена пояса не должна бесплатно обнулять или дважды считать накатанный трафик.
+# Ключи СУТОЧНОЙ истории (`_day_key`, #439) живут в поясе оператора: «трафик за
+# сутки» — это то, что читает человек, и полуночь у него своя.
 _TZC = {"name": None, "zone": None, "names": None}
 
 def _tz_zone(name=None):
@@ -598,6 +596,23 @@ def _tz_off(ts=None):
     суток в половине случаев уезжало бы на предыдущий день."""
     ts = _tssane(time.time() if ts is None else ts)
     return int(calendar.timegm(_ltime(ts)) - ts)
+
+def _day_key(ts=None):
+    """Ключ суток в поясе оператора. «Трафик за сутки» обязан считаться от местной
+    полуночи, а не от гринвичской: на поясе UTC+3 гринвичские сутки кончаются в
+    03:00 по местным, и вечер предыдущего дня ложился в ячейку сегодняшнего. Тот же
+    `_ldate`, которым панель показывает даты, — значит подпись графика и колонка
+    судят один и тот же день."""
+    return _ldate("%Y-%m-%d", ts)
+
+def _day_keys(count):
+    """`count` ключей суток подряд, последний — сегодняшний. Идём календарными
+    днями, а не шагом по `86400` секунд: в день перехода времени сутки длятся
+    23 или 25 часов, и секундный шаг потерял бы или удвоил бы один день ряда."""
+    z = _tz_zone()
+    today = (datetime.datetime.now(z) if z else datetime.datetime.now()).date()
+    return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(count - 1, -1, -1)]
 
 def _tz_label():
     """'Europe/Moscow · UTC+3' — для морды и самодиагностики. Смещение берём из
@@ -2982,34 +2997,6 @@ def _wg_keyless_heal(st):
             changed = True
     return changed
 
-def _ss_personalize(st):
-    """Цикл #414: у `shadowsocks` пароль был один на вход. Порт без шифрования
-    оставался поверхностью подбора, а подобранный секрет открывал трафик СРАЗУ
-    всех подписчиков входа; утечка ссылки одного не отключала никого. По слову
-    хозяина пароль стал персональным. Доходит только то, что жило до правки:
-    записям без своего пароля выдаём новый тем же приёмом, что перевыпуск ключей
-    у туннелей (#313) — один раз под замком состояния, а не на каждую загрузку
-    страницы. Общий пароль входа при этом не трогается: он уходит из конфига сам,
-    когда на него не опирается ни одна запись (см. `_inbound`). Ссылки подписчиков
-    меняются — старая ссылка на общий секрет перестаёт работать, свежая лежит в
-    подписке `/sub/<токен>`."""
-    if not st:
-        return False
-    inbs = st.get("inbounds")
-    if not isinstance(inbs, dict):
-        return False
-    changed = False
-    for proto, inb in inbs.items():
-        if not str(proto).startswith("shadowsocks") or not isinstance(inb, dict):
-            continue
-        for c in inb.get("clients") or []:
-            if not isinstance(c, dict) or c.get("password"):
-                continue
-            c["password"] = secrets.token_urlsafe(18)
-            _audit("ss_password_personalized", proto=proto, name=c.get("name"))
-            changed = True
-    return changed
-
 def _proto_of(st):
     if not st: return "reality"
     a = st.get("active")
@@ -3018,7 +3005,10 @@ def _proto_of(st):
     for p in _PORTS:
         if p in inbs: return p
     for p in inbs:
-        return p
+        # #431: снятый протокол не делает состояние «живым» — осиротевший SS-вход
+        # не должен всплыть как активный протокол в обход матрицы.
+        if not str(p).startswith("shadowsocks"):
+            return p
     return "reality"
 
 def _new_state(proto="reality"):
@@ -3049,11 +3039,6 @@ def _new_inbound(proto):
         inb.update({"private_key": priv, "public_key": pub,
                     "sid": secrets.token_hex(4), "sni": "www.samsung.com",
                     "dest": "www.samsung.com:443"})
-    if proto.startswith("shadowsocks"):
-        # #418: общий секрет входа остаётся запасью для записей без личного
-        # пароля (#414); форма одна для обоих вариантов — и для клинтекста,
-        # и для TLS-фронта
-        inb["password"] = secrets.token_urlsafe(12)
     if proto == "hysteria2":
         cp = _cert_pathes()
         if cp["cert"] and cp["key"]:
@@ -3083,11 +3068,17 @@ def _alloc_inbound(st, proto):
         inb["port"] = _find_free_port(_PORTS.get(proto), used)
     return inb
 
-# Поля подписчика, общие для ВСЕХ его записей (в state их по одной на inbound).
-# Вне списка — секрет конкретного транспорта: пароль trojan, auth hysteria2,
-# ключи и адрес wireguard. Их новая запись получает свою, а не скопированную:
-# ровно так подписчик устроен сегодня, когда ему заводят подписку сразу по всем
-# протоколам (clients/add вызывает _new_client отдельно на каждый inbound).
+# Поля подписчика, общие для ВСЕХ его записей (в состоянии по одной на вход).
+# Вне списка — секрет конкретного транспорта: новую запись он получает свой, а
+# не скопированный — так подписчик устроен, когда ему заводят подписку сразу по
+# всем протоколам (`clients/add` вызывает `_new_client` отдельно на каждый вход).
+# Перенос общего секрета семьи при заводе нового транспорта. Механизм общий, но
+# семью имела ровно одна семья — `shadowsocks` (#427: ссылку несёт пароль #414).
+# Протокол снят с панели (#431), поэтому таблица пуста; её пустое значение — не
+# убранный костыль, а «ни одна живая семья не требует переноса секрета». Если
+# вернётся семья, где ссылку несёт одно поле, её ключ кладут сюда по имени группы.
+_CRED_BY_GROUP = {}
+
 _CLIENT_SHARED = ("name", "sub_token", "limit_gb", "expiry", "reset_cycle", "cycle",
                   "up", "down", "last_up", "last_down", "max_devices", "warned_80",
                   "warned_days", "blocked", "blocked_reason", "tg_proxy", "tg_user",
@@ -3177,14 +3168,20 @@ def _proto_backfill(st, proto, inb):
     Записи без uuid пропускаются: state.json их допускает, а подписной строки
     для транспорта всё равно не из чего собрать."""
     refs = {}
+    grp = (_PROTO_MAP.get(proto) or {}).get("group") or ""
+    credk = _CRED_BY_GROUP.get(grp)
+    creds = {}
     for p2, ib in _inb_entries(st):
         if p2 == proto:
             continue
+        same_group = credk and (_PROTO_MAP.get(p2) or {}).get("group") == grp
         for c in (ib.get("clients") or []):
             if not isinstance(c, dict): continue
             uu = c.get("uuid")
             if not uu:
                 continue
+            if same_group and c.get(credk):
+                creds.setdefault(uu, c[credk])
             r = refs.get(uu)
             if r is None:
                 refs[uu] = r = {}
@@ -3211,6 +3208,8 @@ def _proto_backfill(st, proto, inb):
             if k in ref:
                 c[k] = ref[k]
         c["uuid"] = uu
+        if credk and uu in creds:
+            c[credk] = creds[uu]
         lst.append(c)
         n += 1
     if no_name:
@@ -3401,8 +3400,8 @@ def _stream_settings(proto, inb):
 def _cleartext_public(proto, meta):
     """#158: вход без TLS/Reality-слоя наружу не выставляется — у `ws`-входов
     идентификатор клиента идёт по каналу открытым текстом и любой, кто
-    слушает сеть, снимает подписку; у `shadowsocks` порт остаётся поверхностью
-    подбора пароля. Такой вход садится на петлевой адрес и живёт за TLS-фронтом.
+    слушает сеть, снимает подписку. Такой вход садится на петлевой адрес и
+    живёт за TLS-фронтом.
     Reality и Hysteria2 шифруют сам транспорт, туннельные входы обходятся
     без streamSettings — они остаются публичными. Явный публичный `listen`
     в ручном блоке перебивается, а не обходится: смысл входа тот же."""
@@ -3451,28 +3450,10 @@ def _inbound(proto, inb):
     elif isinstance(sn, dict) and sn:
         ib["sniffing"] = sn
     if proto.startswith("shadowsocks"):
-        ib["protocol"] = "shadowsocks"
-        meth = inb.get("method") or "aes-256-gcm"
-        # #414: пароль у подписчика свой, ядро видит список клиентов, а не один
-        # секрет на вход. Общий пароль выходит в конфиг ровно до тех пор, пока
-        # хоть одна запись на него опирается: снятый раньше он убил бы ссылку
-        # того, кто ещё не получил персональный (state.json правится и из-за
-        # панели, и руками, и импортом из чужой).
-        shared = inb.get("password") or ""
-        cl = [{"method": meth, "password": c.get("password") or shared,
-               "email": c["uuid"]} for c in cs]
-        sett = {"method": meth, "network": "tcp,udp", "clients": cl}
-        if shared and any(not c.get("password") for c in cs):
-            sett["password"] = shared
-        ib["settings"] = sett
-        if _proto_meta(proto)["tls"]:
-            # #418: ветка выходит раньше общего сборщика — TLS-фронт навешивается
-            # здесь, тем же мета-движком `_stream_settings`, что и у остальных
-            # защищённых входов; под SNI-мюксом `_mux_apply` подменит серт, ключ
-            # и адрес на петлевые (план мюкса читает `tls` из матрицы — вариант
-            # попадает в него сам)
-            ib["streamSettings"] = _stream_settings(proto, inb)
-        return ib
+        # #431: протокол снят с панели. До `_inbound` SS-вход довести не может ни
+        # один путь — `_build_xray_cfg` пропускает его выше, — но оставим явный
+        # отказ, а не провал в общий сборщик, который свернул бы вход в VLESS.
+        raise RuntimeError("протокол shadowsocks снят с панели (#431)")
     if proto.startswith("trojan"):
         ib["protocol"] = "trojan"
         ib["settings"] = {"clients": [
@@ -3525,7 +3506,6 @@ _MANUAL_HEX_SHAPE = re.compile(r"[0-9a-fA-F]{2,16}")
 _MANUAL_HOST_SHAPE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?")
 _MANUAL_PATH_SHAPE = re.compile(r"/[^\s\x00-\x1f]{0,199}")
 _MANUAL_PASS_SHAPE = re.compile(r"[^\s\x00-\x1f]{6,128}")
-_SS_METHODS = ("aes-256-gcm", "aes-128-gcm", "chacha20-ietf-poly1305")
 _WG_MTU_LO, _WG_MTU_HI = 576, 1420
 _GRPC_MODES = ("unary", "multi", "gun")
 _XHTTP_MODES = ("auto", "stream", "packet-up", "multi")
@@ -3710,8 +3690,6 @@ def _manual_fields(proto, inb, b, inbs, existed):
         allowed |= {"path", "mode"}
     if meta["tls"] and not reality and not tun:
         allowed |= {"alpn"}
-    if grp == "ss":
-        allowed |= {"method", "password"}
     if tun:
         allowed |= {"private_key", "address", "mtu", "keepalive",
                     "allowed_ips", "dns", "psk"}
@@ -3946,32 +3924,6 @@ def _manual_fields(proto, inb, b, inbs, existed):
             if (was or []) != [x.lower() for x in items]:
                 note("alpn", was, items)
 
-    if grp == "ss":
-        if "method" in b:
-            v = (str(b.get("method") or "")).strip()
-            if v and v not in _SS_METHODS:
-                errs.append("метод SS: один из %s" % ", ".join(_SS_METHODS))
-            else:
-                was = inb.get("method")
-                if v:
-                    inb["method"] = v
-                else:
-                    inb.pop("method", None)
-                if (was or "") != v:
-                    note("method", was, v)
-        if "password" in b:
-            v = (str(b.get("password") or "")).strip()
-            if v and not _MANUAL_PASS_SHAPE.fullmatch(v):
-                errs.append("пароль SS: 6–128 печатных символов без пробелов")
-            else:
-                was = inb.get("password")
-                if v:
-                    inb["password"] = v
-                else:
-                    inb.pop("password", None)
-                if (was or "") != v:
-                    note("password", was, v, secret=True)
-
     if not tun and "sniff" in b:
         sv = b.get("sniff")
         was = inb.get("sniff")
@@ -4186,11 +4138,6 @@ def _inbound_public(proto, inb):
         out["public_key"] = inb.get("public_key") or ""
     if meta.get("group") in ("wg", "awg"):
         out["address"] = inb.get("address") or ""
-    if meta.get("group") == "ss":
-        # метод шифрования не секрет (он в ссылке); пароль — секрет, наружу
-        # только ФАКТ наличия, значение не уходит никогда.
-        out["method"] = inb.get("method") or ""
-        out["has_password"] = bool(inb.get("password"))
     return out
 
 _STATS_PORT = 10088
@@ -4295,6 +4242,12 @@ def _build_xray_cfg(st, force_proto=None):
     # чтения стоит ровно одного вызова.
     for proto, inb in (_state_view(st).get("inbounds") or {}).items():
         if proto in ("amneziawg", "wireguard"):
+            continue
+        if str(proto).startswith("shadowsocks"):
+            # #431: протокол снят с панели по решению хозяина. Осиротевший вход,
+            # оставшийся в state.json (или поднесённый чужим лечением), не должен
+            # доходить до `_inbound` — без своей ветки он свернулся бы в VLESS и
+            # браковал весь конфиг, из-за чего xray не перезапустился бы никогда.
             continue
         if inb.get("disabled"):
             continue
@@ -4587,10 +4540,16 @@ def _cycle_key(kind, ts=None):
 
 def _traffic_tick(st):
     """Накапливает дельты счётчиков Xray в cycle-полях клиента (up/down).
-    Счётчики Xray живут в памяти и обнуляются при рестарте — поэтому ведём
-    last_up/last_down и копим дельты. На границе цикла обнуляем накопленное,
-    а базой делаем теперешний снимок счётчиков. Значения зеркалятся во ВСЕ записи одного
-    uuid (клиент может быть в нескольких инбаундах с одним uuid). True = изменения."""
+    Счётчики Xray живут в памяти и обнуляются при рестарте движка или переезде
+    пользователя (`rmu`+`adu`) — поэтому ведём `last_up`/`last_down` и копим дельты.
+    Отрицательная дельта означает, что счётчик обнулили, а байты после нуля ещё
+    не считаны: засчитываем текущее значение. Рестарт панели на базу не влияет —
+    её при старте не переставляют (#447). Судим только uuid, пришедшие в снимке:
+    отсутствие записи — незнание счётчика (клиент не подключался на этом движке
+    или снимок частичный), а не нулевой счётчик, и подставлять в базу ноль нельзя.
+    На границе цикла обнуляем накопленное, а базой делаем теперешний снимок.
+    Значения зеркалятся во ВСЕ записи одного uuid (клиент может быть в нескольких
+    инбаундах с одним uuid). True = изменения."""
     tr = _statsquery()
     if not tr:
         return False
@@ -4606,31 +4565,37 @@ def _traffic_tick(st):
     changed = False
     for key, cs in groups.items():
         c0 = cs[0]
+        snap = tr.get(key)
         ck = _cycle_key(c0.get("reset_cycle"))
         if c0.get("cycle") != ck:
-            base = tr.get(key) or {}
-            bu = int(base.get("uplink", 0) or 0); bd = int(base.get("downlink", 0) or 0)
             # граница цикла совпадает с тиком редко: интервал от предыдущего тика уже
             # намотан, но ещё не сложен — раньше он терялся из суточной ячейки
-            lu = _bytes_of(c0.get("last_up")); ld = _bytes_of(c0.get("last_down"))
-            du = bu - lu; dd = bd - ld
-            if du < 0: du = bu   # Xray перезапустился — считаем текущее значение с нуля
-            if dd < 0: dd = bd
-            if du or dd:
-                _traffic_days_add(du + dd)
+            if snap is not None:
+                bu = int(snap.get("uplink", 0) or 0); bd = int(snap.get("downlink", 0) or 0)
+                lu = _bytes_of(c0.get("last_up")); ld = _bytes_of(c0.get("last_down"))
+                du = bu - lu; dd = bd - ld
+                if du < 0: du = bu   # счётчик обнулялся (движок или пользователь) — от текущего
+                if dd < 0: dd = bd
+                if du or dd:
+                    _traffic_days_add(du + dd)
             for c in cs:
                 c["cycle"] = ck
                 c["up"] = 0; c["down"] = 0
-                # новый цикл считается от текущего снимка, а не от нуля счётчика
-                c["last_up"] = bu; c["last_down"] = bd
+                if snap is not None:
+                    # новый цикл считается от текущего снимка, а не от нуля счётчика
+                    c["last_up"] = bu; c["last_down"] = bd
                 c["warned_80"] = False
             changed = True
             continue
-        t = tr.get(key) or {}
-        cu = int(t.get("uplink", 0) or 0); cd = int(t.get("downlink", 0) or 0)
+        if snap is None:
+            # счётчика нет в снимке — база обязана переждать: подстановка нуля
+            # лишила бы дельту знака, и следующий приход засчитал бы всё время
+            # жизни движка как один тик
+            continue
+        cu = int(snap.get("uplink", 0) or 0); cd = int(snap.get("downlink", 0) or 0)
         lu = _bytes_of(c0.get("last_up")); ld = _bytes_of(c0.get("last_down"))
         du = cu - lu; dd = cd - ld
-        if du < 0: du = cu   # Xray перезапустился — считаем текущее значение с нуля
+        if du < 0: du = cu   # счётчик обнулялся — байты после нуля ещё не считаны
         if dd < 0: dd = cd
         if du or dd:
             for c in cs:
@@ -4645,13 +4610,14 @@ def _traffic_tick(st):
     return changed
 
 # Общесерверная дневная история трафика (для дашборда): {дата: байты}, до 120 дней.
+# Ключ — сутки в поясе оператора (`_day_key`, #439), а не гринвичские сутки.
 _TRAFFIC_DAYS_FILE = f"{BASE}/logs/traffic_days.json"
 _TRAFFIC_DAYS = _load(_TRAFFIC_DAYS_FILE, {}) or {}
 
 def _traffic_days_add(nb):
     if nb <= 0:
         return
-    k = time.strftime("%Y-%m-%d", time.gmtime())
+    k = _day_key()
     _TRAFFIC_DAYS[k] = int(_TRAFFIC_DAYS.get(k) or 0) + int(nb)
     if len(_TRAFFIC_DAYS) > 120:
         for old in sorted(_TRAFFIC_DAYS)[:len(_TRAFFIC_DAYS) - 120]:
@@ -5410,7 +5376,7 @@ def _online_count(email):
 #  · `xray api statsgetallonlineusers` — кто открыт сейчас, и `statsonlineiplist`
 #    на каждого: разные адреса входа и есть разные устройства;
 #  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл последний
-#    accept и когда началась текущая цепь accept'ов — это «время в сети» (#375);
+#    accept и когда началась текущая лента присутствия — это «время в сети» (#375);
 #  · `wg`/`awg show … latest-handshakes` — возраст рукопожатия туннельного пиера;
 #  · telemt `/v1/stats/users` — текущие MTProto-соединения по имени пользователя.
 # Снимок живёт 10 секунд: морда опрашивает чаще, а коробку каждый раз трогать
@@ -5422,61 +5388,65 @@ _ONLINE_TUN_WIN = 180.0          # WG/AWG-пиер считается живым
 _ONLINE_ACC_TAIL = 512 * 1024    # сколько байт хвоста лога читать за один снимок
 _ONLINE_DEV_MAX = 24             # сколько онлайн-подписчиков пересчитать по адресам
 _ONLINE_ACC_WIN = 600.0          # свежий accept и есть присутствие, когда обработчик закрыт
-_ONLINE_ACC_KEEP = 3600.0        # час тишины цепь не рвёт: экран погас, трафик молчит (#412)
+_ONLINE_ACC_KEEP = 3600.0        # час без accept'а и без открытого обработчика — лента кончилась (#412, #441)
 _ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "acc_start": {}, "acc_dev": {}, "tun": {}, "mt": {}}
-# {(почта, адрес входа): [начало цепи, последний accept]} — память цепей между
-# снимками (#377): хвост лога конечен и при трафике ест начало цепи. Пустой
-# адрес — цепь уровня почты (запасной путь `since`)
-_ONLINE_CHAIN = {}
-_ONLINE_ACC_BOOT = 96 * 1024 * 1024   # всего байт на обратный скан при подъёме панели (#378)
-_ONLINE_ACC_BOOT_CH = 8 * 1024 * 1024  # один чанк обратного скана
-# память цепей умирает с процессом, поэтому скан досевает начала ровно один
-# раз на процесс — каждый снимок файл заново не перечитывает
-_ONLINE_BOOT_DONE = False
-# цепь, потерянная памятью между снимками, досевается не чаще раза в
-# `_ONLINE_RESEED_TTL` секунд на ключ и с меньшим бюджетом, чем при подъёме (#401)
-_ONLINE_RESEED = {}              # {ключ: метка последнего досева}
-_ONLINE_RESEED_TTL = 900.0
-_ONLINE_RESEED_BUDGET = 32 * 1024 * 1024
-# память цепей живёт ещё и на диске (#409): обратный скан — лучший догадчик,
-# а диск называет начало цепи, виденный панелью вживую. Рестарт, потеря
-# процесса, проеденный бюджет скана — «время в сети» больше не спрыгивает:
-# при подъёме цепи загружаются с диска, скан досевает только то, чего там нет
-_ONLINE_CHAIN_FILE = f"{BASE}/online_chain.json"
-_ONLINE_CHAIN_FLUSH_TTL = 60.0            # писать не чаще, даже если цепи движутся
-_ONLINE_CHAIN_DEAD = _ONLINE_ACC_KEEP   # дальше горизонта жизни цепи на диск не ложатся (#412)
-_CHAIN_LOCK = threading.Lock()
-_CHAIN_ST = {"at": 0.0, "fp": None, "loaded": False}
+# {(почта, адрес входа): [начало ленты, последний признак присутствия]} — регистр
+# лент присутствия между снимками (#441). Пустой адрес — лента уровня почты, она
+# кормит `since`. Начало двигает только свидетельство: метка accept'а из лога или
+# факт открытого обработчика. Пережитое время не хранится больше нигде и ничем
+# не возвращается: лента, закрывшаяся по горизонту молчания, при возвращении
+# начинается заново с названного момента, а не с `now минус накопленное`.
+_ONLINE_RUNS = {}
+_ONLINE_RUNS_FILE = f"{BASE}/online_runs.json"
+_ONLINE_RUNS_FLUSH_TTL = 60.0     # писать не чаще, даже если ленты движутся
+_RUNS_LOCK = threading.Lock()
+_RUNS_ST = {"at": 0.0, "fp": None, "loaded": False}
 # {uuid: {адрес входа без порта}} — подписчики с открытым обработчиком прямо
 # сейчас (#410): у опросных протоколов живой клиент не порождает новых
-# accept'ов, и без этой меры цепь остывала у него на глазах
+# accept'ов, и без этой меры лента остывала у него на глазах.
 _XRAY_LIVE = {}
-_ONLINE_KEEP_TTL = 180.0   # ход хранителя цепей — втрое чаще окна присутствия `600` с (#410)
-# горизонт жизни цепи остужает ключ за час, и начало теряется вместе с ним (#413):
-# лента на боевом мерит паузы между accept'ами одного ключа длиннее часа
-# (`63` за `61.8` ч ленты, из них `12` длиннее шести часов), а обратный скан
-# через такой разрыв не идёт — он закрывается на первом зазоре шире горизонта.
-# Полка хранит накопленное соединённое время, а не старт в wall-clock, поэтому
-# возвращает клиенту уже отсиданные минуты и не приписывает ему часы простоя.
-_ONLINE_COLD_KEEP = 24 * 3600.0   # дальше этого срока возвращение считается новой сессией
-_ONLINE_COLD = {}                 # {(почта, адрес входа): [накопленное время, последний accept]}
-_ONLINE_COLD_FILE = f"{BASE}/online_chain_cold.json"
-_COLD_ST = {"at": 0.0, "fp": None, "loaded": False}
+_ONLINE_KEEP_TTL = 180.0   # ход хранителя лент — втрое чаще окна присутствия `600` с
+# Обратный ход по журналу подъёмов (#443): хвост в `_ONLINE_ACC_TAIL` байт на
+# живой коробке закрывает минуты, а не часы, и долгоживущее соединение, поднявшееся
+# три часа назад, хвосту не видно — лента заводилась с края хвоста и «время в сети»
+# отставало от факта. Потолок хода: байт, горизонт и шаг чтения.
+_ONLINE_BACK_BYTES = 32 * 1024 * 1024   # дальше этого журнала панель не идёт
+# горизонт копа назван страховкой от расхождения часов, а не глубиной: глубина
+# обратного хода вся на потолке байтов, а цепь рвёт час молчания (полумера с
+# горизонтом `6` ч на бою соврала «`6ч5мин`» против фактных `8ч16мин` — #445)
+_ONLINE_BACK_HORIZON = 365 * 24 * 3600.0  # старше года метка не может быть началом
+_ONLINE_BACK_BLOCK = 1024 * 1024        # шаг обратного чтения
+_ONLINE_BACK_YOUNG = 1800.0             # лента младше получаса — ещё подозреваемая
+# отметки обратного хода: на какое начало какой коп уже был + нужен ли первый ход
+_RUNS_BACK_ST = {"probed": {}, "boot": False}
 
-def _chain_encode(chain, now):
-    """Память цепей в сериализуемый словарь; остывшие ключи не пишутся.
+def _run_sane(pr):
+    """Запись ленты годна, если это `[начало, конец]` и начало не позже конца.
+    Часы лога и коробки могут разойтись, носитель мог остаться от прежнего
+    кода — кривую запись регистр не принимает (#441). Чистая."""
+    try:
+        first, last = float(pr[0]), float(pr[1])
+    except (TypeError, ValueError, IndexError):
+        return False
+    return first > 0 and last >= first
+
+def _runs_encode(runs, now):
+    """Регистр лент в сериализуемый словарь; закрывшиеся ленты не пишутся —
+    на диске живёт только то, что ещё может продолжиться по свидетельству.
     Чистая: ничего не мутирует."""
     out = {}
-    for (email, host), pr in chain.items():
-        if now - pr[1] > _ONLINE_CHAIN_DEAD:
+    for (email, host), pr in runs.items():
+        if not _run_sane(pr):
+            continue
+        if now - pr[1] > _ONLINE_ACC_KEEP:
             continue
         out[email + "\x00" + host] = [pr[0], pr[1]]
     return out
 
-def _chain_decode(data, chain):
-    """Словарь с диска в память цепей, заполняя только пустые ключи —
+def _runs_decode(data, runs):
+    """Словарь с диска в регистр лент, заполняя только пустые ключи —
     память держит перевес. Кривые записи пропускаются молча. Мутирует
-    переданный `chain`, возвращает число посеянных ключей."""
+    переданный `runs`, возвращает число посеянных ключей."""
     n = 0
     if not isinstance(data, dict):
         return 0
@@ -5486,49 +5456,42 @@ def _chain_decode(data, chain):
             first, last = float(v[0]), float(v[1])
         except (TypeError, ValueError, IndexError):
             continue
-        if not email or last <= 0:
+        if not email or first <= 0 or last < first:
             continue
         key = (email, host)
-        if key not in chain:
-            chain[key] = [first, last]
+        if key not in runs:
+            runs[key] = [first, last]
             n += 1
     return n
 
-def _chain_keepwarm(chain, live, now):
-    """Подогревает цепи подписчиков, у которых обработчик открыт прямо сейчас (#410).
+def _runs_keepwarm(runs, live, now):
+    """Продлевает ленты подписчиков, у которых обработчик открыт прямо сейчас (#410).
 
     XHTTP и опросные протоколы держат соединение, не порождая новых accept'ов:
-    мера по логу считает такого клиента замолчавшим, ключ остывает и выбрасывается,
-    «время в сети» спрыгивает на край хвоста — хозяин видел это как «слетело».
-    Пока `statsgetallonlineusers` называет подписчика открытым, метка последнего
-    accept'а его цепей сдвигается на `now`; начало не трогается. Ничего не
-    создаёт: подогрев продлевает только цепи, которые память уже знает, иначе
+    мера по логу считает такого клиента замолчавшим, лента остывает и
+    выбрасывается, «время в сети» спрыгивает на край хвоста — хозяин видел это
+    как «слетело». Пока `statsgetallonlineusers` называет подписчика открытым,
+    метка конца его лент сдвигается на `now`; начало не трогается. Ничего не
+    создаёт: подогрев продлевает только ленты, которые регистр уже знает, иначе
     окно показывало бы сессии, которых панель никогда не видела. Возвращает
-    число подогретых ключей. Чистая: мутирует только переданный `chain`."""
+    число подогретых ключей. Чистая: мутирует только переданный `runs`."""
     n = 0
     for email, hosts in (live or {}).items():
-        pr = chain.get((email, ""))
-        if pr is not None and pr[1] < now:
-            pr[1] = now
-            n += 1
-        for host in hosts:
-            pr = chain.get((email, host))
+        for key in [(email, "")] + [(email, h) for h in hosts]:
+            pr = runs.get(key)
             if pr is not None and pr[1] < now:
                 pr[1] = now
                 n += 1
     return n
 
-def _chain_flush(path, chain, now, st, ttl, enc=None):
-    """Атомарная запись памяти цепей на диск при движении отпечатка, но не
-    чаще `ttl` подряд: замолчавшая цепь не перекладывается, а после `ttl`
+def _runs_flush(path, runs, now, st, ttl):
+    """Атомарная запись регистра лент на диск при движении отпечатка, но не
+    чаще `ttl` подряд: замолчавшая лента не перекладывается, а после `ttl`
     одна запись обновляет стамп и на тихом носителе. `st` — {"at": метка
     последней успешной попытки, "fp": отпечаток записанного}, мутируется
     при успехе; возвращает True, когда файл переписан. Черновик пишется под
-    своим замком с правами `0600` — ключами цепей стоят почты подписчиков.
-    `enc` — готовый словарь для записи (холодная полка), иначе кодируется
-    `chain`."""
-    if enc is None:
-        enc = _chain_encode(chain, now)
+    своим замком с правами `0600` — ключами лент стоят почты подписчиков."""
+    enc = _runs_encode(runs, now)
     fp = hashlib.sha1(json.dumps(enc, sort_keys=True).encode()).hexdigest()
     if fp == st.get("fp") and now - st.get("at", 0.0) < ttl:
         return False
@@ -5550,32 +5513,20 @@ def _chain_flush(path, chain, now, st, ttl, enc=None):
     st["fp"] = fp
     return True
 
-def _chain_cold_encode(cold, now, keep):
-    """Холодная полка в сериализуемый словарь; записи старше `keep` не
-    пишутся. Чистая: ничего не мутирует."""
-    out = {}
-    for (email, host), cl in cold.items():
-        if now - cl[1] > keep:
-            continue
-        out[email + "\x00" + host] = [cl[0], cl[1]]
-    return out
+def _runs_prune(runs, now):
+    """Закрывает ленты, у которых горизонт молчания `_ONLINE_ACC_KEEP` пройден:
+    ни accept'а, ни открытого обработчика за час — сессия кончилась (#441).
 
-def _chain_cold_flush(path, cold, now, st, ttl):
-    """Холодная полка на диске — тем же писателем, что и тёплые цепи (#413)."""
-    return _chain_flush(path, None, now, st, ttl,
-                        enc=_chain_cold_encode(cold, now, _ONLINE_COLD_KEEP))
-
-def _chain_cold_lift(cold, key, last, keep):
-    """Начало цепи, продолженное с холодной полки, или `None` (#413).
-
-    Полка держит накопленное соединённое время, поэтому началом становится
-    `метка нового accept'а минус отсиданные секунды`: пауза в «время в сети» не
-    входит, а возвращение позже `keep` считается новой сессией. Ничего не
-    мутирует."""
-    cl = cold.get(key)
-    if cl is None or cl[1] <= 0 or last - cl[1] > keep:
-        return None
-    return last - cl[0]
+    Это единственное, чем панель закрывает ленту. Ни полки накопленного времени,
+    ни отдельного доказательства отсутствия (#436) не нужно: начало умирает
+    вместе с лентой и при возвращении начинается с названного момента, поэтому
+    простой клиента в «время в сети» не въедает никогда. Возвращает число
+    снятых записей; мутирует переданный `runs`."""
+    n = 0
+    for key in [k for k, v in runs.items() if now - v[1] > _ONLINE_ACC_KEEP]:
+        runs.pop(key, None)
+        n += 1
+    return n
 
 def _xray_devices(email):
     """(число разных адресов входа подписчика, множество этих адресов без портов).
@@ -5640,6 +5591,10 @@ def _xray_online_map():
         e = parts[1]
         if e and e not in emails:
             emails.append(e)
+    # #441: этот список полон и авторитетен — названный в нём подписчик
+    # присутствует прямо сейчас, и его лента продлевается, даже когда лог молчит.
+    # Отсутствие в списке панель не трактует ничем: оно молчит до горизонта
+    # `_ONLINE_ACC_KEEP`, после чего лента закрывается сама.
     out = {}
     live = {}
     for e in emails[:_ONLINE_DEV_MAX]:
@@ -5652,17 +5607,29 @@ def _xray_online_map():
     _XRAY_LIVE = live
     return out
 
+def _acc_ts(line):
+    """Метка времени accept-строки в секундах; ноль — строка без года в голове.
+
+    Xray пишет местным временем коробки (#187); живой формат дат — `2026/10/12
+    04:45:06` (слэши), дефисная форма встречается у старых сборок лога: разбираем
+    обе, иначе вся мера молча оседает в 0."""
+    try:
+        return datetime.datetime.strptime(
+            line[:19].replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return 0.0
+
 def _acc_last_tags():
-    """({uuid: (тег последнего accept, метка времени)}, {uuid: метка начала цепи},
-    {uuid: {адрес входа: [начало цепи, последний accept]}}).
+    """({uuid: (тег последнего accept, метка времени)}, {uuid: метка начала ленты},
+    {uuid: {адрес входа: [начало ленты, последний accept]}}).
 
     `_DEV_POS` НЕ трогается: курсор строк принадлежит хранителю устройств,
-    этот читатель — гость, он откусывает только хвост файла. Цепь — accept'ы
-    одного подписчика, идущие подряд с зазором не шире `_ONLINE_ACC_KEEP`:
-    у XHTTP цепь и есть текущая сессия опроса входа, у долгоживущего TCP —
-    цепь из одной строки, момент подъёма соединения. Начало цепи и есть
-    «время в сети»: честный нижний край, начало прошлой за `_ONLINE_ACC_TAIL`
-    хвост не видит."""
+    этот читатель — гость, он откусывает только хвост файла. Лента здесь —
+    accept'ы одного подписчика, идущие подряд с зазором не шире
+    `_ONLINE_ACC_KEEP`: у XHTTP такая лента и есть текущая сессия опроса входа,
+    у долгоживущего TCP — лента из одной строки, момент подъёма соединения.
+    Это только то, что видит хвост: начало прошло за `_ONLINE_ACC_TAIL` байт
+    он не называет, его помнит регистр лент (`_runs_glue` #441)."""
     out = {}
     start = {}
     dev = {}
@@ -5686,14 +5653,7 @@ def _acc_last_tags():
         if not email:
             continue
         tag = _acc_tag(line)
-        try:
-            # xray пишет местным временем коробки (#187); живой формат дат —
-            # `2026/10/12 04:45:06` (слэши), дефисная форма встречается у
-            # старых сборок лога: разбираем обе, иначе вся мера молча оседает в 0
-            ts = datetime.datetime.strptime(
-                line[:19].replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
-        except ValueError:
-            ts = 0.0
+        ts = _acc_ts(line)
         prev = out.get(email)
         if prev is None or ts >= prev[1]:
             out[email] = (tag, ts)
@@ -5720,253 +5680,225 @@ def _acc_last_tags():
         dev.setdefault(email, {})[host] = [first, chain[-1]]
     return out, start, dev
 
-def _acc_hold(chain, acc, start, dev, now, live=None, cold=None):
-    """Держит начало цепи между снимками — иначе хвост лога его съедает (#377).
+def _acc_backfill(pending, now=None):
+    """{ключ ленты: названное начало} -> {ключ: начало глубже} (#443).
 
-    Хвост конечен: при дневном трафике начало цепи сидит на краю файла и
-    ползёт вперёд быстрее часов — девять часов сессии выглядят как «20 минут»
-    и прибавляются не по времени, а по объёму лога. Панель помнит между
-    снимками: если начало хвостовой цепи склеивается с сохранённым последним
-    accept’ом не дальше `_ONLINE_ACC_KEEP`, начало остаётся там, где панель
-    видела его впервые; зазор шире этого горизонта сбрасывает цепь, ключ без
-    движения дольше горизонта окно покидает. Присутствие при этом мерит
-    `_ONLINE_ACC_WIN` — это свежесть accept’а, а не длительность сессии. Раньше
-    горизонт жизни цепи и окно присутствия были одним числом `600`: телефон с
-    погасшим экраном молчит часами, не отключаясь, а панель чистила такую цепь
-    на 601-й секунде и восстанавливала её началом с края ленты — хозяин мерил
-    это как «слетело» (#412). Рестарт не обнуляет: при подъёме панели начала
-    цепей досевает обратный скан `_acc_boot` (#378), а
-    без него край хвоста остаётся честным нижним краем. Пустой адрес входа —
-    цепь уровня почты, она кормит `since`.
-    Живой обработчик кормит склейку без новых accept'ов (#410): у опросных
-    протоколов клиент часами держит соединение и не порождает строк лога,
-    поэтому хвост про него молчит и цепь остывала у хозяина на глазах.
-    `live` — мера присутствия от `_xray_online_map` ({почта: {адрес входа без
-    порта}}): если цепь ключа свежа в памяти (её `последний` не дальше
-    `_ONLINE_ACC_WIN`, подогрев хранителя греет и её), а в хвосте ключа нет,
-    начало перекладывается в снимок из памяти. Ключей, которых нет ни в
-    хвосте, ни в памяти, `live` не создаёт: присутствие без цепи остаётся
-    только числом устройств.
-    `cold` — холодная полка накопленного времени (#413): ключ, выброшенный
-    этим же горизонтом, уходит на неё и при возвращении продолжает цепь её
-    временем, а не краем ленты. Полка мутируется только здесь — выбросом
-    остывших ключей и их записью; `None` отключает полку вовсе (песочница).
-    Чистая: состояние только в переданных `chain` и `cold`, ноги передают
-    свои словари.
+    Хвост в `_ONLINE_ACC_TAIL` байт на живой коробке закрывает минуты, а не
+    часы: соединение, поднявшееся три часа назад, хвосту не видно вовсе — лента
+    заводилась с его края, и «время в сети» отставало от факта. Здесь панель
+    идёт от того же края назад, блоками по `_ONLINE_BACK_BLOCK`, пока цепь
+    подъёмов подписчика не порвётся (зазор шире `_ONLINE_ACC_KEEP` — это другая
+    сессия, её начало не воскресает), пока не упрётся в потолок
+    `_ONLINE_BACK_BYTES` — он и называет настоящую глубину копа. Горизонт
+    `_ONLINE_BACK_HORIZON` с цикла #445 остался только страховкой от
+    расхождения часов: метка старше года не может быть началом подъёма, а
+    шестичасовый горизонт соврал «`6ч5мин`» там, где факт был `8ч16мин`.
+    Рвётся только та цепь, что докопалась: остальные копятся дальше. Начало
+    становится глубже только по строке `accepted` с той же почтой (и с тем же
+    адресом входа, если ключ адресный) — выдуманному числу здесь неоткуда
+    взяться, а молчание меры — пустой ответ, то есть честное «меньше»."""
+    if SBX or not pending:
+        return {}
+    if now is None:
+        now = time.time()
+    floor = now - _ONLINE_BACK_HORIZON
+    try:
+        sz = os.path.getsize(_XRAY_ACCESS)
+    except OSError:
+        return {}
+    hi = sz - _ONLINE_ACC_TAIL
+    lo = hi - _ONLINE_BACK_BYTES
+    if lo < 0:
+        lo = 0
+    if hi <= lo:
+        return {}                 # журнал целиком в хвосте: копать некуда
+    mails = set(k[0] for k in pending)
+    chains = dict(pending)
+    got = {}
+    try:
+        f = open(_XRAY_ACCESS, "rb")
+    except OSError:
+        return {}
+    try:
+        f.seek(hi)
+        # строка на крае хвоста: хвост от неё видел только конец и в цепь её
+        # не положил, поэтому она достаётся обратному ходу
+        carry = f.readline()
+        pos = hi
+        stop = False
+        while pos > lo and chains and not stop:
+            a = pos - _ONLINE_BACK_BLOCK
+            if a < lo:
+                a = lo
+            f.seek(a)
+            lines = (f.read(pos - a) + carry).split(b"\n")
+            if a > lo:
+                carry = lines[0]  # начало блока посреди строки: донесём глубже
+                body = lines[1:]
+            else:
+                body = lines
+            for raw in reversed(body):
+                if b" accepted " not in raw:
+                    continue
+                line = raw.decode("utf-8", "replace")
+                email = _acc_email(line)
+                if email not in mails:
+                    continue
+                ts = _acc_ts(line)
+                if ts <= 0:
+                    continue
+                if ts < floor:
+                    stop = True   # глубже страхового горизонта меток не бывает
+                    break
+                for key in ((email, _acc_from_host(line)), (email, "")):
+                    head = chains.get(key)
+                    if head is None or ts >= head:
+                        continue
+                    if head - ts > _ONLINE_ACC_KEEP:
+                        del chains[key]
+                        continue
+                    chains[key] = ts
+                    got[key] = ts
+            pos = a
+    finally:
+        f.close()
+    return got
+
+def _runs_suspects(runs, st, now):
+    """Кому из лент нужен обратный ход, {(почта, адрес входа): названное начало}.
+
+    Подозреваемая — та, чьё начало моложе `_ONLINE_BACK_YOUNG`: её заводил край
+    хвоста, а не подъём соединения. Начало глубже получаса уже названо
+    свидетельством или докопано им — незачем копать его на каждый ход. Первый
+    ход после подъёма процесса (`st["boot"]`) не смотрит на возраст: ленты,
+    поднятые с диска, уже взрослые, а их начала могли быть заведены краем
+    хвоста при прежнем процессе, и после рестарта они остались бы
+    недоговорёнными (#443). Отметка о пробе ставится до хода и хранит само
+    начало: копается по одному разу на данное начало, а новое начало (лента
+    умерла по горизонту и возродилась) подозревается снова. Ключи, которых в
+    регистре уже нет, из отметок вон."""
+    boot = not st["boot"]
+    probed = st["probed"]
+    gone = []
+    for key in probed:
+        if key not in runs:
+            gone.append(key)
+    for key in gone:
+        del probed[key]
+    pending = {}
+    for key, pr in runs.items():
+        if not boot and now - pr[0] >= _ONLINE_BACK_YOUNG:
+            continue
+        if probed.get(key) == pr[0]:
+            continue
+        pending[key] = pr[0]
+        probed[key] = pr[0]
+    st["boot"] = True
+    return pending
+
+def _runs_lift(runs, st, got):
+    """Начало, добытое обратным ходом, кладётся в регистр (#443).
+
+    Двигается только глубже: лента, уехавшая из регистра за время хода, не
+    возвращается, начало позже конца не записывается, а проба считается
+    завершённой на новое начало. Возвращает число сдвинутых начал."""
+    n = 0
+    for key, head in got.items():
+        pr = runs.get(key)
+        if pr is None or head >= pr[0] or not _run_sane([head, pr[1]]):
+            continue
+        pr[0] = head
+        st["probed"][key] = head
+        n += 1
+    return n
+
+def _runs_glue(runs, acc, start, dev, live, now):
+    """Единый закон «времени в сети»: начало ленты двигает только свидетельство (#441).
+
+    На входе — меры снимка: `acc` {почта: (тег, метка последнего accept'а)},
+    `start` {почта: начало цепи, названное хвостом лога}, `dev`
+    {почта: {адрес входа: [начало, конец]}} и `live` {почта: {адрес
+    открытого сейчас обработчика}}. `runs` — регистр лент между снимками: он
+    мутируется здесь и ложится на диск, поэтому рестарт панели не обнуляет
+    «время в сети» (#378, #409 — и без обратного скана лога, который был самым
+    дорогим и самым спорным досевателем). Возвращает `(start, dev)` уже с
+    памятными началами — их рисует окно «Клиенты в сети».
+
+    Правил немного и из них нельзя выйти:
+      · горизонт молчания `_ONLINE_ACC_KEEP` закрывает ленту вместе с началом:
+        `_runs_prune` снимает ключ, и возвращение начинается с новой названной
+        метки. Накопленное время не хранится больше нигде — ни полки (#413), ни
+        отдельного доказательства отсутствия (#436) нет, поэтому простой
+        клиента в «время в сети» не въедает никогда;
+      · отрезок хвоста склеивается с лентой, только если между их границами нет
+        разрыва шире горизонта; при склейке начало берётся самым глубоким из
+        двух — край ленты это нижняя граница, начало из регистра панель видела
+        вживую; разрыв шире горизонта — это разные сессии, и регистр остаётся
+        при более позднем отрезке: начало прежней сессии не воскресает;
+      · открытый обработчик продлевает ленту без новых строк лога (#410) и
+        никогда её не создаёт: присутствие без начала остаётся только числом
+        устройств;
+      · конца в будущем не бывает: метка, опередившая часы панели, становится
+        `now`, начало позже конца регистр не принимает.
+    Пустой адрес входа — лента уровня почты, она кормит `since`.
     """
     s2 = dict(start)
     d2 = {e: dict(h) for e, h in dev.items()}
-    for key in [k for k, v in chain.items() if now - v[1] > _ONLINE_ACC_KEEP]:
-        if cold is not None:
-            v = chain[key]
-            cold[key] = [v[1] - v[0], v[1]]
-        chain.pop(key, None)
-    if cold is not None:
-        for key in [k for k, v in cold.items() if now - v[1] > _ONLINE_COLD_KEEP]:
-            cold.pop(key, None)
+    _runs_prune(runs, now)
     for email, hosts in d2.items():
         for host, pr in hosts.items():
+            lo, hi = pr[0], min(pr[1], now)
+            if not _run_sane([lo, hi]):
+                continue
             key = (email, host)
-            prev = chain.get(key)
-            if prev is not None:
-                # #409: шов симметричен — разрыв судится по границе отрезков
-                # (память и хвост могут идти в любом порядке), а начало берётся
-                # самым глубоким из двух: край ленты — нижняя граница, начало
-                # из памяти панель видела вживую
-                if prev[1] + _ONLINE_ACC_KEEP < pr[0] or pr[1] + _ONLINE_ACC_KEEP < prev[0]:
-                    pr = [pr[0], pr[1]]
+            prev = runs.get(key)
+            if prev is None:
+                runs[key] = [lo, hi]
+                hosts[host] = [lo, hi]
+                continue
+            if prev[1] + _ONLINE_ACC_KEEP < lo or hi + _ONLINE_ACC_KEEP < prev[0]:
+                # разрыв шире горизонта — это разные сессии; регистр остаётся при
+                # более позднем отрезке, начало прежней сессии не воскресает
+                if prev[1] >= hi:
+                    hosts[host] = [prev[0], prev[1]]
                 else:
-                    pr = [min(pr[0], prev[0]), pr[1]]
-                hosts[host] = pr
-            if cold is not None:
-                cand = _chain_cold_lift(cold, key, pr[1], _ONLINE_COLD_KEEP)
-                if cand is not None and cand < pr[0]:
-                    pr = [cand, pr[1]]
-                    hosts[host] = pr
-            chain[key] = pr
+                    runs[key] = [lo, hi]
+                continue
+            prev[0] = min(prev[0], lo)
+            if hi > prev[1]:
+                prev[1] = hi
+            hosts[host] = [prev[0], prev[1]]
     for email, first in list(s2.items()):
-        last = (acc.get(email) or ("", 0.0))[1]
-        if last <= 0:
+        last = min((acc.get(email) or ("", 0.0))[1], now)
+        if last <= 0 or not _run_sane([first, last]):
             continue
-        prev = chain.get((email, ""))
-        if (prev is not None and prev[1] + _ONLINE_ACC_KEEP >= first
-                and last + _ONLINE_ACC_KEEP >= prev[0]):
-            first = min(first, prev[0])
-            s2[email] = first
-        if cold is not None:
-            cand = _chain_cold_lift(cold, (email, ""), last, _ONLINE_COLD_KEEP)
-            if cand is not None and cand < first:
-                s2[email] = first = cand
-        chain[(email, "")] = [first, last]
+        key = (email, "")
+        prev = runs.get(key)
+        if prev is None:
+            runs[key] = [first, last]
+            continue
+        if prev[1] + _ONLINE_ACC_KEEP < first or last + _ONLINE_ACC_KEEP < prev[0]:
+            if prev[1] >= last:
+                s2[email] = prev[0]
+            else:
+                runs[key] = [first, last]
+            continue
+        prev[0] = min(prev[0], first)
+        if last > prev[1]:
+            prev[1] = last
+        s2[email] = prev[0]
     for email, hosts in (live or {}).items():
-        pr = chain.get((email, ""))
+        pr = runs.get((email, ""))
         if email not in s2 and pr is not None and pr[1] >= now - _ONLINE_ACC_WIN:
             s2[email] = pr[0]
         cur = d2.get(email)
         for host in hosts:
             if cur is not None and host in cur:
                 continue
-            prh = chain.get((email, host))
+            prh = runs.get((email, host))
             if prh is not None and prh[1] >= now - _ONLINE_ACC_WIN:
                 d2.setdefault(email, {})[host] = [prh[0], prh[1]]
     return s2, d2
-
-def _acc_boot_step(pending, stamps, win, closed):
-    """Тянет начала цепей свежих ключей назад по меткам одного чанка.
-
-    Ключи из `closed` больше не тянутся: цепь, закрытая разрывом в живом
-    слое, не открывается старыми строками. Метки чанка идут от новых к
-    старым; метки теперешнего начала или новее пропускаются — начало уезжает
-    только назад (#411, иначе лечение по существующему ключу прыгнуло бы к
-    краю хвоста). Пока зазор от текущего начала не шире переданного горизонта
-    `win`, начало уезжает на старшую метку, первый зазор шире горизонта
-    закрывает цепь на теперешнем начале. Мутирует `pending` и `closed` — ноги
-    подают свои словари."""
-    for key, ts_list in stamps.items():
-        if key in closed or key not in pending:
-            continue
-        pr = pending[key]
-        for t in sorted(ts_list, reverse=True):
-            if t >= pr[0]:
-                continue
-            if pr[0] - t > win:
-                closed.add(key)
-                break
-            pr[0] = t
-
-def _acc_boot(chain, dev, start, acc, now, read_back, heal_existing=False):
-    """Сеет память цепей при подъёме панели — рестарт не обнуляет «время в сети» (#378).
-
-    Память цепей умирает с процессом, а хвост видит только `_ONLINE_ACC_TAIL`
-    байт: после рестарта десятичасовая сессия начиналась заново с края хвоста
-    и показывала минуты вместо часов. Обратный скан тянет начала цепей свежих
-    ключей назад через чанки, которые даёт `read_back`, пока каждый ключ не
-    закроется разрывом; ключ, дошедший до края файла или бюджета, остаётся с
-    началом на последней прочитанной метке — нижняя честная граница. `chain`
-    заполняется только где пусто (память держит перевес), возвращает число
-    посеянных ключей. Хозяин видел это числа: `38` минут вместо `624`.
-    `heal_existing` (#411): начало, уже сидящее в памяти или на носителе, но
-    придвинутое к краю хвоста чисткой за время простоя процесса, скан по
-    отсутствию не лечит — ключ-то не пустой. При подъёме панели (ровно один
-    раз на процесс) свежие ключи цепи забираются в тот же обратный скан, и их
-    начало уезжает назад только глубже; перевес памяти над краем хвоста
-    остаётся, разрыв шире окна закрывает цепь на теперешнем начале. Досев
-    `_acc_reseed` лечением не занимается: он сеет только потерянные, а скан по
-    всем живым ключам каждый снимок жрал бы бюджет зря."""
-    pending = {}
-    for email, hosts in (dev or {}).items():
-        for host, pr in hosts.items():
-            if pr[1] >= now - _ONLINE_ACC_KEEP:
-                pending[(email, host)] = [pr[0], pr[1]]
-    for email, first in (start or {}).items():
-        last = (acc.get(email) or ("", 0.0))[1]
-        if last >= now - _ONLINE_ACC_KEEP and (email, "") not in pending:
-            pending[(email, "")] = [first, last]
-    healed = set()
-    if heal_existing:
-        for key, v in chain.items():
-            # перевес памяти: скан стартует от начала цепи, а не от края хвоста,
-            # и тянет его назад; остаток хвоста по тому же ключу не важен
-            if now - v[1] <= _ONLINE_ACC_KEEP:
-                pending[key] = list(v)
-                healed.add(key)
-    closed = set()
-    if pending:
-        for data in read_back:
-            stamps = {}
-            for line in data.splitlines():
-                if " accepted " not in line:
-                    continue
-                email = _acc_email(line)
-                if not email:
-                    continue
-                try:
-                    ts = datetime.datetime.strptime(
-                        line[:19].replace("/", "-"), "%Y-%m-%d %H:%M:%S").timestamp()
-                except ValueError:
-                    continue
-                if ts <= 0:
-                    continue
-                host = _acc_from_host(line)
-                for key in ((email, host), (email, "")) if host else ((email, ""),):
-                    if key in pending and key not in closed:
-                        stamps.setdefault(key, []).append(ts)
-            _acc_boot_step(pending, stamps, _ONLINE_ACC_KEEP, closed)
-            if len(closed) >= len(pending):
-                break
-    n = 0
-    for key, pr in pending.items():
-        cur = chain.get(key)
-        if cur is None:
-            chain[key] = pr
-            n += 1
-        elif key in healed and pr[0] < cur[0]:
-            cur[0] = pr[0]
-    return n
-
-def _acc_boot_gen(files, tail, budget, chunk):
-    """Обратный читатель access-лога: чанки строк от края хвоста назад, потом
-    по повёрнутым файлам от конца к началу.
-
-    `files` — от нового к старым; у самого нового первые `tail` байт уже
-    прочитаны снимком, повторять незачем. Огрызок строки на границе чанка
-    снят — его начало в прежнем чанке (так же делает хвостовая читалка).
-    Бюджет `budget` и размер чанка `chunk` считываются здесь; отказ файла
-    останавливает скан, а не превращает его в ошибку ручки."""
-    left = budget
-    for i, path in enumerate(files):
-        try:
-            sz = os.path.getsize(path)
-        except OSError:
-            continue
-        pos = sz - (tail if i == 0 else 0)
-        while pos > 0 and left > 0:
-            st = max(0, pos - min(chunk, left))
-            try:
-                with open(path, "rb") as f:
-                    f.seek(st)
-                    raw = f.read(pos - st)
-            except OSError:
-                return
-            pos = st
-            left -= len(raw)
-            if st > 0:
-                nl = raw.find(b"\n")
-                raw = raw[nl + 1:] if nl >= 0 else b""
-            if raw:
-                yield raw.decode("utf-8", "replace")
-
-def _acc_reseed(chain, dev, start, acc, now, cooldown, read_back):
-    """Досевает цепи, потерянные памятью между снимками (#401).
-
-    Хвост видит свежий accept ключа, а `_ONLINE_CHAIN` его не держит — так
-    выглядит потеря цепи (ложный purge или пропуск строки читалкой). Без
-    досева `_acc_hold` посадит такой ключ на край хвоста и «время в сети»
-    спрыгнет с пяти часов на пятьдесят минут. Досевает только потерянные и
-    не остывшие после недавнего досева ключи — тем же обратным сканом, что
-    и подъём панели, но с меньшим бюджетом и не чаще
-    `_ONLINE_RESEED_TTL` секунд на ключ.
-    Чистая: мутирует только переданные `chain` и `cooldown`, ноги подают
-    свои словари; `read_back` — ленивый генератор, без потерь не читает."""
-    d = {}
-    s = {}
-    for email, hosts in (dev or {}).items():
-        for host, pr in hosts.items():
-            k = (email, host)
-            if (k not in chain and pr[1] >= now - _ONLINE_ACC_WIN
-                    and now - cooldown.get(k, 0.0) >= _ONLINE_RESEED_TTL):
-                d.setdefault(email, {})[host] = pr
-                cooldown[k] = now
-    for email, first in (start or {}).items():
-        k = (email, "")
-        last = (acc.get(email) or ("", 0.0))[1]
-        if (k not in chain and last >= now - _ONLINE_ACC_WIN
-                and now - cooldown.get(k, 0.0) >= _ONLINE_RESEED_TTL):
-            s[email] = first
-            cooldown[k] = now
-    if not d and not s:
-        return 0
-    return _acc_boot(chain, d, s, acc, now, read_back)
 
 def _acc_live(snap, email):
     """Свежий accept подписчика: (тег инбаунда, возраст, метка времени) или `None`.
@@ -6042,66 +5974,46 @@ def _mt_live_users():
             out[name] = n
     return out
 
+def _runs_load(runs, path, st):
+    """Регистр лент с диска — ровно один подъём на процесс (#409, #441).
+
+    Начало ленты, виденное панелью вживую, переживает гибель процесса только
+    потому, что лежит на носителе: обратный скан access-лога его больше не
+    досевает. Чего на диске нет — начинается с первой названной метки, и это
+    честное «меньше», а не выдуманное «больше». Возвращает число посеянных
+    ключей; `st` мутируется отметкой загрузки, повторный ход ничего не читает."""
+    if st["loaded"]:
+        return 0
+    st["loaded"] = True
+    try:
+        with open(path) as f:
+            return _runs_decode(json.load(f), runs)
+    except Exception:
+        return 0
+
 def _online_snapshot(force=False):
     """Снимок всех четырёх источников; кэш `_ONLINE_SNAP_TTL` секунд.
     Источники опрашиваются по очереди и изолированно: отказ одного не гасит
     остальные и не превращает окно в 500."""
     now = time.time()
-    global _ONLINE_BOOT_DONE
     snap = _ONLINE_SNAP
     if not force and snap["at"] and now - snap["at"] < _ONLINE_SNAP_TTL:
         return snap
     snap["xray"] = _xray_online_map()
     acc, start, dev = _acc_last_tags()
     if not SBX:
-        # память цепей целиком под одним замком: подъём с диска, подогрев,
-        # досев и запись не разъезжаются с хранителем (#410)
-        with _CHAIN_LOCK:
-            if not _CHAIN_ST["loaded"]:
-                # подъём панели начинает с диска: цепи, виденные живой панелью,
-                # переживают гибель процесса (#409); скан ниже досевает только пустое
-                _CHAIN_ST["loaded"] = True
-                try:
-                    with open(_ONLINE_CHAIN_FILE) as f:
-                        _chain_decode(json.load(f), _ONLINE_CHAIN)
-                except Exception:
-                    pass
-                if not _COLD_ST["loaded"]:
-                    # накопленное время остывших цепей живёт на своей полке (#413)
-                    _COLD_ST["loaded"] = True
-                    try:
-                        with open(_ONLINE_COLD_FILE) as f:
-                            _chain_decode(json.load(f), _ONLINE_COLD)
-                    except Exception:
-                        pass
-            _chain_keepwarm(_ONLINE_CHAIN, _XRAY_LIVE, now)
-            if not _ONLINE_BOOT_DONE:
-                # подъём панели не обнуляет «время в сети»: начала цепей досеивает
-                # обратный скан лога, ровно один раз на процесс (#378). Тот же скан
-                # лечит уже сидящие в цепи придвинутые к краю начала (#411)
-                _ONLINE_BOOT_DONE = True
-                _acc_boot(_ONLINE_CHAIN, dev, start, acc, now, _acc_boot_gen(
-                    (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
-                    _ONLINE_ACC_TAIL, _ONLINE_ACC_BOOT, _ONLINE_ACC_BOOT_CH),
-                    heal_existing=True)
-            # потерянная между снимками цепь не должна садиться на край хвоста:
-            # обратный скан возвращает её настоящее начало (#401)
-            _acc_reseed(_ONLINE_CHAIN, dev, start, acc, now, _ONLINE_RESEED,
-                        _acc_boot_gen(
-                            (_XRAY_ACCESS, _XRAY_ACCESS + ".1", _XRAY_ACCESS + ".2"),
-                            _ONLINE_ACC_TAIL, _ONLINE_RESEED_BUDGET, _ONLINE_ACC_BOOT_CH))
-            start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now,
-                                   _XRAY_LIVE, _ONLINE_COLD)
-            # память цепей переписывается на диск, когда движется (#409):
-            # гибель процесса больше не сдвигает «время в сети» к краю хвоста
-            _chain_flush(_ONLINE_CHAIN_FILE, _ONLINE_CHAIN, now, _CHAIN_ST,
-                         _ONLINE_CHAIN_FLUSH_TTL)
-            # остывшее время, снятое с цепей этим же ходом, успевает улечься на
-            # полку до гибели процесса (#413)
-            _chain_cold_flush(_ONLINE_COLD_FILE, _ONLINE_COLD, now, _COLD_ST,
-                              _ONLINE_CHAIN_FLUSH_TTL)
+        # регистр лент целиком под одним замком: подъём с диска, подогрев
+        # и запись не разъезжаются с хранителем (#410)
+        with _RUNS_LOCK:
+            _runs_load(_ONLINE_RUNS, _ONLINE_RUNS_FILE, _RUNS_ST)
+            _runs_keepwarm(_ONLINE_RUNS, _XRAY_LIVE, now)
+            start, dev = _runs_glue(_ONLINE_RUNS, acc, start, dev, _XRAY_LIVE, now)
+            # регистр переписывается на диск, когда движется (#409): гибель
+            # процесса больше не сдвигает «время в сети» к краю хвоста
+            _runs_flush(_ONLINE_RUNS_FILE, _ONLINE_RUNS, now, _RUNS_ST,
+                        _ONLINE_RUNS_FLUSH_TTL)
     else:
-        start, dev = _acc_hold(_ONLINE_CHAIN, acc, start, dev, now)
+        start, dev = _runs_glue({}, acc, start, dev, {}, now)
     snap["acc"], snap["acc_start"], snap["acc_dev"] = acc, start, dev
     snap["tun"] = _wg_awg_live_peers()
     snap["mt"] = _mt_live_users()
@@ -6109,31 +6021,45 @@ def _online_snapshot(force=False):
     return snap
 
 def _online_keep_once(now=None):
-    """Один ход хранителя цепей (#410): спросить xray, подогреть открытые
-    цепи и оставить их на диске. Окно не рисуется — `acc`/`start`/`dev`
-    снимка не трогаются, подогрев двигает только `последний` уже живых
-    ключей. Под песочницей не ходит: чужой носитель не греет и не читает.
-    Возвращает число подогретых цепей."""
+    """Один ход хранителя лент (#410, #441, #443): спросить xray, продлить ленты
+    с открытым обработчиком, закрыть истёкшие по горизонту молчания, докопать
+    начало подозрительных лент обратным ходом по журналу и оставить регистр на
+    диске. Окно не рисуется — `acc`/`start`/`dev` снимка не трогаются, подогрев
+    двигает только `конец` уже живых ключей, а обратный ход — только их `начало`.
+    Регистр поднимается с диска и здесь: без этого первый же ход хранителя до
+    открытия окна затёр бы носитель пустым регистром. Под песочницей не ходит:
+    чужой носитель не греет и не читает. Возвращает число подогретых лент."""
     if SBX:
         return 0
     if now is None:
         now = time.time()
     _xray_online_map()
-    with _CHAIN_LOCK:
-        n = _chain_keepwarm(_ONLINE_CHAIN, _XRAY_LIVE, now)
-        if n:
-            _chain_flush(_ONLINE_CHAIN_FILE, _ONLINE_CHAIN, now, _CHAIN_ST,
-                         _ONLINE_CHAIN_FLUSH_TTL)
+    with _RUNS_LOCK:
+        _runs_load(_ONLINE_RUNS, _ONLINE_RUNS_FILE, _RUNS_ST)
+        n = _runs_keepwarm(_ONLINE_RUNS, _XRAY_LIVE, now)
+        m = _runs_prune(_ONLINE_RUNS, now)
+        pending = _runs_suspects(_ONLINE_RUNS, _RUNS_BACK_ST, now)
+    # тяжёлое чтение журнала — вне замка: обратный ход по многомегабайтному логу
+    # не имеет права быть тем, из-за чего стоит запрос «Клиенты в сети» (#443)
+    got = _acc_backfill(pending, now)
+    q = 0
+    if got:
+        with _RUNS_LOCK:
+            q = _runs_lift(_ONLINE_RUNS, _RUNS_BACK_ST, got)
+    with _RUNS_LOCK:
+        if n or m or q:
+            _runs_flush(_ONLINE_RUNS_FILE, _ONLINE_RUNS, now, _RUNS_ST,
+                        _ONLINE_RUNS_FLUSH_TTL)
     return n
 
 def _online_keep_loop():
-    """Хранитель цепей «Клиенты в сети» (#410).
+    """Хранитель лент «Клиенты в сети» (#410).
 
-    Снимок рисуется, только когда кто-то открывает окно: ночью цепь
+    Снимок рисуется, только когда кто-то открывает окно: ночью лента
     подписчика с открытым обработчиком и тихим опросным протоколом остывала
     до утра, склейщик выбрасывал ключ за окно и «время в сети» слетало, хотя
-    клиент не отключался. Хранитель ходит втрое чаще окна `_ONLINE_ACC_WIN`,
-    спрашивает xray и держит открытые цепи свежими на диске; утро поднимает
+    клиент не отключался. Хранитель ходит втрое чаще окна присутствия,
+    спрашивает xray и держит открытые ленты свежими на диске; утро поднимает
     настоящее начало, а не край хвоста."""
     while True:
         try:
@@ -6827,20 +6753,10 @@ def _link(inb, host, client, proto, std=False):
                 f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"
                 "")
     if proto.startswith("shadowsocks"):
-        # #414: ссылку несёт пароль подписчика, а не общий секрет входа.
-        cred = ((inb.get("method") or "aes-256-gcm") + ":" +
-                (client.get("password") or inb.get("password") or ""))
-        raw = base64.urlsafe_b64encode(cred.encode()).decode().rstrip("=")
-        tail = ""
-        if meta["tls"]:
-            # #418: клиент обязан знать, что стучится под TLS: без этих параметров
-            # v2rayN/INCY шлют клинтекст и рукопожатие не складывается никогда.
-            # `sni` — домен входа (в мюксе — маска `vpn.<база>`), при адресе-
-            # литерале (#239) он остаётся доменом: сертификат и SNI-политика
-            # у входа общие, различается только сетевой путь.
-            tail = "?" + urllib.parse.urlencode(
-                {"type": "tcp", "security": "tls", "sni": _dom})
-        return f"ss://{raw}@{host}:{_port}{tail}#{urllib.parse.quote(name)}"
+        # #431: протокол снят с панели по решению хозяина. Ссылку не собираем —
+        # провал в общий сборщик свёл бы осиротевший вход в мусорный vless://,
+        # поэтому отказ назван и возвращён как None (выдача его отфильтрует).
+        return None
     if proto.startswith("vmess"):
         add = host.strip("[]")
         if std:
@@ -7108,7 +7024,9 @@ def _parse_link_line(line):
                     if ":" in dec: method, password = dec.split(":", 1)
                 except Exception:
                     password = cred
-            return {"scheme": "ss", "proto": "shadowsocks", "ss_method": method or "aes-256-gcm",
+            # #431: протокол снят с панели. Ссылку разбираем, но цель не
+            # назначаем — импорт отвергнет её по имени, а не склеит в reality.
+            return {"scheme": "ss", "proto": None, "ss_method": method or "aes-256-gcm",
                     "password": password, "name": urllib.parse.unquote(frag)}
         if low.startswith("hy2://"):
             body = line[6:]
@@ -7256,9 +7174,6 @@ def _import_from_links(st, text):
                 except Exception as e:
                     warnings.append(base + ": не создал inbound " + proto + ": " + str(e)[:70])
                     continue
-            if proto == "shadowsocks":
-                if it.get("ss_method"): inb["method"] = it["ss_method"]
-                if it.get("password"): inb["password"] = it["password"]
             c = _new_client(base, proto, inb)
             c["sub_token"] = sub_token
             u = it.get("uuid")
@@ -7269,9 +7184,8 @@ def _import_from_links(st, text):
                 c["uuid"] = u
             elif u:
                 warnings.append(base + ": uuid занят на " + proto + ", назначен новый")
-            if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and it.get("password"):
-                # #414: у `shadowsocks` пароль теперь личный у записи, поэтому
-                # вставленная ссылка переносит его на подписчика, а не на вход.
+            if proto.startswith("trojan") and it.get("password"):
+                # #414: пароль вставленной ссылки переносится на подписчика.
                 c["password"] = it["password"]
             if proto == "hysteria2" and it.get("auth"):
                 c["auth"] = it["auth"]
@@ -7348,9 +7262,9 @@ def _import_from_json(st, data):
                 u = ""
             if u and not any(x.get("uuid") == u for x in inb.get("clients", [])):
                 c["uuid"] = u
-            if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and cc.get("password") is not None:
-                # #414: пароль подписчика `shadowsocks` переезжает вместе с записью,
-                # иначе на новой коробке ссылка того же человека станет другой.
+            if proto.startswith("trojan") and cc.get("password") is not None:
+                # #414: пароль подписчика переезжает вместе с записью, иначе на
+                # новой коробке ссылка того же человека станет другой.
                 c["password"] = cc["password"]
             if proto == "hysteria2" and cc.get("auth"):
                 c["auth"] = cc["auth"]
@@ -7391,8 +7305,6 @@ _EXTIMP_PROTO_MAP = {
     "trojan": {"tls|ws": "trojan-ws-tls", "tls|tcp": "trojan-tcp-tls", "tls|grpc": "trojan-grpc-tls",
                "tls|xhttp": "trojan-ws-tls", "reality|tcp": "trojan-reality", "reality|*": "trojan-reality",
                "tls|*": "trojan-tcp-tls"},
-    "shadowsocks": {"tls|tcp": "shadowsocks-tcp-tls", "tls|*": "shadowsocks-tcp-tls",
-                    "*|*": "shadowsocks"},
     "hysteria2": {"*|*": "hysteria2"},
 }
 
@@ -7456,7 +7368,7 @@ def _xui_parse_items(con, warnings):
         s = _jload(row.get(scol))
         veil_proto = _xui_proto_key(protocol, stream)
         if str(protocol).lower() == "shadowsocks":
-            warnings.append("пропуск «%s»: в Veil Shadowsocks — один общий пароль на порт, перенеси вручную" % inb_name)
+            warnings.append("пропуск «%s»: протокол Shadowsocks снят с панели (#431)" % inb_name)
             continue
         if not veil_proto:
             warnings.append("пропуск «%s»: %s+%s+%s Veil не поддерживается (можно перенести ссылками)" %
@@ -7496,7 +7408,7 @@ def _marzban_parse_items(con, warnings):
         username, status, data_limit, expire = row[0], row[1], row[2], row[3]
         proxy_protocol, proxy_settings = str(row[4] or "").lower(), _jload(row[5])
         key = str(row[6]) if len(row) > 6 and row[6] else ""
-        proto_map = {"vless": "reality", "trojan": "trojan-tcp-tls", "shadowsocks": "shadowsocks",
+        proto_map = {"vless": "reality", "trojan": "trojan-tcp-tls",
                      "hysteria2": "hysteria2"}
         veil_proto = proto_map.get(proxy_protocol)
         if not veil_proto:
@@ -7588,9 +7500,9 @@ def _extimport_apply(st, items):
         else:
             c = _new_client(nm, proto, inb)
             if u: c["uuid"] = u
-        if (proto.startswith("trojan") or proto.startswith("shadowsocks")) and it.get("password"):
-            # #414: у `shadowsocks` слово подписчика своё, источник несёт его в
-            # том же поле — иначе импорт присвоил бы запись к общему секрету входа.
+        if proto.startswith("trojan") and it.get("password"):
+            # #414:Trojan-пароль подписчика несёт источник в том же поле —
+            # иначе импорт присвоил бы запись к общему секрету входа.
             c["password"] = it["password"]
         if proto == "hysteria2" and it.get("password"):
             c["auth"] = it["password"]
@@ -7866,6 +7778,29 @@ def _expire_seconds_client(ua="", xclient=""):
     return ("shadowrocket" in u or "incy" in u or "happ" in u
             or (xclient or "").lower() == "incy")
 
+def _sub_userinfo(up, down, total, expiry, ua="", xclient=""):
+    """Заголовок `subscription-userinfo` выдачи подписки.
+
+    Клиенты (`v2rayNG`, `Hiddify`, `NekoBox`, `Happ`, `Incy`) показывают по нему
+    трафик и срок. Внутри панели `0` значит «без лимита» и «бессрочно» (см. метку
+    `_ts_of`), но наружу этот же ноль `Happ` и `Incy` читают как «капот достигнут»
+    и «истекло» (#429): поле на нуле они не пропускают, а считают из него остаток —
+    и подписчик без лимита получает «превышен лимит» на каждой выдаче. Поэтому
+    безлимитному не отдаём `total` вовсе, бессрочному — `expire`: по негласной мере
+    заголовка отсутствие поля и есть «не ограничено», и его понимают все
+    перечисленные клиенты, включая работающего здесь `Shadowrocket`. Настоящий
+    капот и настоящая дата уходят как уходили — поле присутствует, только когда
+    лимит или срок заданы."""
+    ui = f"upload={int(up)}; download={int(down)}"
+    if total > 0:
+        ui += f"; total={int(total)}"
+    exp_val = int(expiry)
+    if not _expire_seconds_client(ua, xclient):
+        exp_val *= 1000  # миллисекунды
+    if exp_val > 0:
+        ui += f"; expire={exp_val}"
+    return ui
+
 def _incy_wg_ep(host):
     """WG-endpoint специально для Incy: только IPv4-литерал. Пинг-проверка Incy
     не резолвит хостнеймы (показывает «na», даже когда туннель живой), а WG-
@@ -8136,15 +8071,8 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
             ob["pre_shared_key"] = psk
         return ob
     if proto.startswith("shadowsocks"):
-        ob = {"type": "shadowsocks", "tag": tag, "server": host, "server_port": port,
-              "method": inb.get("method") or "aes-256-gcm",
-              # #414: пароль подписчика, общий секрет входа — только запасной
-              "password": c.get("password") or inb.get("password") or ""}
-        if meta["tls"]:
-            # #418: тот же общий TLS-слой, что у остального семейства: `server_name`
-            # — домен входа, без него sing-box молча не поднимет рукопожатие
-            ob["tls"] = _tls()
-        return ob
+        # #431: протокол снят с панели — объекта sing-box для него не бывает.
+        return None
     if proto == "hysteria2":
         return {"type": "hysteria2", "tag": tag, "server": host, "server_port": port,
                 "password": c.get("auth") or c["uuid"],
@@ -10530,16 +10458,11 @@ def _proto_dup(pr):
     второй туннель — на другом телефоне, для другой задачи. У туннельных протоколов
     пара ключей, у `trojan` — пароль, у `hysteria2` — строка авторизации: всё это
     лежит в самой записи, поэтому вторая запись даёт вторую ОТДЕЛЬНУЮ ссылку.
-    У `vless`/`vmess`/`reality` ссылку несёт идентификатор подписчика; у `shadowsocks`
-    с цикла #414 — его собственный пароль, как у трояна, поэтому и там вторая запись
-    отличается ключом. Входов, где нельзя ни того ни другого, панель не множит —
+    У `vless`/`vmess`/`reality` ссылку несёт идентификатор подписчика.
+    Входов, где нельзя ни того ни другого, панель не множит —
     отказ называется на месте правки."""
     p = str(pr or "")
     if p in ("wireguard", "amneziawg", "hysteria2") or p.startswith("trojan"):
-        return "cred"
-    if p.startswith("shadowsocks"):
-        # #414: пароль перестал быть общим на вход — вторая запись отличается
-        # им же, как запись трояна, а не адресом входа.
         return "cred"
     if (p.startswith("vless") or p.startswith("vmess") or p == "reality"):
         return "ep"
@@ -10603,10 +10526,6 @@ def _rec_mark(proto, c):
         m = str(c.get("client_public_key") or c.get("uuid") or "")
     elif str(proto or "").startswith("trojan"):
         m = str(c.get("password") or c.get("uuid") or "")
-    elif str(proto or "").startswith("shadowsocks"):
-        # #414: пароль стал персональным — вторая запись отличается им, а не
-        # адресом входа, как отличалась, когда секрет был общий на весь вход.
-        m = str(c.get("password") or c.get("uuid") or "")
     elif proto == "hysteria2":
         m = str(c.get("auth") or c.get("uuid") or "")
     else:
@@ -10641,10 +10560,6 @@ def _new_client(name, proto=None, inb=None, **kw):
     except Exception: c["max_devices"] = 0
     if proto and proto.startswith("trojan"):
         c["password"] = secrets.token_urlsafe(12)
-    if proto and proto.startswith("shadowsocks"):
-        # #414: слово хозяина — персональные пароли подписчиков; здесь же
-        # граница, через которую идут все места создания записи.
-        c["password"] = secrets.token_urlsafe(18)
     if proto == "hysteria2":
         c["auth"] = secrets.token_hex(16)
     if proto == "wireguard" and inb is not None:
@@ -14866,7 +14781,7 @@ _NODE_PROTO_PRIORITY = ("reality", "vless-xhttp-reality", "trojan-reality", "hys
                         "vless-xhttp-tls", "vless-ws-tls", "vless-tcp-tls", "vless-grpc-tls", "vless-ws",
                         "trojan-tcp-tls", "trojan-ws-tls", "trojan-grpc-tls",
                         "vmess-ws-tls", "vmess-tcp-tls", "vmess-ws",
-                        "shadowsocks-tcp-tls", "shadowsocks", "wireguard", "amneziawg")
+                        "wireguard", "amneziawg")
 
 def _deploy_client_to_nodes(st, u):
     """Разместить клиента u на всех онлайн-нодах (Veil API и агент). (`deployed`, skipped)."""
@@ -19896,6 +19811,63 @@ def _front_dns_ensure(domain):
         rep.append("%s %s → %s (создана/обновлена)" % (typ, domain, ip))
     return rep
 
+# Цикл #424: у запуска certbot не было транспортного повтора. Живой отказ #415 —
+# четыре попытки подряд за `153.79`, `120.04`, `50.76`, `68.25` с, и в каждой
+# `read timeout=45` на постановке заказа: сервис выдачи молчал, отказ проходил
+# сам, а панель поднимала `certbot: …` с первой же ошибки. Повторять имеет смысл
+# только обрыв транспорта; лимит выпуска и проваленное подтверждение второй
+# попытки не ждут — крутить их значит жечь бюджет и время впустую.
+_CERTBOT_ATTEMPTS_MAX = 3
+_CERTBOT_RETRY_PAUSE = 15
+_CERTBOT_RETRY_WALL = 180
+_CERTBOT_TRANSIENT_MARKS = (
+    "(read timeout=", "Read timed out", "ConnectTimeoutError", "Connection aborted",
+    "Connection reset by peer", "Connection refused", "Name or service not known",
+    "Temporary failure in name resolution",
+    "500 Server Error", "502 Bad Gateway", "503 Service Unavailable",
+    "504 Gateway Time-out",
+)
+
+
+def _certbot_transient(text):
+    return any(m in text for m in _CERTBOT_TRANSIENT_MARKS)
+
+
+def _certbot_run(args, timeout):
+    """Запуск certbot с повтором на обрыв транспорта. Возвращает результат
+    удавшейся попытки; при окончательном отказе бросает RuntimeError с текстом
+    последней неудачи и числом попыток. Пауза растёт от попытки к попытке, стена
+    времени ограничена — ручка выдачи не обязана висеть вечно.
+    `_CERT_STATE["attempts"]` показывает, сколько попыток потратил последний
+    выпуск: `1` значит обошлось без повтора."""
+    start = time.time()
+    last = ""
+    attempt = 0
+    while attempt < _CERTBOT_ATTEMPTS_MAX:
+        attempt += 1
+        _CERT_STATE["attempts"] = attempt
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0:
+                return r
+            last = (r.stderr or r.stdout or "")[-400:]
+            stuck = False
+        except subprocess.TimeoutExpired:
+            # зависший за таймаут запуск — тот же молчаливый сервис, текста отказа
+            # у него нет, поэтому судится он транспортом по факту
+            last = "не завершился за %d с (соединение с сервисом выдачи висит)" % timeout
+            stuck = True
+        if not (stuck or _certbot_transient(last)):
+            break
+        pause = _CERTBOT_RETRY_PAUSE * attempt
+        if attempt >= _CERTBOT_ATTEMPTS_MAX or time.time() - start + pause > _CERTBOT_RETRY_WALL:
+            break
+        _audit("certbot_retry", attempt=attempt, waited=round(time.time() - start, 1),
+               err=last[-160:])
+        time.sleep(pause)
+    raise RuntimeError("certbot: " + last + (" (попыток: %d)" % attempt if attempt > 1 else ""))
+
+
 def _front_cert_issue(domain):
     """LE-сертификата произвольного домена через DNS-01 (Cloudflare-хук панели).
     В отличие от _cert_issue — НЕ трогает настройки панели (cert_domain/panel_domain),
@@ -19944,9 +19916,7 @@ def _front_cert_issue(domain):
     _CERT_STATE["busy"] = True
     try:
         os.makedirs(CERT_DIR, exist_ok=True)
-        r = subprocess.run(args, capture_output=True, text=True, timeout=320)
-        if r.returncode != 0:
-            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        _certbot_run(args, 320)
         _cert_tree_perms()
     finally:
         _CERT_STATE["busy"] = False
@@ -20440,7 +20410,7 @@ def _tg_dcs():
             "totals": {"required": req, "counted": counted, "alive": alive,
                        "coverage": round(counted / req * 100, 1) if req else 0.0},
             "threshold": thr, "loss": _tg_dc_loss_view(), "me": _tg_me_state(),
-            "media_route": _mr_view()}
+            "media_route": _mr_view(), "writers_wd": _tg_wd_view()}
 
 def _tg_set_fresh_ratio(pct):
     pct = float(pct)
@@ -20860,12 +20830,110 @@ def _tg_web_guard_loop():
             _TG_WEB_GUARD["error"] = str(e)[:160]
         time.sleep(30)
 
+# #435: холодный старт telemt — не поломка, а окно конвергенции ME-писателей:
+# каждый DC обязан заново набрать `required_writers`, и пока не набрал, клиенты
+# на этом DC висят. Хозяин назвал прошлое лечение словом: «ну ты просто
+# перезагрузил, скоро значит опять будут эти затыки, это не решение проблемы».
+# Лечение: панель сама мерит недобор писателей и поднимает писателям новый
+# процесс — но не кнопкой у админа, а ограниченным числом рестартов: цикл
+# рестартов #305 запрещён, поэтому между подъёмами пауза, а после трёх подряд
+# невкусных подъёмов хранитель замолкает и только кричит в журнал.
+_TG_WD_SCAN = 60.0          # частота осмотра писателей
+_TG_WD_WIN = 600.0          # как долго длится недобор, прежде чем дёргать telemt
+_TG_WD_COOL = 3 * 3600.0    # не чаще одного подъёма на три часа
+_TG_WD_TRY = 3              # три невкусных подъёма подряд — стоп, только крик
+_TG_MP_WD = {"bad_since": 0.0, "starved": [], "last_restart": 0.0,
+             "bad_restarts": 0, "error": "", "silent": False}
+
+
+def _tg_wd_starved(dcs):
+    """Какие НЕмедиа DC недобрали писателей: [(номер, живо, требуется)].
+
+    Медиа-узлы судит `_mr_*` (голод писателей там лечится туннелем, а не
+    рестартом), и рестарт telemt не должен толкаться с ними; DC, который
+    писателей не требует (`0` в поле), судить нечем."""
+    out = []
+    for x in dcs:
+        if _tg_dc_media(x.get("dc")):
+            continue
+        try:
+            req = int(x.get("required_writers") or 0)
+            alive = int(x.get("alive_writers") or 0)
+        except (TypeError, ValueError):
+            continue
+        if req > 0 and alive < req:
+            out.append((_tg_dc_num(x.get("dc")), alive, req))
+    return out
+
+
+def _tg_wd_scan(dcs=None):
+    """Один осмотр писателей: копит длительность недобора и чинит его
+    рестартом telemt в своих границах. `dcs` — строки `/v1/stats/dcs`;
+    нога подаёт свой список, тик берёт живой. Мутирует только `_TG_MP_WD`."""
+    now = time.time()
+    if dcs is None:
+        dcs = ((_tg_api("GET", "/v1/stats/dcs").get("data") or {}).get("dcs")) or []
+    st = _TG_MP_WD
+    starved = _tg_wd_starved(dcs)
+    if not starved:
+        if st["last_restart"]:
+            # писатели добрались после подъёма — счётчик невкусных сбрасывается
+            st["bad_restarts"] = 0
+        st["bad_since"] = 0.0
+        st["starved"] = []
+        st["silent"] = False
+        return
+    st["starved"] = ["%s:%d/%d" % t for t in starved]
+    if not st["bad_since"]:
+        st["bad_since"] = now
+        return
+    if now - st["bad_since"] < _TG_WD_WIN:
+        return
+    if now - st["last_restart"] < _TG_WD_COOL or st["bad_restarts"] >= _TG_WD_TRY:
+        # граница числа: рестартов не будет, но молчать нельзя — крик один раз
+        if not st["silent"]:
+            st["silent"] = True
+            _audit("tg_mp_writers_stuck", detail=",".join(st["starved"])[:200],
+                   hours=round((now - st["bad_since"]) / 3600.0, 1))
+        return
+    st["bad_restarts"] += 1
+    st["last_restart"] = now
+    ok, why = _svc_restart("telemt")
+    _audit("tg_mp_writers_restart", detail=",".join(st["starved"])[:200],
+           minutes=round((now - st["bad_since"]) / 60.0), ok=ok, why=why[:120])
+    st["bad_since"] = 0.0
+    st["silent"] = False
+
+
+def _tg_wd_loop():
+    time.sleep(15)
+    while True:
+        try:
+            if _tg_middle_proxy_on():
+                _tg_wd_scan()
+        except Exception as e:
+            _TG_MP_WD["error"] = str(e)[:160]
+        time.sleep(_TG_WD_SCAN)
+
+_TG_WD_VIEW_KEYS = ("bad_since", "starved", "last_restart",
+                    "bad_restarts", "error", "silent")
+
+
+def _tg_wd_view():
+    """Снимок хранителя писателей для `/api/tg/dcs`: недобор с `bad_since`,
+    чей список, когда последний подъём, сколько их было невкусных и замолк ли
+    хранитель. Пустой `starved` при живом `bad_since` — та же картина, что в
+    морде: мера есть, приговора нет."""
+    return {k: _TG_MP_WD[k] for k in _TG_WD_VIEW_KEYS}
+
+
 # #309: в песочнице харнесса (`VEIL_SYS_SANDBOX`) фоновые нити не заводятся вовсе:
 # импортировавший панель прибор получал живые нити в своём процессе, а пути
 # `config.json`, `audit.json` и `state.json` песочница не переселяет — нити писали
 # боевые файлы. Так стиратель #309 и свернул живой конфиг до двух ключей.
 if not SBX:
     threading.Thread(target=_tg_web_guard_loop, daemon=True).start()
+    threading.Thread(target=_tg_wd_loop, daemon=True).start()
 
 _NG_WEBPROXY_TEMPLATE = """map $http_upgrade $telemt_connection_upgrade {
     default upgrade;
@@ -26345,7 +26413,7 @@ CERT_DIR = f"{BASE}/certs"
 _CERT_STATE = {"domain": "", "issued": None, "expire": None, "cert": "", "key": "", "error": "", "busy": False,
                "email": "", "auto": True,
                "san": [], "san_next": [], "san_added": [], "san_dropped": [],
-               "san_error": "", "budget": {}}
+               "san_error": "", "budget": {}, "attempts": None}
 
 def _dynv6_conf():
     c = CFG_CACHE or {}
@@ -27991,9 +28059,7 @@ def _cert_issue(email=None, mode="auto", extra_domains=None, base=None):
             args += ["--register-unsafely-without-email"]
         args += ["--config-dir", CERT_DIR, "--work-dir", CERT_DIR + "/work",
                  "--logs-dir", CERT_DIR + "/logs", "--cert-name", "veil-" + domain]
-        r = subprocess.run(args, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        _certbot_run(args, 600)
         _cert_tree_perms()
         if not (os.path.exists(certp) and os.path.exists(keyp)):
             raise RuntimeError("certbot завершился, но fullchain/privkey не найдены")
@@ -29145,16 +29211,14 @@ def _cert_renew_now():
         raise RuntimeError("порт 80 занят — продление (HTTP-01) невозможно; перевыпустите сертификат через DNS-01 (Cloudflare)")
     _CERT_STATE["busy"] = True
     try:
-        r = subprocess.run(["certbot", "renew", "--force-renewal",
-                            # без этой опции certbot в неинтерактивном режиме сначала
-                            # спит случайные 0–8 минут — и панель успевает убить его по
-                            # таймауту, так и не продлив сертификат
-                            "--no-random-sleep-on-renew",
-                            "--config-dir", CERT_DIR,
-                            "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
-                            "--non-interactive"], capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise RuntimeError("certbot: " + (r.stderr or r.stdout)[-400:])
+        _certbot_run(["certbot", "renew", "--force-renewal",
+                      # без этой опции certbot в неинтерактивном режиме сначала
+                      # спит случайные 0–8 минут — и панель успевает убить его по
+                      # таймауту, так и не продлив сертификат
+                      "--no-random-sleep-on-renew",
+                      "--config-dir", CERT_DIR,
+                      "--work-dir", CERT_DIR + "/work", "--logs-dir", CERT_DIR + "/logs",
+                      "--non-interactive"], 600)
         # заодно лечим следы старого «chmod -R o+rX»: все ключи обратно 0600
         _cert_tree_perms()
         _cert_status()
@@ -29270,11 +29334,6 @@ def _limits_loop():
                                 _wg_sync(st)
                         except Exception as e:
                             print("[wgheal] " + str(e), flush=True)
-                        try:
-                            if _ss_personalize(st):
-                                _save(STATE, st)
-                        except Exception as e:
-                            print("[sspersonal] " + str(e), flush=True)
                         try:
                             if _traffic_tick(st):
                                 _save(STATE, st)
@@ -29558,8 +29617,8 @@ if not SBX:  # #309: в песочнице харнесса эти нити не
     threading.Thread(target=_rulesets_loop, daemon=True).start()
     # #387: подбор адресов хозяйского списка обхода; читает кэш, сеть трогает только тут.
     threading.Thread(target=_bypass_loop, daemon=True).start()
-    # #410: хранитель цепей «Клиенты в сети» — греет открытые обработчики,
-    # пока окно никто не открывает; иначе ночная цепь остывает до утра.
+    # #410/#443: хранитель лент «Клиенты в сети» — греет открытые обработчики и
+    # докапывает начало подозрительных лент, пока окно никто не открывает.
     threading.Thread(target=_online_keep_loop, daemon=True).start()
     # #335/#361: нить наблюдателя живёт только вместе с приватным модулем — без него
     # панели нечем наблюдать и нечего банить.
@@ -32682,7 +32741,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     uptime = int(float(f.read().split()[0]))
             except Exception:
                 uptime = 0
-            today_k = time.strftime("%Y-%m-%d")
+            today_k = _day_key()
             uuids = {c.get("uuid") for inb in inbs.values() for c in inb.get("clients", [])}
             online = 0
             for u in uuids:
@@ -33091,7 +33150,8 @@ class H(http.server.BaseHTTPRequestHandler):
                                         tg_links.append(l)
                             except Exception:
                                 pass
-                        if not inb.get("disabled") and _link_reachable(inb, c, unreachable):
+                        if (not str(proto).startswith("shadowsocks")
+                                and not inb.get("disabled") and _link_reachable(inb, c, unreachable)):
                             try:
                                 # Ключ — протокол плюс различник записи (#239): пока
                                 # на протокол была одна копия, «одна ссылка на протокол»
@@ -33243,12 +33303,11 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(b)))
                 self.send_header("Cache-Control", "no-store")
-                # subscription-userinfo — клиенты (v2rayNG, Hiddify, NekoBox) показывают трафик и срок
-                exp_val = int(expiry)
-                if not _expire_seconds_client(ua, xc):
-                    exp_val *= 1000  # миллисекунды
-                ui = f"upload={up}; download={down}; total={total}; expire={exp_val}"
-                self.send_header("subscription-userinfo", ui)
+                # subscription-userinfo — сборка в `_sub_userinfo` (#429): безлимитному
+                # не отдаём `total`, бессрочному — `expire`, иначе `Happ`/`Incy` читают
+                # ноль как «капот достигнут» и пишут «превышен лимит» на каждой выдаче.
+                self.send_header("subscription-userinfo",
+                                 _sub_userinfo(up, down, total, expiry, ua, xc))
                 _pt = ((CFG_CACHE.get("sub_brand") or "").strip() or sub_name)[:25]
                 if _pt:
                     pt = "base64:" + base64.b64encode(_pt.encode("utf-8")).decode()
@@ -34294,18 +34353,13 @@ class H(http.server.BaseHTTPRequestHandler):
             for proto, inb in (st.get("inbounds") or {}).items():
                 for c in inb.get("clients", []):
                     uuids.add(c.get("uuid"))
-            now = time.gmtime()
-            days = []
-            for i in range(29, -1, -1):
-                k = time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
-                days.append([k, int(_TRAFFIC_DAYS.get(k) or 0)])
-            today_k = time.strftime("%Y-%m-%d", now)
-            mo_k = time.strftime("%Y-%m", now)
-            week = sum(int(_TRAFFIC_DAYS.get(
-                time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
-            ) or 0) for i in range(7))
+            dkeys = _day_keys(30)
+            days = [[k, int(_TRAFFIC_DAYS.get(k) or 0)] for k in dkeys]
+            today_k = dkeys[-1]
+            mo_k = _ldate("%Y-%m")
+            week = sum(int(_TRAFFIC_DAYS.get(k) or 0) for k in dkeys[-7:])
             month = sum(v for k, v in _TRAFFIC_DAYS.items() if k.startswith(mo_k))
-            yest_k = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+            yest_k = dkeys[-2]
             yesterday = int(_TRAFFIC_DAYS.get(yest_k) or 0)
             try:
                 with open("/proc/uptime") as f:
@@ -34323,7 +34377,7 @@ class H(http.server.BaseHTTPRequestHandler):
             tg_running = _unit_active("telemt")
             protos = []
             _grp_lbl = {"reality": "VLESS + Reality", "vless": "VLESS", "vmess": "VMess",
-                        "trojan": "Trojan", "ss": "Shadowsocks", "hy2": "Hysteria2",
+                        "trojan": "Trojan", "hy2": "Hysteria2",
                         "wg": "WireGuard", "awg": "AmneziaWG", "amneziawg": "AmneziaWG", "mtproto": "MTProto"}
             agg = {}
             for proto, inb in (st.get("inbounds") or {}).items():
@@ -34377,10 +34431,11 @@ class H(http.server.BaseHTTPRequestHandler):
             # раньше судил один Xray и не отвечал, ЧТО ИМЕННО запущено. Теперь
             # по строке на подписчика: какие протоколы живут сейчас (зеленью),
             # когда была последняя активность (`last`) и когда началась текущая
-            # цепь — «время в сети» (`since`, #375), у каждого устройства —
-            # своё (`devs`, #376). Слово хозяина 14.10: из
+            # лента присутствия — «время в сети» (`since`, #375, #441), у
+            # каждого устройства — своё (`devs`, #376). Слово хозяина 14.10: из
             # окна убран перечёнт «доступны: …» — он спорил с «Запущен» и
-            # плодил шум. Ни рестартов, ни записей — четыре читалки снимка.
+            # плодил шум. Ни рестартов, ни изменений конфига; из записей —
+            # только регистр лент на носителе панели.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             raw_st = _load(STATE)
             if self._refuse_unshapable(raw_st): return
@@ -34430,14 +34485,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         running.append(lbl)
                     if ts > last:
                         last = ts
-                    # «время в сети» — начало текущей цепи accept'ов, нижний
-                    # край: хвост дальше `_ONLINE_ACC_TAIL` начала не видит;
-                    # туннельному и MTProto пиеру начала мерять нечем — 0
+                    # «время в сети» — начало ленты присутствия (#441): его
+                    # панель назвала вживую и помнит между снимками, хвост
+                    # лога тут только склейка; туннельному и MTProto пиеру
+                    # начала мерять нечем — 0
                     cst = (snap.get("acc_start") or {}).get(u) or 0.0
                     if cst > 0:
                         since = cst
-                    # #376: у каждого адреса входа своя цепь — своё «время в
-                    # сети»; в окно попадает адрес, чей последний accept свеж
+                    # #376: у каждого адреса входа своя лента — своё «время в
+                    # сети»; в окно попадает адрес, чей признак присутствия свеж
                     for _h, pr in ((snap.get("acc_dev") or {}).get(u) or {}).items():
                         if pr[1] >= snap["at"] - _ONLINE_ACC_WIN:
                             devs.append(int(pr[0]))
@@ -34454,7 +34510,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         # обнуляется ротацией ключа каждые ~2 мин (замер 14.10 на боевом:
                         # активный пиер сдвинул метку на `240` с за `140` с стенного
                         # времени), значит его возраст — след последнего обмена, а не
-                        # начало цепи; access-лога туннеля нет, досеять начало нечем.
+                        # начало ленты; access-лога туннеля нет, назвать его
+                        # нечем.
                         # Морда на пустом `devs` честно показывает «—» (контракт #375),
                         # а счётчик устройств и чип протокола остаются. Время последней
                         # активности (`last`) названо меткой рукопожатия — это факт, а не
@@ -36614,10 +36671,6 @@ class H(http.server.BaseHTTPRequestHandler):
                     c["uuid"] = new_uuid
                     if proto.startswith("trojan"):
                         c["password"] = secrets.token_urlsafe(12)
-                    if proto.startswith("shadowsocks"):
-                        # #414: пароль больше не общий на вход — поворот вериты
-                        # обязан коснуться и его, иначе ссылка прежняя.
-                        c["password"] = secrets.token_urlsafe(18)
                     if proto == "hysteria2":
                         c["auth"] = secrets.token_hex(16)
                     if proto in ("wireguard", "amneziawg"):
@@ -38676,22 +38729,13 @@ if __name__ == "__main__":
         # смотрим прямо по состоянию. Иначе новые ключи живут до первого
         # случайного сохранения, а veilwg после рестарта ОС поднимается с ДРУГИМИ.
         chg = (json.dumps(st, sort_keys=True) != before) or chg
-        # Смена схемы учёта трафика: раньше опрос счётчиков сам их и обнулял, так
-        # что last_* хранили «значение за интервал». Чтение перестало сбрасывать —
-        # значит первый тик увидел бы «всё с запуска xray минус последний
-        # интервал» и вылил бы весь наработанный трафик в текущий цикл. Ставим
-        # базу на теперешний снимок: теряем максимум минуту, а не гигабайты.
-        try:
-            _tr = _statsquery()
-            for _proto, _inb in _inb_entries(st):
-                for _c in (_inb.get("clients") or []):
-                    _t = _tr.get(_c.get("uuid")) or {}
-                    _lu = int(_t.get("uplink", 0) or 0); _ld = int(_t.get("downlink", 0) or 0)
-                    if (int(_c.get("last_up") or 0) != _lu) or (int(_c.get("last_down") or 0) != _ld):
-                        _c["last_up"] = _lu; _c["last_down"] = _ld
-                        chg = True
-        except Exception as e:
-            print("stats baseline init: " + str(e), flush=True)
+        # Базу last_up/last_down при старте НЕ трогаем. Прежний блок ставил её на
+        # «теперешний снимок», а снимок на загруженной коробке приходит пустым
+        # (API ещё не слушает) — база обнулялась, и первый удачный тик выливал
+        # всё время жизни движка в суточную ячейку: #439 замерил живьём `71697`
+        # как `22368+49329` при целом движке. Счётчики от рестарта панели не
+        # обнуляются, поэтому сохранённая база честна, а дельта за простой
+        # панели приедет на первом тике — её терять не за чем.
         if chg:
             _save(STATE, st)
         need_rewrite = _client_count(st) > 0 and (not xc or "api" not in (xc.get("api") or {}) or not any(
