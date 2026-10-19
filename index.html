@@ -6251,6 +6251,14 @@ async function loadVeilCenter(){
   let h='<div>База: <b>'+esc(v.base)+'</b> · провайдер: '+esc(v.provider||'—')+'</div>';
   if(v.ipv6_note) h+='<div style="color:var(--warn);font-size:12px">AAAA: '+esc(v.ipv6_note)+'</div>';
   else if(v.ipv6) h+='<div class=mut style="font-size:12px">AAAA выпускаются на '+esc(v.ipv6)+' (живость подтверждена внешним эхом)</div>';
+  const aaaaOn=!!v.aaaa_publish;
+  h+='<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--br)">'
+    +'<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer">'
+    +'<input type="checkbox" id="aaaaPublish" '+(aaaaOn?'checked':'')+' onchange="dnsAaaaPublish(this.checked)" style="margin-top:2px">'
+    +'<span>Публиковать AAAA (IPv6). Заводски — выключено: панель не выпускает v6-записей и снимает осиротевшие '
+    +'(цикл #452, слово хозяина 19.10: «после удаления аааа заработало у всех»).</span></label>'
+    +'<div class=mut style="font-size:12px;margin-top:4px">Включено — AAAA выходит только при подтверждённой живости IPv6: внешнее эхо или входящая проба порта фасада. '
+    +'Явное хозяйское слово при переезде рубильник не гасит. Сейчас публикуется: <b>'+(v.ipv6?esc(v.ipv6):'ничего')+'</b>.</div></div>';
   h+='<table style="font-size:12.5px;margin-top:4px"><tbody>';
   (v.names||[]).forEach(function(r){
     h+='<tr><td class=mut style="padding:1px 10px 1px 0">'+esc(r.label||'')+'</td>'+
@@ -6290,6 +6298,19 @@ async function veilCenterGo(){
     loadCert(); loadVeilCenter();
   }catch(e){ setMsg('veilCenterMsg','Ошибка: '+esc(e.message),'err'); loadVeilCenter(); }
   finally{ if(btn) btn.disabled=false; }
+}
+// #452: рубильник публикации AAAA — действует сразу: ручка пересобирает базу
+// и прогоняет хранителя имён, осиротевшая запись не живёт до следующего тика.
+async function dnsAaaaPublish(on){
+  try{
+    const d=await api('/api/dns/aaaa',{method:'POST',body:JSON.stringify({on:!!on})});
+    let m=(on?'✅ публикация AAAA включена':'⚠ публикация AAAA выключена — осиротевшие записи снимаются');
+    if(d.base_ipv6) m+=' · база публикует '+d.base_ipv6;
+    if(d.dropped&&d.dropped.length) m+=' · снято имён: '+d.dropped.length;
+    if(d.dns_error) m+=' · '+d.dns_error;
+    setMsg('veilCenterMsg',m,'ok');
+  }catch(e){ setMsg('veilCenterMsg','❌ '+e,'err'); }
+  await loadVeilCenter();
 }
 // ─── #368 (#319): мастер вкладки «Сайт, домен, сертификация» ───
 // Один читатель состояния (`/api/site/wizard`) и один исполнитель шага
@@ -9092,15 +9113,6 @@ document.addEventListener('touchcancel',()=>{PTR=null;ptrMove(null);},{passive:t
 // ---------- Клиенты в сети: окно «кто именно» (#303), «что запущено» (#322) ----------
 let ONLINE_TIMER=null;
 const _runChip='display:inline-block;padding:1px 8px;margin:1px 4px 1px 0;border-radius:999px;background:#166534;border:1px solid #2f9e5c;color:#eafff2;font-size:12.5px;font-weight:600';
-function _dur(s){
-  s=Math.max(0,Math.floor(s));
-  if(s<60) return 'меньше минуты';
-  const sMin=Math.floor(s/60);
-  if(sMin<60) return sMin+' мин';
-  const h=Math.floor(sMin/60), m=sMin%60;
-  if(h<24) return h+' ч '+m+' мин';
-  return Math.floor(h/24)+' дн '+(h%24)+' ч';
-}
 async function onlineLoad(){
   const el=$('onlineList'), sum=$('onlineSum'), b=$('onlineRefreshBtn');
   if(!el||!sum)return;
@@ -9108,24 +9120,15 @@ async function onlineLoad(){
   try{
     const d=await api('/api/online');
     const list=(d&&d.list)||[];
-    // длительности меряются от секунды снимка `at`, а не от часов браузера (#377):
-    // и начало цепи, и часы ответа — серверные, их разность не ползёт,
-    // когда страницу не обновляли. Без `at` (старая панель) — прежний путь
-    const at=(d&&d.at)?Number(d.at):Math.floor(Date.now()/1000);
     sum.textContent='в сети '+((d&&d.online)||0)+' устройств · '+list.length+' клиентов из '+((d&&d.clients)||0);
     if(!list.length){el.innerHTML='<div class=mut>Сейчас в сети никого нет.</div>';return;}
-    el.innerHTML='<table class=data><tr><th>Имя</th><th>Запущен</th><th>В сети</th><th>Устройств</th></tr>'
+    el.innerHTML='<table class=data><tr><th>Имя</th><th>Запущен</th><th>Устройств</th></tr>'
       +list.map(r=>{
         const run=r.running||[];
         let cell;
         if(run.length)cell=run.map(x=>'<span style="'+_runChip+'">'+escapeHtml(x)+'</span>').join('');
         else cell='<span class=mut>не запущен'+(r.last?(' · последний: '+escapeHtml(_ago(new Date(r.last*1000).toISOString()))):'')+'</span>';
-        // «время в сети» — начало текущей цепи accept'ов (#375); у каждого
-        // устройства своя цепь по адресу входа и своё время (#376); туннельному
-        // и MTProto пиеру начала мерять нечем — честное «—», а не выдуманное число
-        const dv=(r.devs||[]).filter(s=>s>0);
-        const net=dv.length?dv.map(s=>_dur(at-s)).join(' · '):((run.length&&r.since)?_dur(at-r.since):'—');
-        return '<tr><td>'+escapeHtml(r.name||'—')+'</td><td>'+cell+'</td><td>'+net+'</td><td>'+(r.devices||1)+'</td></tr>';
+        return '<tr><td>'+escapeHtml(r.name||'—')+'</td><td>'+cell+'</td><td>'+(r.devices||1)+'</td></tr>';
       }).join('')
       +'</table>';
   }catch(e){
