@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.10"
+VERSION = "2.17.11"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -5375,8 +5375,8 @@ def _online_count(email):
 # только чтение, без рестартов и записей:
 #  · `xray api statsgetallonlineusers` — кто открыт сейчас, и `statsonlineiplist`
 #    на каждого: разные адреса входа и есть разные устройства;
-#  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл последний
-#    accept и когда началась текущая лента присутствия — это «время в сети» (#375);
+#  · хвост access-лога — каким инбаундом (тегом = протоколом) прошёл
+#    последний accept и когда;
 #  · `wg`/`awg show … latest-handshakes` — возраст рукопожатия туннельного пиера;
 #  · telemt `/v1/stats/users` — текущие MTProto-соединения по имени пользователя.
 # Снимок живёт 10 секунд: морда опрашивает чаще, а коробку каждый раз трогать
@@ -5388,170 +5388,28 @@ _ONLINE_TUN_WIN = 180.0          # WG/AWG-пиер считается живым
 _ONLINE_ACC_TAIL = 512 * 1024    # сколько байт хвоста лога читать за один снимок
 _ONLINE_DEV_MAX = 24             # сколько онлайн-подписчиков пересчитать по адресам
 _ONLINE_ACC_WIN = 600.0          # свежий accept и есть присутствие, когда обработчик закрыт
-_ONLINE_ACC_KEEP = 3600.0        # час без accept'а и без открытого обработчика — лента кончилась (#412, #441)
-_ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "acc_start": {}, "acc_dev": {}, "tun": {}, "mt": {}}
-# {(почта, адрес входа): [начало ленты, последний признак присутствия]} — регистр
-# лент присутствия между снимками (#441). Пустой адрес — лента уровня почты, она
-# кормит `since`. Начало двигает только свидетельство: метка accept'а из лога или
-# факт открытого обработчика. Пережитое время не хранится больше нигде и ничем
-# не возвращается: лента, закрывшаяся по горизонту молчания, при возвращении
-# начинается заново с названного момента, а не с `now минус накопленное`.
-_ONLINE_RUNS = {}
-_ONLINE_RUNS_FILE = f"{BASE}/online_runs.json"
-_ONLINE_RUNS_FLUSH_TTL = 60.0     # писать не чаще, даже если ленты движутся
-_RUNS_LOCK = threading.Lock()
-_RUNS_ST = {"at": 0.0, "fp": None, "loaded": False}
-# {uuid: {адрес входа без порта}} — подписчики с открытым обработчиком прямо
-# сейчас (#410): у опросных протоколов живой клиент не порождает новых
-# accept'ов, и без этой меры лента остывала у него на глазах.
-_XRAY_LIVE = {}
-_ONLINE_KEEP_TTL = 180.0   # ход хранителя лент — втрое чаще окна присутствия `600` с
-# Обратный ход по журналу подъёмов (#443): хвост в `_ONLINE_ACC_TAIL` байт на
-# живой коробке закрывает минуты, а не часы, и долгоживущее соединение, поднявшееся
-# три часа назад, хвосту не видно — лента заводилась с края хвоста и «время в сети»
-# отставало от факта. Потолок хода: байт, горизонт и шаг чтения.
-_ONLINE_BACK_BYTES = 32 * 1024 * 1024   # дальше этого журнала панель не идёт
-# горизонт копа назван страховкой от расхождения часов, а не глубиной: глубина
-# обратного хода вся на потолке байтов, а цепь рвёт час молчания (полумера с
-# горизонтом `6` ч на бою соврала «`6ч5мин`» против фактных `8ч16мин` — #445)
-_ONLINE_BACK_HORIZON = 365 * 24 * 3600.0  # старше года метка не может быть началом
-_ONLINE_BACK_BLOCK = 1024 * 1024        # шаг обратного чтения
-_ONLINE_BACK_YOUNG = 1800.0             # лента младше получаса — ещё подозреваемая
-# отметки обратного хода: на какое начало какой коп уже был + нужен ли первый ход
-_RUNS_BACK_ST = {"probed": {}, "boot": False}
-
-def _run_sane(pr):
-    """Запись ленты годна, если это `[начало, конец]` и начало не позже конца.
-    Часы лога и коробки могут разойтись, носитель мог остаться от прежнего
-    кода — кривую запись регистр не принимает (#441). Чистая."""
-    try:
-        first, last = float(pr[0]), float(pr[1])
-    except (TypeError, ValueError, IndexError):
-        return False
-    return first > 0 and last >= first
-
-def _runs_encode(runs, now):
-    """Регистр лент в сериализуемый словарь; закрывшиеся ленты не пишутся —
-    на диске живёт только то, что ещё может продолжиться по свидетельству.
-    Чистая: ничего не мутирует."""
-    out = {}
-    for (email, host), pr in runs.items():
-        if not _run_sane(pr):
-            continue
-        if now - pr[1] > _ONLINE_ACC_KEEP:
-            continue
-        out[email + "\x00" + host] = [pr[0], pr[1]]
-    return out
-
-def _runs_decode(data, runs):
-    """Словарь с диска в регистр лент, заполняя только пустые ключи —
-    память держит перевес. Кривые записи пропускаются молча. Мутирует
-    переданный `runs`, возвращает число посеянных ключей."""
-    n = 0
-    if not isinstance(data, dict):
-        return 0
-    for k, v in data.items():
-        try:
-            email, _, host = str(k).partition("\x00")
-            first, last = float(v[0]), float(v[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if not email or first <= 0 or last < first:
-            continue
-        key = (email, host)
-        if key not in runs:
-            runs[key] = [first, last]
-            n += 1
-    return n
-
-def _runs_keepwarm(runs, live, now):
-    """Продлевает ленты подписчиков, у которых обработчик открыт прямо сейчас (#410).
-
-    XHTTP и опросные протоколы держат соединение, не порождая новых accept'ов:
-    мера по логу считает такого клиента замолчавшим, лента остывает и
-    выбрасывается, «время в сети» спрыгивает на край хвоста — хозяин видел это
-    как «слетело». Пока `statsgetallonlineusers` называет подписчика открытым,
-    метка конца его лент сдвигается на `now`; начало не трогается. Ничего не
-    создаёт: подогрев продлевает только ленты, которые регистр уже знает, иначе
-    окно показывало бы сессии, которых панель никогда не видела. Возвращает
-    число подогретых ключей. Чистая: мутирует только переданный `runs`."""
-    n = 0
-    for email, hosts in (live or {}).items():
-        for key in [(email, "")] + [(email, h) for h in hosts]:
-            pr = runs.get(key)
-            if pr is not None and pr[1] < now:
-                pr[1] = now
-                n += 1
-    return n
-
-def _runs_flush(path, runs, now, st, ttl):
-    """Атомарная запись регистра лент на диск при движении отпечатка, но не
-    чаще `ttl` подряд: замолчавшая лента не перекладывается, а после `ttl`
-    одна запись обновляет стамп и на тихом носителе. `st` — {"at": метка
-    последней успешной попытки, "fp": отпечаток записанного}, мутируется
-    при успехе; возвращает True, когда файл переписан. Черновик пишется под
-    своим замком с правами `0600` — ключами лент стоят почты подписчиков."""
-    enc = _runs_encode(runs, now)
-    fp = hashlib.sha1(json.dumps(enc, sort_keys=True).encode()).hexdigest()
-    if fp == st.get("fp") and now - st.get("at", 0.0) < ttl:
-        return False
-    tmp = path + ".tmp"
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(enc, f, ensure_ascii=False, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return False
-    st["at"] = now
-    st["fp"] = fp
-    return True
-
-def _runs_prune(runs, now):
-    """Закрывает ленты, у которых горизонт молчания `_ONLINE_ACC_KEEP` пройден:
-    ни accept'а, ни открытого обработчика за час — сессия кончилась (#441).
-
-    Это единственное, чем панель закрывает ленту. Ни полки накопленного времени,
-    ни отдельного доказательства отсутствия (#436) не нужно: начало умирает
-    вместе с лентой и при возвращении начинается с названного момента, поэтому
-    простой клиента в «время в сети» не въедает никогда. Возвращает число
-    снятых записей; мутирует переданный `runs`."""
-    n = 0
-    for key in [k for k, v in runs.items() if now - v[1] > _ONLINE_ACC_KEEP]:
-        runs.pop(key, None)
-        n += 1
-    return n
+_ONLINE_SNAP = {"at": 0.0, "xray": {}, "acc": {}, "tun": {}, "mt": {}}
 
 def _xray_devices(email):
-    """(число разных адресов входа подписчика, множество этих адресов без портов).
-    Отказ меры не оставляет клиента невидимым: присутствие известно из
-    общего списка, поэтому 1 — честный нижний край, а не выдуманное число;
-    множество при отказе пусто — подогреву цепей там взяться нечем. Адреса
-    нужны памяти цепей: открытый обработчик без новых accept'ов остывает,
-    а по живому списку его видно (#410)."""
+    """Число разных адресов входа подписчика. Отказ меры не оставляет клиента
+    невидимым: присутствие известно из общего списка, поэтому 1 — честный
+    нижний край, а не выдуманное число."""
     try:
         r = subprocess.run(
             ["xray", "api", "statsonlineiplist", "--server", f"127.0.0.1:{_STATS_PORT}",
              "-email", email],
             capture_output=True, text=True, timeout=8)
         if r.returncode != 0:
-            return 1, set()
+            return 1
         ips = (json.loads(r.stdout) or {}).get("ips")
     except Exception:
-        return 1, set()
+        return 1
     if not isinstance(ips, dict) or not ips:
-        return 1, set()
-    return len(ips), {_strip_port(a) for a in ips}
+        return 1
+    return len(ips)
 
 def _xray_online_map():
-    """{uuid подписчика: число открытых устройств}; параллельно строит `_XRAY_LIVE`
-    — {uuid: {адрес входа}} открытых сейчас обработчиков (#410).
+    """{uuid подписчика: число открытых устройств}.
     Прежний `statsquery` живая сборка `xray` (26.3.27) для этих строк глуха:
     CLI не знает флага `includeOnlineValue` и в выдаче есть только трафик —
     `user>>>email>>>online` там не появляется никогда. Из-за этого окно
@@ -5561,10 +5419,7 @@ def _xray_online_map():
     есть разные устройства. Больше `_ONLINE_DEV_MAX` адресов не переписываются:
     присутствие известно, а число остаётся 1 — иначе опрос толпы подписчиков
     превратился бы в толпу процессов; таких живых список знает без адресов.
-    Живой список меняется целиком на каждый успешный вызов: отказ меры живых
-    не выдумывает, подогрев встаёт на паузу до следующего успеха. Под
-    песочницей прогона узел не спрашивается и список не трогается."""
-    global _XRAY_LIVE
+    Под песочницей прогона узел не спрашивается."""
     if SBX:
         return {}
     try:
@@ -5572,16 +5427,13 @@ def _xray_online_map():
             ["xray", "api", "statsgetallonlineusers", "--server", f"127.0.0.1:{_STATS_PORT}"],
             capture_output=True, text=True, timeout=8)
         if r.returncode != 0:
-            _XRAY_LIVE = {}
             return {}
         d = json.loads(r.stdout)
     except Exception:
-        _XRAY_LIVE = {}
         return {}
     emails = []
     arr = d.get("users")
     if not isinstance(arr, list):
-        _XRAY_LIVE = {}
         return {}
     for s in arr:
         parts = [x for x in str(s).split(">>>") if x]
@@ -5591,20 +5443,11 @@ def _xray_online_map():
         e = parts[1]
         if e and e not in emails:
             emails.append(e)
-    # #441: этот список полон и авторитетен — названный в нём подписчик
-    # присутствует прямо сейчас, и его лента продлевается, даже когда лог молчит.
-    # Отсутствие в списке панель не трактует ничем: оно молчит до горизонта
-    # `_ONLINE_ACC_KEEP`, после чего лента закрывается сама.
     out = {}
-    live = {}
     for e in emails[:_ONLINE_DEV_MAX]:
-        n, hosts = _xray_devices(e)
-        out[e] = n
-        live[e] = hosts
+        out[e] = _xray_devices(e)
     for e in emails[_ONLINE_DEV_MAX:]:
         out[e] = 1
-        live[e] = set()
-    _XRAY_LIVE = live
     return out
 
 def _acc_ts(line):
@@ -5620,21 +5463,13 @@ def _acc_ts(line):
         return 0.0
 
 def _acc_last_tags():
-    """({uuid: (тег последнего accept, метка времени)}, {uuid: метка начала ленты},
-    {uuid: {адрес входа: [начало ленты, последний accept]}}).
+    """{uuid: (тег последнего accept, метка времени)}.
 
     `_DEV_POS` НЕ трогается: курсор строк принадлежит хранителю устройств,
-    этот читатель — гость, он откусывает только хвост файла. Лента здесь —
-    accept'ы одного подписчика, идущие подряд с зазором не шире
-    `_ONLINE_ACC_KEEP`: у XHTTP такая лента и есть текущая сессия опроса входа,
-    у долгоживущего TCP — лента из одной строки, момент подъёма соединения.
-    Это только то, что видит хвост: начало прошло за `_ONLINE_ACC_TAIL` байт
-    он не называет, его помнит регистр лент (`_runs_glue` #441)."""
+    этот читатель — гость, он откусывает только хвост файла."""
     out = {}
-    start = {}
-    dev = {}
     if SBX:
-        return out, start, dev
+        return out
     try:
         sz = os.path.getsize(_XRAY_ACCESS)
         with open(_XRAY_ACCESS, "r", errors="replace") as f:
@@ -5643,9 +5478,7 @@ def _acc_last_tags():
                 f.readline()       # огрызок строки, начавшейся до отсечки
             data = f.read()
     except OSError:
-        return out, start, dev
-    seen = {}
-    seen_dev = {}
+        return out
     for line in data.splitlines():
         if " accepted " not in line:
             continue
@@ -5657,248 +5490,7 @@ def _acc_last_tags():
         prev = out.get(email)
         if prev is None or ts >= prev[1]:
             out[email] = (tag, ts)
-        if ts > 0:
-            seen.setdefault(email, []).append(ts)
-            host = _acc_from_host(line)
-            if host:
-                seen_dev.setdefault((email, host), []).append(ts)
-    for email, ts_list in seen.items():
-        chain = sorted(ts_list)
-        first = chain[-1]
-        for t in reversed(chain[:-1]):
-            if first - t > _ONLINE_ACC_KEEP:
-                break
-            first = t
-        start[email] = first
-    for (email, host), ts_list in seen_dev.items():
-        chain = sorted(ts_list)
-        first = chain[-1]
-        for t in reversed(chain[:-1]):
-            if first - t > _ONLINE_ACC_KEEP:
-                break
-            first = t
-        dev.setdefault(email, {})[host] = [first, chain[-1]]
-    return out, start, dev
-
-def _acc_backfill(pending, now=None):
-    """{ключ ленты: названное начало} -> {ключ: начало глубже} (#443).
-
-    Хвост в `_ONLINE_ACC_TAIL` байт на живой коробке закрывает минуты, а не
-    часы: соединение, поднявшееся три часа назад, хвосту не видно вовсе — лента
-    заводилась с его края, и «время в сети» отставало от факта. Здесь панель
-    идёт от того же края назад, блоками по `_ONLINE_BACK_BLOCK`, пока цепь
-    подъёмов подписчика не порвётся (зазор шире `_ONLINE_ACC_KEEP` — это другая
-    сессия, её начало не воскресает), пока не упрётся в потолок
-    `_ONLINE_BACK_BYTES` — он и называет настоящую глубину копа. Горизонт
-    `_ONLINE_BACK_HORIZON` с цикла #445 остался только страховкой от
-    расхождения часов: метка старше года не может быть началом подъёма, а
-    шестичасовый горизонт соврал «`6ч5мин`» там, где факт был `8ч16мин`.
-    Рвётся только та цепь, что докопалась: остальные копятся дальше. Начало
-    становится глубже только по строке `accepted` с той же почтой (и с тем же
-    адресом входа, если ключ адресный) — выдуманному числу здесь неоткуда
-    взяться, а молчание меры — пустой ответ, то есть честное «меньше»."""
-    if SBX or not pending:
-        return {}
-    if now is None:
-        now = time.time()
-    floor = now - _ONLINE_BACK_HORIZON
-    try:
-        sz = os.path.getsize(_XRAY_ACCESS)
-    except OSError:
-        return {}
-    hi = sz - _ONLINE_ACC_TAIL
-    lo = hi - _ONLINE_BACK_BYTES
-    if lo < 0:
-        lo = 0
-    if hi <= lo:
-        return {}                 # журнал целиком в хвосте: копать некуда
-    mails = set(k[0] for k in pending)
-    chains = dict(pending)
-    got = {}
-    try:
-        f = open(_XRAY_ACCESS, "rb")
-    except OSError:
-        return {}
-    try:
-        f.seek(hi)
-        # строка на крае хвоста: хвост от неё видел только конец и в цепь её
-        # не положил, поэтому она достаётся обратному ходу
-        carry = f.readline()
-        pos = hi
-        stop = False
-        while pos > lo and chains and not stop:
-            a = pos - _ONLINE_BACK_BLOCK
-            if a < lo:
-                a = lo
-            f.seek(a)
-            lines = (f.read(pos - a) + carry).split(b"\n")
-            if a > lo:
-                carry = lines[0]  # начало блока посреди строки: донесём глубже
-                body = lines[1:]
-            else:
-                body = lines
-            for raw in reversed(body):
-                if b" accepted " not in raw:
-                    continue
-                line = raw.decode("utf-8", "replace")
-                email = _acc_email(line)
-                if email not in mails:
-                    continue
-                ts = _acc_ts(line)
-                if ts <= 0:
-                    continue
-                if ts < floor:
-                    stop = True   # глубже страхового горизонта меток не бывает
-                    break
-                for key in ((email, _acc_from_host(line)), (email, "")):
-                    head = chains.get(key)
-                    if head is None or ts >= head:
-                        continue
-                    if head - ts > _ONLINE_ACC_KEEP:
-                        del chains[key]
-                        continue
-                    chains[key] = ts
-                    got[key] = ts
-            pos = a
-    finally:
-        f.close()
-    return got
-
-def _runs_suspects(runs, st, now):
-    """Кому из лент нужен обратный ход, {(почта, адрес входа): названное начало}.
-
-    Подозреваемая — та, чьё начало моложе `_ONLINE_BACK_YOUNG`: её заводил край
-    хвоста, а не подъём соединения. Начало глубже получаса уже названо
-    свидетельством или докопано им — незачем копать его на каждый ход. Первый
-    ход после подъёма процесса (`st["boot"]`) не смотрит на возраст: ленты,
-    поднятые с диска, уже взрослые, а их начала могли быть заведены краем
-    хвоста при прежнем процессе, и после рестарта они остались бы
-    недоговорёнными (#443). Отметка о пробе ставится до хода и хранит само
-    начало: копается по одному разу на данное начало, а новое начало (лента
-    умерла по горизонту и возродилась) подозревается снова. Ключи, которых в
-    регистре уже нет, из отметок вон."""
-    boot = not st["boot"]
-    probed = st["probed"]
-    gone = []
-    for key in probed:
-        if key not in runs:
-            gone.append(key)
-    for key in gone:
-        del probed[key]
-    pending = {}
-    for key, pr in runs.items():
-        if not boot and now - pr[0] >= _ONLINE_BACK_YOUNG:
-            continue
-        if probed.get(key) == pr[0]:
-            continue
-        pending[key] = pr[0]
-        probed[key] = pr[0]
-    st["boot"] = True
-    return pending
-
-def _runs_lift(runs, st, got):
-    """Начало, добытое обратным ходом, кладётся в регистр (#443).
-
-    Двигается только глубже: лента, уехавшая из регистра за время хода, не
-    возвращается, начало позже конца не записывается, а проба считается
-    завершённой на новое начало. Возвращает число сдвинутых начал."""
-    n = 0
-    for key, head in got.items():
-        pr = runs.get(key)
-        if pr is None or head >= pr[0] or not _run_sane([head, pr[1]]):
-            continue
-        pr[0] = head
-        st["probed"][key] = head
-        n += 1
-    return n
-
-def _runs_glue(runs, acc, start, dev, live, now):
-    """Единый закон «времени в сети»: начало ленты двигает только свидетельство (#441).
-
-    На входе — меры снимка: `acc` {почта: (тег, метка последнего accept'а)},
-    `start` {почта: начало цепи, названное хвостом лога}, `dev`
-    {почта: {адрес входа: [начало, конец]}} и `live` {почта: {адрес
-    открытого сейчас обработчика}}. `runs` — регистр лент между снимками: он
-    мутируется здесь и ложится на диск, поэтому рестарт панели не обнуляет
-    «время в сети» (#378, #409 — и без обратного скана лога, который был самым
-    дорогим и самым спорным досевателем). Возвращает `(start, dev)` уже с
-    памятными началами — их рисует окно «Клиенты в сети».
-
-    Правил немного и из них нельзя выйти:
-      · горизонт молчания `_ONLINE_ACC_KEEP` закрывает ленту вместе с началом:
-        `_runs_prune` снимает ключ, и возвращение начинается с новой названной
-        метки. Накопленное время не хранится больше нигде — ни полки (#413), ни
-        отдельного доказательства отсутствия (#436) нет, поэтому простой
-        клиента в «время в сети» не въедает никогда;
-      · отрезок хвоста склеивается с лентой, только если между их границами нет
-        разрыва шире горизонта; при склейке начало берётся самым глубоким из
-        двух — край ленты это нижняя граница, начало из регистра панель видела
-        вживую; разрыв шире горизонта — это разные сессии, и регистр остаётся
-        при более позднем отрезке: начало прежней сессии не воскресает;
-      · открытый обработчик продлевает ленту без новых строк лога (#410) и
-        никогда её не создаёт: присутствие без начала остаётся только числом
-        устройств;
-      · конца в будущем не бывает: метка, опередившая часы панели, становится
-        `now`, начало позже конца регистр не принимает.
-    Пустой адрес входа — лента уровня почты, она кормит `since`.
-    """
-    s2 = dict(start)
-    d2 = {e: dict(h) for e, h in dev.items()}
-    _runs_prune(runs, now)
-    for email, hosts in d2.items():
-        for host, pr in hosts.items():
-            lo, hi = pr[0], min(pr[1], now)
-            if not _run_sane([lo, hi]):
-                continue
-            key = (email, host)
-            prev = runs.get(key)
-            if prev is None:
-                runs[key] = [lo, hi]
-                hosts[host] = [lo, hi]
-                continue
-            if prev[1] + _ONLINE_ACC_KEEP < lo or hi + _ONLINE_ACC_KEEP < prev[0]:
-                # разрыв шире горизонта — это разные сессии; регистр остаётся при
-                # более позднем отрезке, начало прежней сессии не воскресает
-                if prev[1] >= hi:
-                    hosts[host] = [prev[0], prev[1]]
-                else:
-                    runs[key] = [lo, hi]
-                continue
-            prev[0] = min(prev[0], lo)
-            if hi > prev[1]:
-                prev[1] = hi
-            hosts[host] = [prev[0], prev[1]]
-    for email, first in list(s2.items()):
-        last = min((acc.get(email) or ("", 0.0))[1], now)
-        if last <= 0 or not _run_sane([first, last]):
-            continue
-        key = (email, "")
-        prev = runs.get(key)
-        if prev is None:
-            runs[key] = [first, last]
-            continue
-        if prev[1] + _ONLINE_ACC_KEEP < first or last + _ONLINE_ACC_KEEP < prev[0]:
-            if prev[1] >= last:
-                s2[email] = prev[0]
-            else:
-                runs[key] = [first, last]
-            continue
-        prev[0] = min(prev[0], first)
-        if last > prev[1]:
-            prev[1] = last
-        s2[email] = prev[0]
-    for email, hosts in (live or {}).items():
-        pr = runs.get((email, ""))
-        if email not in s2 and pr is not None and pr[1] >= now - _ONLINE_ACC_WIN:
-            s2[email] = pr[0]
-        cur = d2.get(email)
-        for host in hosts:
-            if cur is not None and host in cur:
-                continue
-            prh = runs.get((email, host))
-            if prh is not None and prh[1] >= now - _ONLINE_ACC_WIN:
-                d2.setdefault(email, {})[host] = [prh[0], prh[1]]
-    return s2, d2
+    return out
 
 def _acc_live(snap, email):
     """Свежий accept подписчика: (тег инбаунда, возраст, метка времени) или `None`.
@@ -5974,23 +5566,6 @@ def _mt_live_users():
             out[name] = n
     return out
 
-def _runs_load(runs, path, st):
-    """Регистр лент с диска — ровно один подъём на процесс (#409, #441).
-
-    Начало ленты, виденное панелью вживую, переживает гибель процесса только
-    потому, что лежит на носителе: обратный скан access-лога его больше не
-    досевает. Чего на диске нет — начинается с первой названной метки, и это
-    честное «меньше», а не выдуманное «больше». Возвращает число посеянных
-    ключей; `st` мутируется отметкой загрузки, повторный ход ничего не читает."""
-    if st["loaded"]:
-        return 0
-    st["loaded"] = True
-    try:
-        with open(path) as f:
-            return _runs_decode(json.load(f), runs)
-    except Exception:
-        return 0
-
 def _online_snapshot(force=False):
     """Снимок всех четырёх источников; кэш `_ONLINE_SNAP_TTL` секунд.
     Источники опрашиваются по очереди и изолированно: отказ одного не гасит
@@ -6000,73 +5575,11 @@ def _online_snapshot(force=False):
     if not force and snap["at"] and now - snap["at"] < _ONLINE_SNAP_TTL:
         return snap
     snap["xray"] = _xray_online_map()
-    acc, start, dev = _acc_last_tags()
-    if not SBX:
-        # регистр лент целиком под одним замком: подъём с диска, подогрев
-        # и запись не разъезжаются с хранителем (#410)
-        with _RUNS_LOCK:
-            _runs_load(_ONLINE_RUNS, _ONLINE_RUNS_FILE, _RUNS_ST)
-            _runs_keepwarm(_ONLINE_RUNS, _XRAY_LIVE, now)
-            start, dev = _runs_glue(_ONLINE_RUNS, acc, start, dev, _XRAY_LIVE, now)
-            # регистр переписывается на диск, когда движется (#409): гибель
-            # процесса больше не сдвигает «время в сети» к краю хвоста
-            _runs_flush(_ONLINE_RUNS_FILE, _ONLINE_RUNS, now, _RUNS_ST,
-                        _ONLINE_RUNS_FLUSH_TTL)
-    else:
-        start, dev = _runs_glue({}, acc, start, dev, {}, now)
-    snap["acc"], snap["acc_start"], snap["acc_dev"] = acc, start, dev
+    snap["acc"] = _acc_last_tags()
     snap["tun"] = _wg_awg_live_peers()
     snap["mt"] = _mt_live_users()
     snap["at"] = now
     return snap
-
-def _online_keep_once(now=None):
-    """Один ход хранителя лент (#410, #441, #443): спросить xray, продлить ленты
-    с открытым обработчиком, закрыть истёкшие по горизонту молчания, докопать
-    начало подозрительных лент обратным ходом по журналу и оставить регистр на
-    диске. Окно не рисуется — `acc`/`start`/`dev` снимка не трогаются, подогрев
-    двигает только `конец` уже живых ключей, а обратный ход — только их `начало`.
-    Регистр поднимается с диска и здесь: без этого первый же ход хранителя до
-    открытия окна затёр бы носитель пустым регистром. Под песочницей не ходит:
-    чужой носитель не греет и не читает. Возвращает число подогретых лент."""
-    if SBX:
-        return 0
-    if now is None:
-        now = time.time()
-    _xray_online_map()
-    with _RUNS_LOCK:
-        _runs_load(_ONLINE_RUNS, _ONLINE_RUNS_FILE, _RUNS_ST)
-        n = _runs_keepwarm(_ONLINE_RUNS, _XRAY_LIVE, now)
-        m = _runs_prune(_ONLINE_RUNS, now)
-        pending = _runs_suspects(_ONLINE_RUNS, _RUNS_BACK_ST, now)
-    # тяжёлое чтение журнала — вне замка: обратный ход по многомегабайтному логу
-    # не имеет права быть тем, из-за чего стоит запрос «Клиенты в сети» (#443)
-    got = _acc_backfill(pending, now)
-    q = 0
-    if got:
-        with _RUNS_LOCK:
-            q = _runs_lift(_ONLINE_RUNS, _RUNS_BACK_ST, got)
-    with _RUNS_LOCK:
-        if n or m or q:
-            _runs_flush(_ONLINE_RUNS_FILE, _ONLINE_RUNS, now, _RUNS_ST,
-                        _ONLINE_RUNS_FLUSH_TTL)
-    return n
-
-def _online_keep_loop():
-    """Хранитель лент «Клиенты в сети» (#410).
-
-    Снимок рисуется, только когда кто-то открывает окно: ночью лента
-    подписчика с открытым обработчиком и тихим опросным протоколом остывала
-    до утра, склейщик выбрасывал ключ за окно и «время в сети» слетало, хотя
-    клиент не отключался. Хранитель ходит втрое чаще окна присутствия,
-    спрашивает xray и держит открытые ленты свежими на диске; утро поднимает
-    настоящее начало, а не край хвоста."""
-    while True:
-        try:
-            time.sleep(_ONLINE_KEEP_TTL)
-            _online_keep_once()
-        except Exception:
-            time.sleep(30)
 
 _STATE_TOKENS_LOCK = threading.Lock()
 
@@ -15150,6 +14663,7 @@ def _tg_fix_mtproto_link(link, port):
     return link
 
 _TG_MP_MARK = "Veil:MTProtoListener"
+_TG_MP_V6_MARK = "Veil:MTProto-v6relay"   # #449: штамп nginx-релея IPv6 фасада в veil-mux-stream.conf
 
 def _tg_toml_get_server_port(text=None):
     """[server] port из telemt.toml (0 если не задан)."""
@@ -15239,12 +14753,22 @@ def _tg_toml_ipv6_set(text, on=True):
     return "\n".join(lines)
 
 def _tg_mp_ipv6_want():
-    """Держать ли IPv6 у MTProto: и слушателя `::`, и [network] ipv6. По умолчанию ВКЛ
-    (прежнее поведение). Гасим только когда оператор снял переключатель `tg_mp_ipv6`
-    И middle-proxy включён — именно под middle-proxy v6-маршрут появляется у клиента
-    (iOS под VPN), и тогда публичный `[network] ipv6 = true` + слушатель `::` —
-    осознанный выбор, а не случайность."""
+    """Держать ли IPv6 у MTProto: nginx-релей `[::]` фасада (#449), [network] ipv6
+    и AAAA-записи имён. По умолчанию ВКЛ (прежнее поведение). Гасим только когда
+    оператор снял переключатель `tg_mp_ipv6` И middle-proxy включён — именно
+    под middle-proxy v6-маршрут появляется у клиента (iOS под VPN), и тогда
+    публичный `[network] ipv6 = true` + релей — осознанный выбор, а не случайность."""
     return bool(CFG_CACHE.get("tg_mp_ipv6", True)) or not _tg_middle_proxy_on()
+
+def _aaaa_publish_want():
+    """Публиковать ли AAAA-записи вообще — глобальный рубильник, цикл #452
+    (реестр #288 п.31). Слово хозяина 19.10 после отказа v6-клиентов: «после
+    удаления аааа заработало у всех». Заводски — ВЫКЛЮЧЕНО: ключа `aaaa_publish`
+    нет в конфиге, и панель не выпускает AAAA, а осиротевшие записи снимает.
+    От `tg_mp_ipv6` независим: тот держит релей и слушателя, этот — только
+    публикацию v6-семейства в DNS. Явное хозяйское слово (`force6` в обновлении
+    базы и при переезде) рубильник не гасит: оно не самодеятельность панели."""
+    return bool(CFG_CACHE.get("aaaa_publish", False))
 
 _IP6PUB = {"t": 0.0, "v": ""}
 
@@ -15272,19 +14796,63 @@ def _pub_ip6_echo():
     _IP6PUB.update(t=time.time(), v=v)
     return v
 
+_IP6IN = {"t": 0.0, "v": ""}
+
+def _ip6_inbound_live():
+    """#449: живость IPv6 судится ВХОДОМ, а не только исходящим эхом. Провайдеры
+    иногда несут v6 в одну сторону: узел наружу не стучится — эхо мертво, а клиенты
+    к нему приходят. Для фасада это худший расклад: прежний гейт по эху никогда не
+    выпустил бы AAAA, и v6-клиенты имени просто не видели бы (живой промер 19.10:
+    наружу не проходит даже пинг шлюза, а внешние зонды поднимают порт фасада 10/10).
+    Вердикт меряем внешними зондами (Globalping) на применённый порт MTProto-фасада:
+    релей и общий :443 стоят в одном nginx — ответ на порте фасада доказывает всё
+    v6-семейство узла. Кэш 15 минут: зонды дорогие, бюджет Globalping общий."""
+    now = time.time()
+    if now - _IP6IN["t"] < 900:
+        return _IP6IN["v"]
+    v = ""
+    ms = _load(_MUX_STATE, {}) or {}
+    port = 0
+    if isinstance(ms, dict) and ms.get("applied") and ms.get("mp"):
+        try:
+            port = int(ms.get("mp_port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+    cand = _my_ipv6() if port else ""
+    if cand:
+        try:
+            ok, _total, _det = _gp_probe("[" + cand + "]", port=port, proto="HTTPS",
+                                         limit=8, wait_s=120, reachable_only=True)
+            if ok:
+                v = cand
+        except Exception:
+            pass
+    _IP6IN.update(t=now, v=v)
+    return v
+
 def _ip6_to_publish():
-    """Какой IPv6 кладём в AAAA: '' — если переключатель гасит v6 или внешнее эхо
-    живость не подтвердила. Ложь в DNS хуже отсутствующей записи: телефон уйдёт
-    на адрес, по которому узел не живёт, и будет висеть, пока WiFi (v4) работает."""
+    """Какой IPv6 кладём в AAAA: '' — если публикацию гасит рубильник #452,
+    переключатель гасит v6 или живость не подтверждена. Ложь в DNS хуже отсутствующей записи: телефон уйдёт на адрес,
+    по которому узел не живёт, и будет висеть, пока WiFi (v4) работает. Живость
+    меряют два свидетельства (#449): исходящее эхо — и, когда оно мертво, входящая
+    внешняя проба порта фасада."""
+    if not _aaaa_publish_want():
+        return ""
     if not _tg_mp_ipv6_want():
         return ""
-    return _pub_ip6_echo()
+    return _pub_ip6_echo() or _ip6_inbound_live()
 
 def _tg_toml_add_mp_listener(text, port, ipv6=True):
-    """Добавить публичные MTProto-listeners на port; вернуть (новый_текст, блок).
-    При ipv6=False — только v4-слушатель, и [network] ipv6 пишется явно в false.
+    """Добавить публичный MTProto-listener на port; вернуть (новый_текст, блок).
+    Флаг `ipv6` правит только [network] ipv6 — маршруты движка к DC.
     Вставляем сразу после последнего существующего [[server.listeners]] (если есть) —
-    тогда все listeners сгруппированы; иначе — в конец файла."""
+    тогда все listeners сгруппированы; иначе — в конец файла.
+
+    #449: слушатель `ip = \"::\"` не пишется. Telemt 3.5.14 молча выбрасывает ключ
+    `ip` («Unknown config key ignored, key=ip»): блок был мёртвой конфигурацией, а
+    один лишь `::` в массиве валил MTProto целиком вместе с v4. IPv6-путь фасада —
+    дело nginx: релей с `[::]` на петлевой mtproxy-порт в veil-mux-stream.conf.
+    """
     if _TG_MP_MARK in text:
         raise RuntimeError("VEIL-MTProto-listener уже добавлен — сначала откат")
     text = _tg_toml_ipv6_set(text, ipv6)
@@ -15295,14 +14863,6 @@ def _tg_toml_add_mp_listener(text, port, ipv6=True):
         "port = "+str(int(port))+"\n"
         "transport = \"mtproxy\"\n"
     )
-    if ipv6:
-        block += (
-            "\n# "+_TG_MP_MARK+"\n"
-            "[[server.listeners]]\n"
-            "ip = \"::\"\n"
-            "port = "+str(int(port))+"\n"
-            "transport = \"mtproxy\"\n"
-        )
     last = None
     for m in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
         last = m
@@ -15326,6 +14886,17 @@ def _tg_toml_remove_mp_listener(text):
     if n == 0:
         raise RuntimeError("наш MTProto-listener не найден в telemt.toml — откатывать нечего")
     return new
+
+def _tg_toml_strip_dead_v6_listeners(text):
+    """#449: вырезать из-под наших маркеров только те слушатели, в чьем теле стоит
+    `ip = \"::\"`. Telemt 3.5.14 выбрасывает ключ `ip` — блок переживает писателя и
+    висит в файле мёртвым грузом на живых машинах, где listener заводила прежняя
+    версия панели. v4-блоки и чужие секции не трогаются; мёртвых блоков нет —
+    текст возвращается байт в байт."""
+    pat = re.compile(r"(?m)^#[ \t]*(?:" + re.escape(_TG_MP_MARK) + "|"
+                     + re.escape(_TG_MANUAL_MARK) + r")[ \t]*\d*[ \t]*\n"
+                     r"\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
+    return pat.sub(lambda m: "" if 'ip = "::"' in m.group(0) else m.group(0), text)
 
 def _tg_mp_preview():
     """Можно ли оживить MTProto: добавив публичный [[server.listeners]] (transport=mtproxy).
@@ -17865,8 +17436,8 @@ def _tg_mp_selftest(force=False):
             # Спрашивать нечего — и это не поломка: кого касается, тот назван проверкой
             # «Клиенты едут под именем маршрута».
             add("tls_ipv6", "Facade-рукопожатие IPv6", True,
-                "IPv6 у MTProto погашен переключателем — слушателя `::` нет, спрашивать "
-                "нечего", warn=True)
+                "IPv6 у MTProto погашен переключателем — в6-путь фасада (релей и AAAA) "
+                "не строится, спрашивать нечего", warn=True)
             continue
         ok, detail = _tls_probe(ip, port, sni)
         add("tls_" + fam.lower(), "Facade-рукопожатие %s на %s:%d (SNI=%s — %s; %s)"
@@ -19240,6 +18811,9 @@ def _tg_toml_add_manual_listener(text, port, ipv6=True):
     Маркер отдельный от «Оживить MTProto»: ручных портов может быть несколько, и откат одного
     не обязан съедать другой. Вставка — после последнего имеющегося блока, чтобы слушатели
     оставались группой и telemt перекрывал массив целиком за один проход.
+
+    #449: `ip = \"::\"` не пишется — telemt выбрасывает ключ `ip`, блок мёртв; v6-путь
+    фасада ставит nginx-релей. Флаг `ipv6` правит только [network] ipv6.
     """
     port = int(port)
     if port in _tg_manual_public_ports(text):
@@ -19252,14 +18826,6 @@ def _tg_toml_add_manual_listener(text, port, ipv6=True):
         "port = " + str(port) + "\n"
         "transport = \"mtproxy\"\n"
     )
-    if ipv6:
-        block += (
-            "\n# " + _TG_MANUAL_MARK + "\n"
-            "[[server.listeners]]\n"
-            "ip = \"::\"\n"
-            "port = " + str(port) + "\n"
-            "transport = \"mtproxy\"\n"
-        )
     last = None
     for mm in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
         last = mm
@@ -19773,8 +19339,8 @@ _NG_FRONT_CONF = "/etc/nginx/conf.d/veil-front.conf"
 def _front_dns_ensure(domain):
     """Фронт обязан жить в зоне Cloudflare панели: серые A/AAAA на этот сервер.
     Создаёт записи, если их нет; пересоздаёт, если они облачные/уехали.
-    AAAA — только подтверждённый живым эхом и включённым переключателем (#343);
-    иначе старая AAAA снимается."""
+    AAAA — только подтверждённая живость: исходящее эхо или входящая внешняя проба
+    фасада (#449); иначе старая AAAA снимается."""
     zid, zone = _cf_zone()
     if not (domain == zone or domain.endswith("." + zone)):
         raise RuntimeError("фронт " + domain + " не в Cloudflare-зоне " + (zone or "?") +
@@ -19791,8 +19357,9 @@ def _front_dns_ensure(domain):
                 _cf_api("DELETE", "/zones/%s/dns_records/%s" % (
                     urllib.parse.quote(zid), urllib.parse.quote(r0.get("id") or "")))
                 rep.append("AAAA %s — снята: %s" % (domain,
-                         "IPv6 выключен переключателем" if not _tg_mp_ipv6_want()
-                         else "живость IPv6 не подтверждена внешним эхом"))
+                         "публикация AAAA выключена рубильником" if not _aaaa_publish_want()
+                         else "IPv6 выключен переключателем" if not _tg_mp_ipv6_want()
+                         else "живость IPv6 не подтверждена эхом и внешней пробой"))
             continue
         if not ip:
             continue
@@ -20650,6 +20217,11 @@ def _tg_web_ensure():
     if not changed:
         return _tg_web_get()
 
+    # #449: раз секция всё равно пересобирается с перезапуском, попутно вырезаем
+    # мёртвые `::`-слушатели прежних писателей — telemt их игнорирует, а на живых
+    # машинах они до сих пор в файле. Сам по себе хлам рестарт не вызывает.
+    text = _tg_toml_strip_dead_v6_listeners(text)
+
     with open(TELEMT_CONF, "w", encoding="utf-8") as f:
         f.write(text)
     try:
@@ -21253,7 +20825,7 @@ stream {
         proxy_timeout 3600s;
         proxy_pass $veil_mux_backend;
     }
-}
+{mp_v6_relay}}
 """
 
 _MUX_DEFAULT_TMPL = """# VEIL-MUX default backend (generated)
@@ -21376,7 +20948,7 @@ def _mux_ports_in_use():
     return used
 
 def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", mask_port=0, sni_pairs=None,
-                     mp_domain="", mp_port=0, web_sni=""):
+                     mp_domain="", mp_port=0, web_sni="", mp_v6_relay_port=0):
     # sni_pairs — [(domain, port), ...] для НЕСКОЛЬКИХ переводимых cert-TLS входов. Если
     # не передан — прежний единственный (vpn_domain, tls_port). Пустой/повторный домен
     # пропускается: пустой ключ дал бы nginx «conflicting parameter» в map.
@@ -21401,12 +20973,26 @@ def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", m
     wsnid = (web_sni or "").strip().lower()
     web_sni_line = ("        %s      127.0.0.1:%d;\n" % (wsnid, int(web_port))
                     if wsnid and wsnid != (web_domain or "").strip().lower() and wsnid not in seen else "")
+    # #449: IPv6-путь фасада MTProto делает nginx, а не telemt: 3.5.14 выбрасывает
+    # ключ `ip` и `::`-слушателя заводить не умеет, поэтому v6-клиент на `[v6]:<порт>`
+    # ловил отказ, пока v4 жил. Релей ставится только когда в6 не погашен
+    # переключателем; слушает свой порт v6-.only и ведёт на петлевой mtproxy-порт.
+    # `_mux_apply` пишет файл целиком, снятый маршрут и откат уносят релей сами.
+    relay_port = int(mp_v6_relay_port or 0)
+    mp_v6_relay = ("    # " + _TG_MP_V6_MARK + "\n"
+                   "    server {\n"
+                   "        listen [::]:%d ipv6only=on;\n"
+                   "        proxy_protocol off;\n"
+                   "        proxy_timeout 3600s;\n"
+                   "        proxy_pass 127.0.0.1:%d;\n"
+                   "    }\n" % (relay_port, relay_port)) if relay_port else ""
     return (_MUX_STREAM_TMPL.replace("{vpn_lines}", "".join(vlines))
             .replace("{web_sni_line}", web_sni_line)
             .replace("{web_domain}", web_domain)
             .replace("{web_port}", str(web_port))
             .replace("{tg_line}", tg_line)
-            .replace("{mp_line}", mp_line))
+            .replace("{mp_line}", mp_line)
+            .replace("{mp_v6_relay}", mp_v6_relay))
 
 def _mux_mask_conf(tg_domain, mask_port, cert, key, root=None):
     """http-сервер сайт-маски под мюксом: stream-развилка по SNI tg.<база> доводит
@@ -22750,7 +22336,9 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
         f.write(_mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain,
                                  mask_port, sni_pairs=sni_pairs,
                                  mp_domain=mp_domain if mp else "", mp_port=mp_port if mp else 0,
-                                 web_sni=web_sni))
+                                 web_sni=web_sni,
+                                 mp_v6_relay_port=(mp_port if (mp and mp_domain and mp_port
+                                                               and _tg_mp_ipv6_want()) else 0)))
     # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
     main = open(_NG_MAIN_BAK).read()
     changed = False
@@ -24491,19 +24079,6 @@ def _strip_port(addr):
         j = addr.find("]")
         return addr[1:j] if j > 0 else addr
     return addr.rsplit(":", 1)[0] if addr.count(":") == 1 else addr
-
-def _acc_from_host(line):
-    """Адрес входа accept-строки без порта. Xray пишет и `from 1.2.x.x:56`,
-    и `from tcp:1.2.x.x:56` — обе формы разведены. По этому ключу цепь
-    accept'ов делится на устройство (#376): разные устройства идут с разных
-    адресов; за петлёй маски адрес общий и разделение нечем мерить."""
-    m = _ACC_RE.match(line)
-    if not m:
-        return ""
-    tok = m.group(1)
-    if tok.startswith("tcp:") or tok.startswith("udp:"):
-        tok = tok[4:]
-    return _strip_port(tok)
 
 def _dev_seen(email, ip, now):
     """Отметить подключение IP у клиента. Новый IP попадает в «роуминг» к самому
@@ -26698,7 +26273,12 @@ def _dynv6_update(force4=None, force6=None):
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=25) as r:
         body = r.read().decode("utf-8", "replace").strip()
-    ok = body.lower().startswith("addresses updated")
+    # живой смоу #452 поймал: сервис отвечает `addresses unchanged`, когда значения
+    # совпадают, — это тоже успех. Прежде «unchanged» считался отказом, ветка
+    # снятия осиротевшей AAAA (#383) недостижима в спокойном состоянии: сирота
+    # живёт до первого изменения адреса, а рубильник «действует сразу» врал.
+    low = body.lower()
+    ok = low.startswith("addresses updated") or low.startswith("addresses unchanged")
     _DDNS.update(configured=True, host=host, ipv4=ip4, ipv6=ip6,
                  response=body, error="" if ok else body)
     _DDNS["listen6"] = ("да" if _V6_LISTEN["ok"] else "отказ") if _V6_LISTEN["ok"] is not None else "не мерили"
@@ -28500,13 +28080,19 @@ def _veil_center():
     ip6_pub = _ip6_to_publish()
     if ip6_pub:
         ip6_note = ""
+    elif not _aaaa_publish_want():
+        ip6_note = ("AAAA не выпускаются: публикация AAAA выключена рубильником "
+                    "«Публиковать AAAA (IPv6)» (цикл #452); осиротевшая запись "
+                    "снимается писателями и хранителем")
     elif not _tg_mp_ipv6_want():
         ip6_note = "AAAA не выпускаются: IPv6 погашен переключателем «tg_mp_ipv6»"
     else:
-        ip6_note = ("AAAA не выпускаются: внешнее эхо не подтвердило живость IPv6 — "
-                    "запись повела бы телефоны в чёрную дыру, старая снимается при выпуске")
+        ip6_note = ("AAAA не выпускаются: живость IPv6 не подтверждена — ни исходящим "
+                    "эхом, ни входящей внешней пробой порта фасада; запись повела бы "
+                    "телефоны в чёрную дыру, старая снимается при выпуске")
     return {"ok": True, "base": base, "provider": prov, "names": out,
             "ipv6": ip6_pub, "ipv6_note": ip6_note,
+            "aaaa_publish": _aaaa_publish_want(),
             "cert": {"has": bool(cs.get("has_cert")), "issued": cs.get("issued"),
                      "expire": cs.get("expire"), "ready": cert_ready,
                      "san": cs.get("san") or [], "san_next": cs.get("san_next") or [],
@@ -29617,9 +29203,6 @@ if not SBX:  # #309: в песочнице харнесса эти нити не
     threading.Thread(target=_rulesets_loop, daemon=True).start()
     # #387: подбор адресов хозяйского списка обхода; читает кэш, сеть трогает только тут.
     threading.Thread(target=_bypass_loop, daemon=True).start()
-    # #410/#443: хранитель лент «Клиенты в сети» — греет открытые обработчики и
-    # докапывает начало подозрительных лент, пока окно никто не открывает.
-    threading.Thread(target=_online_keep_loop, daemon=True).start()
     # #335/#361: нить наблюдателя живёт только вместе с приватным модулем — без него
     # панели нечем наблюдать и нечего банить.
     if PRIV:
@@ -34429,13 +34012,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/online":
             # #303 задал окно «Клиенты в сети», #322 наполнил его правдой:
             # раньше судил один Xray и не отвечал, ЧТО ИМЕННО запущено. Теперь
-            # по строке на подписчика: какие протоколы живут сейчас (зеленью),
-            # когда была последняя активность (`last`) и когда началась текущая
-            # лента присутствия — «время в сети» (`since`, #375, #441), у
-            # каждого устройства — своё (`devs`, #376). Слово хозяина 14.10: из
-            # окна убран перечёнт «доступны: …» — он спорил с «Запущен» и
-            # плодил шум. Ни рестартов, ни изменений конфига; из записей —
-            # только регистр лент на носителе панели.
+            # по строке на подписчика: какие протоколы живут сейчас (зеленью)
+            # и когда была последняя активность (`last`). Слово хозяина 14.10:
+            # из окна убран перечёнт «доступны: …» — он спорил с «Запущен» и
+            # плодил шум. Слово хозяина 19.10: колонка «время в сети» снята
+            # целиком вместе с регистром лент — полумеры не нужны. Ни
+            # рестартов, ни изменений конфига.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             raw_st = _load(STATE)
             if self._refuse_unshapable(raw_st): return
@@ -34470,8 +34052,6 @@ class H(http.server.BaseHTTPRequestHandler):
                 running = []
                 n = 0
                 last = 0.0
-                since = 0.0
-                devs = []
                 xd = int(snap["xray"].get(u) or 0)
                 if xd > 0 or _acc_live(snap, u):
                     # открыт сейчас — числом устройств; закрыт, но свежий accept —
@@ -34485,18 +34065,6 @@ class H(http.server.BaseHTTPRequestHandler):
                         running.append(lbl)
                     if ts > last:
                         last = ts
-                    # «время в сети» — начало ленты присутствия (#441): его
-                    # панель назвала вживую и помнит между снимками, хвост
-                    # лога тут только склейка; туннельному и MTProto пиеру
-                    # начала мерять нечем — 0
-                    cst = (snap.get("acc_start") or {}).get(u) or 0.0
-                    if cst > 0:
-                        since = cst
-                    # #376: у каждого адреса входа своя лента — своё «время в
-                    # сети»; в окно попадает адрес, чей признак присутствия свеж
-                    for _h, pr in ((snap.get("acc_dev") or {}).get(u) or {}).items():
-                        if pr[1] >= snap["at"] - _ONLINE_ACC_WIN:
-                            devs.append(int(pr[0]))
                 for grp, lbl in (("wg", _GROUP_LABELS.get("wg", "wg")),
                                  ("awg", _GROUP_LABELS.get("awg", "awg"))):
                     ages = [a for pub in (w["pubs"][grp] & set(snap["tun"].get(grp) or {}))
@@ -34505,17 +34073,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         n += len(ages)
                         if lbl not in running:
                             running.append(lbl)
-                        # #379: туннельному пиеру «время в сети» мерить нечем, поэтому
-                        # его рукопожатие в `devs` не ложится. `latest-handshakes`
-                        # обнуляется ротацией ключа каждые ~2 мин (замер 14.10 на боевом:
+                        # #379: у туннельного пиера меряется только возраст
+                        # последнего рукопожатия: `latest-handshakes` обнуляется
+                        # ротацией ключа каждые ~2 мин (замер 14.10 на боевом:
                         # активный пиер сдвинул метку на `240` с за `140` с стенного
-                        # времени), значит его возраст — след последнего обмена, а не
-                        # начало ленты; access-лога туннеля нет, назвать его
-                        # нечем.
-                        # Морда на пустом `devs` честно показывает «—» (контракт #375),
-                        # а счётчик устройств и чип протокола остаются. Время последней
-                        # активности (`last`) названо меткой рукопожатия — это факт, а не
-                        # выдуманная длительность.
+                        # времени), значит это след обмена, а не начало ленты.
                         ts = snap["at"] - min(ages)
                         if ts > last:
                             last = ts
@@ -34529,16 +34091,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 devices += n
                 out.append({"name": w["name"], "protos": ", ".join(w["protos"]),
                             "running": running, "devices": n,
-                            "last": int(last) if last else 0,
-                            "since": int(since) if since else 0,
-                            "devs": sorted(set(devs))})
+                            "last": int(last) if last else 0})
             out.sort(key=lambda x: (x["name"], x["protos"]))
-            # `at` — секунда самого снимка (#377): морда обязана мерять длительности
-            # от неё, а не от своих часов при каждой отрисовке. Страница, которую
-            # не перезагружали, иначе крутит «время в сети» вверх вечно: замёрзшее
-            # утро 7 ч 43 мин само доехало до 9 ч 17 мин
-            return self._send(200, {"list": out, "online": devices, "clients": len(who),
-                                    "at": int(snap["at"])})
+            return self._send(200, {"list": out, "online": devices, "clients": len(who)})
         if p == "/api/bans":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             now = time.time()
@@ -38181,6 +37736,29 @@ class H(http.server.BaseHTTPRequestHandler):
                 _cfg_save()
                 _audit("tg_mp_ipv6", on=CFG_CACHE["tg_mp_ipv6"])
                 return self._send(200, {"ok": True, "ipv6": "on" if _tg_mp_ipv6_want() else "off"})
+            if p == "/api/dns/aaaa":
+                b = self._body()
+                if "on" not in b:
+                    return self._send(400, {"error": "нужно поле on"})
+                CFG_CACHE["aaaa_publish"] = bool(b.get("on"))
+                _cfg_save()
+                _audit("aaaa_publish", on=CFG_CACHE["aaaa_publish"])
+                # Рубильник обязан действовать сразу (#452): контур базы и хранитель
+                # имён проходят этот путь каждые десять минут, а ложная AAAA всё это
+                # время водит телефоны в чёрную дыру. Отказ наружу — не провал
+                # переключения: записи переставит периодический контур.
+                out = {"ok": True, "publish": "on" if CFG_CACHE["aaaa_publish"] else "off"}
+                try:
+                    if _dynv6_conf()["host"]:
+                        out["base_ipv6"] = _dynv6_update().get("ipv6") or ""
+                except Exception as e:
+                    out["dns_error"] = str(e)[:160]
+                try:
+                    _veil_names_guard()
+                    out["dropped"] = [x for x in (_VEIL_GUARD.get("ip6_dropped") or "").split(",") if x]
+                except Exception as e:
+                    out["guard_error"] = str(e)[:160]
+                return self._send(200, out)
             if p == "/api/media_route":
                 b = self._body()
                 if "on" not in b:
