@@ -1,7 +1,7 @@
 <div align="center">
   <img src="icon-veil.png" width="128" height="128" alt="Veil Logo">
   <h1>Veil — VPN Panel</h1>
-  <p><strong>An all-in-one VPN control panel: 18 Xray & WireGuard protocols, Telegram MTProto proxy, DPI bypass, and subscriptions for all popular clients — from a single web UI.</strong></p>
+  <p><strong>An all-in-one VPN control panel: 17 Xray & WireGuard protocols, Telegram MTProto proxy, DPI bypass, and subscriptions for all popular clients — from a single web UI.</strong></p>
   <p>
     <a href="README.md">🇬🇧 English</a> |
     <a href="README.ru.md">🇷🇺 Русский</a>
@@ -31,10 +31,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 
 ## Features
 
-### Protocols (18 out of the box)
+### Protocols (17 out of the box)
 - **VLESS**: Reality, XHTTP+Reality, WS, WS+TLS, TCP+TLS, gRPC+TLS, XHTTP+TLS
 - **VMess** and **Trojan**: WS / TCP / gRPC + TLS
-- **Shadowsocks** AEAD, **Hysteria2**
+- **Hysteria2**
 - **WireGuard** on the kernel module (`veilwg`) and **AmneziaWG** (`awg0`) — with PSK and personal `.conf` generation
 - REALITY with SNI validation, configurable TLS fingerprints (Firefox/Chrome/Safari/iOS/Android)
 
