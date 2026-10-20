@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.12"
+VERSION = "2.17.13"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1974,6 +1974,32 @@ _CERT_REQ_MSG = ("для использования и настройки тре
                  "(CN=Veil) строгие клиенты отвергают — ссылка с ним была бы обманом")
 
 
+def _cert_selfsigned(path, _cache={}):
+    """Самоподпись ли сертификат: издатель совпадает с владельцем (панельная заглушка
+    `CN=Veil`) либо файл не читается. Мера по самому сертификату, а не по каталогу:
+    панель хранит выпуск Let's Encrypt в `certs/live/…`, то есть под тем же
+    `CERT_DIR`, где живёт и её заглушка, — каталог различить их не может."""
+    try:
+        ck = (path, int(os.path.getmtime(path)))
+    except OSError:
+        return True
+    hit = _cache.get(ck)
+    if hit is not None:
+        return hit
+    try:
+        r = subprocess.run(["openssl", "x509", "-in", path, "-noout", "-subject", "-issuer"],
+                           capture_output=True, text=True, timeout=10)
+        vals = [re.sub(r"\s+", "", l.split("=", 1)[1]) for l in (r.stdout or "").splitlines()
+                if l.startswith(("subject=", "issuer=")) and "=" in l]
+        bad = r.returncode != 0 or len(vals) != 2 or not vals[0] or vals[0] == vals[1]
+    except Exception:
+        bad = True
+    if len(_cache) > 64:
+        _cache.clear()
+    _cache[ck] = bad
+    return bad
+
+
 def _cert_transport_block(proto, inb=None):
     """F5 (#466): честная недоступность сертификатов-на-TLS транспортов без домена.
     cert-TLS входы (vless/vmess/trojan `*-tls`) и Hysteria2 живут сертификатом;
@@ -1984,12 +2010,13 @@ def _cert_transport_block(proto, inb=None):
         return None
     if inb is not None:
         certp = str(inb.get("cert") or "")
-        if certp and not certp.startswith(CERT_DIR + "/") and os.path.exists(certp) \
-                and os.path.exists(str(inb.get("key") or "")):
+        if certp and os.path.exists(certp) \
+                and os.path.exists(str(inb.get("key") or "")) and not _cert_selfsigned(certp):
             return None
         return _CERT_REQ_MSG
     cp = _cert_pathes()
-    if cp["cert"] and cp["key"] and os.path.exists(cp["cert"]) and os.path.exists(cp["key"]):
+    if cp["cert"] and cp["key"] and os.path.exists(cp["cert"]) and os.path.exists(cp["key"]) \
+            and not _cert_selfsigned(cp["cert"]):
         return None
     return _CERT_REQ_MSG
 
