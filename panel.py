@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.11"
+VERSION = "2.17.12"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -421,7 +421,7 @@ _UUID_SHAPE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
 
 # Proto labels for bot messages
 PROTO_LABELS = {p["id"]: p["label"] for p in PROTOCOLS}
-_PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
+_PORTS = {"reality": 20443, "vmess-ws": 10443, "vless-ws": 11443,
           "trojan-ws": 12443, "vless-ws-tls": 13443, "vmess-ws-tls": 14443,
           "trojan-ws-tls": 15443, "vless-tcp-tls": 16443, "vmess-tcp-tls": 17443,
           "trojan-tcp-tls": 18443, "vless-grpc-tls": 19443,
@@ -430,9 +430,10 @@ _PORTS = {"reality": 443, "vmess-ws": 10443, "vless-ws": 11443,
            "trojan-reality": 25443,
            "hysteria2": 27443, "wireguard": 28443, "amneziawg": 28444}
 # Порт 80 занят nginx/Let's Encrypt, 18080 — telemt web, 9091 — telemt API,
-# 7443 — telemt MTProto. 443 намеренно НЕ зарезервирован: на чистом хосте Reality
-# должен занять его (см. _find_free_port — bind-тест), а если его держит nginx —
-# bind упадёт и порт выделяется резервный. Панель не должна брать 80/telemt-порты.
+# 7443 — telemt MTProto. 443 на свежей коробке НЕ занимаем (решение владельца, #466/F2):
+# его оставляем под будущий nginx и под общий SNI-мюкс — Reality по умолчанию стартует
+# на 20443, а на :443 входы переводит явная автонастройка/мюкс, когда есть домен и
+# сертификат (_mux_apply). Панель не должна брать 80/telemt-порты.
 _RESERVED_PORTS = {80, 8080, 18080, 9091, 7443}
 CERT_DIR = f"{BASE}/certs"
 
@@ -1738,15 +1739,6 @@ def _totp_generate_secret():
     import secrets
     return base64.b32encode(secrets.token_bytes(10)).decode('utf-8').rstrip('=')
 
-def _free_port(pref=443):
-    import socket
-    def ok(p):
-        s = socket.socket()
-        try: s.bind(("", p)); s.close(); return True
-        except OSError: s.close(); return False
-    if pref and ok(pref): return pref
-    s = socket.socket(); s.bind(("", 0)); p = s.getsockname()[1]; s.close(); return p
-
 def _port_free(port):
     import socket
     if not (isinstance(port, int) and 0 < port < 65536):
@@ -1975,6 +1967,31 @@ def _tun_tools(proto):
                     "`apt-get install -y wireguard-tools` и включи транспорт заново")
         return None
     return None
+
+
+_CERT_REQ_MSG = ("для использования и настройки требуется домен и (или) сертификат: "
+                 "на хосте нет реального TLS-сертификата, а самоподписанный "
+                 "(CN=Veil) строгие клиенты отвергают — ссылка с ним была бы обманом")
+
+
+def _cert_transport_block(proto, inb=None):
+    """F5 (#466): честная недоступность сертификатов-на-TLS транспортов без домена.
+    cert-TLS входы (vless/vmess/trojan `*-tls`) и Hysteria2 живут сертификатом;
+    на голом IP панель прячет их и не позволяет включить, пока не появится реальный
+    сертификат (вход, заведённый на самоподписанном CN=Veil, подписчик не примет).
+    `inb` — проверка уже существующего входа; без него — возможность завести новый."""
+    if proto != "hysteria2" and not _proto_meta(proto).get("tls"):
+        return None
+    if inb is not None:
+        certp = str(inb.get("cert") or "")
+        if certp and not certp.startswith(CERT_DIR + "/") and os.path.exists(certp) \
+                and os.path.exists(str(inb.get("key") or "")):
+            return None
+        return _CERT_REQ_MSG
+    cp = _cert_pathes()
+    if cp["cert"] and cp["key"] and os.path.exists(cp["cert"]) and os.path.exists(cp["key"]):
+        return None
+    return _CERT_REQ_MSG
 
 
 def _awg_pubof(priv):
@@ -2543,6 +2560,11 @@ def _ensure_all_protos(st):
     inbounds = st.setdefault("inbounds", {})
     for proto in _VALID_PROTOCOLS:
         if proto not in inbounds:
+            # F5 (#466): на коробке без домена/сертификата cert-TLS входы не заводим
+            # (иначе подписчику достанется самоподписанная ссылка), туннельным
+            # транспортам без их пакета — тем более.
+            if _cert_transport_block(proto) or _tun_tools(proto):
+                continue
             try:
                 inbounds[proto] = _alloc_inbound(st, proto)
                 changed = True
@@ -3244,6 +3266,13 @@ def _enable_proto(st, proto):
         inbounds[proto] = inb
     else:
         inb = inbounds[proto]
+    reason = _cert_transport_block(proto, inb)
+    if reason:
+        # F5 (#466): включать сертифицированный TLS-транспорт без сертификата —
+        # тот же обман, что ссылка на самоподпись: отказ до первой записи.
+        if fresh:
+            inbounds.pop(proto, None)
+        return False, reason
     was_disabled = bool(inb.get("disabled"))
     inb.pop("disabled", None)
     try:
@@ -5710,7 +5739,10 @@ def _subs_summary(st, for_display=False):
             # развилкой :443, для подписчика мёртв — ссылка несёт его собственный
             # порт. Ссылку на такой вход не выдаём, мерка та же, что у строки
             # протокола на дашборде (#416).
-            if not inb.get("disabled") and _link_reachable(inb, c, unreachable):
+            if (not inb.get("disabled") and _link_reachable(inb, c, unreachable)
+                    # F5 (#466): самоподпись без домена и туннель без пакета —
+                    # мёртвая выдача; страница подписчика их не показывает
+                    and not _cert_transport_block(proto, inb) and not _tun_tools(proto)):
                 try:
                     u["links"][proto] = _link(inb, host, c, proto)
                 except Exception:
@@ -14121,13 +14153,21 @@ def _node_bootstrap_worker(jid):
                     return fail(2, "установка локального xray: " + (r.stderr or "")[:150])
                 st(2, "done", "скопирован xray с панели")
             else:
-                r = rscript('curl -fsSL https://github.com/XTLS/Xray-install/raw/main/scripts/install-release.sh '
-                            '-o /tmp/.veil_xi.sh || wget -qO /tmp/.veil_xi.sh '
-                            'https://github.com/XTLS/Xray-install/raw/main/scripts/install-release.sh; '
-                            'bash /tmp/.veil_xi.sh install >/dev/null 2>&1; rm -f /tmp/.veil_xi.sh; '
+                # F3 (#466): путь scripts/install-release.sh отдавал 404 — в репозитории
+                # скрипт лежит в корне; плюс чистая нода без unzip роняла официальный
+                # установщик в середине распаковки. Доводим зависимости, потом ставим.
+                XI = "https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
+                r = rscript('command -v unzip >/dev/null 2>&1 || '
+                            '{ apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -yqq unzip ca-certificates; } || '
+                            '{ yum install -y unzip >/dev/null 2>&1 || apk add unzip >/dev/null 2>&1; }\n'
+                            'command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || '
+                            '{ apt-get install -yqq curl >/dev/null 2>&1 || yum install -y curl >/dev/null 2>&1; }\n'
+                            f'curl -fsSL {XI} -o /tmp/.veil_xi.sh || wget -qO /tmp/.veil_xi.sh {XI}\n'
+                            'bash /tmp/.veil_xi.sh install >/dev/null 2>&1; rm -f /tmp/.veil_xi.sh\n'
                             'xray version | head -1', timeout=300)
                 if r.returncode != 0 or "Xray" not in (r.stdout or ""):
-                    return fail(2, "не удалось установить xray (на ноде нужен интернет и curl/wget)")
+                    return fail(2, "не удалось установить xray (на ноде нужен интернет и пакетный менеджер): "
+                                   + ((r.stderr or r.stdout) or "")[:150])
                 st(2, "done", "установлен xray из официального репозитория")
 
         # --- 3. файлы агента
@@ -14542,7 +14582,8 @@ def _tg_status():
     # на маршруте `mp` врала в обе стороны: свежая ссылка выглядела чужой, прежняя — своей.
     for u in users:
         u["on443"] = bool(_tg_mp_route_for(u.get("link") or ""))
-    res = {"installed": True, "users": users, "sni": _tg_sni(), "mtproto": mp, "manual": man}
+    res = {"installed": True, "users": users, "sni": _tg_sni(), "mtproto": mp, "manual": man,
+           "mss": _tg_mss_view()}
     if web:
         res["web"] = web
     return res
@@ -14842,6 +14883,62 @@ def _ip6_to_publish():
         return ""
     return _pub_ip6_echo() or _ip6_inbound_live()
 
+_TG_MSS_KEY = "client_mss"
+_TG_MSS_BULK_KEY = "client_mss_bulk"
+_TG_MSS_PRESET = "2in8"        # 256 байт — пресет telemt из доки тюнинга «4 июня»
+_TG_MSS_BULK_VAL = "1400"
+
+def _tg_mss_want():
+    """Включатель MSS-фрагментации фасада MTProto — цикл #470, заводски ВЫКЛЮЧЕН.
+    Хозяйское слово: «подготовь включатель, но не включай его». После ограничения
+    от 4 июня провайдеры режут начальные пакеты FakeTLS-рукопожатия; telemt 3.5.14
+    знает нативные параметры `client_mss` (мелкий MSS на handshake, пресет «2in8»)
+    и `client_mss_bulk` (крупный MSS на качалку, только под Linux-движком). Ключ
+    `tg_mss_tune` отсутствует в конфиге — значит выключено, и telemt.toml при этом
+    байт в байт как без включателя."""
+    return bool(CFG_CACHE.get("tg_mss_tune", False))
+
+def _tg_mp_block_re():
+    """Наши помеченные блоки слушателей (заголовок + тело) одной регуляркой.
+    Пустая строка между штампом и заголовком допускается: писатель её не ставит,
+    но ручной правке в файле она не запрет."""
+    return re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\d*[ \t]*\n"
+                      r"[ \t]*\n?\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
+
+def _tg_toml_mss_live(text):
+    """Есть ли MSS-ключи в НАШЕМ помеченном блоке; чужие секции не считаются."""
+    return any(re.search(r"(?m)^\s*%s\s*=" % re.escape(_TG_MSS_KEY), m.group(0))
+               for m in _tg_mp_block_re().finditer(text))
+
+def _tg_toml_set_mp_tune(text, on):
+    """Дописать или снять ключи MSS-формирования строго в наших помеченных блоках.
+    Выключено и ключей в файле нет — блок не задевается вовсе, а весь текст
+    возвращается байт в байт: заводская чистота писателя, включатель не трогает
+    telemt.toml без хозяйского слова. Записанные значения всегда наши константы:
+    ключ с любым прежним значением перезаписывается, расхождений между словом
+    переключателя и файлом не остаётся."""
+    keyre = re.compile(r"(?m)^[ \t]*%s(_bulk)?[ \t]*=.*\n" % re.escape(_TG_MSS_KEY))
+    def fix(m):
+        blk = m.group(0)
+        if not on and not keyre.search(blk):
+            return blk
+        blk = keyre.sub("", blk)
+        if not on:
+            return blk
+        return blk.rstrip("\n") + "\n%s = \"%s\"\n%s = \"%s\"\n" % (
+            _TG_MSS_KEY, _TG_MSS_PRESET, _TG_MSS_BULK_KEY, _TG_MSS_BULK_VAL)
+    return _tg_mp_block_re().sub(fix, text)
+
+def _tg_mss_view():
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        text = ""
+    return {"want": _tg_mss_want(),
+            "live": _tg_toml_mss_live(text),
+            "listener": (_TG_MP_MARK in text)}
+
 def _tg_toml_add_mp_listener(text, port, ipv6=True):
     """Добавить публичный MTProto-listener на port; вернуть (новый_текст, блок).
     Флаг `ipv6` правит только [network] ipv6 — маршруты движка к DC.
@@ -14863,6 +14960,11 @@ def _tg_toml_add_mp_listener(text, port, ipv6=True):
         "port = "+str(int(port))+"\n"
         "transport = \"mtproxy\"\n"
     )
+    if _tg_mss_want():
+        # Заводски выключено — блок остаётся прежним байт в байт; тюнинг кладёт
+        # только хозяйское слово `tg_mss_tune` (цикл #470, «не включай»).
+        block += "%s = \"%s\"\n%s = \"%s\"\n" % (
+            _TG_MSS_KEY, _TG_MSS_PRESET, _TG_MSS_BULK_KEY, _TG_MSS_BULK_VAL)
     last = None
     for m in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
         last = m
@@ -15234,6 +15336,7 @@ _MR_COOL = 3600.0      # сколько секунд адрес после от�
 # родились за `10` с, а покрытие выросло с `86.0` до `100.0` и держалось. Прежний
 # критерий такой туннель считал удачным и не отбраковывал никогда.
 _MR_STARVE = 3         # сколько тиков подряд узел требует писателей и не получает ни одного
+_MR_STARVE_WAIT = 180.0  # окно переподключения писателей после подъёма звена: до него голод не считают
 _MR_STARVE_BAN = 86400.0  # на столько секунд (сутки) адрес уходит напрямую после приговора
                           # туннелю: возвращать его каждый час — значит обнулять медиа каждые
                           # минуты
@@ -15422,6 +15525,13 @@ def _mr_want_eps():
     since = float(st.get("up_since") or 0)
     tun = set(h for h, e in cur.items() if (e or {}).get("mode") == "tunnel")
     writers = _mr_writers(tun)
+    # голод судят только на звене, показавшем, что несёт: облако ответило рукопожатием,
+    # и с подъёма звено шло окно переподключения писателей; на молчащем звене писателей
+    # не родится никогда, и прежний порядок голодом становился сам факт пересборки —
+    # так запрет на сутки получали разом все восемь адресов (живая находка этого цикла,
+    # тот же класс, что с молчащей песочницей #457)
+    hs = _mr_handshake_age() if since > 0 else None
+    starve_ok = hs is not None and now - since >= _MR_STARVE_WAIT
     # шпилька снимает гейт ПОДЪЁМА на входе; приговоры в туннеле (`_MR_GIVEUP`, голод
     # писателей) и их запреты (`banned_until`) остаются в силе — нерабочий WARP не прячется
     hold = _mr_hold()
@@ -15433,7 +15543,7 @@ def _mr_want_eps():
             if w and w[0]:
                 # писатели есть — счётчик голода обнуляем, туннель их даёт
                 ent["starve"] = 0
-            elif w and since > 0:
+            elif w and starve_ok:
                 ent["starve"] = int(ent.get("starve") or 0) + 1
                 ent["writers"] = "0 из %d" % w[1]
             if since > 0 and at >= since and loss >= _MR_GIVEUP:
@@ -15603,7 +15713,20 @@ def _mr_link_up(reg, cidrs):
     rc, _, err = _mr_cmd("ip", "link", "set", _MR_IF, "up", "mtu", _MR_MTU)
     if rc != 0:
         return "связь не поднята: " + err[:90]
-    return _mr_sync_cidrs(cidrs, reg)
+    sync = _mr_sync_cidrs(cidrs, reg)
+    if sync:
+        return sync
+    # звено объявляют несущим только когда облако ответило рукопожатием: сам `wg` шлёт
+    # инициацию лишь при появлении трафика, а на звене без рукопожатия писателей нет —
+    # по ним голод вынес бы приговор ещё до первого ответа облака (тот же класс
+    # находки, что с молчащей песочницей #457). Пинком провоцируем инициацию, ждём
+    # до ~18 секунд; молчание чинит не пересборка того же ключа, а `_mr_retire` в тике
+    for _ in range(4):
+        if _mr_handshake_age() is not None:
+            return ""
+        _mr_carries(cidrs[0])
+        time.sleep(4)
+    return "облако молчит: рукопожатия нет"
 
 
 def _mr_handshake_age():
@@ -15889,8 +16012,10 @@ def _tw_want():
 
 
 def _tw_cmd(*a, **kw):
-    """Один вызов командной строки без право-левого разбора: (код возврата, вывод, ошибка)."""
-    r = subprocess.run(list(a), capture_output=True, text=True, timeout=15, **kw)
+    """Один вызов командной строки без право-левого разбора: (код возврата, вывод, ошибка).
+    Срок ожидания задаётся по умолчанию 15 с, а #457 зверолов в песочнице просит свой."""
+    r = subprocess.run(list(a), capture_output=True, text=True,
+                       timeout=kw.pop("timeout", 15), **kw)
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
@@ -15901,12 +16026,13 @@ def _tw_registered():
     return reg if all(reg.get(k) for k in need) else None
 
 
-def _tw_register():
+def _tw_register(dest=None):
     """Заводим бесплатный аккаунт WARP ровно один раз и запоминаем его.
 
     Тот же порядок, что у `_mr_register`: форма тела и заголовок проверены на живой
     коробке; рабочий адрес пиера отдаёт ответ, а не имя из конфигурации. Возвращает
-    (аккаунт, причина отказа)."""
+    (аккаунт, причина отказа). `dest` — куда лечь: по умолчанию живое звено,
+    #457 зовёт для варианта в реестре, где живое звено не дёргается."""
     rc, priv, err = _tw_cmd("wg", "genkey")
     if rc != 0 or not priv:
         return None, "ключ не выпущен"
@@ -15946,9 +16072,10 @@ def _tw_register():
            "at": int(time.time())}
     if not all(reg[k] for k in ("private_key", "peer_public_key", "tunnel_v4", "endpoint")):
         return None, "ответ облака не полный"
+    dest = dest or _TW_REG
     try:
-        os.makedirs(_TW_DIR, mode=0o700, exist_ok=True)
-        _save(_TW_REG, reg, 0o600)
+        os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        _save(dest, reg, 0o600)
     except Exception as e:
         return None, "аккаунт не сохранён: " + str(e)[:90]
     return reg, ""
@@ -16433,6 +16560,7 @@ def _tw_tick():
         st.update({"ts": _now_iso()})
         _save(_TW_STATE, st, 0o600)
         _tw_probe()
+        _tv_after()
         return
     nets = _tw_blocks(ips, tik, exact)
     rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
@@ -16460,6 +16588,7 @@ def _tw_tick():
                "tunnel_v4": (reg["tunnel_v4"] if up else ""), "ts": _now_iso()})
     _save(_TW_STATE, st, 0o600)
     _tw_probe()
+    _tv_after()
 
 
 def _tw_view():
@@ -16473,6 +16602,7 @@ def _tw_view():
             "link": rc == 0, "ready": _tw_link_ready(nets), "up": bool(st.get("up")),
             "count": int(st.get("count") or 0), "nets": nets,
             "tiktok_on": bool(CFG_CACHE.get("tiktok_warp")),
+            "variant": int((_tv_doc() or {}).get("active") or 0),
             **(PRIV.tw_view(nets) if PRIV else {}),
             "region_tunnel": st.get("region_tunnel"),
             "region_direct": st.get("region_direct"),
@@ -16481,6 +16611,487 @@ def _tw_view():
             "error": st.get("error") or _TW_ERR,
             "probe_error": st.get("probe_error") or "",
             "bypass": _tw_bypass_present(), "ts": st.get("ts")}
+
+
+# ---------- Варианты WARP: реестр аккаунтов для переключения выхода (#457) ----------
+# Хозяйское слово 19.10: «можно сделать несколько серверов переключения warp для
+# тикток… вариант 1, потом вариант 2», и тут же второе слово: «то что сейчас
+# работает назови вариант 1 и постарайся не трогать его никак». Отсюда границы:
+# живое звено импортируется в реестр КОПИЕЙ файла (reg.json не двигается), а
+# переключение делает только сам оператор — или смотритель, когда рабочий вариант
+# уличён в geo-молчании и в реестле есть зелёный. Промер чужого аккаунта живёт
+# ТОЛЬКО в сетевой песочнице: `netns` `vtp<n>`, перемычка 10.98.<n>.0/24, MASQUERADE
+# на время замера; основной стол, таблица 204 и tkw0 при промере не трогаются.
+_TV_CAP = 5              # потолок вариантов: бесплатные регистрации облако лимитит
+_TV_DIR = _TW_DIR + "/variants"
+_TV_LIST = _TV_DIR + "/list.json"
+_TV_LOCK = threading.Lock()   # промеры и переключения идут строго по одному
+_TV_JOB = ""             # чем заняты (морда показывает словом «замер идёт»)
+_TV_GEO_AT = 0.0         # когда в последний раз судили geo-молчание (громит защита)
+_TV_GEO_ROT = 600.0
+_TV_NEED = ("private_key", "peer_public_key", "tunnel_v4", "endpoint", "endpoint_port")
+# щуп внутри песочницы: свой маленький скрипт, у panel.py в `netns` дел нет
+_TV_PROBE_SRC = (
+    "import socket,ssl,sys,re\n"
+    "ip=sys.argv[1]\n"
+    "try:\n"
+    " s=socket.create_connection((ip,443),timeout=18)\n"
+    " c=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
+    " c.check_hostname=False; c.verify_mode=ssl.CERT_NONE\n"
+    " t=c.wrap_socket(s,server_hostname='www.tiktok.com')\n"
+    " s=None\n"
+    " t.settimeout(6)\n"
+    " t.sendall(b'GET / HTTP/1.1\\r\\nHost: www.tiktok.com\\r\\n'"
+    "b'User-Agent: Mozilla/5.0\\r\\nConnection: close\\r\\n\\r\\n')\n"
+    " b=b''\n"
+    " while len(b)<300000:\n"
+    "  d=t.recv(8192)\n"
+    "  if not d: break\n"
+    "  b+=d\n"
+    " m=re.search(rb'\"region\":\"([A-Za-z]{2})\"',b)\n"
+    " print('REGION='+(m.group(1).decode().upper() if m else 'NONE'))\n"
+    "except Exception as e:\n"
+    " print('ERR='+type(e).__name__)\n"
+    " if s is not None:\n"
+    "  try: s.close()\n"
+    "  except Exception: pass\n")
+
+
+def _tv_regfile(n):
+    return "%s/p%d.json" % (_TV_DIR, int(n))
+
+
+def _tv_doc():
+    """Реестр или None: форма {active, next, items:[{n,at,verdict,region,checked_at}]}."""
+    try:
+        doc = _load(_TV_LIST)
+    except Exception:
+        return None
+    if isinstance(doc, dict) and isinstance(doc.get("items"), list):
+        return doc
+    return None
+
+
+def _tv_save(doc):
+    try:
+        os.makedirs(_TV_DIR, mode=0o700, exist_ok=True)
+        _save(_TV_LIST, doc, 0o600)
+        return ""
+    except Exception as e:
+        return "реестр не сохранён: " + str(e)[:90]
+
+
+def _tv_item(doc, n):
+    for it in doc["items"]:
+        if int(it.get("n") or 0) == int(n):
+            return it
+    return None
+
+
+def _tv_reg_ok(reg):
+    return bool(reg) and all(reg.get(k) for k in _TV_NEED)
+
+
+def _tv_sync(doc):
+    """Реестр догоняет живое звено: рабочий аккаунт всегда зеркалён в файл своего
+    варианта; сирота (reg.json есть, варианта нет) получает следующий свободный
+    номер — так вариант 1 рождается из работающего звена без единой команды."""
+    reg = _load(_TW_REG) or {}
+    if not _tv_reg_ok(reg):
+        return doc
+    items = [int(x.get("n") or 0) for x in doc["items"]]
+    a = int(doc.get("active") or 0)
+    if a not in items:
+        n = int(doc.get("next") or 1)
+        while n in items:
+            n += 1
+        doc["items"].append({"n": n, "at": int(time.time()), "verdict": "unknown",
+                             "region": None, "checked_at": 0})
+        doc["next"] = n + 1
+        doc["active"] = n
+        _tv_save(doc)
+    f = _tv_regfile(doc["active"])
+    try:
+        cur = _load(f)
+    except Exception:
+        cur = None
+    if cur != reg:
+        try:
+            os.makedirs(_TV_DIR, mode=0o700, exist_ok=True)
+            _save(f, reg, 0o600)
+        except Exception:
+            pass
+    return doc
+
+
+def _tv_ensure():
+    doc = _tv_doc()
+    if doc is None:
+        doc = {"active": 0, "items": [], "next": 1}
+    for k, d in (("active", 0), ("next", 1)):
+        if not isinstance(doc.get(k), int):
+            doc[k] = d
+    if doc["items"]:
+        mx = max([int(x.get("n") or 0) for x in doc["items"]] + [0])
+        if doc["next"] <= mx:
+            doc["next"] = mx + 1
+    return _tv_sync(doc)
+
+
+def _tv_add():
+    """Новый бесплатный аккаунт в реестр: регистрация облаком в файл варианта,
+    живое звено не двигается ни на байт."""
+    with _TV_LOCK:
+        doc = _tv_ensure()
+        if len(doc["items"]) >= _TV_CAP:
+            return None, "достигнут потолок вариантов: %d" % _TV_CAP
+        n = int(doc.get("next") or 1)
+        while _tv_item(doc, n) is not None:
+            n += 1
+        reg, why = _tw_register(_tv_regfile(n))
+        if not reg:
+            return None, why
+        doc["items"].append({"n": n, "at": int(time.time()), "verdict": "unknown",
+                             "region": None, "checked_at": 0})
+        doc["next"] = n + 1
+        err = _tv_save(doc)
+        if err:
+            return None, err
+        _audit("tiktok_variant_add", n=n)
+        return n, ""
+
+
+def _tv_sandbox(n, reg, tgt):
+    """Промер варианта в сетевой песочнице: (регион|None, приговор, причина).
+    Песочница снимается в любом исходе; на входе — только наши имена vtp/tvh/tvn
+    и своя подсеть, стол main и таблица 204 не участвуют ни в одной команде.
+    Веер живёт в пространстве хоста, как живое звено: UDP-пакеты туннельного
+    модуля, поднятого внутри netns, хостовый NAT не проходят — облако получало
+    немаршрутизируемый адрес песочницы и молчало, и «молчание» судило песочницу,
+    а не аккаунт. Изоляция гостя — своим столом и правилом `from подсеть`."""
+    ns = "vtp%d" % n
+    hv = "tvh%d" % n
+    nv = "tvn%d" % n
+    tun = "twt%d" % n
+    sub = "10.98.%d" % n
+    tbl = str(210 + int(n))
+    ep = "%s:%s" % (reg["endpoint"], reg["endpoint_port"])
+    nat = ("iptables", "-t", "nat", "POSTROUTING", "-s", sub + ".0/24", "-j", "MASQUERADE")
+    def E(*a, **kw):
+        return _tw_cmd(*a, **kw)
+    def N(*a, **kw):
+        return _tw_cmd("ip", "netns", "exec", ns, *a, **kw)
+    prio = ""
+    nat_on = False
+    # осколки прежних прогонов: удалить, если живы, ошибки молча глотаются
+    E("ip", "netns", "del", ns)
+    E(*(("iptables", "-t", "nat", "-D") + nat[3:]))
+    E("ip", "link", "del", tun)
+    try:
+        rc, _, err = E("ip", "netns", "add", ns)
+        if rc != 0:
+            return None, "silent", "песочница не создана: " + err[:60]
+        rc, _, err = E("ip", "link", "add", hv, "type", "veth", "peer", "name", nv)
+        if rc != 0:
+            return None, "silent", "перемычка не создана: " + err[:60]
+        E("ip", "link", "set", nv, "netns", ns)
+        E("ip", "addr", "add", sub + ".1/24", "dev", hv)
+        E("ip", "link", "set", hv, "up")
+        N("ip", "link", "set", "lo", "up")
+        N("ip", "addr", "add", sub + ".2/24", "dev", nv)
+        N("ip", "link", "set", nv, "up")
+        rc, _, err = N("ip", "route", "add", "default", "via", sub + ".1")
+        if rc != 0:
+            return None, "silent", "гостевой дефолт не поставлен: " + err[:60]
+        rc, _, err = E("ip", "link", "add", tun, "type", "wireguard")
+        if rc != 0:
+            return None, "silent", "связь не создана: " + err[:60]
+        E("ip", "-4", "addr", "replace", sub + ".9/32", "dev", tun)
+        rc, _, err = E("wg", "set", tun, "private-key", "/dev/stdin",
+                       "peer", reg["peer_public_key"], "endpoint", ep,
+                       "allowed-ips", "0.0.0.0/0", "persistent-keepalive", _TW_KEEP,
+                       input=reg["private_key"] + "\n")
+        if rc != 0:
+            return None, "silent", "веер не настроен: " + err[:60]
+        rc, _, err = E("ip", "link", "set", tun, "up", "mtu", _TW_MTU)
+        if rc != 0:
+            return None, "silent", "веер не поднят: " + err[:60]
+        rc, _, err = E("ip", "route", "replace", "default", "dev", tun, "table", tbl)
+        if rc != 0:
+            return None, "silent", "туннельный стол не поставлен: " + err[:60]
+        used = set()
+        for line in str(E("ip", "rule", "list")[1] or "").splitlines():
+            f = line.split()
+            if f and f[0].isdigit():
+                used.add(int(f[0]))
+        cand = 410 + int(n)
+        while cand in used:
+            cand += 1
+        prio = str(cand)
+        rc, _, err = E("ip", "rule", "add", "priority", prio, "from", sub + ".0/24",
+                       "lookup", tbl)
+        if rc != 0:
+            return None, "silent", "правило гостя не поставлено: " + err[:60]
+        rc, _, err = E(*(("iptables", "-t", "nat", "-A") + nat[3:]))
+        if rc != 0:
+            return None, "silent", "маскарадинг не поставлен: " + err[:60]
+        nat_on = True
+        # облако обязано подтвердить веер до щупа: иначе первая попытка упрётся в таймаут
+        for _ in range(3):
+            if str(E("wg", "show", tun, "latest-handshake")[1] or "").strip():
+                break
+            E("ip", "link", "set", tun, "down")
+            E("ip", "link", "set", tun, "up")
+            time.sleep(4)
+        rc, out, err = N("python3", "-", tgt, input=_TV_PROBE_SRC, timeout=45)
+        m = re.match(r"^REGION=(NONE|[A-Z]{2})", str(out or "").strip())
+        if m and m.group(1) != "NONE":
+            rg = m.group(1)
+            return rg, ("ru" if rg == "RU" else "green"), ""
+        if m:
+            return None, "silent", "региона в ответе нет"
+        if str(out or "").startswith("ERR="):
+            return None, "silent", "щуп: " + str(out)[4:44]
+        return None, "silent", "песочница не ответила"
+    finally:
+        if nat_on:
+            E(*(("iptables", "-t", "nat", "-D") + nat[3:]))
+        if prio:
+            E("ip", "rule", "del", "priority", prio)
+        E("ip", "route", "flush", "table", tbl)
+        E("ip", "link", "del", tun)
+        E("ip", "netns", "del", ns)
+
+
+def _tv_probe(n):
+    """Приговор варианту по факту «что видит TikTok»: рабочий меряется живым звеном,
+    остальные — песочницей. Возвращает названный отказ или пустое слово."""
+    global _TV_JOB, _TW_ERR
+    with _TV_LOCK:
+        _TV_JOB = "probe%d" % int(n)
+        try:
+            doc = _tv_ensure()
+            it = _tv_item(doc, n)
+            if it is None:
+                return "нет такого варианта"
+            reg = _load(_tv_regfile(n)) or {}
+            if not _tv_reg_ok(reg):
+                return "у варианта нет целого аккаунта"
+            st = _load(_TW_STATE, {}) or {}
+            tgt = (str(st.get("probe_ip") or "")
+                   or _tw_covered_ip(_tw_seen_ips(), list(st.get("nets") or []))
+                   or "71.18.85.9")
+            if int(doc.get("active") or 0) == int(n):
+                _tw_probe(force=True)
+                rt = str((_load(_TW_STATE, {}) or {}).get("region_tunnel") or "").upper()
+                verdict = ("green" if (rt and rt != "RU")
+                           else ("ru" if rt == "RU" else "silent"))
+                region = rt or None
+            else:
+                region, verdict, why = _tv_sandbox(n, reg, tgt)
+                if why:
+                    _TW_ERR = why
+            it["verdict"] = verdict
+            it["region"] = region
+            it["checked_at"] = int(time.time())
+            _tv_save(doc)
+            _audit("tiktok_variant_probe", n=int(n), verdict=verdict, region=region or "")
+            return ""
+        finally:
+            _TV_JOB = ""
+
+
+def _tv_probe_all():
+    doc = _tv_ensure()
+    for it in sorted(doc["items"], key=lambda x: int(x.get("n") or 0)):
+        _tv_probe(int(it["n"]))
+
+
+def _tv_live_swap(reg, nets):
+    """Переставить живое звено на другой аккаунт на месте: старый пир снять, новый
+    повесить тем же `wg set` с трубкой для ключа; правила и маршруты остаются
+    наши — они судят по блокам адресов, а не по аккаунту."""
+    rc, _, _ = _tw_cmd("ip", "link", "show", _TW_IF)
+    if rc != 0:
+        return "звена нет — поднимет смотритель"
+    return _tw_link_up(reg, nets)
+
+
+def _tv_use(n):
+    """Переключение рабочего варианта: живой reg.json заменяется файлом варианта,
+    звено перестраивается на месте, немедленный щуп, при RU/молчании — откат ко
+    всему. Пока оператор не попросил, вариант 1 не двигается."""
+    with _TV_LOCK:
+        doc = _tv_ensure()
+        n = int(n)
+        a = int(doc.get("active") or 0)
+        if a == n:
+            return "вариант уже рабочий"
+        if _tv_item(doc, n) is None:
+            return "нет такого варианта"
+        newreg = _load(_tv_regfile(n)) or {}
+        if not _tv_reg_ok(newreg):
+            return "у варианта нет целого аккаунта"
+        oldreg = _tw_registered()
+        if a and oldreg:
+            try:
+                os.makedirs(_TV_DIR, mode=0o700, exist_ok=True)
+                _save(_tv_regfile(a), oldreg, 0o600)
+            except Exception:
+                return "прежний аккаунт не сохранить — переключение отменено"
+        try:
+            # прежние байты живого reg.json храним как есть: откат обязан вернуть
+            # ровно то, что было, а не пересобранный из словаря близнец
+            with open(_TW_REG, "rb") as f: oldraw = f.read()
+        except Exception:
+            oldraw = None
+        try:
+            tmp = _TW_REG + ".tmp"
+            _save(tmp, newreg, 0o600)
+            os.replace(tmp, _TW_REG)
+        except Exception as e:
+            return "живой аккаунт не записать: " + str(e)[:80]
+        st = _load(_TW_STATE, {}) or {}
+        nets = list(st.get("nets") or [])
+        if oldreg and a:
+            oldpeer = str(oldreg.get("peer_public_key") or "")
+            if oldpeer and oldpeer != newreg["peer_public_key"]:
+                _tw_cmd("wg", "set", _TW_IF, "peer", oldpeer, "remove")
+        verdict, rt = "silent", ""
+        swap_err = _tv_live_swap(newreg, nets) if (nets and st.get("up")) else ""
+        _tw_probe(force=True)
+        rt = str((_load(_TW_STATE, {}) or {}).get("region_tunnel") or "").upper()
+        if swap_err == "":
+            verdict = ("green" if (rt and rt != "RU")
+                       else ("ru" if rt == "RU" else "silent"))
+        it = _tv_item(doc, n)
+        if it is not None:
+            it["verdict"] = verdict
+            it["region"] = rt or None
+            it["checked_at"] = int(time.time())
+        if verdict != "green":
+            if oldreg and a:
+                try:
+                    tmp = _TW_REG + ".tmp"
+                    if oldraw:
+                        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, "wb") as f:
+                            f.write(oldraw)
+                            f.flush()
+                            os.fsync(f.fileno())
+                    else:
+                        _save(tmp, oldreg, 0o600)
+                    os.replace(tmp, _TW_REG)
+                    _tw_cmd("wg", "set", _TW_IF, "peer", newreg["peer_public_key"], "remove")
+                    if nets and st.get("up"):
+                        _tv_live_swap(oldreg, nets)
+                    back = _tv_item(doc, a)
+                    if back is not None:
+                        back["verdict"] = "ru" if rt == "RU" else back.get("verdict")
+                except Exception:
+                    pass
+                _tv_save(doc)
+                return ("вариант %d не повёз (%s) — откат на прежний" %
+                        (n, swap_err[:60] if swap_err else verdict))
+            _tv_save(doc)
+            return "вариант %d не повёз (%s)" % (n, swap_err[:60] if swap_err else verdict)
+        doc["active"] = n
+        _tv_save(doc)
+        _audit("tiktok_variant_use", n=n, region=rt)
+        return ""
+
+
+def _tv_del(n):
+    """Снять вариант с хранения: рабочий не снимается — иначе звено останется без
+    аккаунта посреди тика."""
+    with _TV_LOCK:
+        doc = _tv_ensure()
+        n = int(n)
+        if int(doc.get("active") or 0) == n:
+            return "рабочий вариант не снимается — сначала сделайте рабочим другой"
+        if _tv_item(doc, n) is None:
+            return "нет такого варианта"
+        doc["items"] = [x for x in doc["items"] if int(x.get("n") or 0) != n]
+        err = _tv_save(doc)
+        if err:
+            return err
+        try:
+            os.remove(_tv_regfile(n))
+        except OSError:
+            pass
+        _audit("tiktok_variant_del", n=n)
+        return ""
+
+
+def _tv_view():
+    """Только чтение: список вариантов, рабочий номер, потолок и чем заняты.
+    Ключей нет ни в одном поле — реестр отдаёт наружу лишь приговоры."""
+    doc = _tv_ensure()
+    st = _load(_TW_STATE, {}) or {}
+    a = int(doc.get("active") or 0)
+    items = []
+    for it in sorted(doc["items"], key=lambda x: int(x.get("n") or 0)):
+        n = int(it.get("n") or 0)
+        v = str(it.get("verdict") or "unknown")
+        r = it.get("region")
+        if n == a:
+            rt = str(st.get("region_tunnel") or "").upper()
+            if rt:
+                r = rt
+                v = "green" if rt != "RU" else "ru"
+        items.append({"n": n, "name": "Вариант %d" % n, "active": n == a,
+                      "verdict": v, "region": r,
+                      "checked_at": int(it.get("checked_at") or 0),
+                      "at": int(it.get("at") or 0)})
+    return {"items": items, "active": a, "cap": _TV_CAP,
+            "space": max(0, _TV_CAP - len(doc["items"])),
+            "busy": _TV_JOB, "error": _TW_ERR or ""}
+
+
+def _tv_geo(doc):
+    """Geo-молчание рабочего варианта: звено поднято, TikTok отвечает RU. Аккаунт
+    жив — в расход его рано; сначала перевал на зелёный из реестра, нет зелёного —
+    замерить непроверенных (один за раз), и лишь потом обычный расход по кулдауну.
+    Ровно то, чего не умела кнопка из реестра #288 пункт 32."""
+    global _TV_GEO_AT
+    now = time.time()
+    if now - _TV_GEO_AT < _TV_GEO_ROT:
+        return
+    _TV_GEO_AT = now
+    a = int(doc.get("active") or 0)
+    it = _tv_item(doc, a)
+    if it is not None:
+        it["verdict"] = "ru"
+        it["checked_at"] = int(now)
+        _tv_save(doc)
+    green = [int(x["n"]) for x in doc["items"]
+             if int(x.get("n") or 0) != a and x.get("verdict") == "green"
+             and os.path.exists(_tv_regfile(int(x.get("n") or 0)))]
+    if green:
+        err = _tv_use(green[0])
+        _audit("tiktok_variant_geo_switch", frm=a, to=green[0], ok=not err)
+        return
+    unknown = [int(x["n"]) for x in doc["items"]
+               if int(x.get("n") or 0) != a
+               and str(x.get("verdict") or "unknown") == "unknown"
+               and os.path.exists(_tv_regfile(int(x.get("n") or 0)))]
+    if unknown:
+        threading.Thread(target=_tv_probe, args=(unknown[0],), daemon=True).start()
+        return
+    _tw_retire("TikTok видит RU с рабочего варианта")
+
+
+def _tv_after():
+    """Хвост тика смотрителя: реестр догоняет живое звено, geo-молчание судится."""
+    try:
+        doc = _tv_ensure()
+        st = _load(_TW_STATE, {}) or {}
+        if st.get("up"):
+            rt = str(st.get("region_tunnel") or "").upper()
+            if rt == "RU":
+                _tv_geo(doc)
+    except Exception as e:
+        print("[tiktok-variants] " + str(e), flush=True)
 
 
 # ---------- #384/#385: в какой стране видят наш адрес (сервис по образцу чужого сканера) ----------
@@ -18218,6 +18829,63 @@ def _tg_mp_revert(confirm=False):
     else:
         note = "VEIL-MTProto listener убран; на :%s теперь сидит %s — MTProto-клиенты туда не попадут." % (prev, ni.get("proc"))
     return {"ok": True, "port": prev, "up": bool(ni.get("up")), "message": note, "note": note}
+
+
+def _tg_mss_set(on, confirm=False):
+    """Хозяйское слово MSS-включателя (цикл #470): прописать ключ `tg_mss_tune`
+    в конфиг и переложить тюнинг в живой помеченный блок, с рестартом telemt и
+    проверкой живости по образцу `_tg_mp_apply` (тот же десяток попыток по секунде).
+    Не поднялся — конфиг и файл откачены байт в байт, прежнее слово возвращено.
+    Включение рвёт живые соединения: Telegram переподключается сам, морда честно
+    предупреждает. Самовольничать переключателю нельзя — без confirm отказ."""
+    if not confirm:
+        raise RuntimeError("нужно подтверждение (confirm)")
+    on = bool(on)
+    try:
+        with open(TELEMT_CONF, "r", encoding="utf-8") as f:
+            backup = f.read()
+    except Exception as e:
+        raise RuntimeError("не смог прочитать telemt.toml: %s" % e)
+    if _TG_MP_MARK not in backup:
+        raise RuntimeError("наш MTProto-listener не применён — класть тюнинг некуда; "
+                           "сначала оживите MTProto («Выпустить listener»)")
+    prev_want = _tg_mss_want()
+    port = _tg_mtproto_info().get("port") or 0
+    text = _tg_toml_set_mp_tune(backup, on)
+    CFG_CACHE["tg_mss_tune"] = on
+    _cfg_save()
+    if text == backup:
+        # Слово совпало с живым блоком (например ключ поправили вручную до нас) —
+        # рестарт не нужен, телефонная связь клиентов цела.
+        _audit("tg_mss_tune", on=on, restart=False)
+        return {"ok": True, "on": on, "restart": False, "port": port,
+                "note": "живой блок уже в слове переключателя — рестарт не понадобился"}
+    try:
+        with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception as e:
+        CFG_CACHE["tg_mss_tune"] = prev_want
+        _cfg_save()
+        raise RuntimeError("не смог записать telemt.toml: %s" % e)
+    r = subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+    up = False
+    for _ in range(10):
+        time.sleep(1)
+        if _tg_mtproto_info().get("up"):
+            up = True
+            break
+    if not up:
+        with open(TELEMT_CONF, "w", encoding="utf-8") as f:
+            f.write(backup)
+        subprocess.run(["systemctl", "restart", "telemt"], capture_output=True, timeout=120)
+        CFG_CACHE["tg_mss_tune"] = prev_want
+        _cfg_save()
+        raise RuntimeError("telemt не поднялся с MSS-тюнингом (restart rc=%s) — "
+                           "файл и слово переключателя откачены" % r.returncode)
+    _audit("tg_mss_tune", on=on, restart=True)
+    return {"ok": True, "on": on, "restart": True, "port": port,
+            "note": ("MSS-тюнинг записан в listener :%d — соединения переподключатся" % port)
+                    if on else ("MSS-тюнинг снят с listener :%d" % port)}
 
 
 def _tg_ensure_secret_in_toml(username, secret):
@@ -20642,10 +21310,14 @@ def _webproxy_install():
         raise RuntimeError("нет SSL-сертификата — сначала выпустите сертификат (Let's Encrypt) во вкладке Сайт")
     domain = st["domain"]
     if not st["nginx"]:
-        r = subprocess.run(["apt-get", "install", "-y", "-qq", "nginx"],
-                           capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise RuntimeError("apt nginx: " + (r.stderr or r.stdout)[-300:])
+        # F4 (#466): stream-модуль берём сразу с nginx — типовая сборка Ubuntu
+        # динамическая, и без libnginx-mod-stream SNI-мюкс позже падал бы на пустом месте.
+        _apt_install_pkgs(["nginx", "libnginx-mod-stream"])
+    elif not _mux_stream_module_state()[0]:
+        try:
+            _apt_install_pkgs(["libnginx-mod-stream"])
+        except Exception:
+            pass   # веб-прокси stream не нужен; при применении мюкса отказ прозвучит честно
     _webproxy_apply(domain)
     return {"ok": True, "status": _webproxy_status()}
 
@@ -20768,7 +21440,8 @@ def _mux_status():
     elif ng["stream_dynamic"]:
         avail, directive = _mux_stream_module_state()
         if not avail:
-            warnings.append("stream-модуль динамический и НЕ установлен — выполните apt-get install -y libnginx-mod-stream (панель сама допишет load_module при применении).")
+            warnings.append("stream-модуль динамический и НЕ установлен — при применении панель "
+                            "сама доустановит libnginx-mod-stream через apt и допишет load_module.")
         elif directive:
             warnings.append("stream-модуль динамический (--with-stream=dynamic) — при применении панель автоматически добавит «%s» в nginx.conf (с бэкапом и авто-откатом)." % directive)
     return {"free443": o443["free"], "occupant443": o443, "free80": o80["free"], "occupant80": o80,
@@ -20911,6 +21584,22 @@ def _mux_cert(web_domain, vpn_domain, tg_domain="", extra_domains=None):
         raise RuntimeError("openssl self-signed: " + (r.stderr or r.stdout)[-300:])
     os.chmod(key, 0o600)
     return crt, key, "self-signed"
+
+def _apt_install_pkgs(pkgs):
+    """F4 (#466): ставит пакет(ы) через apt; при провале — один заход после
+    `apt-get update` (на чистых коробках списки репозиториев пусты и голой
+    install честен только со второго раза). Бросает RuntimeError с текстом apt."""
+    last = ""
+    for attempt in (0, 1):
+        r = subprocess.run(["apt-get", "install", "-y", "-qq"] + [str(p) for p in pkgs],
+                           capture_output=True, text=True, timeout=900)
+        if r.returncode == 0:
+            return True
+        last = (r.stderr or r.stdout or "").strip()[-300:]
+        if attempt == 0:
+            subprocess.run(["apt-get", "update", "-qq"], capture_output=True, text=True, timeout=600)
+    raise RuntimeError("apt-get install %s: %s" % (" ".join(pkgs), last or "без вывода"))
+
 
 def _mux_stream_module_state():
     """Можно ли nginx этого хоста реально использовать stream, и нужен ли явный load_module.
@@ -21884,8 +22573,8 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
         blockers.append("nginx не установлен")
     elif not (ng["stream"] and ng["ssl_preread"]):
         blockers.append("nginx собран без stream/ssl_preread — SNI-mux невозможен")
-    elif not _mux_stream_module_state()[0]:
-        blockers.append("stream-модуль не установлен (сборка динамическая): выполните apt-get install -y libnginx-mod-stream")
+    # F4 (#466): отсутствующий ДИНАМИЧЕСКИЙ stream-модуль больше не блокер —
+    # _mux_apply доустанавливает libnginx-mod-stream сам; не выйдет — откажет честно.
     if not web_domain:
         blockers.append("не задан домен панели (веб-SNI)")
     if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?", vpn_domain or ""):
@@ -21965,6 +22654,10 @@ def _mux_preview(vpn_domain=None, tg_domain=None, protos=None, mp_domain=None, m
     # мюкс терминирует TLS тем же сертификатом, что и панель: если в нём нет SNI-имени
     # VPN, подписчики со строгой проверкой сертификата отвалятся — сказать ДО применения
     warns = []
+    if ng["installed"] and (ng["stream"] and ng["ssl_preread"]) and not _mux_stream_module_state()[0]:
+        warns.append("stream-модуль не установлен — при применении панель доустановит "
+                     "libnginx-mod-stream через apt; если у коробки нет доступа к репозиториям, "
+                     "применение честно откажется.")
     cp = _cert_pathes()
     exp = _cert_expire(cp["cert"]) if cp["cert"] else None
     le_ok = False   # LE-сертификат годен мюксу: живой И покрывает все SNI (тот же guard, что в _mux_cert)
@@ -22271,7 +22964,16 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
     cert, key, kind = _mux_cert(web_domain, vpn_domain, tg_domain, extra_domains=extra)
     avail, mod_directive = _mux_stream_module_state()
     if not avail:
-        raise RuntimeError("stream-модуль nginx не установлен — выполните apt-get install -y libnginx-mod-stream")
+        # F4 (#466): не отправляем администратора в консоль — панель доустанавливает
+        # недостающий пакет сама и перепроверяет; не выйдет — честный отказ.
+        try:
+            _apt_install_pkgs(["libnginx-mod-stream"])
+            avail, mod_directive = _mux_stream_module_state()
+        except Exception:
+            pass
+    if not avail:
+        raise RuntimeError("stream-модуль nginx не установлен и панели не удалось доставить "
+                           "libnginx-mod-stream — выполните вручную: apt-get install -y libnginx-mod-stream")
     used = _mux_ports_in_use()
     if mux_live:
         # тот же веб-порт, что держит НАШ nginx (8445): «ищи свободный» при повторном apply
@@ -24771,6 +25473,10 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
         if not isinstance(inb, dict): continue
         if inb.get("disabled"):
             continue
+        # F5 (#466): исходящий на самоподписанный cert-TLS вход или на туннель
+        # без своего пакета — мёртвый; подписчику его не кладём.
+        if _cert_transport_block(proto, inb) or _tun_tools(proto):
+            continue
         for c in inb.get("clients", []):
             if not isinstance(c, dict): continue
             if c.get("sub_token") != sub_path and c.get("uuid") != sub_path:
@@ -26089,7 +26795,9 @@ def _dynv6_ensure_rec(zid, zone, label, rtype, data):
                     pass
         elif same:
             keep = same[0]
-            _dynv6_api("PUT", "/zones/%s/records/%s" % (zid, keep.get("id")), {"data": data})
+            # F14 (#466): dynv6 v2 обновляет запись методом PATCH; PUT отвечает 404 —
+            # раньше любая «починка» существующей записи молча улетала в исключение.
+            _dynv6_api("PATCH", "/zones/%s/records/%s" % (zid, keep.get("id")), {"data": data})
             changed = True
             for r in same[1:]:
                 try:
@@ -26238,9 +26946,46 @@ def _dynv6_create_zone(name, account_token):
         up = _dynv6_update()
     except Exception as e:
         up = {"ok": False, "error": str(e)}
-    return {"ok": True, "host": name, "token": account_token,
+    # F7 (#466): аккаунт-токен в ответе — лишняя копия секрета в логах, прокси и
+    # истории сети браузера; UI берёт его из поля, которое заполнял сам оператор.
+    return {"ok": True, "host": name,
             "zone_created": bool(zone_created or zone_existing),
             "zone_existing": bool(zone_existing), "zone_error": zone_error, "update": up}
+
+def _dynv6_sweep(snap, host, old4, new4, old6, new6):
+    """F13 (#466): легаси-эндпоинт dynv6 двигает только апекс зоны — всё, что панель
+    публиковала под доменом (vpn/web/tg/mp/wg и протокольные метки), после переезда
+    или смены IP оставалось указывать на старый адрес. Уводим из снимка записи, чьи
+    данные совпадают со СТАРЫм значением апекса; чужие значения не трогаем (это может
+    быть узел или другой хост). Возвращает список перенесённых имён."""
+    moved = []
+    want4 = bool(new4 and old4 and old4 != new4)
+    want6 = bool(new6 and old6 and old6 != new6)
+    if not (want4 or want6):
+        return moved
+    def _apex(nm):
+        return str(nm or "").lower().rstrip(".") in ("", host)
+    with _D6_LOCK:
+        try:
+            zid = _dynv6_zone_id(host)
+            fresh = {str(r.get("id")): r for r in _dynv6_records(zid)}
+        except Exception:
+            return moved
+        for r in snap:
+            t = (r.get("type") or "").upper()
+            nm = str(r.get("name") or "")
+            if _apex(nm):
+                continue
+            cur = fresh.get(str(r.get("id"))) or r
+            data = (cur.get("data") or "").strip()
+            if (t == "A" and want4 and data == old4) or (t == "AAAA" and want6 and data == old6):
+                try:
+                    _dynv6_api("PATCH", "/zones/%s/records/%s" % (zid, r.get("id")),
+                               {"data": (new4 if t == "A" else new6)})
+                    moved.append(nm or "?")
+                except Exception:
+                    pass
+    return moved
 
 def _dynv6_update(force4=None, force6=None):
     if not force4 and not force6 and _mv_locked():
@@ -26265,6 +27010,22 @@ def _dynv6_update(force4=None, force6=None):
         ip4 = str(force4)
     if force6:
         ip6 = str(force6)
+    # F13 (#466): снимок зоны ДО пуша: старые значения апекса — примета, откуда
+    # уводить поддоменные записи (легаси-эндпоинт двигает только апекс).
+    snap, old4, old6 = [], "", ""
+    try:
+        with _D6_LOCK:
+            snap = _dynv6_records(_dynv6_zone_id(host))
+        for r in snap:
+            nm = str(r.get("name") or "").lower().rstrip(".")
+            if nm in ("", host.lower()):
+                t = (r.get("type") or "").upper()
+                if t == "A" and not old4:
+                    old4 = (r.get("data") or "").strip()
+                elif t == "AAAA" and not old6:
+                    old6 = (r.get("data") or "").strip()
+    except Exception:
+        snap = []
     p = [("hostname", host)]
     if ip4: p.append(("ipv4", ip4))
     if ip6: p.append(("ipv6", ip6))
@@ -26306,6 +27067,15 @@ def _dynv6_update(force4=None, force6=None):
                     _audit("dynv6_aaaa_drop", host=host)
             except Exception as e:
                 _DDNS["aaaa_drop"] = "ошибка: " + str(e)[:120]
+        # F13: вместе с апексом уводим и поддомены, оставшиеся на старом адресе
+        try:
+            moved = _dynv6_sweep(snap, host, old4, ip4, old6, ip6)
+            _DDNS["sweep"] = ("перенесено: " + ", ".join(moved[:15])) if moved \
+                else "не требовалось"
+            if moved:
+                _audit("dynv6_sweep", moved=len(moved))
+        except Exception as e:
+            _DDNS["sweep"] = "ошибка: " + str(e)[:120]
     else:
         _DDNS["error"] = "dynv6: " + body
         raise RuntimeError("dynv6: " + body[:200])
@@ -26531,61 +27301,19 @@ def _gp_probe(target, port=443, path="/", proto=None, limit=20, wait_s=200,
     return ok, len(results), details
 
 
-def _gp_tcp_probe(target, port, limit=10, wait_s=120):
-    """TCP-проба кандидата на смену: сколько зондов из РФ подняли соединение. -> (ok, total)
-
-    HTTP-проба голого адреса не годится: сертификат выдан на домен, на `ip:443`
-    рукопожатие рвётся именем, и живой адрес выглядел бы блокировкой. Блокировка
-    (#335) рвёт именно соединения — поэтому кандидат щупается голым TCP (#337).
-    Отказ провайдера — исключение: «не известно» не приравнивается к «не жив»,
-    слепого применения к первому кандидату, как в событии 20:44, больше нет."""
-    if not target:
-        raise RuntimeError("не задан адрес для пробы")
-    body = {"type": "tcp", "target": target,
-            "locations": [{"country": "RU", "limit": limit}],
-            "measurementOptions": {"port": int(port)}}
-
-    def _req(url, data=None):
-        req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
-                                     headers={"Content-Type": "application/json",
-                                              "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=25) as r:
-            return json.loads(r.read().decode("utf-8", "replace") or "{}")
-
-    d = _gp_connect_retry(
-        lambda: _req("https://api.globalping.io/v1/measurements", json.dumps(body).encode()))
-    mid = (d.get("id") or "").strip()
-    if not mid:
-        raise RuntimeError("Globalping не вернул id пробы")
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        time.sleep(4)
-        try:
-            dd = _req("https://api.globalping.io/v1/measurements/" + mid)
-        except Exception:
-            continue
-        if dd.get("status") == "finished":
-            results = dd.get("results") or []
-            if not results:
-                raise RuntimeError("Globalping: проба не дала результатов")
-            ok = 0
-            for r in results:
-                res = r.get("result") or {}
-                if res.get("connect") or res.get("established"):
-                    ok += 1
-            return ok, len(results)
-        if dd.get("status") == "failed":
-            raise RuntimeError("Globalping: TCP-проба не удалась")
-    raise RuntimeError("таймаут ожидания TCP-пробы Globalping")
-
-
 def _rot_pick_live(cfg, cur):
-    """Живой кандидат на смену: каждый щупается TCP-пробой из РФ до применения (#337).
+    """Живой кандидат на смену: каждый щупается достижимостной пробой из РФ до применения (#337).
 
     Возвращает (ip, пояснение); отказ обязан быть назван: «менять некем»,
     «все кандидаты блокированы» и «проба не выполнена» — три разные ситуации
     с разными действиями хозяина. Кандидатов щупаем не больше трёх за тик —
-    смена сама по себе редка, а бюджет Globalping общий с монитором."""
+    смена сама по себе редка, а бюджет Globalping общий с монитором.
+
+    Голый TCP-щуп (#337) мёртв извне: Globalping снял тип `tcp` из публичного
+    API (живой ответ валидатора 20.10: разрешены только ping/traceroute/dns/mtr/http).
+    Кандидат судится той же мерой, что монитор судит текущий адрес: любой
+    HTTP-ответ на порту фасада значит «пакеты ходят», блокировка — отсутствие
+    ответа. Живой промер боевого :443 на голый адрес: HTTPS `404`, HTTP `400`."""
     cand = [ip for ip in _rot_candidates() if ip != cur]
     if not cand:
         return "", "нет свободных IP в пуле (текущий %s)" % (cur or "?")
@@ -26600,12 +27328,13 @@ def _rot_pick_live(cfg, cur):
     errs = []
     for ip in cand[:3]:
         try:
-            ok, total = _gp_tcp_probe(ip, cfg["port"], limit=10)
+            ok, total, _det = _gp_probe(ip, cfg["port"], cfg["path"], limit=10,
+                                        wait_s=120, reachable_only=True)
         except Exception as e:
             errs.append("%s: %s" % (ip, str(e)[:60]))
             continue
         if total > 0 and ok * 100.0 / total > cfg["threshold"]:
-            return ip, "TCP-проба из РФ %d/%d" % (ok, total)
+            return ip, "достижимость из РФ %d/%d" % (ok, total)
         dead.append("%s %d/%d" % (ip, ok, total))
     if dead:
         return "", "ни один кандидат не отзывается из РФ (%s) — смена отложена" % "; ".join(dead)
@@ -29626,6 +30355,13 @@ def _mv_ports_plan():
     for proto, ib in (st.get("inbounds") or {}).items():
         if not isinstance(ib, dict):
             continue
+        # F12 (#466): выключенный вход и туннельный транспорт без своих инструментов
+        # на этой машине ничем не поднимутся и на новой — чужой порт в манифесте
+        # превращал здоровый переезд в ложный провал самопроверки.
+        if ib.get("disabled"):
+            continue
+        if _tun_tools(proto):
+            continue
         add("udp" if proto in ("wireguard", "hysteria2", "amneziawg") else "tcp", ib.get("port"))
     tp = _tg_toml_get_server_port()
     if tp:
@@ -29633,7 +30369,10 @@ def _mv_ports_plan():
     if shutil.which("nginx"):
         add("tcp", 80)
         add("tcp", 443)
-    for f in ("/etc/wireguard/veilwg.conf", "/etc/amnezia/amneziawg/awg0.conf"):
+    for f, tool in (("/etc/wireguard/veilwg.conf", "wireguard"),
+                    ("/etc/amnezia/amneziawg/awg0.conf", "amneziawg")):
+        if _tun_tools(tool):
+            continue
         try:
             with open(f, encoding="utf-8", errors="ignore") as fh:
                 m = re.search(r"(?mi)^ListenPort\s*=\s*(\d+)", fh.read())
@@ -30181,6 +30920,7 @@ def _mv_dns(provider="auto", confirm=False):
             _dynv6_update(force4=ip4, force6=ip6 or None)
             report.append("dynv6: %s → %s%s" % (_dynv6_conf()["host"], ip4,
                                                 (" (IPv6: %s)" % ip6) if ip6 else ""))
+            report.append("поддомены: " + (_DDNS.get("sweep") or "не проверяно"))
             if not ip6:
                 report.append("внимание: IPv6 нового хоста не известен — AAAA-запись "
                               "не обновлена, убери её вручную, если у нового хоста нет v6")
@@ -30430,6 +31170,24 @@ def _mv_apply_main():
     for svc in ("xray", "telemt"):
         sysctl("enable", "--now", svc)
     ng_ok = None
+    # F11 (#466): архив несёт конфиги веб-фронта nginx, но сам бинарь в переезжаемую
+    # базу не входит — на цели :80/:443 молча терялись, а самопроверка хоронила
+    # здоровый переезд в ports_missing. Если конфиги разложены, а nginx нет —
+    # доставляем пакет вместе со stream-модулем; если nginx есть, но модуля нет —
+    # доставляем модуль (без него veil-mux-stream не проходит nginx -t).
+    if any(os.path.exists(p) for p in
+           ("/etc/nginx/conf.d/webproxy.conf", "/etc/nginx/conf.d/veil-front.conf",
+            "/etc/nginx/conf.d/veil-mux-default.conf", "/etc/nginx/veil-mux-stream.conf")):
+        try:
+            if not shutil.which("nginx"):
+                _apt_install_pkgs(["nginx", "libnginx-mod-stream"])
+                problems.append("nginx на новом хосте не было — панель доставила пакет "
+                                "вместе с libnginx-mod-stream")
+            elif not _mux_stream_module_state()[0]:
+                _apt_install_pkgs(["libnginx-mod-stream"])
+        except Exception as e:
+            problems.append("доставить nginx не удалось: " + str(e)[:160] +
+                            " — веб-фронт включите на новом хосте из панели вручную")
     if shutil.which("nginx"):
         t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=30)
         if t.returncode == 0:
@@ -30464,27 +31222,43 @@ def _mv_apply_main():
         f.write(_MV_PANEL_UNIT)
     sysctl("daemon-reload", to=60)
     sysctl("enable", "--now", "vpnpanel")
-    time.sleep(3)
+    # F10 (#466): единственный замер через 3 секунды врал: на холодном хосте
+    # xray/telemt/nginx ещё биндили порты, и самопроверка заносила живые порты
+    # в ports_missing. Окно grace: до 12 прогонов по 3 с, выход раньше,
+    # как только веб ответил и все порты связаны.
     pp = int(CFG_CACHE.get("panel_port") or 8443)
-    web_ok = False
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen("https://127.0.0.1:%d/" % pp, timeout=8, context=ctx) as r:
-            web_ok = r.status == 200
-    except Exception:
-        pass
-    bound, missing = [], []
-    for spec in (manifest.get("ports") or []):
-        pr, pv = spec.split(":")
+    specs = [str(s) for s in (manifest.get("ports") or [])]
+
+    def _web_probe():
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen("https://127.0.0.1:%d/" % pp, timeout=8, context=ctx) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    def _ss_bound(spec):
+        pr, _, pv = str(spec).partition(":")
         try:
             out = subprocess.run(["ss", "-H", "-l" + ("un" if pr == "udp" else "tn"),
                                   "sport = :%s" % pv], capture_output=True, text=True,
                                  timeout=10).stdout or ""
         except Exception:
             out = ""
-        (bound if out.strip() else missing).append(spec)
+        return bool(out.strip())
+
+    web_ok, bound, missing = False, [], list(specs)
+    for _round in range(12):
+        time.sleep(3)
+        web_ok = _web_probe()
+        missing = [s for s in specs if not _ss_bound(s)]
+        bound = [s for s in specs if s not in missing]
+        if web_ok and not missing:
+            break
+        if web_ok and unit_active("xray") and unit_active("telemt") and _round >= 6:
+            break   # службы подняты, веб жив: добиваем окно один раз и судим как есть
     cur6 = ""
     try:
         cur6 = _pub_ip6() or ""
@@ -32734,7 +33508,13 @@ class H(http.server.BaseHTTPRequestHandler):
                             except Exception:
                                 pass
                         if (not str(proto).startswith("shadowsocks")
-                                and not inb.get("disabled") and _link_reachable(inb, c, unreachable)):
+                                and not inb.get("disabled")
+                                and _link_reachable(inb, c, unreachable)
+                                # F5 (#466): самоподписанный cert-TLS и туннель без
+                                # своего пакета — заведомо мёртвая для подписчика
+                                # выдача; ссылки и исходящие таких входов не получают.
+                                and not _cert_transport_block(proto, inb)
+                                and not _tun_tools(proto)):
                             try:
                                 # Ключ — протокол плюс различник записи (#239): пока
                                 # на протокол была одна копия, «одна ссылка на протокол»
@@ -34142,6 +34922,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if p == "/api/tg/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             return self._send(200, _tg_status())
+        if p == "/api/tg/mss":
+            # #470: слово включателя и состояние живого блока — отдельно от статуса,
+            # чтобы морда могла переспросить файл после чужой правки.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            return self._send(200, _tg_mss_view())
         if p == "/api/front/status":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
@@ -34164,6 +34949,13 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
                 return self._send(200, _tw_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/tiktok_variants":
+            # #457: реестр вариантов WARP — только приговоры, ключей наружу нет.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _tv_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
         if p == "/api/ipregion":
@@ -35027,6 +35819,8 @@ class H(http.server.BaseHTTPRequestHandler):
                                             "changes": changes,
                                             "inbound": _inbound_public(proto, candidate)})
                 missing = _tun_tools(proto) if tun else None
+                if not missing:
+                    missing = _cert_transport_block(proto, candidate)
                 if missing:
                     # туннельному протоколу без пакета на этой машине отказ раньше
                     # любой записи: причина названа, состояние не тронуто
@@ -35086,6 +35880,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "inbound не найден: " + proto})
                 want = bool(b.get("disabled"))
                 was = bool(inb.get("disabled"))
+                if not want:
+                    # F5 (#466): включать то, что на этой коробке не может работать
+                    # (cert-TLS без сертификата, туннель без своего пакета), — обман;
+                    # отказ до первой записи состояния.
+                    reason = _cert_transport_block(proto, inb) or _tun_tools(proto)
+                    if reason:
+                        return self._send(400, {"error": reason})
                 if want:
                     inb["disabled"] = True
                 else:
@@ -36853,6 +37654,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self._send(200, _tg_mp_revert(bool(b.get("confirm"))))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/tg/mss":
+                try:
+                    b = self._body() or {}
+                    if "on" not in b:
+                        return self._send(400, {"error": "нужно поле on"})
+                    return self._send(200, _tg_mss_set(b.get("on"), bool(b.get("confirm"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             # ---- двойной прыжок (RU-фронт + зарубежный бэк) ----
             if p == "/api/hop/add":
                 try:
@@ -37796,6 +38605,46 @@ class H(http.server.BaseHTTPRequestHandler):
                     print("[tiktok-route] " + str(e), flush=True)
                 v = _tw_view()
                 return self._send(200, v)
+            if p == "/api/tiktok_variants":
+                # #457: `add` — зарегистрировать новый вариант; `probe:n` / `probe_all`
+                # — замерить (в фоне: песочница мерит до минуты, морда дочитывает опросом);
+                # `use:n` — сделать рабочим (синхронно: перестановка звена и щуп);
+                # `del:n` — снять с хранения. Ни одного поля — отказ.
+                b = self._body()
+                if not any(k in b for k in ("add", "probe", "probe_all", "use", "del")):
+                    return self._send(400, {"error": "нужно поле add, probe, probe_all, use или del"})
+                try:
+                    if b.get("add"):
+                        n, why = _tv_add()
+                        if why:
+                            return self._send(400, {"error": why})
+                    elif b.get("probe_all"):
+                        threading.Thread(target=_tv_probe_all, daemon=True).start()
+                    elif "probe" in b:
+                        n = int(b.get("probe") or 0)
+                        if n <= 0:
+                            return self._send(400, {"error": "probe ждёт номер вариантом"})
+                        threading.Thread(target=_tv_probe, args=(n,), daemon=True).start()
+                    elif "use" in b:
+                        n = int(b.get("use") or 0)
+                        if n <= 0:
+                            return self._send(400, {"error": "use ждёт номер вариантом"})
+                        why = _tv_use(n)
+                        if why:
+                            return self._send(400, {"error": why})
+                    elif "del" in b:
+                        n = int(b.get("del") or 0)
+                        if n <= 0:
+                            return self._send(400, {"error": "del ждёт номер вариантом"})
+                        why = _tv_del(n)
+                        if why:
+                            return self._send(400, {"error": why})
+                except ValueError:
+                    return self._send(400, {"error": "номер варианта — целое число"})
+                except Exception as e:
+                    print("[tiktok-variants] " + str(e), flush=True)
+                    return self._send(502, {"error": str(e)[:200]})
+                return self._send(200, _tv_view())
             if p == "/api/ipregion":
                 # #384: `check` — мерить сейчас, минуя черёд и свежесть. Ответ приходит
                 # сразу: строки дописывает поток, морда их дочитывает опросом GET.

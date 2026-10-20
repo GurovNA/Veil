@@ -1108,6 +1108,10 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <span class=mut style="font-size:12px">выпуск имени и сертификата — единый вход «🌐 Имена и сертификаты» во вкладке «Сайт»</span>
         <button class="tiny" onclick=mp443Apply()>▶ Применить</button>
       </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <label class=fldlbl style="margin:0"><input type=checkbox id=mpMss onchange=tgMssSet(this.checked)> MSS-формирование фасада (эксперт, заводски выключено)</label>
+        <span class=mut id=mpMssState style="font-size:12px">—</span>
+      </div>
       <div id=mp443Prev class=mut style="margin-top:8px;font-size:13px;line-height:1.6"></div>
       <div class=msg id=mp443Msg></div>
       <details class=expl style="margin:14px 0 0"><summary>🎯 Вручную: SNI-домены прокси (эксперт)</summary><div>
@@ -1891,6 +1895,16 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick=checkTikTok() id=twCheckBtn>🔎 Проверить, что видит TikTok</button>
     </div>
     <div class=msg id=twMsg></div>
+    <div style="margin-top:10px;border-top:1px solid rgba(128,128,128,.25);padding-top:8px">
+      <b style="font-size:13px">Варианты WARP</b> <span id=tvBusy class=mut></span>
+      <p class=mut style="margin:4px 0 6px">Рабочий аккаунт TikTok-туннеля записан в реестр как вариант — переключение между вариантами, промер «что видит TikTok» в изолированной песочнице, автоперевал на зелёный, когда TikTok снова видит Россию. Бесплатных регистраций облако даёт немного — потолок ограничен.</p>
+      <div id=tvRows></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="tiny sec" onclick=tvAdd() id=tvAddBtn>➕ Добавить вариант</button>
+        <button class="tiny sec" onclick=tvProbeAll() id=tvAllBtn>🔎 Проверить все варианты</button>
+      </div>
+      <div class=msg id=tvMsg></div>
+    </div>
     </div>
     <div class="card set-block" id=setWarpManual>
     <h3 style="margin:0 0 8px">Ручной список через WARP</h3>
@@ -6164,7 +6178,7 @@ async function createDynv6Zone(){
     const r=await api('/api/dynv6/create-zone',{method:'POST',body:JSON.stringify({account_token:acct,name:nm})});
     setMsgHtml('ztMsg','Зона успешно создана: <b>'+$h(r.host)+'</b> — host и token сохранены','ok',true);
     toast('Зона успешно создана: ' + r.host, 'ok');
-    $('dvHost').value=r.host; $('dvToken').value=r.token||'';
+    $('dvHost').value=r.host; $('dvToken').value=acct;
     if($('setDomain')){
       $('setDomain').value=r.host;
       api('/api/settings',{method:'POST',body:JSON.stringify({domain:r.host})}).catch(()=>{});
@@ -6815,7 +6829,8 @@ async function loadTikTok(){
     const d=await api('/api/tiktok_warp');
     if(on) on.checked=!!d.tiktok_on;
     const rt=String(d.region_tunnel||'').toUpperCase(), rd=String(d.region_direct||'').toUpperCase();
-    if(!d.tiktok_want){ el.textContent='Выключено — TikTok видит сервер как есть.'; return; }
+    if(!d.tiktok_want){ el.textContent='Выключено — TikTok видит сервер как есть.'; loadTikTokVariants(false); return; }
+    loadTikTokVariants(true);
     if(d.up&&d.ready&&rt&&rt!=='RU') el.innerHTML='🎵 <b>TikTok через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; TikTok видит <b>'+esc(rt)+'</b>'+(rd?(' вместо '+esc(rd)):'')+'.';
     else if(d.up&&rt==='RU') el.innerHTML='🎵 <b style="color:var(--warn)">Туннель поднят, а TikTok всё ещё видит RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.';
     else if(d.up) el.innerHTML='🎵 <b>TikTok через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.';
@@ -6845,6 +6860,57 @@ async function checkTikTok(){
   if(b) b.disabled=false;
   loadTikTok();
 }
+let tvTimer=0;
+function tvWord(v,region){
+  if(v==='green') return '<b style="color:var(--ok)">заграницей'+(region?(' ('+esc(region)+')'):'')+'</b>';
+  if(v==='ru') return '<b style="color:var(--warn)">TikTok видит RU</b>';
+  if(v==='silent') return '<b style="color:#d9a441">молчит</b>';
+  return '<span class=mut>не мерян</span>';
+}
+function tvWhen(ts){
+  if(!ts) return '';
+  return fmtZ(ts,'dt');
+}
+async function loadTikTokVariants(show){
+  const rows=$('tvRows'), busy=$('tvBusy');
+  if(!rows) return;
+  if(show===false){ rows.innerHTML=''; if(busy) busy.textContent=''; if(tvTimer){ clearTimeout(tvTimer); tvTimer=0; } return; }
+  if(tvTimer){ clearTimeout(tvTimer); tvTimer=0; }
+  try{
+    const d=await api('/api/tiktok_variants');
+    if(busy) busy.textContent=d.busy?(' — замер идёт, это до минуты'):'';
+    const it=d.items||[];
+    if(!it.length){ rows.innerHTML='<span class=mut>Реестр пуст — рабочий аккаунт появится здесь, когда звено будет поднято.</span>'; }
+    else rows.innerHTML=it.map(v=>{
+      const n=v.n, act=v.active;
+      const btns=(act?'':('<button class="tiny sec" onclick=tvUse('+n+')>▶ Сделать рабочим</button> ')+
+                  '<button class="tiny sec" onclick=tvProbe('+n+')>🔎 Замерить</button>'+
+                  (act?'':' <button class="tiny sec" onclick=tvDel('+n+')>✖ Снять</button>'));
+      return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:3px 0'+
+             (act?';font-weight:700':'')+'">'+esc(v.name||('Вариант '+n))+
+             (act?' <span class=mut>— рабочий</span>':'')+
+             '<span>'+tvWord(v.verdict,v.region)+'</span>'+
+             (v.checked_at?('<span class=mut style="font-size:11px">'+tvWhen(v.checked_at)+'</span>'):'')+
+             '<span style="margin-left:auto">'+btns+'</span></div>';
+    }).join('')+('<div class=mut style="font-size:11px;margin-top:4px">свободных мест: '+
+      (d.space||0)+' из '+(d.cap||0)+(d.error?('; последняя причина: '+esc(d.error)):'')+'</div>');
+    if(d.busy) tvTimer=setTimeout(()=>loadTikTokVariants(true),4000);
+  }catch(e){ rows.innerHTML='<span class=mut>нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function tvPost(body,msg){
+  const m=$('tvMsg');
+  if(m) m.textContent=msg||'…';
+  try{
+    await api('/api/tiktok_variants',{method:'POST',body:JSON.stringify(body)});
+    if(m) m.textContent='готово';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,140); }
+  loadTikTokVariants(true);
+}
+async function tvAdd(){ tvPost({add:true},'регистрирую новый вариант у облака…'); }
+async function tvProbe(n){ tvPost({probe:n},'замер варианта '+n+' идёт в песочнице — до минуты, дочитаю сама'); }
+async function tvProbeAll(){ tvPost({probe_all:true},'замер всех вариантов идёт по очереди — до нескольких минут'); }
+async function tvUse(n){ tvPost({use:n},'переставляю звено на вариант '+n+' и щупаю TikTok…'); }
+async function tvDel(n){ if(confirm('Снять вариант '+n+' с хранения? Аккаунт будет потерян.')) tvPost({del:n},'снимаю…'); }
 function irCell(v,ms){
   let s;
   if(!v||v==='null'||v==='N/A') s='<span class=mut>N/A</span>';
@@ -7051,6 +7117,7 @@ async function loadTg(){
     loadWp();
     loadFront();
     loadMp443();
+    loadMpMss();
   }catch(e){
     setMsg('tgMsg',e.message,'err');
   }
@@ -7984,6 +8051,32 @@ async function mp443Apply(){
     setMsg('mp443Msg','✅ '+(on?('MTProto ведётся на :443 через '+esc(r.mp_domain||md)+'. '):'MTProto снят с общего :443, прежний порт цел. ')+(r.mp_mask_port?('Форма — с петлевого фронта :'+r.mp_mask_port+'. '):'')+esc((r.note||'')),'ok',false);
     loadMp443(); mp443Preview();
   }catch(e){ setMsg('mp443Msg','Ошибка: '+esc(e.message),'err'); }
+}
+
+async function loadMpMss(){
+  const cb=$('mpMss'), st=$('mpMssState'); if(!cb||!st) return;
+  try{
+    const d=await api('/api/tg/mss');
+    if(document.activeElement!==cb) cb.checked=!!d.want;
+    st.textContent = d.listener
+      ? ('в живом конфиге: '+(d.live?'да':'нет')+(d.live===!!d.want?'':' · слово и файл расходятся — включатель переложит при переключении'))
+      : 'listener панели не применён — включать некуда до «Оживить MTProto»';
+    cb.disabled = !d.listener;
+  }catch(e){ st.textContent='ошибка: '+esc(e.message); }
+}
+
+async function tgMssSet(on){
+  if(!confirm((on?'Включить':'Выключить')+' MSS-формирование фасада MTProto?\n\n'
+    +'telemt перезапустится: живые соединения Telegram оборвутся и переподключатся сами.\n'
+    +'Начало рукопожатий станет мельче (пресет «2in8»), качалка останется крупной.\n'
+    +'Заводски выключено — включать только когда провайдер режет рукопожатия.\n'
+    +'При сбое конфиг и слово переключателя откачены автоматически.')) { await loadMpMss(); return; }
+  setMsg('mp443Msg','Переключаю MSS-формирование… (рестарт telemt)','');
+  try{
+    const d=await api('/api/tg/mss',{method:'POST',body:JSON.stringify({on:!!on,confirm:true})});
+    setMsg('mp443Msg','✅ '+esc(d.note||'готово')+(d.restart?' — telemt перезапущен':' — без рестарта'),'ok',false);
+  }catch(e){ setMsg('mp443Msg','❌ '+esc(e.message),'err'); }
+  await loadMpMss();
 }
 
 // #168: ручная настройка с нуля — своя сайт-маска, секрет и порт. Ссылка собирается здесь же

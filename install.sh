@@ -3,11 +3,10 @@
 # Usage: bash install.sh [--step N] [--dry-run] [--help]
 set -euo pipefail
 
-VERSION="2.4.3"
+VERSION="2.4.4"
 REPO="GurovNA/Veil"
 LOG_FILE="/var/log/veil-install.log"
 IPIFY="https://api.ipify.org"
-XRAY_PORT=443
 TELEMT_PORT=7443
 PANEL_PORT=8443
 TLS_DOMAIN="www.microsoft.com"   # SNI-фронт MTProto: обязан отдавать TLS1.3+X25519MLKEM768 (iOS), my.aeza.ru — только TLS1.2
@@ -134,52 +133,66 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 UNITEOF
   systemctl daemon-reload
-  systemctl enable xray
-  ok "$(T "Xray service настроен" "Xray service configured")"
-
   [ -x /usr/local/bin/xray ] || die "$(T "Xray не установился" "Xray failed to install")"
   if [ ! -f /usr/local/etc/xray/config.json ]; then
     run "mkdir -p /usr/local/etc/xray"
     run "echo '{\"log\":{\"loglevel\":\"warning\"},\"inbounds\":[],\"outbounds\":[{\"protocol\":\"freedom\"}]}' > /usr/local/etc/xray/config.json"
   fi
+  # F8 (#466): голый `enable` поднимал xray только после перезагрузки — при
+  # переустановке на грязном хосте все туннели оставались мёртвыми.
+  if [ "$DRY_RUN" = 1 ] || systemctl enable --now xray >>"$LOG_FILE" 2>&1; then
+    ok "$(T "Xray service настроен" "Xray service configured")"
+  else
+    warn "$(T "xray не стартовал сейчас — панель поднимет его после первого применения конфига" "xray did not start now — the panel will bring it up after the first config apply")"
+  fi
 }
 
 step_3_telemt() {
   msg "$(T "Шаг 3: telemt (Telegram MTProto)" "Step 3: telemt (Telegram MTProto)")"
+  # F9 (#466): раньше шаг выходил по одному лишь наличию бинарника — переустановка
+  # на грязном хосте оставляла telemt выключенным. «уже есть» теперь лишь пропускает
+  # скачивание: юнит, права и enabled+active доводятся на всех путях.
   if [ -x /usr/bin/telemt ]; then
     ok "$(T "telemt уже установлен" "telemt already installed")"
-    return 0
+  else
+    if [ ! -f /etc/telemt/telemt.toml ]; then
+      TELEMT_PORT="$(find_free_port "$TELEMT_PORT")"
+    fi
+    local arch variant asset_name tag url
+    case "$(uname -m)" in
+      x86_64)  arch="x86_64" ;;
+      aarch64) arch="aarch64" ;;
+      *) die "$(T "неподдерживаемая архитектура" "unsupported architecture"): $(uname -m)" ;;
+    esac
+    variant=""
+    if [ "$arch" = "x86_64" ] && grep -qm1 avx2 /proc/cpuinfo 2>/dev/null; then
+      variant="v3"
+    fi
+    asset_name="telemt-${arch}${variant:+-${variant}}-linux-gnu.tar.gz"
+    tag="$(curl -fsSL https://api.github.com/repos/telemt/telemt/releases/latest 2>/dev/null \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null || true)"
+    [ -n "$tag" ] || tag="v1.0.0"
+    url="https://github.com/telemt/telemt/releases/download/${tag}/${asset_name}"
+    run "curl -fsSL -o /tmp/telemt.tar.gz '$url' || curl -fsSL -o /tmp/telemt.tar.gz 'https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-gnu.tar.gz'"
+    run "tar -xzf /tmp/telemt.tar.gz -C /tmp 2>/dev/null || true"
+    run "install -m 0755 /tmp/telemt /usr/bin/telemt 2>/dev/null || true"
+    run "rm -f /tmp/telemt.tar.gz /tmp/telemt"
   fi
-  if [ ! -f /etc/telemt/telemt.toml ]; then
-    TELEMT_PORT="$(find_free_port "$TELEMT_PORT")"
-  fi
-  local arch variant asset_name tag url
-  case "$(uname -m)" in
-    x86_64)  arch="x86_64" ;;
-    aarch64) arch="aarch64" ;;
-    *) die "$(T "неподдерживаемая архитектура" "unsupported architecture"): $(uname -m)" ;;
-  esac
-  variant=""
-  if [ "$arch" = "x86_64" ] && grep -qm1 avx2 /proc/cpuinfo 2>/dev/null; then
-    variant="v3"
-  fi
-  asset_name="telemt-${arch}${variant:+-${variant}}-linux-gnu.tar.gz"
-  tag="$(curl -fsSL https://api.github.com/repos/telemt/telemt/releases/latest 2>/dev/null \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null || true)"
-  [ -n "$tag" ] || tag="v1.0.0"
-  url="https://github.com/telemt/telemt/releases/download/${tag}/${asset_name}"
-  run "curl -fsSL -o /tmp/telemt.tar.gz '$url' || curl -fsSL -o /tmp/telemt.tar.gz 'https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-gnu.tar.gz'"
-  run "tar -xzf /tmp/telemt.tar.gz -C /tmp 2>/dev/null || true"
-  run "install -m 0755 /tmp/telemt /usr/bin/telemt 2>/dev/null || true"
-  run "rm -f /tmp/telemt.tar.gz /tmp/telemt"
   if ! id telemt >/dev/null 2>&1; then
     run "useradd -r -s /usr/sbin/nologin -M telemt"
   fi
   run "mkdir -p /opt/telemt /etc/telemt /var/lib/telemt"
-  run "chown telemt:telemt /opt/telemt /var/lib/telemt"
-  local secret
-  secret="$(openssl rand -hex 16)"
+  # F1 (#466): каталог /etc/telemt тоже telemt:telemt — раньше доставался только
+  # файл конфига, а при готовом чужом конфиге (root:root 0600) демон не мог его
+  # прочесть и крушился; права доводятся безусловно, вне зависимости от того,
+  # создавался конфиг сейчас или лежал заранее.
+  run "chown telemt:telemt /opt/telemt /etc/telemt /var/lib/telemt"
   if [ ! -f /etc/telemt/telemt.toml ]; then
+    local secret v6
+    secret="$(openssl rand -hex 16)"
+    # F6 (#466): `ipv6 = true` без v6-маршрута роняет telemt в crash-loop на
+    # v4-only хосте — пишем true только при живом маршруте наружу.
+    if ip -6 route get 2001:4860:4860::8888 >/dev/null 2>&1; then v6=true; else v6=false; fi
     cat <<TOMLEOF > /etc/telemt/telemt.toml
 [general]
 use_middle_proxy = true
@@ -189,7 +202,7 @@ classic = false
 secure = false
 tls = true
 [network]
-ipv6 = true
+ipv6 = ${v6}
 [server]
 port = ${TELEMT_PORT}
 [server.api]
@@ -204,9 +217,9 @@ hello = "${secret}"
 client_handshake = 90
 client_keepalive = 120
 TOMLEOF
-    chmod 0640 /etc/telemt/telemt.toml
-    chown telemt:telemt /etc/telemt/telemt.toml
   fi
+  chmod 0640 /etc/telemt/telemt.toml
+  chown telemt:telemt /etc/telemt/telemt.toml
   if [ ! -f /etc/systemd/system/telemt.service ]; then
     cat <<'UNITEOF' > /etc/systemd/system/telemt.service
 [Unit]
