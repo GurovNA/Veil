@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.14"
+VERSION = "2.17.15"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1043,6 +1043,46 @@ def _device_type(u, os_, ua=""):
         if key in u: return "📱 " + name
     return "📱 Android" + ((" " + model) if model else "")
 
+_SELF_IPS = None
+_SELF_IPS_TS = 0.0
+
+def _self_ips():
+    """Адреса, назначенные этой машине. Перебираются заново не чаще раза в 5
+    минут: интерфейсы и туннельные сети шевелятся, а ловить их на каждом запросе
+    подписки — лишняя системная команда в горячем пути."""
+    global _SELF_IPS, _SELF_IPS_TS
+    now = time.time()
+    if _SELF_IPS is None or now - _SELF_IPS_TS > 300:
+        got = set()
+        try:
+            out = subprocess.run(["ip", "-o", "addr", "list"], capture_output=True,
+                                 text=True, timeout=5).stdout or ""
+            for m in re.finditer(r"\binet6?\s+([0-9a-fA-F:.]+)", out):
+                got.add(m.group(1))
+        except Exception:
+            pass
+        try:
+            for ai in socket.getaddrinfo(socket.gethostname(), None):
+                got.add(str(ai[4][0]).split("%")[0])
+        except Exception:
+            pass
+        _SELF_IPS = got | {"127.0.0.1", "::1"}
+        _SELF_IPS_TS = now
+    return _SELF_IPS
+
+def _is_self_ip(ip):
+    """Запрос пришёл с адреса самой панели. Отличает себя от подписчика, чей
+    круг через туннель виден как адрес В сети подписчиков (10.10.0.77 — это
+    клиент, 10.10.0.1 — это шлюз самой машины)."""
+    try:
+        a = ipaddress.ip_address(str(ip or "").split("%")[0])
+    except ValueError:
+        return False
+    mapped = getattr(a, "ipv4_mapped", None)
+    if mapped is not None:
+        a = mapped
+    return a.is_loopback or str(a) in _self_ips()
+
 def _subdev_load():
     global _SUBDEV, _SUBPREF
     if _SUBDEV is None:
@@ -1060,14 +1100,33 @@ def _subdev_load():
             _SUBPREF = {}
 
 def _subdev_fixup():
-    """Однократно при загрузке: проставить отпечатки старым записям и склеить
-    одну установку приложения, записанную раньше как несколько IP-строк."""
+    """Однократно при загрузке: снять строки, записанные на адрес самой панели,
+    проставить отпечатки старым записям и склеить одну установку приложения,
+    записанную раньше как несколько IP-строк. Строки на своём адресе — это не
+    клиенты: их оставляли проверки выдачи, сделанные с самой машины, и они
+    выглядели как живое устройство у каждого подписчика."""
     changed = False
     for token, lst in list((_SUBDEV or {}).items()):
         if not isinstance(lst, list):
             continue
-        merged, seen = [], {}
+        kept = []
         for d in lst:
+            if isinstance(d, dict) and _is_self_ip(d.get("ip") or ""):
+                changed = True
+                continue
+            if isinstance(d, dict) and d.get("ips"):
+                clean = [x for x in d["ips"] if not _is_self_ip(x)]
+                if len(clean) != len(d["ips"]):
+                    d["ips"] = clean
+                    changed = True
+            kept.append(d)
+        if not kept:
+            if token in _SUBDEV:
+                _SUBDEV.pop(token, None)
+                changed = True
+            continue
+        merged, seen = [], {}
+        for d in kept:
             if not isinstance(d, dict):
                 continue
             fp = d.get("fp") or _dev_fp(d.get("ua") or "")
@@ -1139,6 +1198,9 @@ def _parse_client(ua, xclient=""):
 
 def _subdev_note(token, ip, ua, xclient=""):
     if not token:
+        return
+    if _is_self_ip(ip):
+        # не заводить «устройство» на запрос с адреса самой панели
         return
     name, ver, os_, old, dtype = _parse_client(ua, xclient)
     fp = _dev_fp(ua)
