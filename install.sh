@@ -71,6 +71,45 @@ sys.exit(1)
 PYFP
 }
 
+# ---------- целостность релизного архива ----------
+# Релиз несёт veil.tar.gz.sha256 рядом с veil.tar.gz. Скачанный архив сверяется
+# по ней ДО распаковки: несовпадение останавливает установку, а отсутствие
+# свери — не повод ставить непроверенное, тогда остаётся путь локальных файлов.
+# Доверие здесь то же, что у самой загрузки: сверь ловит подмену зеркала и
+# битую передачу, но не взломанный аккаунт, выложивший и архив и дайджест.
+verify_release_tarball() {
+  # 0 — совпало, 1 — не совпало, 2 — сверить нечем.
+  local url="$1" file="$2" want got cand
+  rm -f "$file.digest"
+  for cand in "${url}.sha256" "${url%.tar.gz}.sha256"; do
+    if curl -fsSL --max-time 20 -o "$file.digest" "$cand" 2>/dev/null; then
+      break
+    fi
+    rm -f "$file.digest"
+  done
+  if [ ! -s "$file.digest" ]; then
+    rm -f "$file.digest"
+    return 2
+  fi
+  want="$(awk 'NR==1 {print tolower($1)}' "$file.digest" 2>/dev/null)"
+  rm -f "$file.digest"
+  case "$want" in
+    "") return 2 ;;
+    *[!0-9a-f]*) return 2 ;;
+  esac
+  if [ "${#want}" -ne 64 ]; then return 2; fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)"
+  elif command -v openssl >/dev/null 2>&1; then
+    got="$(openssl dgst -sha256 -r "$file" 2>/dev/null | cut -d' ' -f1)"
+  else
+    return 2
+  fi
+  if [ -z "$got" ]; then return 2; fi
+  if [ "$want" = "$got" ]; then return 0; fi
+  return 1
+}
+
 step_0_preflight() {
   msg "$(T "Шаг 0: проверка перед установкой" "Step 0: pre-flight checks")"
   [ "$(id -u)" = "0" ] || die "$(T "нужен запуск от root" "must run as root")"
@@ -297,6 +336,7 @@ step_5_panel() {
     # Не трогаем диск: только показываем, что будет сделано.
     printf "${C_Y}[dry]${C_N} mkdir -p /opt/vpnpanel\n"
     printf "${C_Y}[dry]${C_N} curl -fsSL -o /tmp/veil.tar.gz '%s' && tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel\n" "$TARBALL_URL"
+    printf "${C_Y}[dry]${C_N} curl -fsSL -o /tmp/veil.tar.gz.sha256 '%s' && sha256sum -c /tmp/veil.tar.gz.sha256\n" "${TARBALL_URL}.sha256"
     if [ ! -f /opt/vpnpanel/config.json ]; then
       printf "${C_Y}[dry]${C_N} $(T "сгенерировать /opt/vpnpanel/config.json и FIRST-LOGIN.txt (порт из find_free_port %s)" "generate /opt/vpnpanel/config.json and FIRST-LOGIN.txt (port from find_free_port %s)")\n" "$PANEL_PORT"
     fi
@@ -311,8 +351,19 @@ step_5_panel() {
   fi
   run "mkdir -p /opt/vpnpanel"
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
-    tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
-    rm -f /tmp/veil.tar.gz
+    VRC=0
+    verify_release_tarball "$TARBALL_URL" /tmp/veil.tar.gz || VRC=$?
+    if [ "$VRC" = "0" ]; then
+      ok "$(T "Контрольная сумма релизного архива совпала" "Release archive checksum verified")"
+      tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
+      rm -f /tmp/veil.tar.gz
+    elif [ "$VRC" = "1" ]; then
+      rm -f /tmp/veil.tar.gz
+      die "$(T "Контрольная сумма релизного архива НЕ совпала — установка остановлена" "Release archive checksum MISMATCH — installation halted")"
+    else
+      rm -f /tmp/veil.tar.gz
+      warn "$(T "Контрольную сумму получить не удалось — архив НЕ распакован" "Checksum unavailable — archive NOT extracted")"
+    fi
   else
     warn "$(T "Не удалось скачать релиз с GitHub, используем локальные файлы" "Failed to download release from GitHub, using local files")"
   fi
@@ -453,9 +504,19 @@ reinstall_keeping_data() {
   local TARBALL_URL="https://github.com/${REPO}/releases/latest/download/veil.tar.gz"
   mkdir -p /opt/vpnpanel
   if curl -fsSL -o /tmp/veil.tar.gz "$TARBALL_URL" 2>/dev/null; then
-    tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
-    rm -f /tmp/veil.tar.gz
-    ok "$(T "Панель обновлена из релиза" "Panel updated from release") v$VERSION"
+    VRC=0
+    verify_release_tarball "$TARBALL_URL" /tmp/veil.tar.gz || VRC=$?
+    if [ "$VRC" = "0" ]; then
+      tar -xzf /tmp/veil.tar.gz -C /opt/vpnpanel 2>/dev/null || true
+      rm -f /tmp/veil.tar.gz
+      ok "$(T "Панель обновлена из релиза, контрольная сумма совпала" "Panel updated from release, checksum verified") v$VERSION"
+    elif [ "$VRC" = "1" ]; then
+      rm -f /tmp/veil.tar.gz
+      die "$(T "Контрольная сумма релизного архива НЕ совпала — обновление остановлено" "Release archive checksum MISMATCH — update halted")"
+    else
+      rm -f /tmp/veil.tar.gz
+      warn "$(T "Контрольную сумму получить не удалось — архив НЕ распакован" "Checksum unavailable — archive NOT extracted")"
+    fi
   else
     warn "$(T "Не удалось скачать релиз с GitHub, используем текущие файлы" "Failed to download release from GitHub, using current files")"
   fi
