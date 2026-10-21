@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.15"
+VERSION = "2.17.16"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -27694,6 +27694,48 @@ def _rot_apply(ip):
 NETPLAN_DIR = os.path.join(SBX or "/etc/netplan", "")
 
 
+def _kernel_primary_sync(ip, ifname):
+    """Поставить живой адрес первым в ядре. `netplan apply` сверяет набор
+    адресов, а не порядок: уже сидящие в интерфейсе он не переставляет. Пока
+    живой не станет первым, машина исходит прежним адресом, и наружная мера
+    `_pub_ip4` — она смотрит на источник исходящего соединения — никогда не
+    увидит перемены: ровно так ротация двадцать первого числа оставила бой
+    исходившим снятым адресом, хотя netplan-файл был перевёрнут верно.
+    Трогаются только адреса того же семейства, что и цель, и только лежащие
+    перед ней: каждый снимается и тут же возвращается тем же cidr; цель не
+    снимается вовсе — её снятие убило бы живые соединения. IPv6 не трогается
+    вовсе: для выбора источника IPv4 его порядок не значит ничего, а снятие
+    публичного `/48` на секунду оборвало бы весь v6-трафик клиентов. Отказ
+    возврата после удачного снятия назван опасным и остаётся в строке
+    результата."""
+    try:
+        out = subprocess.run(["ip", "-o", "addr", "list", ifname, "scope", "global"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception as e:
+        return "ядро: список адресов %s не читается (%s) — порядок не проверен" % (ifname, str(e)[:60])
+    fam = "inet6" if ":" in str(ip) else "inet"
+    cur = []
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) >= 4 and f[2] == fam:
+            cur.append(f[3])
+    tgt = next((c for c in cur if c.split("/")[0] == ip), "")
+    if not tgt:
+        return "ядро: адрес %s на %s не найден — набор не сверен" % (ip, ifname)
+    ahead = cur[:cur.index(tgt)]
+    if not ahead:
+        return "ядро: %s уже первый среди %s на %s" % (ip, "IPv6" if fam == "inet6" else "IPv4", ifname)
+    for c in ahead:
+        if subprocess.run(["ip", "addr", "del", c, "dev", ifname],
+                          capture_output=True, timeout=10).returncode != 0:
+            return "ядро: снять %s с %s не удалось — до цели не дошли" % (c, ifname)
+        if subprocess.run(["ip", "addr", "add", c, "dev", ifname],
+                          capture_output=True, timeout=10).returncode != 0:
+            return "ядро: ОПАСНО — %s с %s снят и назад не лёг — проверить вручную!" % (c, ifname)
+    return "ядро: %s стал первым среди %s на %s (переложено %d)" % (
+        ip, "IPv6" if fam == "inet6" else "IPv4", ifname, len(ahead))
+
+
 def _netplan_primary_fix(ip):
     """Переставить главный адрес `netplan` на живой и применить. -> названная строка.
 
@@ -27726,7 +27768,8 @@ def _netplan_primary_fix(ip):
             if ip not in bare:
                 continue
             if bare[0] == ip:
-                return "netplan: главный адрес интерфейса %s уже %s" % (ifname, ip)
+                return "netplan: главный адрес интерфейса %s уже %s; %s" % (
+                    ifname, ip, _kernel_primary_sync(ip, ifname))
             k = bare.index(ip)
             conf["addresses"] = [addrs[k]] + [a for i, a in enumerate(addrs) if i != k]
             try:
@@ -27752,7 +27795,8 @@ def _netplan_primary_fix(ip):
                     return ("netplan: применение отклонено (rc %d %s), снимок %s вернуть не удалось — "
                             "проверить вручную!" % (rc, err, name))
                 return "netplan: применение отклонено (rc %d %s), файл %s откачен" % (rc, err, name)
-            return "netplan: главный адрес %s → %s на %s" % (bare[0], ip, ifname)
+            return "netplan: главный адрес %s → %s на %s; %s" % (
+                bare[0], ip, ifname, _kernel_primary_sync(ip, ifname))
     return "netplan: адрес %s не найден в %s — порядок не тронут" % (ip, NETPLAN_DIR)
 
 
