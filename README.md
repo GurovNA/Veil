@@ -15,6 +15,21 @@
 
 ---
 
+## Contents
+
+- [Quick install](#quick-install)
+- [Features](#features)
+  - [Protocols](#protocols-17-out-of-the-box)
+  - [Subscriptions & clients](#subscriptions--clients)
+  - [Interface & dashboard](#interface--dashboard)
+  - [Security](#security)
+  - [Censorship bypass & Telegram](#censorship-bypass--telegram)
+  - [Diagnostics & administration](#diagnostics--administration)
+- [Documentation](#documentation)
+- [License](#license)
+
+---
+
 ## Quick install
 
 Deploy on Ubuntu with a single command:
@@ -85,8 +100,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 
 ## Documentation
 
+- How it is built inside — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Node-side API endpoints, `/api/ext/*` — [docs/NODE_API.md](docs/NODE_API.md)
+- Where it is heading — [docs/ROADMAP.md](docs/ROADMAP.md)
 - Full version history — [`CHANGELOG.md`](CHANGELOG.md)
 - Notes: [SNI vs FakeTLS](docs/SNI_vs_FakeTLS.md)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md), vulnerability reports: [SECURITY.md](SECURITY.md)
+- Public test suite: `python3 -m unittest discover -s tests -t tests`
 - Client subscription & deep-link formats: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## License

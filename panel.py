@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.13"
+VERSION = "2.17.14"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -76,7 +76,7 @@ VERSION = "2.17.13"
 #        сломан: панель брала список edge-сетей с www.cloudflare.com/ips-v4, который теперь
 #        отдаёт обычному запросу 403, — список оказывался пустым и облачные адреса
 #        классифицировались как «прямой IP сервера»/«DNS ещё расходится». Живой прогон
-#        2026-09-26 на xx.xxxxxxxxx.vip это и показал. Теперь берём
+#        2026-09-26 на w2.xxxxxxxx.vip это и показал. Теперь берём
 #        api.cloudflare.com/client/v4/ips, а рядом лежит вечный пол из официальных
 #        префиксов: каприз сети больше не может превратить облако в «что-то чужое».
 #        Порядок ответа в «что дальше» тоже почестнее: если через CDN нечего везти
@@ -14932,19 +14932,56 @@ def _tg_mp_block_re():
     return re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\d*[ \t]*\n"
                       r"[ \t]*\n?\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
 
+def _tg_toml_server_table(text):
+    """Тело таблицы `[server]` — от заголовка до следующей секции. Заголовок
+    ищется с конца строки, поэтому `[[server.listeners]]` под него не подпадает."""
+    m = re.search(r"(?m)^\[server\][ \t]*\n(.*?)(?=^\[\S|\Z)", text, re.S)
+    return m
+
+
+def _tg_toml_bulk_live(text):
+    """Стоит ли крупный MSS там, где telemt его читает: в таблице `[server]`."""
+    m = _tg_toml_server_table(text)
+    return bool(m) and bool(re.search(r"(?m)^[ \t]*%s[ \t]*=" % re.escape(_TG_MSS_BULK_KEY),
+                                      m.group(1)))
+
+
+def _tg_toml_bulk_set(text, on):
+    """Положить или снять `client_mss_bulk` в таблице `[server]`.
+
+    Живая находка #476: внутри слушателя telemt этого ключа не знает и молча его
+    выбрасывает — `Unknown config key ignored; key=server.listeners[1].client_mss_bulk`,
+    по сто с лишним таких строк на каждый подъём службы. Снимается линия отовсюду,
+    включая прежнее неверное место, поэтому включатель лечит файл, где его держали
+    руками старой панели. Нет в конфиге таблицы `[server]` — ключ не кладётся:
+    сочинять структуру чужого конфига включатель не вправе."""
+    burre = re.compile(r"(?m)^[ \t]*%s[ \t]*=.*\n" % re.escape(_TG_MSS_BULK_KEY))
+    text = burre.sub("", text)
+    if not on:
+        return text
+    m = re.search(r"(?m)^\[server\][ \t]*\n", text)
+    if not m:
+        return text
+    return text[:m.end()] + '%s = "%s"\n' % (_TG_MSS_BULK_KEY, _TG_MSS_BULK_VAL) + text[m.end():]
+
+
 def _tg_toml_mss_live(text):
-    """Есть ли MSS-ключи в НАШЕМ помеченном блоке; чужие секции не считаются."""
-    return any(re.search(r"(?m)^\s*%s\s*=" % re.escape(_TG_MSS_KEY), m.group(0))
-               for m in _tg_mp_block_re().finditer(text))
+    """Есть ли тюнинг в файле целиком: малый MSS в НАШЕМ помеченном блоке и крупный
+    в `[server]`. Половина слова живым состоянием не считается — иначе морда рапортовала
+    бы о включённом тюнинге, пока telemt выбрасывает одну из двух его половин."""
+    in_block = any(re.search(r"(?m)^\s*%s\s*=" % re.escape(_TG_MSS_KEY), m.group(0))
+                   for m in _tg_mp_block_re().finditer(text))
+    return in_block and _tg_toml_bulk_live(text)
 
 def _tg_toml_set_mp_tune(text, on):
-    """Дописать или снять ключи MSS-формирования строго в наших помеченных блоках.
+    """Дописать или снять MSS-формирование: малый ключ — в наших помеченных блоках
+    слушателя, крупный — в `[server]` (`_tg_toml_bulk_set`).
     Выключено и ключей в файле нет — блок не задевается вовсе, а весь текст
     возвращается байт в байт: заводская чистота писателя, включатель не трогает
     telemt.toml без хозяйского слова. Записанные значения всегда наши константы:
     ключ с любым прежним значением перезаписывается, расхождений между словом
     переключателя и файлом не остаётся."""
-    keyre = re.compile(r"(?m)^[ \t]*%s(_bulk)?[ \t]*=.*\n" % re.escape(_TG_MSS_KEY))
+    keyre = re.compile(r"(?m)^[ \t]*%s[ \t]*=.*\n" % re.escape(_TG_MSS_KEY))
     def fix(m):
         blk = m.group(0)
         if not on and not keyre.search(blk):
@@ -14952,9 +14989,8 @@ def _tg_toml_set_mp_tune(text, on):
         blk = keyre.sub("", blk)
         if not on:
             return blk
-        return blk.rstrip("\n") + "\n%s = \"%s\"\n%s = \"%s\"\n" % (
-            _TG_MSS_KEY, _TG_MSS_PRESET, _TG_MSS_BULK_KEY, _TG_MSS_BULK_VAL)
-    return _tg_mp_block_re().sub(fix, text)
+        return blk.rstrip("\n") + "\n%s = \"%s\"\n" % (_TG_MSS_KEY, _TG_MSS_PRESET)
+    return _tg_toml_bulk_set(_tg_mp_block_re().sub(fix, text), on)
 
 def _tg_mss_view():
     try:
@@ -14976,6 +15012,10 @@ def _tg_toml_add_mp_listener(text, port, ipv6=True):
     `ip` («Unknown config key ignored, key=ip»): блок был мёртвой конфигурацией, а
     один лишь `::` в массиве валил MTProto целиком вместе с v4. IPv6-путь фасада —
     дело nginx: релей с `[::]` на петлевой mtproxy-порт в veil-mux-stream.conf.
+
+    #476: тем же граблем оказался крупный MSS — он читается на уровне `[server]`,
+    а не в теле слушателя. Возвращаемый текст несёт обе половины тюнинга, `блок`
+    остаётся тем, что вставляется под маркер: крупный ключ в нём не прячется.
     """
     if _TG_MP_MARK in text:
         raise RuntimeError("VEIL-MTProto-listener уже добавлен — сначала откат")
@@ -14990,15 +15030,16 @@ def _tg_toml_add_mp_listener(text, port, ipv6=True):
     if _tg_mss_want():
         # Заводски выключено — блок остаётся прежним байт в байт; тюнинг кладёт
         # только хозяйское слово `tg_mss_tune` (цикл #470, «не включай»).
-        block += "%s = \"%s\"\n%s = \"%s\"\n" % (
-            _TG_MSS_KEY, _TG_MSS_PRESET, _TG_MSS_BULK_KEY, _TG_MSS_BULK_VAL)
+        block += "%s = \"%s\"\n" % (_TG_MSS_KEY, _TG_MSS_PRESET)
     last = None
     for m in re.finditer(r"(?ms)^\s*\[\[server\.listeners\]\]\s*$(.+?)(?=^\s*\[\[?|\Z)", text):
         last = m
     if last:
         ins = last.end()
-        return text[:ins].rstrip("\n") + "\n\n" + block + text[ins:].lstrip("\n"), block
-    return text.rstrip("\n") + "\n\n" + block, block
+        new = text[:ins].rstrip("\n") + "\n\n" + block + text[ins:].lstrip("\n")
+    else:
+        new = text.rstrip("\n") + "\n\n" + block
+    return _tg_toml_bulk_set(new, _tg_mss_want()), block
 
 def _tg_toml_remove_mp_listener(text):
     """Вырезать наши блоки-маркеры (v4+v6): строка-комментарий, заголовок [[server.listeners]]
@@ -15008,12 +15049,18 @@ def _tg_toml_remove_mp_listener(text):
     подписывала `# Veil:MTProtoListener6`, и на живых машинах такой блок до сих пор
     в файле. Без этой цифры откат вырезал один блок из двух и молча оставлял
     публичного `::`-слушателя, рапортуя успех.
+
+    #476: вместе с последним слушателем снимается и крупный MSS из `[server]` —
+    telemt требует, чтобы хотя бы у одного слушателя стоял рабочий малый MSS, и без
+    этого ключа движение конфига валится на запуске.
     """
     pat = re.compile(r"(?m)^#[ \t]*" + re.escape(_TG_MP_MARK) + r"[ \t]*\d*[ \t]*\n"
                      r"\[\[server\.listeners\]\][^\n]*\n(?:[^\[#\n][^\n]*\n)*")
     new, n = pat.subn("", text)
     if n == 0:
         raise RuntimeError("наш MTProto-listener не найден в telemt.toml — откатывать нечего")
+    if not re.search(r"(?m)^[ \t]*%s[ \t]*=" % re.escape(_TG_MSS_KEY), new):
+        new = _tg_toml_bulk_set(new, False)
     return new
 
 def _tg_toml_strip_dead_v6_listeners(text):
@@ -15385,7 +15432,7 @@ def _mr_hold():
 
     Гейт `_MR_LOSS` судит ПОДЪЁМ соединения (`socket.create_connection`), а зависание
     медиа — это stall на уровне ПЕРЕДАЧИ: подъём проходит, потеря остаётся `0`%, и
-    страховка никогда не срабатывает (живая находка 11.10: `91.105.xxx.1xx:443` давал
+    страховка никогда не срабатывает (живая находка 11.10: `91.105.x.110:443` давал
     `15/15` подъёмов, пока у хозяина картинка висла). Флаг снимает гейт на ВХОДЕ, чтобы
     звено поднималось и держалось даже при нулевой замеренной потере. Откаты остаются:
     `_MR_GIVEUP` и голод писателей по-прежнему убирают адрес из туннеля, если сам путь
@@ -15605,7 +15652,7 @@ def _mr_flush_rules():
 def _mr_rules():
     """Наши правила: [(приоритет, сеть)]. Судим только правило, ведущее в нашу таблицу.
 
-    Хостовое правило ядро печатает БЕЗ маски: `to 91.105.xxx.1xx lookup 203`, а не
+    Хостовое правило ядро печатает БЕЗ маски: `to 91.105.x.110 lookup 203`, а не
     `.../32` — тот же дефект, что и в разборе маршрутов, из-за него живое правило не
     узнавалось, `ip rule add` отвечал `File exists`, а звено казалось не готовым."""
     rc, out, _ = _mr_cmd("ip", "-o", "rule", "show")
@@ -15627,7 +15674,7 @@ def _mr_rules():
 def _mr_routes():
     """Наши маршруты в таблице: {сеть: интерфейс}.
 
-    Хостовый маршрут ядро печатает БЕЗ маски: `91.105.xxx.1xx dev tgw0`, а не `.../32`.
+    Хостовый маршрут ядро печатает БЕЗ маски: `91.105.x.110 dev tgw0`, а не `.../32`.
     Прежний разбор требовал слэш с цифрой, из-за чего полностью собранное звено казалось
     пустым и пересобиралось каждый тик (живая находка этого цикла)."""
     rc, out, _ = _mr_cmd("ip", "-o", "route", "show", "table", _MR_TBL)
@@ -23916,7 +23963,7 @@ def _f2b_bootstrap():
 # ---------- SSH-замок: панель не имеет права перерезать вход на сервер ----------
 # Слово хозяина 13.10: «сделай так чтобы панель не блокировала доступ к впс по ssh
 # и блокировала только сканеры». Причина измерена до правки: боевой наблюдатель
-# забанил 212.47.xx.1xx и 212.47.xx.1xx («sweep half-open», 18.02 ч и 22.10 ч из
+# забанил 212.47.x.129 и 212.47.x.131 («sweep half-open», 18.02 ч и 22.10 ч из
 # суток), а ступень наблюдения ни живых ssh-сеансов, ни списка оператора не
 # спрашивала никогда.
 _SSH_KEEP_WIN_S = 24 * 3600
@@ -23964,7 +24011,7 @@ def _ssh_live_peers():
 
     Порты берутся у живого сокета и из sshd-конфига, а не из зашитой `: 22`:
     на боевом ssh слушает `:4141`, поэтому прежняя строка `sport = : 22` не
-    защищала ни одного живого сеанса (#366: бан 212.47.xx.1xx «sweep half-open»
+    защищала ни одного живого сеанса (#366: бан 212.47.x.129 «sweep half-open»
     при хозяйских входах по ssh).
     """
     try:
@@ -24204,7 +24251,7 @@ _SSH_STAT = {"hits": 0, "banned": 0, "read": 0, "skipped": 0, "users": {}, "t": 
 # `Failed password`: `Invalid user …` и `Connection closed/Disconnected …` пишет
 # тот же самый сеанс, и под счёт они подвели бы порог ниже, чем просит оператор.
 # Форму этой строки задаёт sshd, а не панель: `Failed password for root from
-# 34.100.xxx.1xx port 37652 ssh2` — после имени идёт ` from `, а не адрес. Первая
+# 203.0.113.44 port 37652 ssh2` — после имени идёт ` from `, а не адрес. Первая
 # редакция регулярки требовала `имя АДРЕС from`, то есть гибридную форму, которой
 # в природе нет: на живом журнале она не распознала ни одной из 77 строк, юниты
 # были объявлены мёртвыми, и автобан молчал при 261 провале в час.
@@ -24671,7 +24718,7 @@ def _devpos_init():
     except Exception:
         pass
 
-# Пример строки: `2026-09-22 12:56:32.927 from 1.2.x.x:5678 accepted vless:... [in] [uuid]`
+# Пример строки: `2026-09-22 12:56:32.927 from 203.0.113.9:5678 accepted vless:... [in] [uuid]`
 _ACC_RE = re.compile(r"^\S+\s+\S+\s+(?:from\s+)?(\S+)\s+accepted\b")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

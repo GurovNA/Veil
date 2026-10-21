@@ -1694,7 +1694,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <div style="margin:12px 0">
       <label for=bdText>Ручной список обхода — домены и адреса поверх российского справочника (напрямую, мимо VPN)</label>
-      <textarea id=bdText rows=5 placeholder="один домен или адрес на строку:&#10;vkusno-retreat.ru&#10;77.88.xx.2xx&#10;185.129.xxx.x/24" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
+      <textarea id=bdText rows=5 placeholder="один домен или адрес на строку:&#10;example-service.com&#10;198.51.100.24&#10;203.0.113.0/24" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
       <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем.</b> Российский справочник знает не всё: приложение «Вкусно — и точка» или банк могут стоять на адресах, которых в базе нет, — их трафик идёт через VPN, а приложение видит адрес узла и ругается на VPN. Сюда дописывают именно те домены и адреса, которые надо пустить напрямую.</p>
         <p><b>Как работает.</b> Панель сама подбирает адреса доменов из списка (обновление каждые пять минут) и кладёт правило в подписку клиента. Телефон пускает эти адреса напрямую, без туннеля — наружу показывается домашний адрес абонента, а не адрес узла. После сохранения пересылать ссылки заново не нужно: они подтянут правило при ближайшей загрузке.</p>
@@ -1909,7 +1909,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div class="card set-block" id=setWarpManual>
     <h3 style="margin:0 0 8px">Ручной список через WARP</h3>
     <label for=wmText>Домены и адреса, которые панель поведёт через туннель WARP (список заменяется целиком)</label>
-    <textarea id=wmText rows=5 placeholder="один домен или адрес на строку:&#10;example-service.com&#10;142.250.xx.1xx&#10;185.199.xxx.x/24" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
+    <textarea id=wmText rows=5 placeholder="один домен или адрес на строку:&#10;example-service.com&#10;198.51.100.7&#10;203.0.113.128/25" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
     <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем это нужно.</b> Тот же туннель, что ведёт адреса TikTok (карточка выше), можно направить и на любые другие сервисы: панель добавит в него адреса из твоего списка и сама подберёт все адреса по доменам — резолвит тремя взглядами (локальный, Google, Cloudflare) и обновляет каждые пять минут, как и покрытие TikTok.</p>
         <p><b>Что не задето.</b> Через туннель идут только перечисленные адреса и подобранные по доменам, и только четвёртым семейством; шестое семейство список не принимает. Снятие последних строк из списка убирает их блоки из туннеля на ближайшем шаге смотрителя. Граница та же, что у фикса TikTok: это маршрутизация адресов, а не гарантия — сервис может отвечать с адресов, которых нет ни в подборе, ни в списке.</p>
@@ -2382,7 +2382,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <h4 style="margin:0 0 8px;color:var(--fg)">📋 Как подключить удалённую панель Veil как ноду</h4>
           <ol style="padding-left:18px;line-height:1.8;margin:8px 0">
             <li><b>На той (удалённой) панели</b> открой «Ноды → Node API» и создай токен со scope <b>чтение + запись</b> — он показывается один раз.</li>
-            <li><b>Здесь:</b> «+ Добавить ноду», тип «Панель Veil», адрес и порт её панели (например 5.23.xx.6x : 8443) и этот токен.</li>
+            <li><b>Здесь:</b> «+ Добавить ноду», тип «Панель Veil», адрес и порт её панели (например 203.0.113.10 : 8443) и этот токен.</li>
             <li><b>«Проверить»</b> — панель запросит статус ноды по защищённому API; при успехе нода станет «🟢 онлайн», а её сертификат будет закреплён по отпечатку. Статус обновляется автоматически каждые 45 секунд.</li>
             <li>Чтобы <b>этот сервер</b> был доступен чужим панелям — создай токен в «Node API» ниже и передай его той панели. Её клиенты разместятся в существующих входящих этого сервера и будут помечены как внешние (🌐).</li>
             <li><b>Разместить своего клиента на ноде:</b> в карточке клиента кнопка «🖥» (или галочка при создании). На ноде создаётся его зеркало, а в личную подписку клиента добавляется ссылка на ноду — клиент сам выберет сервер. Снять — кликом по бейджу «🖥 host».</li>
@@ -2404,7 +2404,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div style="margin-top:12px;padding:12px;background:color-mix(in srgb,var(--card2) 20%,transparent);border:1px solid var(--br);border-radius:8px">
           <p class=mut style="margin:0 0 10px">Нужен SSH-доступ к чистому VPS (Ubuntu/Debian/Alma с python3). Панель: подключится, установит xray (если нет), положит агент в <code>/opt/veil-agent</code>, поднимет службу <code>veil-agent</code>, откроет порты в файрволе и сама зарегистрирует ноду. SSH-пароль используется <b>однократно</b> (только для установки ключа панели), нигде не сохраняется; дальше — вход по ключу.</p>
           <label class=fldlbl for=bootHost>Адрес сервера (IP или домен)</label>
-          <input id=bootHost placeholder="Например: 5.23.xx.6x" maxlength=200 autocomplete=off>
+          <input id=bootHost placeholder="Например: 203.0.113.10" maxlength=200 autocomplete=off>
           <label class=fldlbl for=bootUser>SSH-логин</label>
           <input id=bootUser placeholder="root" value="root" maxlength=64 autocomplete=off>
           <label class=fldlbl for=bootPort>SSH-порт</label>
@@ -2492,7 +2492,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <label class=fldlbl for=nodeName>Имя ноды</label>
           <input id=nodeName placeholder="Имя (например: Москва-2)" maxlength=32>
           <label class=fldlbl for=nodeHost>Адрес ноды (IP или домен, без порта)</label>
-          <input id=nodeHost placeholder="Например: 5.23.xx.6x" maxlength=200>
+          <input id=nodeHost placeholder="Например: 203.0.113.10" maxlength=200>
           <label class=fldlbl for=nodePort>Порт, на котором у ноды открыта панель</label>
           <input id=nodePort type=number min=1 max=65535 step=1 placeholder="Например: 8444" value="8444">
           <label class=fldlbl for=nodeToken>Токен соединения (секрет, общий с нодой)</label>

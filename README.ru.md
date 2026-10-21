@@ -15,6 +15,21 @@
 
 ---
 
+## Оглавление
+
+- [Быстрая установка](#быстрая-установка)
+- [Возможности](#возможности)
+  - [Протоколы](#протоколы-17-из-коробки)
+  - [Подписки и клиенты](#подписки-и-клиенты)
+  - [Интерфейс и дашборд](#интерфейс-и-дашборд)
+  - [Безопасность](#безопасность)
+  - [Обход блокировок и Telegram](#обход-блокировок-и-telegram)
+  - [Диагностика и администрирование](#диагностика-и-администрирование)
+- [Документация](#документация)
+- [Лицензия](#лицензия)
+
+---
+
 ## Быстрая установка
 
 Установите панель на Ubuntu одной командой:
@@ -85,8 +100,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 
 ## Документация
 
+- Как устроено внутри — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Внешние ручки узла, `/api/ext/*` — [docs/NODE_API.md](docs/NODE_API.md)
+- Планы развития — [docs/ROADMAP.md](docs/ROADMAP.md)
 - Полная история версий — [`CHANGELOG.md`](CHANGELOG.md)
 - Заметки: [SNI vs FakeTLS](docs/SNI_vs_FakeTLS.md)
+- Кто правит: [CONTRIBUTING.md](CONTRIBUTING.md), сигналы о дырах: [SECURITY.md](SECURITY.md)
+- Приборы наружного CI: `python3 -m unittest discover -s tests -t tests`
 - Форматы подписок и deep-link'ов клиентов: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## Лицензия
