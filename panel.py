@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.17"
+VERSION = "2.17.18"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -5175,7 +5175,7 @@ def _fam_member_row(f, L):
 def _fam_urls(tok):
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-    bp = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    bp = _pb_pub(host, CFG_CACHE.get("panel_port", 8444))
     return {"sub_url": f"{bp}/sub/{tok}", "page_url": f"{bp}/p/{tok}"}
 
 # Отложенная отправка Telegram-уведомлений. Фоновый тик и обработка апдейтов бота
@@ -5842,9 +5842,9 @@ def _subs_summary(st, for_display=False):
                 cn = u.setdefault("conf_n", {})
                 cn[proto] = cn.get(proto, 0) + 1
                 if proto == "wireguard":
-                    u["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{key}"
+                    u["conf_url"] = f"{_pb_pub(host, panel_port)}/api/wgconf/{key}"
                 if proto == "amneziawg":
-                    u["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{key}"
+                    u["conf_url"] = f"{_pb_pub(host, panel_port)}/api/awgconf/{key}"
                 if proto not in [x["proto"] for x in u["protos"]]:
                     u["protos"].append({"proto": proto, "label": _proto_meta(proto)["label"],
                                         "port": inb.get("port", 0)})
@@ -5870,7 +5870,7 @@ def _subs_summary(st, for_display=False):
         _, fu, fd = _fam_ud(st, pu)
         fam_used[pu] = fu + fd
     out = []
-    base_url = _pb(host, panel_port)
+    base_url = _pb_pub(host, panel_port)
     for u in users.values():
         u.pop("_tr_taken", None)
         used = fam_used.get(u["uuid"])
@@ -9625,15 +9625,15 @@ def _sub_page_html(u, sub_url, host, panel_port, ua="", devs=None, lang="ru", pa
     onl = int(u.get("online") or 0)
     conns = len(u.get("protos") or [])
     tok = u["sub_token"]
-    page_url = f"{_pb(host, panel_port)}/p/{tok}"
+    page_url = f"{_pb_pub(host, panel_port)}/p/{tok}"
     cls = "ok" if status == "active" else "off"
     sub64 = base64.urlsafe_b64encode(sub_url.encode("utf-8")).decode().rstrip("=")
     avatar = (name_plain[:1] or "V").upper()
     links = u.get("links") or {}
     wg_conf = links.get("wireguard") or ""
     awg_conf = links.get("amneziawg") or ""
-    wg_url = f"{_pb(host, panel_port)}/api/wgconf/{tok}"
-    awg_url = f"{_pb(host, panel_port)}/api/awgconf/{tok}"
+    wg_url = f"{_pb_pub(host, panel_port)}/api/wgconf/{tok}"
+    awg_url = f"{_pb_pub(host, panel_port)}/api/awgconf/{tok}"
     conf_blocks = []
     # по кнопке скачивания на каждую конфигурацию туннеля (#239): оператор завёл
     # человеку два `wireguard` — на странице их тоже два, а не «первая, остальные молча»
@@ -11238,7 +11238,7 @@ def _bot_subs_of(chat_id):
 def _bot_sub_urls(u):
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-    base = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    base = _pb_pub(host, CFG_CACHE.get("panel_port", 8444))
     return base + "/sub/" + u["sub_token"], base + "/p/" + u["sub_token"]
 
 def _bot_sub_status_msg(u, B):
@@ -11594,7 +11594,7 @@ def _pay_cfg():
 def _pay_base():
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-    return _pb(host, CFG_CACHE.get("panel_port", 8444))
+    return _pb_pub(host, CFG_CACHE.get("panel_port", 8444))
 
 def _pay_pub_plans():
     d = _pay_load()
@@ -12365,7 +12365,7 @@ def _create_subscription(name, limit_gb=0, expiry_days=0):
     _awg_sync(st)
     _wg_sync(st)
     _apply_state(st)
-    sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
+    sub_url = f"{_pb_pub(host, panel_port)}/sub/{sub_token}"
     return {"name": name, "sub_token": sub_token, "sub_url": sub_url,
             "link": first_link or "", "limit_gb": float(limit_gb) or 0,
             "expiry_days": int(expiry_days)}
@@ -12410,7 +12410,7 @@ def _onboard_info():
         return None
     host = _hop_pub_host()
     host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-    base = _pb(host, CFG_CACHE.get("panel_port", 8444))
+    base = _pb_pub(host, CFG_CACHE.get("panel_port", 8444))
     return {"sub_url": base + "/sub/" + tok, "page_url": base + "/p/" + tok}
 
 def _onboard_notify():
@@ -13555,6 +13555,12 @@ def _perm_for(p, m):
         # единственной галкой «прокси» получает возможность залить любой телемет
         # руткит и поднять его той же кнопкой. Ручной рестарт — сюда же: он рвёт
         # тоннели у всех, кто пользуется прокси прямо сейчас.
+        return ["settings"]
+    if p == "/api/front/panel":
+        # #495: этот рубильник переписывает конфиги nginx и форму ВСЕХ свежих ссылок
+        # (порт в них или нет) — это не «переключить прокси», а настройка раздачи.
+        # Право `proxy` его не касается: сотрудник с одной галкой «прокси» не обязан
+        # перекладывать фронт всего узла.
         return ["settings"]
     if (p.startswith("/api/tg/") or p.startswith("/api/webproxy")
             or p.startswith("/api/webmux") or p.startswith("/api/front/")):
@@ -17284,10 +17290,12 @@ def _tv_after():
 # мог бы остаться за покрытием — видео тогда пошло бы напрямую, а витрина осталась бы
 # в туннеле. Первый срез агрегатов был девять, прибор добавил десятый (`172.253/16`):
 # без него один из сорока четырёх блоков живого резолва оставался бы вне туннеля.
-# Граница та же, что у фикса TikTok: это маршрутизация адресов узла, а не
-# гарантия; трафик подписчиков через эти правила не проходит. О названном
-# следствии: через туннель идут адреса Google целиком — `YouTube` делит их
-# с другими службами Google, отделить их адресно нельзя.
+# Граница названа честно (замер `ip route get … iif awg0`, 21.10): правила
+# смотрятся по АДРЕСУ НАЗНАЧЕНИЯ, а `main` в цепочке сидит позже (на `32766`),
+# поэтому под окно попадает и трафик, который узел пересылает подписчикам, — ровно
+# как у фикса TikTok. Это не гарантия «до YouTube дойдёт»: при падении звена адреса
+# идут напрямую. О названном следствии: через туннель идут адреса Google целиком —
+# `YouTube` делит их с другими службами Google, отделить их адресно нельзя.
 _YW_IF = "ytw0"
 _YW_TBL = "205"
 _YW_PRIO_BASE = 600       # выше TikTok (200..456) и медиа (100..108): наши правила не пересекаются
@@ -18583,6 +18591,17 @@ def _tg_mp_selftest(force=False):
                 warn=True)
     except Exception:
         pass
+    try:
+        # #495: включённое слово «раздача на :443» обязано быть доказанным живым
+        # ответом, а не записью в конфиге. Здесь же хранитель: фронт замолчал —
+        # имя подтверждения снимается и свежие ссылки снова понесут порт.
+        if CFG_CACHE.get("front_panel"):
+            nm, det = _front_panel_repair()
+            add("front443", "Раздача и страница подписчика на :443", bool(nm),
+                ("%s — панель отвечает через фронт" % nm) if nm else
+                ("не отвечает: %s — ссылки снова идут на порту панели" % (det or "?")))
+    except Exception as e:
+        add("front443", "Раздача и страница подписчика на :443", False, str(e)[:160])
     try:
         mm = _tg_manual_status()
         if mm:
@@ -20730,27 +20749,96 @@ def _front_site_write(root=None):
         f.write(_FRONT_SITE_HTML)
 
 # Маршруты, на которых следующий сегмент адреса и есть чужой credential подписки
-# (тот же список, что маскирует журнал: `_AUDIT_TOK_ROUTES`). Сайт-маска их не
-# обслуживает — подписка живёт на порту панели, — поэтому сюда попадают только
-# опечатка в порту, сканирование и чужие проверки ссылок.
-# Зачем это нужно отдельно от #72: nginx пишет `$request` в access.log как есть и
+# (тот же список, что маскирует журнал: `_AUDIT_TOK_ROUTES`). Чем они кончаются на
+# фронте — решает переключатель #495: выключен — закрыто (`return 404`), включён —
+# ведём на панель, и раздача живёт на стандартном :443.
+# Зачем закрытие нужно отдельно от #72: nginx пишет `$request` в access.log как есть и
 # про маску панели не знает, то есть закрытый журнал панели оставлял второй канал
 # с тем же токеном (`/var/log/nginx/access.log`, 0640 www-data:adm, ротация с
 # хранением). Плюс `try_files … /index.html` на неизвестном пути отвечает 200
 # чужой страницей: подписка, запрошенная не с того порта, выглядит успешной.
-# Тот же приём, что на фронте моста (`webproxy.conf`: `access_log off`).
-_FRONT_TOK_LOCATIONS = ("^/(sub|sb|p|pay)(/|$)", "^/api/(wg|awg)conf(/|$)")
+# Тот же приём, что на фронте моста (`webproxy.conf`: `access_log off`) — и в
+# включённом виде остаётся: `access_log off` стоит на каждом из этих `location`.
+# `/rulesets` лёг сюда же с #495: файл не секрет, но до включённой раздачи он на
+# фронте попадал в `try_files … /index.html` и отвечал 200 чужой страницей —
+# sing-box молча сохранял маску вместо базы.
+_FRONT_TOK_LOCATIONS = ("^/(sub|sb|p|pay)(/|$)", "^/api/(wg|awg)conf(/|$)", "^/rulesets(/|$)")
+_FRONT_TOK_MARK = "VEIL:FRONT-TOK"
+# Кусок в том виде, в каком его писали 2.17.17 и старше: два `location`, ни одной
+# метки. Нужен, чтобы переключатель #495 нашёл и переложил уже лежащий на диске
+# конфиг, не требуя полного переприменения фронта.
+_FRONT_TOK_LEGACY = ('    location ~ "^/(sub|sb|p|pay)(/|$)" {\n'
+                     '        access_log off;\n        return 404;\n    }\n'
+                     '    location ~ "^/api/(wg|awg)conf(/|$)" {\n'
+                     '        access_log off;\n        return 404;\n    }\n')
+# Границы вписанного кусочка: `sync` заменяет ровно между ними, поэтому второй
+# сервер того же файла (:80) остаётся закрытым даже при включённой раздаче.
+_FRONT_TOK_RX = re.compile(r"[ ]{4}# " + re.escape(_FRONT_TOK_MARK) + r" begin.*?"
+                           r"[ ]{4}# " + re.escape(_FRONT_TOK_MARK) + r" end\n", re.S)
 
 
-def _front_tok_block(indent="    "):
-    """Строки `location` для конфига маски: без записи URL и без ложного 200."""
-    return "".join('%slocation ~ "%s" {\n%s    access_log off;\n%s    return 404;\n%s}\n'
-                   % (indent, rx, indent, indent, indent)
-                   for rx in _FRONT_TOK_LOCATIONS)
+def _front_panel_upstream():
+    """Куда фронт ведёт credential-пути: (`host`, `port`, `tls`) или (``, `0`, ``).
+
+    Ноль означает «не ведём» — так закрыто. Панель обязана стоять на TLS: без
+    сертификата петлевой адрес был бы открытым http, а токен подписки живёт в URL,
+    то есть раздача на :443 превратилась бы в раздачу секретом по прозрачному http.
+    `panel_bind` уважается: под конкретный адрес ведём на него же,
+    wildcard и пустота — петля."""
+    if not CFG_CACHE.get("front_panel"):
+        return ("", 0, False)
+    if _WEB_CTX is None:
+        return ("", 0, False)
+    try:
+        port = int(CFG_CACHE.get("panel_port") or 0)
+    except (TypeError, ValueError):
+        return ("", 0, False)
+    if port < 1 or port > 65535:
+        return ("", 0, False)
+    bind = (CFG_CACHE.get("panel_bind") or "").strip()
+    if not bind or bind == "0.0.0.0":
+        bind = "127.0.0.1"
+    elif ":" in bind and not bind.startswith("["):
+        bind = "[" + bind + "]"
+    return (bind, port, _WEB_CTX is not None)
+
+
+def _front_tok_block(indent="    ", serve=None, mark=True):
+    """Строки `location` для конфигов фронтов: credential-пути панели.
+
+    `serve` пустой — закрыто (`return 404`: ни записи URL в чужой журнал, ни ложного
+    200 маской). `serve` = (`host`, `port`, `tls`) — тот же `access_log off`, но
+    запрос ведётся на панель, и страница подписчика с раздачей живут на стандартном
+    :443 (#495). Метки ставят только те куски, которые переключатель перекладывает:
+    сервер :80 пишет панель без меток и навсегда закрытым — редирект туда унёс бы
+    credential в открытом URL, а `proxy_pass` сделал бы раздачу по прозрачному http."""
+    up, port, tls = serve or ("", 0, False)
+    if up:
+        act = ["proxy_pass %s://%s:%d;" % ("https" if tls else "http", up, int(port)),
+               "proxy_http_version 1.1;",
+               "proxy_set_header Host $host;",
+               "proxy_set_header X-Forwarded-For $remote_addr;",
+               "proxy_connect_timeout 5s;", "proxy_send_timeout 60s;",
+               "proxy_read_timeout 60s;"]
+        if tls:
+            act.insert(0, "proxy_ssl_verify off;")
+    else:
+        act = ["return 404;"]
+    body = "".join('%slocation ~ "%s" {\n%s    access_log off;\n' % (indent, rx, indent)
+                   + "".join("%s    %s\n" % (indent, a) for a in act)
+                   + "%s}\n" % indent for rx in _FRONT_TOK_LOCATIONS)
+    if not mark:
+        return body
+    return ("%s# %s begin (кусок перекладывает панель — правка руками затрётся)\n"
+            % (indent, _FRONT_TOK_MARK) + body + "%s# %s end\n" % (indent, _FRONT_TOK_MARK))
 
 
 def _front_nginx_apply(domain, cert, key):
-    _loc = _front_tok_block()
+    _loc = _front_tok_block(serve=_front_panel_upstream())
+    # :80 остаётся закрытым всегда: редирект унёс бы credential в открытом URL
+    # вместе с `access.log` чужого фронта, а `proxy_pass` сюда сделал бы раздачи
+    # по прозрачному http. Метки на этом куске нет — переключатель его не трогает.
+    _loc80 = _front_tok_block(mark=False)
     conf = ("# Veil: сайт-маска для TLS-F (управляет панель — правка руками затрётся)\n"
             "server {\n"
             "    listen 443 ssl;\n"
@@ -20773,7 +20861,7 @@ def _front_nginx_apply(domain, cert, key):
             # редирект обязан сидеть в `location /` — иначе блоки выше никогда не
             # сработают и credential из URL уедет в access.log вместе с 301.
             "    location / { return 301 https://$host$request_uri; }\n" % domain
-            + _loc +
+            + _loc80 +
             "}\n")
     if os.path.exists(_NG_FRONT_CONF):
         try:
@@ -20818,6 +20906,337 @@ def _front_443_blocker():
     return ("порт :443 занят «%s». Маска обязана отвечать на 443 — иначе ни TLS-F, ни "
             "обычный сайт не работают. Освободите порт (перенесите Reality на другой порт "
             "во вкладке Протоколы) и повторите" % (proc or "?"))
+
+
+# === #495: страница подписчика и раздача на стандартном :443 ====================
+# Природа беды, названная числом: ссылки панели несут `:{panel_port}`, а NAT64 —
+# так IPv6-only сеть добирается до IPv4-узла — обычно пускает только 80 и 443.
+# Панель слушает `[::]:8443` честно, но это спасает лишь тех, у кого есть нативный
+# IPv6 до этого порта. Поэтому раздача надо не «гасить IPv6», а ставить на общий
+# мировой порт: credential-пути ведятся через тот же nginx-фронт, что держит :443.
+# Что обязано остаться правдой при включённом переключателе:
+#  1) credential не уезжает в журнал nginx — на каждом из этих `location` стоит
+#     `access_log off` (см. #72 и комментарий у `_FRONT_TOK_LOCATIONS`);
+#  2) ложного 200 маской больше нет: на эти пути отвечает панель, а не чужой сайт;
+#  3) старые ссылки с портом продолжают работать — панель свой слушатель не теряет,
+#     токен не поворачивается, ссылка не снимается (хозяйское слово «ссылки нельзя
+#     снимать ими пользуются клиенты»); меняется только форма СВЕЖИХ ссылок.
+
+
+def _front_panel_targets():
+    """Наши файлы фронтов, где лежит (или должен лежать) credential-кусок.
+    `veil-mux-default.conf` сюда не входит: это авто-заглушка, её задача — не
+    отвечать вовсе, а не вести раздачу."""
+    return (_NG_FRONT_CONF, _NG_CONF, _NG_MUX_MASK, _NG_MUX_MP_MASK)
+
+
+def _front_panel_mode(txt):
+    """Что фронт делает с credential-путями сейчас: 'panel', 'closed' или None.
+    Смотрит ровно на помеченный кусок — чужие `proxy_pass` (мост telemt) сюда
+    попадать не должны."""
+    m = _FRONT_TOK_RX.search(txt or "")
+    if not m:
+        return None
+    return "panel" if "proxy_pass " in m.group(0) else "closed"
+
+
+def _front_panel_render(txt, serve):
+    """Текст конфига фронта в нужном режиме; `None` — вписать некуда.
+
+    Три формы в порядке достоверности: помеченный кусок (наша версия), прежний
+    закрытый кусок без меток (файл 2.17.17 и старше), фронт вообще без куска
+    (веб-мост credential-пути не описывал). Последняя форма вставляет ПЕРЕД
+    `location /`: regex-`location` выбирается раньше префиксного, поэтому порядок
+    строк в файле роли не играет, а вот отсутствие куска играло."""
+    block = _front_tok_block(serve=serve)
+    if _FRONT_TOK_RX.search(txt):
+        return _FRONT_TOK_RX.sub(lambda _m: block, txt, count=1)
+    if _FRONT_TOK_LEGACY in txt:
+        return txt.replace(_FRONT_TOK_LEGACY, block, 1)
+    m = re.search(r"^    location / \{\n", txt, re.M)
+    if m:
+        return txt[:m.start()] + block + txt[m.start():]
+    return None
+
+
+def _front_panel_read():
+    """Байты найденных файлов фронтов — снимок ДО любой перекладки."""
+    out = {}
+    for p in _front_panel_targets():
+        try:
+            with open(p, encoding="utf-8") as f:
+                out[p] = f.read()
+        except Exception:
+            continue
+    return out
+
+
+def _front_panel_sync(restore=None):
+    """Переложить credential-куски во всех наших фронтах под текущее слово.
+
+    Возврат — (`изменённые пути`, `отказы`), отказ назван строкой. Красный `nginx -t`
+    возвращает всем тронутым файлам прежние байта и не делает reload: рабочий nginx
+    не должен узнать о неудачной попытке. Рестарт здесь не используется намеренно:
+    `reload` не рвёт живые соединения, а `_webproxy_apply` их рвёт, и включать
+    переключатель ценой обрыва у всех подписчиков — это полумера другого рода.
+
+    `restore` — снимок из `_front_panel_read()`: вернуть файлам РОВНО эти байта, а не
+    то, что под них ляжет. Проигравшая попытка включения не имеет права оставить след:
+    прежний кусок мог быть написан в форме без метки (так писали 2.17.17 и старше), и
+    перекладка его в форму с меткой — уже другой текст, который сверка дайджестов
+    поймает как порчу."""
+    serve = _front_panel_upstream()
+    changed, refused, old = [], [], {}
+    for path in _front_panel_targets():
+        try:
+            with open(path, encoding="utf-8") as f:
+                txt = f.read()
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            refused.append("%s: %s" % (os.path.basename(path), type(e).__name__))
+            continue
+        if restore is not None:
+            if path not in restore or restore[path] == txt:
+                continue
+            new = restore[path]
+        else:
+            new = _front_panel_render(txt, serve)
+            if new is None:
+                refused.append(os.path.basename(path) +
+                               ": не найден кусок, куда ложится переключатель")
+                continue
+            if new == txt:
+                continue
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new)
+        except Exception as e:
+            refused.append("%s: %s" % (os.path.basename(path), type(e).__name__))
+            continue
+        old[path] = txt
+        changed.append(path)
+    if not changed:
+        return (changed, refused)
+    t = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=25)
+    if t.returncode != 0:
+        for p, b in old.items():
+            try:
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(b)
+            except Exception:
+                pass
+        return ([], ["откат: nginx -t — " + ((t.stderr or t.stdout).strip() or "?")[-220:]])
+    try:
+        if _unit_active("nginx"):
+            subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=40)
+        else:
+            subprocess.run(["systemctl", "restart", "nginx"], capture_output=True, timeout=40)
+    except Exception as e:
+        refused.append("reload: " + type(e).__name__)
+    return (changed, refused)
+
+
+def _front_panel_boot():
+    """Переложить credential-куски, если дело разошлось со словом.
+
+    Нужен ровно один шаг: `reload` зелёного `nginx -t` и молчание, когда менять нечего.
+    Возврат — (`изменённые`, `отказы`); пустой список — значит слово и дело совпадали.
+    """
+    want = "panel" if _front_panel_upstream()[0] else "closed"
+    bad = False
+    for p in _front_panel_targets():
+        try:
+            with open(p, encoding="utf-8") as f:
+                mode = _front_panel_mode(f.read())
+        except Exception:
+            continue
+        if mode != want:
+            bad = True
+            break
+    if not bad:
+        return ([], [])
+    changed, refused = _front_panel_sync()
+    if changed:
+        _audit("front_panel_boot", on=(want == "panel"),
+               files=[os.path.basename(p) for p in changed],
+               refused="; ".join(refused)[:200])
+    return (changed, refused)
+
+
+def _front_panel_name():
+    """Имя, по которому раздача обязана влезть на :443 ('' — не может).
+
+    Это ровно то имя, что стоит в ссылках (`_hop_pub_host`), поэтому три отказа
+    названы заранее: пустое имя; адрес вместо имени (сертификат на адрес не
+    проверяется, и ссылка без порта была бы обещанием без доказательства); двойной
+    прыжок (ссылка ведёт на ЧУЖОЙ фронт — переключатель на этой машине её не
+    касается, раздачу настраивают там)."""
+    if (CFG_CACHE.get("hop_public_host") or "").strip():
+        return ""
+    h = (_hop_pub_host() or "").strip().lower()
+    if not h or ":" in h or "/" in h:
+        return ""
+    if _hop_is_ip4(h) or re.fullmatch(r"[0-9.]+", h):
+        return ""
+    return h
+
+
+def _front_panel_probe(host, want=True):
+    """Живой ответ фронта на заведомо чужой токен подписки.
+
+    Судит различие двух 404: панель отвечает своим JSON «подписка не найдена»,
+    закрытый фронт — чужим телом. Проверка идёт НАСТОЯЩИМ TLS на НАСТОЯЩИЙ :443 с
+    НАСТОЯЩИМ именем и с проверкой цепи (не `verify_mode=CERT_NONE`), поэтому
+    проваливается всё: и порт занят чужим, и сертификат не на это имя, и кусок в
+    файл не лег. Возврат — (`суд`, `краткая причина`)."""
+    if not host:
+        return (False, "нет имени фронта")
+    tok = "veil495" + secrets.token_hex(4)
+    req = ("GET /p/" + tok + " HTTP/1.1\r\nHost: " + host +
+           "\r\nUser-Agent: veil-panel-check\r\nConnection: close\r\n\r\n")
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=8) as s0:
+            with ctx.wrap_socket(s0, server_hostname=host) as ss0:
+                ss0.settimeout(8)
+                ss0.sendall(req.encode("utf-8"))
+                data = b""
+                while len(data) < 8192:
+                    ch = ss0.recv(2048)
+                    if not ch:
+                        break
+                    data += ch
+    except Exception as e:
+        return (False, type(e).__name__)
+    txt = data.decode("utf-8", "replace")
+    got = "подписка не найдена" in txt
+    head = (txt.split("\r\n", 1) or [""])[0][:40]
+    return (got == bool(want), head or "ок")
+
+
+def _front_panel_set(on, why=""):
+    """Включить или погасить раздачу на :443 — и ДОКАЗАТЬ её до слова «включено».
+
+    Пускать можно, только если панель стоит на TLS (без сертификата петлевой адрес
+    был бы прозрачным http, а токен живёт в URL), если хотя бы один наш фронт вообще
+    есть и если живой запрос через :443 дождался панели. Любой отказ возвращает
+    файлы и флаг в прежнее состояние, поэтому ссылка без порта не бывает выдана
+    «по обещанию»."""
+    prev, prevhost = bool(CFG_CACHE.get("front_panel")), CFG_CACHE.get("front_panel_host")
+    before = _front_panel_read()
+    nm = _front_panel_name()
+    if on:
+        if _WEB_CTX is None:
+            raise RuntimeError("у панели нет сертификата — на :443 раздача пошла бы "
+                               "открытым http, а токен подписки живёт в URL")
+        if not any(os.path.exists(p) for p in _front_panel_targets()):
+            raise RuntimeError("ни одного нашего фронта на :443 нет — сначала заведите "
+                               "сайт-маску (вкладка Сайт) или SNI-мюкс (вкладка Мюкс)")
+        if not nm:
+            raise RuntimeError("ссылки идут не на имя этой машины (пустой домен, адрес "
+                               "вместо имени или двойной прыжок) — раздачу на :443 "
+                               "настраивают на том фронте, который стоит в ссылках")
+    CFG_CACHE["front_panel"] = bool(on)
+    try:
+        changed, refused = _front_panel_sync()
+        if refused and not changed:
+            raise RuntimeError("; ".join(refused)[:220])
+        if on:
+            ok, detail = (False, "нет пробы")
+            for _ in range(6):
+                # `systemctl reload` отвечает ДО того, как рабочие процессы пересменятся:
+                # замерено на живой коробке — первый запрос после reload получил прежний
+                # `return 404`. Пока фронт не переведён, отказывать рано.
+                ok, detail = _front_panel_probe(nm, want=True)
+                if ok:
+                    break
+                time.sleep(0.5)
+            if not ok:
+                raise RuntimeError("фронт на %s:443 не довёл запрос до панели (%s) — "
+                                   "раздача не включена" % (nm, detail))
+            CFG_CACHE["front_panel_host"] = nm
+        else:
+            CFG_CACHE.pop("front_panel_host", None)
+    except Exception as e:
+        CFG_CACHE["front_panel"] = prev
+        if prevhost:
+            CFG_CACHE["front_panel_host"] = prevhost
+        else:
+            CFG_CACHE.pop("front_panel_host", None)
+        _front_panel_sync(restore=before)
+        raise RuntimeError(str(e)[:240])
+    _cfg_save()
+    _audit("front_panel", on=bool(on), name=CFG_CACHE.get("front_panel_host") or "",
+           files=[os.path.basename(p) for p in changed], refused="; ".join(refused)[:200],
+           why=(why or "")[:80])
+    return _front_panel_view()
+
+
+def _front_panel_view():
+    """Снимок для морды и самотеста: слово оператора, подтверждённое имя, что
+    делает каждый фронт и что сказал живой запрос. Токенов здесь нет."""
+    serve = _front_panel_upstream()
+    nm = _front_panel_name()
+    files = []
+    for p in _front_panel_targets():
+        try:
+            with open(p, encoding="utf-8") as f:
+                mode = _front_panel_mode(f.read())
+        except Exception:
+            continue
+        files.append({"name": os.path.basename(p),
+                      "mode": mode or "нет куска", "want": "panel" if serve[0] else "closed"})
+    live, detail = (False, "раздача выключена")
+    if serve[0] and nm:
+        live, detail = _front_panel_probe(nm, want=True)
+    return {"on": bool(CFG_CACHE.get("front_panel")),
+            "host": (CFG_CACHE.get("front_panel_host") or "").strip().lower(),
+            "name": nm, "port": int(serve[1] or 0), "tls": bool(serve[2]),
+            "files": files, "live": bool(live), "detail": (detail or "")[:200],
+            "blocker": _front_443_blocker() if nm else ""}
+
+
+def _pb_pub(host, panel_port):
+    """Базовый URL подписочных путей: без порта, когда раздача на :443 подтверждена.
+
+    Судит ОДНО условие с тем, что пишет конфиги (`_front_panel_upstream`): флаг, живой
+    сертификат панели и годный порт. Иначе ссылка разошлась бы с делом — например
+    сертификат сняли, фронт закрыт, а ссылки без порта продолжали бы выдаваться. Имя
+    ставит только успешная проверка (`_front_panel_set`), поэтому ссылка без порта не
+    бывает выдана «на обещание»: либо фронт на это имя отвечал живым запросом, либо
+    ссылка несёт порт — как носила всегда. Старая ссылка с портом при этом не ломается:
+    панель свой слушатель не снимает."""
+    h = (host or "").strip().lower()
+    if (_front_panel_upstream()[0] and h
+            and h == (CFG_CACHE.get("front_panel_host") or "").strip().lower()):
+        return "https://" + h
+    return _pb(host, panel_port)
+
+
+def _front_panel_repair():
+    """Хранитель слова: сверить его с делом. Зовёт самотест (у него свой кэш 60 с).
+
+    Включено, а фронт перестал доводить запрос до панели — ссылки без порта сейчас
+    не работают, поэтому имя подтверждения снимается (свежие ссылки снова понесут
+    порт, который не снимался никогда) и это называется в аудите. Обратно имя
+    возвращает та же проверка: как только фронт ожил, самотест его ставит."""
+    if not CFG_CACHE.get("front_panel"):
+        return ("", "")
+    nm = _front_panel_name()
+    ok, detail = _front_panel_probe(nm, want=True) if nm else (False, "нет имени")
+    if ok:
+        if (CFG_CACHE.get("front_panel_host") or "") != nm:
+            CFG_CACHE["front_panel_host"] = nm
+            _cfg_save()
+            _audit("front_panel_host_restored", name=nm)
+        return (nm, detail)
+    if CFG_CACHE.get("front_panel_host"):
+        CFG_CACHE.pop("front_panel_host", None)
+        _cfg_save()
+        _audit("front_panel_regress", name=nm, detail=(detail or "")[:160])
+    return ("", detail)
+
 
 def _front_apply(domain):
     """Свой фронт TLS-F: DNS → сертификат LE → сайт-заглушка на :443 → telemt
@@ -21707,6 +22126,7 @@ server {
 
     client_max_body_size 2m;
 
+{tok}
     location / {
         proxy_pass http://telemt_web;
         proxy_http_version 1.1;
@@ -21784,7 +22204,9 @@ def _webproxy_apply(domain):
     _tg_web_ensure()
     subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True, timeout=10)
     cert, key = _ng_certs(domain)
-    conf = _NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert).replace("{key}", key)
+    conf = (_NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert)
+            .replace("{key}", key)
+            .replace("{tok}", _front_tok_block(serve=_front_panel_upstream())))
     # #249: под живым SNI-мюксом общий :443 держит stream-развилка, а веб-фронт сидит на
     # петлевом `web_port` — шаблонный `listen 443` вернул бы конфликт портов на рестарте.
     ms0 = _load(_MUX_STATE, {}) or {}
@@ -22194,7 +22616,7 @@ def _mux_mask_conf(tg_domain, mask_port, cert, key, root=None):
     соединение до петлевого листнера mask_port, где nginx терминалирует TLS своим
     SAN-сертификатом и отдаёт frontsite. :80-блока нет — редирект хосту базы делает
     автономный фронт, а сюда приходит только TLS на :443."""
-    _loc = _front_tok_block()
+    _loc = _front_tok_block(serve=_front_panel_upstream())
     return ("# VEIL-MUX маска tg (generated) — правка руками затрётся\n"
             "server {\n"
             "    listen 127.0.0.1:%d ssl;\n"
@@ -26037,7 +26459,7 @@ def _sb_config(st, sub_path, host, panel_port, legacy=False, http_client=False):
         dl = ({"http_client": RULE_DL_TAG} if http_client else
               {"download_detour": "direct"})
         rule_sets.append(dict({"tag": tag, "type": "remote", "format": "binary",
-                               "url": f"{_pb(host, panel_port)}/rulesets/{fname}"}, **dl))
+                               "url": f"{_pb_pub(host, panel_port)}/rulesets/{fname}"}, **dl))
     rules = ([{"inbound": ["tun-in", "http-in"], "action": "sniff"}] if modern else [])
     # легаси- outbound `dns` снят в 1.13: роль исполняет действие hijack-dns
     rules.append({"protocol": ["dns"], "action": "hijack-dns"} if modern else
@@ -33755,7 +34177,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"client": {
                 "uuid": c["uuid"], "name": name, "proto": proto,
                 "sub_token": c.get("sub_token"),
-                "sub_url": f"{_pb(host, panel_port)}/sub/{c.get('sub_token')}",
+                "sub_url": f"{_pb_pub(host, panel_port)}/sub/{c.get('sub_token')}",
                 "link": link}})
         if p == "/api/ext/clients/update":
             u = _field(b, 'uuid').strip()
@@ -34157,7 +34579,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         ("incy" in _ual or "happ" in _ual or _is_incy_client(ua, xc)):
                     try:
                         xprof = _routing_profile_b64(
-                            _pb(host, CFG_CACHE.get("panel_port", 8444)))
+                            _pb_pub(host, CFG_CACHE.get("panel_port", 8444)))
                     except Exception:
                         xprof = None
                 if use_sb:
@@ -34240,7 +34662,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     pui = "1"
                 self.send_header("profile-update-interval", pui)
                 self.send_header("profile-web-page-url",
-                                 f"{_pb(host, panel_port)}/p/{sub_path}" if sub_path
+                                 f"{_pb_pub(host, panel_port)}/p/{sub_path}" if sub_path
                                  else f"{_pb(host, panel_port)}/")
                 self.end_headers(); self.wfile.write(b)
                 return None
@@ -34387,7 +34809,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(404, {"error": "подписка не найдена"})
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
-            svg = _qr_svg("%s/sub/%s" % (_pb(host, CFG_CACHE.get("panel_port", 8444)),
+            svg = _qr_svg("%s/sub/%s" % (_pb_pub(host, CFG_CACHE.get("panel_port", 8444)),
                                          u["sub_token"])).encode("utf-8")
             if not svg:
                 return self._send(404, {"error": "QR не собрался"})
@@ -34455,7 +34877,7 @@ class H(http.server.BaseHTTPRequestHandler):
             host = _hop_pub_host()
             host = host if "://" not in host else urllib.parse.urlparse(host).netloc
             panel_port = CFG_CACHE.get("panel_port", 8444)
-            sub_url = f"{_pb(host, panel_port)}/sub/{u['sub_token']}"
+            sub_url = f"{_pb_pub(host, panel_port)}/sub/{u['sub_token']}"
             _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query or "")
             _lq = (_q.get("lang") or [""])[0]
             _lck = ""
@@ -34787,7 +35209,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not isinstance(c, dict):
                         continue
                     sub_token = c.get("sub_token") or ""
-                    sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
+                    sub_url = f"{_pb_pub(host, panel_port)}/sub/{sub_token}"
                     cu = _bytes_of(c.get("up")); cdn = _bytes_of(c.get("down"))
                     # Цикл #313: безключевой туннельный пир — названное состояние,
                     # а не исключение на каждую загрузку страницы. Прежний путь
@@ -34809,7 +35231,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             "link": link,
                             "sub_token": sub_token,
                             "sub_url": sub_url,
-                            "sb_url": f"{_pb(host, panel_port)}/sb/{sub_token}",
+                            "sb_url": f"{_pb_pub(host, panel_port)}/sb/{sub_token}",
                             "up": cu, "down": cdn,
                             "limit_gb": _gb_of(c.get("limit_gb")),
                             "expiry": _ts_of(c.get("expiry")),
@@ -34844,11 +35266,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     if proto == "wireguard" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
-                        item["conf_url"] = f"{_pb(host, panel_port)}/api/wgconf/{sub_token}"
+                        item["conf_url"] = f"{_pb_pub(host, panel_port)}/api/wgconf/{sub_token}"
                     if proto == "amneziawg" and c.get("address"):
                         item["address"] = c["address"]
                         item["link6"] = ""
-                        item["conf_url"] = f"{_pb(host, panel_port)}/api/awgconf/{sub_token}"
+                        item["conf_url"] = f"{_pb_pub(host, panel_port)}/api/awgconf/{sub_token}"
                     if len(out) < 16:
                         item["online"] = _online_count(c.get("uuid") or "")
                     out.append(item)
@@ -35482,6 +35904,14 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             try:
                 return self._send(200, _front_status())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/front/panel":
+            # #495: слово оператора, что делает каждый фронт и живой ответ :443 —
+            # отдельно от статуса, чтобы морда могла переспросить после чужой правки.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _front_panel_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
         if p == "/api/tg/dcs":
@@ -36651,7 +37081,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 st["active"] = proto
                 _apply_state(st)
                 
-                sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
+                sub_url = f"{_pb_pub(host, panel_port)}/sub/{sub_token}"
                 first_link = added_links[0] if added_links else ""
                 return self._send(200, {"ok": True, "link": first_link,
                                         "port": inb["port"], "proto": proto,
@@ -37144,7 +37574,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         nodes_res = {"deployed": dep, "skipped": skip}
                     except Exception as e:
                         nodes_res = {"error": str(e)[:120]}
-                sub_url = f"{_pb(host, panel_port)}/sub/{sub_token}"
+                sub_url = f"{_pb_pub(host, panel_port)}/sub/{sub_token}"
                 tg_preview = []
                 try:
                     tg_preview = _tg_sub_links({"tg_proxy": tg_mode, "tg_user": tg_user,
@@ -39269,6 +39699,17 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     print("[warp-manual] " + str(e), flush=True)
                 return self._send(200, _wm_view())
+            if p == "/api/front/panel":
+                # #495: одно поле `on`. Отдельной «проверить» кнопки нет намеренно:
+                # включение само обязано дождаться ответа панели через :443, иначе
+                # хозяин видел бы зелёное слово о неразделанном намерении.
+                b = self._body()
+                if "on" not in b:
+                    return self._send(400, {"error": "нужно поле on"})
+                try:
+                    return self._send(200, _front_panel_set(bool(b.get("on"))))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)[:300]})
             if p == "/api/front/apply":
                 b = self._body()
                 try:
@@ -39768,6 +40209,14 @@ if __name__ == "__main__":
     except Exception as e:
         print("mux link_host sync: " + str(e), flush=True)
     _web_tls_ctx()
+    # #495: слово «раздача на :443» обязано пережить рестарт. Мюкс и веб-мост пишут
+    # свои файлы целиком из шаблонов, и если credential-куски в них разошлись со
+    # словом, панель перекладывает их сама и называет перемен аудитом; без этого шага
+    # включённый переключатель после рестарта молча возвращал бы порт в ссылках.
+    try:
+        _front_panel_boot()
+    except Exception as e:
+        print("front panel sync init: " + str(e), flush=True)
     # Значка старта — до первого ответа: страж обновления (v2.16.7) смотрит именно
     # на неё и иначе вечно ждал бы «панель поднялась», пока оператор сам лезет
     # в консоль. Ставится перед serve_forever, потому что после него панель может
