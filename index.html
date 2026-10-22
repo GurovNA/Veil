@@ -1887,7 +1887,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <p class=mut style="margin:0 0 10px"><span id=twState>—</span></p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем это нужно.</b> TikTok сверяется со своей справочной службой и решает, в какой стране сидит зритель. База самой ByteDance (разработчика TikTok) читает адрес нашего узла как российский — приложение делает вывод, что оно в стране, где сервис запрещён, и видео не играют. Фикс поднимает с сервера личный туннель Cloudflare (WARP) и ведёт через него только адреса TikTok: выход Cloudflare та же база читает заграницей, и видео возвращаются.</p>
-        <p><b>Что не задето.</b> Через туннель идут адреса самого TikTok, и только с сервера. Трафик подписчиков через эти правила не проходит — узел и клиенты фикс не замечают. Остальной трафик коробки не перемаршрутизируется; если туннель падает, адреса TikTok идут напрямую, как шли.</p>
+        <p><b>Что не задето.</b> Через туннель идут адреса самого TikTok. Правила смотрят на адрес назначения, поэтому под фикс попадает и трафик, который узел пересылает подписчикам: их TikTok уходит тем же туннелем — это и нужно, раз база ByteDance читает адрес узла российским. Не перемаршрутизируется всё остальное; если туннель падает, адреса TikTok идут напрямую, как шли.</p>
         <p><b>Кнопка «Применить фикс»</b> поднимает туннель сразу, не дожидаясь ближайшего тика панели; снятие галки разбирает его целиком: правила, связь и обходное правило снимаются.</p>
         <p><b>Кнопка «Проверить, что видит TikTok»</b> шлёт два запроса к одному и тому же адресу TikTok — напрямую и через туннель — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
       </div></details>
@@ -1912,7 +1912,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <p class=mut style="margin:0 0 10px"><span id=ywState>—</span></p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем это нужно.</b> Google тоже решает, в какой стране сидит зритель, по адресу, с которого пришёл запрос. Без туннеля наш узел для Google — заграница (на тестовой коробке замерено: не Россия, и название страны на прямом выходе живое — два промера назвали разные), и выдача, язык и права на показ строятся под эту страну. Личный туннель Cloudflare (WARP) даёт другой выход: тот же замер показал, что Google читает его российским — четыре прогона из четырёх, и на витрине, и в ответе плеера. Это окно поднимает своё звено и ведёт через него адреса YouTube, чтобы Google видел Россию.</p>
-        <p><b>Что не задето.</b> Через эти правила идёт трафик самого сервера, а не подписчики: узел и клиенты окно не замечают. Остальной трафик коробки не перемаршрутизируется; если туннель падает, адреса YouTube идут напрямую, как шли.</p>
+        <p><b>Что не задето.</b> Правила смотрят на адрес назначения, поэтому под окно попадает и трафик, который узел пересылает подписчикам: их YouTube идёт тем же туннелем, и Google видит Россию не только у сервера — это и есть то, чего окно добивается. Не перемаршрутизируется всё остальное: адреса вне сетей Google идут своими путями, а если звено падает, адреса YouTube (свои и подписчиков) идут напрямую, как шли.</p>
         <p><b>О названном следствии.</b> YouTube отвечает с тех же адресных сетей, что и другие службы Google, — разделить их по адресам нельзя. Через это окно уходят сети Google целиком: поиску и прочим службам Google сервер тоже будет виден Россией. Звено отдельное от TikTok — своё, со своим туннелем; включать и выключать их можно раздельно.</p>
         <p><b>Кнопка «Вести YouTube через WARP»</b> поднимает звено сразу, не дожидаясь ближайшего тика панели; снятие галки разбирает его целиком: правила, связь и обходное правило снимаются.</p>
         <p><b>Кнопка «Проверить, что видит Google»</b> шлёт два запроса к одному и тому же адресу YouTube — напрямую и через туннель — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
@@ -1922,6 +1922,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick=checkYouTube() id=ywCheckBtn>🔎 Проверить, что видит Google</button>
     </div>
     <div class=msg id=ywMsg></div>
+    </div>
+    <div class="card set-block" id=setFront443>
+    <h3 style="margin:0 0 8px">Страница подписчика и раздача на :443</h3>
+    <p class=mut style="margin:0 0 10px"><span id=fpState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Ссылка панели выглядит как <code>https://имя:8443</code> — адрес и порт. У абонентов, которым провайдер даёт только IPv6 (так работает часть сети Мегафона), до адреса на нестандартном порту дороги нет: до IPv4-адреса такая сеть добирается через переводчик, а переводчик обычно пропускает только общие порты 80 и 443. Отсюда и наблюдение хозяина: «при включённом VPN они заходят, при выключенном нет» — под VPN путь у клиента другой. Переключатель ставит страницу подписчика и раздачу на общий порт 443, где никакому переводчику и никакому фильтру портов нечего возразить.</p>
+        <p><b>Что делает панель.</b> Тот же nginx-фронт, который уже держит :443 для маски, начинает вести пути подписки (<code>/p</code>, <code>/sub</code>, <code>/sb</code>, <code>/pay</code>, конфиги туннеля, файлы правил) на саму панель. Панель отвечает своими словами, поэтому вместо чужой маски подписчик видит честную страницу. Ссылки, которые панель выдаёт после включения, идут без порта.</p>
+        <p><b>Что не задето.</b> На :443 не появляется ни вход в панель, ни её административная часть — ведутся ровно подписочные пути. Журнал nginx по-прежнему не видит ни токена, ни адреса клиента: на каждом из этих путей запись выключена. Порт панели не снимается, и <b>разданные ранее ссылки с портом продолжают работать</b> — ни один токен не поворачивается и ни одна ссылка не снимается.</p>
+        <p><b>О названном следствии.</b> Пока включено, форма свежей ссылки зависит от фронта: если nginx на :443 умрёт (упал, истёк сертификат, освободился порт), ссылка без порта встанет там, где ссылка с портом жила. Панель меряет это живым запросом при включении и в самотесте: не дождалась ответа — снимает обещание и возвращает свежим ссылкам порт, а причину называет в строке «Раздача и страница подписчика на :443».</p>
+        <p><b>Условия включения.</b> Панель должна стоять на сертификате (без него раздача пошла бы открытым http, а токен живёт в адресе), имя в ссылках должно быть именем, а не адресом, и живой запрос через :443 обязан дождаться панели. Любое из этих условий не выполнено — переключатель не включится и назовёт причину; конфиги фронта при отказе вернутся к прежним байтам.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=fpOn onchange=saveFrontPanel(this.checked)> Раздавать на :443 — свежие ссылки без порта</label>
+    </div>
+    <div class=msg id=fpMsg></div>
     </div>
     <div class="card set-block" id=setWarpManual>
     <h3 style="margin:0 0 8px">Ручной список через WARP</h3>
@@ -6915,6 +6930,27 @@ async function checkYouTube(){
   if(b) b.disabled=false;
   loadYouTube();
 }
+async function loadFrontPanel(){
+  const el=$('fpState'), on=$('fpOn');
+  if(!el) return;
+  try{
+    const d=await api('/api/front/panel');
+    if(on) on.checked=!!d.on;
+    const files=(d.files||[]).map(function(f){return f.name+' — '+(f.mode==='panel'?'ведёт на панель':(f.mode==='closed'?'закрыт':String(f.mode||'')))}).join(', ');
+    if(!d.on){ el.textContent='Выключено — страница подписчика и раздача живут на порту панели, ссылки несут порт.'; return; }
+    if(d.live) el.innerHTML='🌐 <b>Раздача на :443 работает</b> — '+esc(d.host||d.name||'')+' отвечает через фронт, свежие ссылки без порта'+(files?('; фронты: '+files):'')+'.';
+    else el.innerHTML='🌐 <b style="color:var(--warn)">Включено, но фронт на :443 не доводит запрос до панели</b> — '+esc(d.detail||'?')+'. Свежие ссылки снова идут на порту.';
+  }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveFrontPanel(onv){
+  const m=$('fpMsg');
+  if(m) m.textContent=onv?'перекладываю фронт и жду ответа панели через :443…':'возвращаю фронт к закрытому виду…';
+  try{
+    await api('/api/front/panel',{method:'POST',body:JSON.stringify({on:!!onv})});
+    if(m) m.textContent=onv?'включено — страница подписчика и раздача на :443':'выключено — раздача только на порту панели';
+  }catch(e){ if(m) m.textContent='не вышло: '+String(e).slice(0,200); }
+  loadFrontPanel();
+}
 let tvTimer=0;
 function tvWord(v,region){
   if(v==='green') return '<b style="color:var(--ok)">заграницей'+(region?(' ('+esc(region)+')'):'')+'</b>';
@@ -8982,7 +9018,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadFrontPanel();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -9393,7 +9429,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}

@@ -153,7 +153,14 @@ class Card(unittest.TestCase):
         for pinned in ("Финляндия", "Швеция", "Германия"):
             self.assertNotIn(pinned, self.card, pinned)
         self.assertIn("раздельно", self.card)
-        self.assertIn("трафик самого сервера", self.card)
+        # Правила ставятся по АДРЕСУ НАЗНАЧЕНИЯ (`ip rule ... to <net> lookup <tbl>`),
+        # а `main` в цепочке сидит позже — значит под окно попадает и трафик, который
+        # узел пересылает подписчикам. Замерено `ip route get … iif awg0`. Прежняя
+        # фраза «трафик самого сервера, а не подписчики» была ложью про границу своей
+        # карточки, поэтому нога судит теперь и ложь, и правду.
+        self.assertIn("пересылает подписчикам", self.card)
+        for lie in ("трафик самого сервера", "окно не замечают"):
+            self.assertNotIn(lie, self.card, lie)
 
 
 if __name__ == "__main__":
