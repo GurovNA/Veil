@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.19"
+VERSION = "2.17.20"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1201,6 +1201,10 @@ def _subdev_note(token, ip, ua, xclient=""):
         return
     if _is_self_ip(ip):
         # не заводить «устройство» на запрос с адреса самой панели
+        return
+    if _front_covered(ip):
+        # адрес фронта — не адрес устройства: за ним весь пул подписчиков, и
+        # строка «устройство живёт на адресе фронта» была бы враньём в переписи (#501)
         return
     name, ver, os_, old, dtype = _parse_client(ua, xclient)
     fp = _dev_fp(ua)
@@ -14904,10 +14908,36 @@ def _aaaa_publish_want():
     (реестр #288 п.31). Слово хозяина 19.10 после отказа v6-клиентов: «после
     удаления аааа заработало у всех». Заводски — ВЫКЛЮЧЕНО: ключа `aaaa_publish`
     нет в конфиге, и панель не выпускает AAAA, а осиротевшие записи снимает.
-    От `tg_mp_ipv6` независим: тот держит релей и слушателя, этот — только
-    публикацию v6-семейства в DNS. Явное хозяйское слово (`force6` в обновлении
-    базы и при переезде) рубильник не гасит: оно не самодеятельность панели."""
+    От `tg_mp_ipv6` независим: тот держит маршруты телемет-центра, а релей фасада на
+    шестёрке стоит, если живо либо пожелание движка, либо этот рубильник (#499).
+    Явное хозяйское слово (`force6` в обновлении базы и при переезде) рубильник
+    не гасит: оно не самодеятельность панели."""
     return bool(CFG_CACHE.get("aaaa_publish", False))
+
+_V6_BIND = {"ok": None, "ts": 0.0}
+
+
+def _v6_bindable():
+    """Умеет ли вообще это ядро держать слушателя на `[::]` — локальная проба без
+    сети (#499). Нужна ровно для одного решения: класть ли в конфиг nginx строку
+    `listen [::]:<порт>`. Там, где семейство выключено, nginx на такой строке падает
+    ВЕСЬ — вместе с v4-фасадом, и право публиковать AAAA не может стоить
+    работоспособности узла. Кэш на пять минут: состояние ядра меняется редко, а
+    проба дёргается при каждом применении мюкса."""
+    if _V6_BIND["ok"] is not None and time.time() - float(_V6_BIND["ts"] or 0) < 300:
+        return bool(_V6_BIND["ok"])
+    ok = False
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        try:
+            s.bind(("::", 0))
+            ok = True
+        finally:
+            s.close()
+    except Exception:
+        ok = False
+    _V6_BIND.update(ok=ok, ts=time.time())
+    return ok
 
 _IP6PUB = {"t": 0.0, "v": ""}
 
@@ -18569,14 +18599,17 @@ def _tg_mp_selftest(force=False):
             add("tls_" + fam.lower(), "Facade-рукопожатие %s" % fam, True,
                 "сервер без %s — пропускаем" % fam, warn=True)
             continue
-        if fam == "IPv6" and not _tg_mp_ipv6_want():
+        if fam == "IPv6" and not (_tg_mp_ipv6_want()
+                                  or (_aaaa_publish_want() and _mp_v6_listener_up())):
             # Живой замер (`l42`, 05.10): на коробке с `tg_mp_ipv6` снятым проверка
             # краснела («Connection refused»), хотя слушателя `::` нет по воле оператора.
             # Спрашивать нечего — и это не поломка: кого касается, тот назван проверкой
-            # «Клиенты едут под именем маршрута».
+            # «Клиенты едут под именем маршрута». #497: переключатель телемета больше
+            # не единственный, кто заводит в6-путь фасада, — поэтому смотрим и на
+            # публикуемое решение, а не на одно слово движка.
             add("tls_ipv6", "Facade-рукопожатие IPv6", True,
-                "IPv6 у MTProto погашен переключателем — в6-путь фасада (релей и AAAA) "
-                "не строится, спрашивать нечего", warn=True)
+                "в6-путь фасада погашен: нет ни пожелания движка, ни рубильника AAAA со "
+                "слушателем на шестёрке — спрашивать нечего", warn=True)
             continue
         ok, detail = _tls_probe(ip, port, sni)
         add("tls_" + fam.lower(), "Facade-рукопожатие %s на %s:%d (SNI=%s — %s; %s)"
@@ -22782,6 +22815,83 @@ def _hop_load():
 
 def _hop_save(hops):
     _save(HOPS_FILE, hops)  # содержит токены регистрации — 0600
+    _hop_front_flush()
+
+_HOP_FRONT = {"ips": None, "ts": 0.0}
+
+
+def _hop_front_flush():
+    """Сбросить кэш адресов фронта: список меняется руками оператора (добавил,
+    удалил, сменил публичный хост), а спрашивается в горячем пути."""
+    _HOP_FRONT["ips"] = None
+
+
+def _hop_front_addrs():
+    """Адреса добавленных фронтов: `front_ip` из `hops.json` плюс то, во что
+    разрезолвился публичный хост ссылок. Это НЕ адреса подписчиков: за каждым
+    фронтом стоит весь его пул, поэтому фронт обязан быть доверенным источником —
+    иначе SYN-лимит и бан по одному адресу решают за всех (#501). Кэш короткий,
+    но есть: спрашивать приходится на каждую строку журнала и на каждый бан."""
+    now = time.time()
+    if _HOP_FRONT["ips"] is not None and now - _HOP_FRONT["ts"] < 120:
+        return _HOP_FRONT["ips"]
+    got = []
+
+    def add(value):
+        # в доверенный список попадают только РАЗБИРАЕМЫЕ адреса: страж
+        # `_dial_addr_ok` пропускает любое имя, которое не разрешилось («не адрес»
+        # тоже проходит — резолв упал, а блокировать нечем), а из этого списка
+        # решают о неприкосновенности источника (#501)
+        try:
+            a = str(ipaddress.ip_address(str(value).strip()).compressed)
+        except Exception:
+            return
+        if a not in got:
+            got.append(a)
+
+    for h in _hop_load():
+        ip = str(h.get("front_ip") or "").strip()
+        if ip and _dial_addr_ok(ip):
+            add(ip)
+    host = (CFG_CACHE.get("hop_public_host") or "").strip()
+    if host and _dial_addr_ok(host):
+        if _hop_is_ip4(host) or ":" in host:
+            add(host)
+        else:
+            try:
+                for r in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP):
+                    add(str(r[4][0]).split("%")[0])
+            except Exception:
+                pass
+    _HOP_FRONT["ips"] = got
+    _HOP_FRONT["ts"] = now
+    return got
+
+
+def _front_covered(target):
+    """Накрывает ли заявка (одиночный адрес или `CIDR`) адрес живого фронта?
+    Вернуть сам адрес фронта, иначе пустую строку. Сравнение по вхождению, а не
+    по равенству строк: `/24` наблюдателя накрывает фронт молча (#501)."""
+    ips = _hop_front_addrs()
+    t = str(target or "").strip()
+    if not ips or not t:
+        return ""
+    try:
+        net = ipaddress.ip_network(t, strict=False)
+    except Exception:
+        return ""
+    for a in ips:
+        try:
+            # Метод `contains` у сети адресов удалён в Пифоне 3.13, а коробка на 3.14:
+            # вызов молча становился исключением, то есть ответом «фронта нет».
+            # Живая во всех ветках форма одна — оператор `in`.
+            if net.version == ipaddress.ip_address(a).version and \
+                    ipaddress.ip_address(a) in net:
+                return a
+        except Exception:
+            continue
+    return ""
+
 
 def _hop_pub_host():
     """Хост для пользовательских ссылок: ФРОНТ (если двойной прыжок включён),
@@ -24015,7 +24125,8 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
                                  web_sni=web_sni,
                                  mp_v6_relay_port=(mp_port if (mp and mp_domain and mp_port
                                                                and (_tg_mp_ipv6_want()
-                                                                    or _aaaa_publish_want())) else 0)))
+                                                                    or (_aaaa_publish_want()
+                                                                        and _v6_bindable()))) else 0)))
     # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
     main = open(_NG_MAIN_BAK).read()
     changed = False
@@ -25079,11 +25190,23 @@ def _ssh_keep_refuses(target):
 def _ban_ip(ip, secs, reason):
     """Общий бан IP через inet/veil_bans + bans.json. False = уже забанен.
 
-    Первым делом SSH-замок: все ступени бана (`login fails`, `ssh fails`,
-    `devices:`, наблюдатель) идут отсюда, поэтому запрет живёт в ОДНОМ месте.
+    Первым делом слово о фронте (#501), затем SSH-замок: все ступени бана
+    (`login fails`, `ssh fails`, `devices:`, наблюдатель) идут отсюда, поэтому
+    запрет живёт в ОДНОМ месте.
     Прежняя защита спрашивалась каждой ступенью сама: fail2ban-lite смотрел на
     живые сессии, а наблюдатель — ни на них, ни на список оператора.
     """
+    front = _front_covered(ip)
+    if front:
+        # Абсолютное слово (#501): фронт — единственный источник, через который
+        # подписчики доходят до бэка, поэтому его бан (или `CIDR`, который его
+        # накрывает) отрезал бы от сервиса весь пул разом. Стоит ПЕРЕД SSH-замком:
+        # отказ окончательный, а замок — дорогой вопрос (`ss` по живым сессиям),
+        # спрашивать его ради заведомого «нет» нечем.
+        _audit("front_ban_refused", ip=ip, reason=reason, front=front)
+        print("[fronts] бан %s (%s) ОТКАЗ: накрывает адрес фронта %s — за ним "
+              "весь пул подписчиков" % (ip, reason, front), flush=True)
+        return False
     known, ips, nets = _ssh_keep()
     why = _ssh_keep_block(ip, known, ips, nets)
     if why:
@@ -25604,6 +25727,18 @@ _DEV_OVER = {}          # uuid -> ts, когда заметили превыше
 _DEV_POS = [0, 0]       # [`offset` чтения, последний размер файла]
 _DEV_POS_FILE = f"{BASE}/logs/xray-access.pos"
 _DEV_POS_INIT = [False]
+# ---------- #500: сети, где живёт подписчик ----------
+# Широкий бан (`/24`-сеткой или `/16`-веером) режет не адрес, а соседей по входу:
+# у оператора связи за одним `/24` сидят сотни телефонов, и бан по такой сетке —
+# авария для всех (22.10: сетка оператора связи по причине «sweep farm fan»
+# держала абонентов без связи 44 часа). Признак, который отличает оператора от фермы без
+# внешних баз (бой их всё равно не резолвит), один: из сети подписчика принимался
+# сеанс. Ферма ключей не имеет и принятого сеанса дать не может.
+_SUBS_SEEN_FILE = f"{BASE}/subs_seen.json"
+_SUBS_SEEN_TTL = 90 * 86400          # сеть забывается через квартал тишины
+_SUBS_LIVE_WIN = 30 * 86400          # сеанс за это время считается живым
+_SUBS_SEEN = None                    # {литерал сети: метка последней приёмки}
+_SUBS_SEEN_LOCK = threading.Lock()
 
 def _devpos_init():
     # смещение переживало рестарт панели: иначе после каждого перезапуска
@@ -25772,6 +25907,90 @@ def _dev_seen(email, ip, now):
         return
     d[ip] = {"ips": {ip: now}}
 
+def _subs_seen_net(ip):
+    """Сеть абонента: v4 — /24 (столько же банит сетка наблюдателя), v6 — /64
+    (префикс одной машины у оператора). Пусто — адрес неразбираемый."""
+    try:
+        a = ipaddress.ip_address(str(ip or "").strip())
+    except Exception:
+        return ""
+    if a.version == 4:
+        p = str(a).split(".")
+        return "%s.%s.%s.0/24" % (p[0], p[1], p[2])
+    e = a.exploded.split(":")
+    return "%s:%s:%s:%s::/64" % (e[0], e[1], e[2], e[3])
+
+
+def _subs_seen_load():
+    global _SUBS_SEEN
+    if _SUBS_SEEN is not None:
+        return _SUBS_SEEN
+    d = {}
+    try:
+        f = json.load(open(_SUBS_SEEN_FILE))
+        if isinstance(f, dict):
+            d = {str(k): float(v or 0) for k, v in f.items()}
+    except Exception:
+        d = {}
+    if not d:
+        # первого запуска хватает строк устройств: они уже лежат в переписи,
+        # а 150 МБ журнала доступа на старте панели читать нечем
+        for rows in (_SUBDEV or {}).values():
+            for r in (rows or []):
+                if not isinstance(r, dict):
+                    continue
+                for ip in [r.get("ip")] + list(r.get("ips") or []):
+                    n = _subs_seen_net(ip)
+                    if n:
+                        d[n] = time.time()
+    now = time.time()
+    _SUBS_SEEN = {k: v for k, v in d.items() if now - float(v or 0) <= _SUBS_SEEN_TTL}
+    return _SUBS_SEEN
+
+
+def _subs_seen_note(ip, ts=None):
+    """Отметить сеть, из которой принят сеанс. True — словарь изменился, тик
+    устройств запишет файл одним куском за проход, а не на каждую строку."""
+    n = _subs_seen_net(ip)
+    if not n:
+        return False
+    t = float(ts or time.time())
+    with _SUBS_SEEN_LOCK:
+        d = _subs_seen_load()
+        if float(d.get(n) or 0) >= t - 60:
+            return False
+        d[n] = t
+        return True
+
+
+def _subs_seen_save():
+    with _SUBS_SEEN_LOCK:
+        _save(_SUBS_SEEN_FILE, dict(_subs_seen_load()))
+
+
+def _subs_live_in(prefix, window_s=_SUBS_LIVE_WIN):
+    """Сколько сетей подписчика попадает в префикс. Ноль — широкому бану тут
+    делать нечего; больше нуля — бан резал бы живых людей и не вступает (#500)."""
+    try:
+        net = ipaddress.ip_network(str(prefix or "").strip(), strict=False)
+    except Exception:
+        return 0
+    now = time.time()
+    with _SUBS_SEEN_LOCK:
+        d = dict(_subs_seen_load())
+    n = 0
+    for k, ts in d.items():
+        if now - float(ts or 0) > window_s:
+            continue
+        try:
+            sub = ipaddress.ip_network(k, strict=False)
+        except Exception:
+            continue
+        if sub.version == net.version and (sub == net or sub.subnet_of(net)):
+            n += 1
+    return n
+
+
 def _device_tick(st):
     limits = {}
     names = {}
@@ -25792,6 +26011,7 @@ def _device_tick(st):
                 limits[cu] = max(limits.get(cu, 0), md)
     now = time.time()
     pact = {}
+    seen_dirty = False
     for line in _access_log_lines():
         m = _ACC_RE.match(line)
         if not m:
@@ -25807,11 +26027,18 @@ def _device_tick(st):
                     time.strftime("%Y-%m-%d", time.gmtime(now))
                 pact.setdefault(tok, {}).setdefault(tag, {}).setdefault(day, 0)
                 pact[tok][tag][day] += 1
-        if email not in limits:
-            continue
         ip = _strip_port(m.group(1))
         if _f2b_public(ip):
-            _dev_seen(email, ip, now)
+            # #500: сеть, откуда принят сеанс, помним независимо от лимита устройств —
+            # она стоп-кран широкого бана, и молчать из-за выставленного лимита не вправе
+            seen_dirty = _subs_seen_note(ip, now) or seen_dirty
+            if email in limits:
+                _dev_seen(email, ip, now)
+    if seen_dirty:
+        try:
+            _subs_seen_save()
+        except Exception as e:
+            print("[subs_seen] " + str(e), flush=True)
     if pact:
         try:
             _protoact_merge(pact, now)
@@ -26336,6 +26563,12 @@ def _own_ip_cidrs():
     if re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", hop) or \
             (":" in hop and re.fullmatch(r"[0-9a-fA-F:]+", hop)):
         ips.append(hop)
+    # #501: адреса добавленных фронтов — тоже свои. Нужны они сразу двум местам:
+    # `veil_synfix` не имеет права лимитировать SYN источника, за которым стоит
+    # весь пул подписчиков, и клиент обязан идти на фронт мимо туннеля, иначе
+    # соединение к входу туннеля уйдёт внутрь того же туннеля.
+    for ip in _hop_front_addrs():
+        ips.append(ip)
     # Куда клиент реально стучится: A/AAAA собственного домена панели и wg-эндпоинта.
     for d in ((CFG_CACHE.get("panel_domain") or "").strip(), hop, _wg_auto_domain()):
         if d and not re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", d) and ":" not in d:
@@ -29687,7 +29920,99 @@ def _veil_ensure(names=None, provider=None, issue_cert=True, confirm=False, base
 # применённого мюкса и возвращаем те, что перестали резолвиться вовсе. Чужое имя
 # не трогаем: спорить с соседом по зоне дороже, чем остаться на базе.
 _VEIL_GUARD = {"checked": 0, "lost": "", "foreign": "", "restored": "",
-               "skipped": "", "error": "", "ts": None, "ip6_dropped": ""}
+               "skipped": "", "error": "", "ts": None, "ip6_dropped": "",
+               "ip6_created": "", "ip6_skipped": "", "provider": ""}
+
+
+def _veil_ip6_guard_cf(names, zid=""):
+    """#499: Cloudflare-лег хранителя выпушенных имён — сверяет AAAA с решением панели.
+
+    Прежний контур умел только dynv6, и на бою, где DNS живёт в Cloudflare, не делал
+    ровным счётом ничего: рубильник «Публиковать AAAA» менял РЕШЕНИЕ панели, до зоны
+    дело не доходило, и v6-клиенты с поднятым рубильником так же ехали через NAT64
+    провайдера. Здесь ровно этот шаг и закрывается.
+
+    Границы этого шага: A-записи не трогаются (судиться с чужой A хранителю нечем), под
+    проксированием имя не трогается вовсе (адресата решает оператор-фронт, а не панель),
+    AAAA без A не создаётся (имя повелось бы в семейство, где его нет), а `wg`-эндпоинт
+    обязан оставаться A-only: для него решение принудительно пусто, и шестёрка у него
+    снимается, а не ставится — мобильный IPv6 рвёт WG-сессию.
+    Возвращает список имён, которым поставили AAAA."""
+    ip6 = _ip6_to_publish()
+    wg = (_wg_auto_domain() or "").strip().lower()
+    if not zid:
+        try:
+            zid = (_cf_zone()[0] or "").strip()
+        except Exception as e:
+            _VEIL_GUARD["error"] = str(e)[:120]
+            return []
+    if not zid:
+        _VEIL_GUARD["skipped"] = "зона Cloudflare не определена"
+        return []
+    try:
+        recs = []
+        page = 1
+        while page <= 10:
+            batch = _cf_api("GET", "/zones/%s/dns_records?per_page=100&page=%d" %
+                            (urllib.parse.quote(zid), page)) or []
+            recs += batch
+            if len(batch) < 100:
+                break
+            page += 1
+    except Exception as e:
+        _VEIL_GUARD["error"] = str(e)[:120]
+        return []
+    by = {}
+    for r in recs:
+        nm = str(r.get("name") or "").lower().rstrip(".")
+        t = (r.get("type") or "").upper()
+        by.setdefault(nm, []).append(dict(r, _t=t))
+    created, dropped, skipped = [], [], []
+    for nm in names:
+        n0 = (nm or "").strip().lower().rstrip(".")
+        if not n0:
+            continue
+        rows = by.get(n0) or []
+        six = [r for r in rows if r["_t"] == "AAAA"]
+        four = [r for r in rows if r["_t"] == "A"]
+        if any(r.get("proxied") for r in rows):
+            skipped.append(n0)             # оранжевое имя: панель его адресатом не владеет
+            continue
+        # `wg` — эндпоинт, ему предписано жить по A-only (шестёрка рвёт мобильную
+        # WG-сессию): для этого имени решение принудительно пусто, и осиротевшая
+        # запись снимается, а не оставляется как есть.
+        want6 = "" if (wg and n0 == wg) else ip6
+        if want6:
+            if not four:
+                skipped.append(n0)         # без A шестёрка повела бы в несуществующее имя
+                continue
+            same = [r for r in six
+                    if (r.get("content") or "").strip().lower() == want6.lower()]
+            keep = same[0] if same else None
+            for r in six:
+                if r is keep:
+                    continue               # верную оставляем в покое, дубль и почерневшую — снимаем
+                _cf_api("DELETE", "/zones/%s/dns_records/%s" %
+                        (urllib.parse.quote(zid), urllib.parse.quote(str(r.get("id") or ""))))
+            if not same:
+                _cf_api("POST", "/zones/%s/dns_records" % urllib.parse.quote(zid),
+                        {"type": "AAAA", "name": n0, "content": want6,
+                         "ttl": 60, "proxied": False})
+                created.append(n0)
+            continue
+        for r in six:
+            _cf_api("DELETE", "/zones/%s/dns_records/%s" %
+                    (urllib.parse.quote(zid), urllib.parse.quote(str(r.get("id") or ""))))
+            dropped.append(n0)
+    _VEIL_GUARD["checked"] = len(names)
+    _VEIL_GUARD["ip6_created"] = ",".join(created)
+    _VEIL_GUARD["ip6_dropped"] = ",".join(dropped)
+    _VEIL_GUARD["ip6_skipped"] = ",".join(skipped)
+    if created or dropped or skipped or _VEIL_GUARD["error"]:
+        _audit("veil_names_guard", provider="cloudflare", checked=len(names),
+               ip6_created=",".join(created), ip6_dropped=",".join(dropped),
+               ip6_skipped=",".join(skipped), error=_VEIL_GUARD["error"])
+    return created
 
 
 def _veil_names_wanted():
@@ -29715,15 +30040,25 @@ def _veil_names_wanted():
 def _veil_names_guard():
     """Присмотр за выпушенными именами. Возвращает список возвращённых."""
     _VEIL_GUARD.update(ts=time.time(), checked=0, lost="", foreign="", restored="",
-                       error="", skipped="", ip6_dropped="")
+                       error="", skipped="", ip6_dropped="", ip6_created="",
+                       ip6_skipped="", provider="")
     if _mv_locked():
         _VEIL_GUARD["skipped"] = "переезд: самопроизвольные правки DNS приостановлены"
         return []
     base = _veil_base()
-    if _veil_provider(base) != "dynv6" or not _dynv6_conf()["token"]:
+    prov = _veil_provider(base)
+    _VEIL_GUARD["provider"] = prov
+    names = _veil_names_wanted()
+    if prov == "cloudflare":
+        # #499: на бою зона живёт в Cloudflare, а прежний контур умел только dynv6 —
+        # рубильник публикации AAAA менял решение панели и до DNS не доходил.
+        if not names:
+            _VEIL_GUARD["skipped"] = "развилка не применена — держать нечего"
+            return []
+        return _veil_ip6_guard_cf(names)
+    if prov != "dynv6" or not _dynv6_conf()["token"]:
         _VEIL_GUARD["skipped"] = "dynv6-зона не настроена"
         return []
-    names = _veil_names_wanted()
     if not names:
         _VEIL_GUARD["skipped"] = "развилка не применена — держать нечего"
         return []
@@ -39605,6 +39940,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 try:
                     _veil_names_guard()
                     out["dropped"] = [x for x in (_VEIL_GUARD.get("ip6_dropped") or "").split(",") if x]
+                    # #499: на бою зона — Cloudflare, и именно там лег хранителя ставит
+                    # записи: оператор обязан увидеть создание, а не только снятие.
+                    out["created"] = [x for x in (_VEIL_GUARD.get("ip6_created") or "").split(",") if x]
+                    out["skipped"] = [x for x in (_VEIL_GUARD.get("ip6_skipped") or "").split(",") if x]
                 except Exception as e:
                     out["guard_error"] = str(e)[:160]
                 if CFG_CACHE["aaaa_publish"]:
