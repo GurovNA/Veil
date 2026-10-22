@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.21"
+VERSION = "2.17.22"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -4389,6 +4389,12 @@ def _build_xray_cfg(st, force_proto=None):
 
     routing_rules = [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]
     outbounds = [{"protocol": "freedom", "tag": "direct"}]
+
+    # #503: `Gemini` своим кольцом наружу — с привязкой к штатному выходу, чтобы адрес
+    # Google не утаскивал его в российское окно `YouTube`. Порядок правил здесь важен:
+    # `Xray` берёт первое совпадение, поэтому развод стоит выше `ru_bypass`.
+    if CFG_CACHE.get("gemini_direct"):
+        _gd_split(outbounds, routing_rules, _gd_egress_dev()[0])
 
     if CFG_CACHE.get("ru_bypass"):
         routing_rules.append({
@@ -17652,6 +17658,347 @@ def _yw_view():
             "aggregates": list(_YW_AGG), "ts": st.get("ts")}
 
 
+# ---------- #503: Gemini в обход российского выхода окна «YouTube» ----------
+# Слово хозяина 22.10: «главное что бы работало. youtube-ru, gemini -не ru».
+#
+# Адресно разделить нечем: окно смотрит на адрес назначения, а `Gemini` отвечает из тех
+# же сетей Google, что и `YouTube`. На живой коробке накрытие измерено — из 56 адресов
+# `Gemini` под окном 56 (100 %), то есть весь `Gemini` читается Россией. Разделить может
+# только SNI, а его `Xray` уже читает: сниффинг `tls` и `quic` стоит на всех входах.
+#
+# Остался один вопрос — как вывести поток из таблицы окна, и он решён числом, а не
+# догадкой. Метку сокета это ядро наружу не передаёт: счётник `nft` на цепочке с
+# `meta mark` добавил 6 пакетов контрольному сокету с меткой 0x2e и ни одного — сокетам
+# `Xray` с `sockopt.mark` и с `sockSettings.mark`. Привязка к интерфейсу работает: под
+# захваченной таблицей неподвязанный поток умер по таймауту (2 прогона из 2), привязанный
+# к штатному выходу принёс `200` с телом (2 из 2) — и по четвёрке, и по шестёрке. На бою
+# тем же щупом по четвёрке: через окно `RU` (2 из 2), с привязкой к выходу `DE` (2 из 2).
+#
+# Поэтому развод живёт в конфиге `Xray`: отдельное кольцо наружу с привязкой к штатному
+# интерфейсу и отдельное правило по доменам, выше `ru_bypass`. Ни таблиц, ни звеньев развод
+# не касается: окно `YouTube`, окно `TikTok` и медиа-путь остаются ровно как стояли.
+#
+# Честная граница: `veilwg` и `awg0` ядро пересылает мимо `Xray`, и по SNI их развести
+# нельзя в принципе. Карточка называет число подписчиков таких входов, а не обещает то,
+# чего сделать нельзя.
+_GD_TAG = "gemini-direct"
+_GD_DIR = "/var/lib/veil-gemini-split"
+_GD_STATE = _GD_DIR + "/state.json"
+_GD_PROBE_TTL = 300.0     # с какой частотой мерим выходы сами
+_GD_APPLY_GAP = 300.0     # не чаще одного пересобрания конфига из-за развода
+_GD_DRIFT_S = 90.0        # расхождение должно пережить два тика, прежде чем тронем Xray
+_GD_POOL_CAP = 32
+_GD_ERR = ""
+_GD_PROBE_AT = 0.0
+_GD_APPLY_AT = 0.0
+_GD_APPLIED_CACHE = [0.0, None]
+# Домены меры. `keyword:gemini` берёт не только фронт: под ним и новые имена того же
+# сервиса, которые Google добавит после этого релиза; остальное — известные витрины.
+_GD_DOMAINS = ("keyword:gemini", "full:aistudio.google.com", "full:notebooklm.google.com",
+               "full:makersuite.google.com", "full:bard.google.com", "full:ai.google.dev",
+               "suffix:ai.google.dev", "suffix:generativelanguage.googleapis.com",
+               "suffix:alkimi-pa.googleapis.com", "suffix:aip.googleapis.com")
+_GD_HOSTS = ("gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com")
+# Туннельные интерфейсы под запретом: привязавшись к звену окна, отправили бы `Gemini`
+# обратно в Россию — то есть сделали бы ровно то, от чего развод лечит.
+_GD_FORBID = (_TW_IF, _YW_IF, _MR_IF, WG_IFACE, AWG_IFACE)
+
+
+def _gd_want():
+    """Одно слово оператора: выводить ли `Gemini` из окна `YouTube`."""
+    return bool(CFG_CACHE.get("gemini_direct"))
+
+
+def _gd_egress_dev():
+    """Интерфейс, через который машина выходит сама: он и есть выход `Gemini`.
+
+    Берём интерфейс маршрута по умолчанию, а не список адресов: привязка обязана быть
+    одна на кольцо. Возвращает (имя, причина отказа). Никаких исключений наружу:
+    `_build_xray_cfg` — самый дорогой читатель состояния, упасть в нём значит остаться
+    без всякого конфига, а не только без развода."""
+    try:
+        rc, out, err = _tw_cmd("ip", "-4", "-o", "route", "show", "default")
+    except Exception as e:
+        return "", "маршрута по умолчанию не прочитали: " + str(e)[:60]
+    if rc != 0:
+        return "", "маршрута по умолчанию нет: " + err[:60]
+    for line in out.splitlines():
+        m = re.search(r"\bdev (\S+)", line)
+        if not m:
+            continue
+        name = m.group(1)
+        if name in _GD_FORBID or name.startswith("lo"):
+            return "", "штатным выходом назван туннельный интерфейс"
+        return name, ""
+    return "", "штатный выход без интерфейса"
+
+
+def _gd_outbound(dev):
+    return {"protocol": "freedom", "tag": _GD_TAG,
+            "streamSettings": {"sockopt": {"interface": dev}}}
+
+
+def _gd_rule():
+    return {"type": "field", "domain": list(_GD_DOMAINS), "outboundTag": _GD_TAG}
+
+
+def _gd_split(outbounds, routing_rules, dev):
+    """Кладёт развод в сборку: своё кольцо наружу и своё правило по доменам.
+
+    Правило добавляется ПОСЛЕ `api`, но ДО `ru_bypass` (вызывающий код держит порядок):
+    `Xray` берёт первое совпадение, и российская витрина не должна успеть первой.
+    Отдельная функция потому, что судить форму обязаны без командной строки —
+    `_gd_egress_dev` читает ядро, а форма правила от ядра не зависит."""
+    if not dev:
+        return False
+    outbounds.append(_gd_outbound(dev))
+    routing_rules.append(_gd_rule())
+    return True
+
+
+def _gd_applied(force=False):
+    """Что служба имеет НА САМОМ ДЕЛЕ: читаем живой файл `Xray`, а не память панели.
+
+    Тот же урок, что у #480: поверить собственному замыслу — то же самое, что называть
+    главным адресом тот, который ядро уже сняло."""
+    now = time.time()
+    if not force and _GD_APPLIED_CACHE[1] is not None and \
+            now - _GD_APPLIED_CACHE[0] < 60.0:
+        return _GD_APPLIED_CACHE[1]
+    try:
+        with open(XRAY, encoding="utf-8") as f:
+            cfg = json.load(f)
+        ob = next((o for o in (cfg.get("outbounds") or []) if o.get("tag") == _GD_TAG), None)
+        res = {"read": True, "error": "",
+               "tag": ob is not None,
+               "dev": str(((ob.get("streamSettings") or {}).get("sockopt") or {})
+                          .get("interface") or "") if ob else "",
+               "rule": any(r.get("outboundTag") == _GD_TAG
+                           for r in ((cfg.get("routing") or {}).get("rules") or []))}
+    except Exception as e:
+        res = {"read": False, "error": str(e)[:120], "tag": False, "dev": "", "rule": False}
+    _GD_APPLIED_CACHE[0] = now
+    _GD_APPLIED_CACHE[1] = res
+    return res
+
+
+def _gd_pool():
+    """Адреса `Gemini` четвёркой: против них и мерим накрытие окном, и судим выходы."""
+    got = []
+    for h in _GD_HOSTS:
+        try:
+            for ai in socket.getaddrinfo(h, None, socket.AF_INET):
+                if ai[4][0] not in got:
+                    got.append(ai[4][0])
+        except Exception:
+            continue
+        if len(got) >= _GD_POOL_CAP:
+            break
+    return got[:_GD_POOL_CAP]
+
+
+def _gd_region(ip, dev, timeout=8):
+    """Страна в ответе Google с одного адреса: с привязкой к `dev` или как есть.
+
+    Тот же способ, что у окна `YouTube`, только вместо метки привязка — метку это ядро
+    `Xray` не передаёт (замерено), и мерить способом, которого в конфиге нет, было бы
+    обманом на карточке. Имя в щупе берём хозяйское (`_YW_HOST`), а не `Gemini`: страна
+    в ответе `Google` ставится по адресу выхода, поэтому сравнивать надо ровно те же
+    два числа, что сверяет окно, — с привязкой и без неё."""
+    if not ip:
+        return "", "адреса Gemini не дождались"
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        if dev:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode())
+        s.connect((ip, 443))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        t = ctx.wrap_socket(s, server_hostname=_YW_HOST)
+        s = None
+        t.settimeout(timeout)
+        t.sendall(b"GET / HTTP/1.1\r\nHost: " + _YW_HOST.encode() +
+                  b"\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+        buf = b""
+        while len(buf) < 300000:
+            try:
+                d = t.recv(8192)
+            except socket.timeout:
+                break
+            if not d:
+                break
+            buf += d
+        try:
+            t.close()
+        except Exception:
+            pass
+        m = re.search(rb'"GL":"([A-Z]{2})"', buf)
+        if m:
+            return m.group(1).decode("ascii", "replace"), ""
+        return "", "региона в ответе нет"
+    except Exception as e:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return "", str(e)[:90]
+
+
+def _gd_kernel_clients():
+    """Сколько подписчиков сидит на веерных входах: их трафик ядро несёт мимо `Xray`.
+
+    Число нужно, чтобы карточка называла свою границей не словами, а размером дыры."""
+    try:
+        inbs = (_state_view(_load(STATE) or {}).get("inbounds") or {})
+    except Exception:
+        return None
+    n = 0
+    for proto in ("wireguard", "amneziawg"):
+        inb = inbs.get(proto) or {}
+        if not inb.get("disabled"):
+            n += len(inb.get("clients") or [])
+    return n
+
+
+def _gd_probe(force=False):
+    """Диагноз «чем отвечает выход на развод»: два щупа против одного накрытого адреса —
+    как идёт сейчас (через окно) и с привязкой к штатному выходу."""
+    global _GD_PROBE_AT
+    now = time.time()
+    if not force and now - _GD_PROBE_AT < _GD_PROBE_TTL:
+        return
+    _GD_PROBE_AT = now
+    st = _load(_GD_STATE, {}) or {}
+    dev, why = _gd_egress_dev()
+    ap = _gd_applied(force=True)
+    nets = [n for _, n in _tw_rules(_YW_TBL)]
+    pool = _gd_pool()
+    cov = len([ip for ip in pool if _tw_covered_ip([ip], nets)])
+    tgt = _tw_covered_ip(pool, nets) or (pool[0] if pool else "")
+    rs, rw, errs = "", "", []
+    if tgt and dev:
+        rs, e1 = _gd_region(tgt, dev)
+        errs.append(e1)
+    elif not tgt:
+        errs.append("адреса Gemini под окном нет — сравнивать не с чем" if cov == 0
+                    else "адресов Gemini не дождались")
+    if tgt:
+        rw, e2 = _gd_region(tgt, "")
+        errs.append(e2)
+    if why:
+        errs.append(why)
+    if not ap.get("read"):
+        errs.append("живой конфиг службы не прочитан: " + str(ap.get("error") or "")[:80])
+    st.update({"enabled": _gd_want(), "dev": dev or None, "pool": len(pool),
+               "covered": cov, "probe_ip": tgt or None, "probe_at": int(now),
+               "region_split": rs or None, "region_window": rw or None,
+               "applied_tag": bool(ap.get("tag")), "applied_rule": bool(ap.get("rule")),
+               "applied_dev": ap.get("dev") or None,
+               "kernel_clients": _gd_kernel_clients(),
+               "probe_error": "; ".join(x for x in errs if x)[:180], "ts": _now_iso()})
+    _save(_GD_STATE, st, 0o600)
+
+
+def _gd_probe_bg():
+    try:
+        _gd_probe(force=True)
+    except Exception as e:
+        print("[gemini-split] " + str(e), flush=True)
+
+
+def _gd_reapply(st, dev, ap):
+    """Пересобираем конфиг службы, только если расхождение пережило два тика.
+
+    Рестарт `Xray` дорог и заметен подписчикам, поэтому мигание маршрута по умолчанию
+    (ротация адреса, подъём линка) не должно выдергивать службу на каждом тике."""
+    global _GD_APPLY_AT, _GD_ERR
+    now = time.time()
+    want = "on:%s" % dev if _gd_want() else "off"
+    have = ("on:%s" % ap.get("dev")) if (ap.get("tag") and ap.get("rule")) else "off"
+    if want != have:
+        if st.get("drift") != "%s|%s" % (want, have):
+            st.update({"drift": "%s|%s" % (want, have), "drift_at": int(now),
+                       "ts": _now_iso()})
+            _save(_GD_STATE, st, 0o600)
+            return "расхождение (%s вместо %s) — жду подтверждения" % (have, want)
+        if now - int(st.get("drift_at") or 0) < _GD_DRIFT_S or \
+                now - _GD_APPLY_AT < _GD_APPLY_GAP:
+            return "расхождение (%s вместо %s) — пересоберём на следующем тике" % (have, want)
+        _GD_APPLY_AT = now
+        _GD_APPLIED_CACHE[0] = 0.0
+        try:
+            _apply_state(_load(STATE))
+        except Exception as e:
+            _GD_ERR = "конфиг службы не пересобран: " + str(e)[:140]
+            st.update({"drift": None, "error": _GD_ERR, "ts": _now_iso()})
+            _save(_GD_STATE, st, 0o600)
+            return _GD_ERR
+        st.update({"drift": None, "error": "", "ts": _now_iso()})
+        _save(_GD_STATE, st, 0o600)
+        return ""
+    if st.get("drift"):
+        st.update({"drift": None, "error": "", "ts": _now_iso()})
+        _save(_GD_STATE, st, 0o600)
+    return ""
+
+
+def _gd_tick():
+    """Смотритель развода: сверяет живое состояние службы с ядром и мерит выходы.
+
+    Смена штатного выхода делает привязку мёртвой: связанный с несуществующим
+    интерфейсом поток `Xray` не уходит в Россию — он гибнет (замерено на четвёрке и
+    шестёрке). Поэтому при расхождении пересобираем конфиг, а не делаем вид, что так и
+    было. Звеньев и таблиц смотритель не касается."""
+    global _GD_ERR
+    if SBX:
+        return
+    st = _load(_GD_STATE, {}) or {}
+    if not _gd_want():
+        _gd_reapply(st, "", _gd_applied())
+        return
+    dev, why = _gd_egress_dev()
+    if why:
+        _GD_ERR = why
+        st.update({"enabled": True, "error": why, "ts": _now_iso()})
+        _save(_GD_STATE, st, 0o600)
+        return
+    _GD_ERR = ""
+    _gd_reapply(st, dev, _gd_applied())
+    _gd_probe()
+
+
+def _gd_tick_bg():
+    try:
+        _gd_tick()
+    except Exception as e:
+        print("[gemini-split] " + str(e), flush=True)
+
+
+def _gd_view():
+    """Снимок для морды и ноги самопроверки: только чтение, ничего не пересобирает."""
+    st = _load(_GD_STATE, {}) or {}
+    dev, why = _gd_egress_dev()
+    ap = _gd_applied()
+    pat = float(st.get("probe_at") or 0)
+    return {"want": _gd_want(), "gemini_direct": bool(CFG_CACHE.get("gemini_direct")),
+            "dev": dev, "why": why or st.get("error") or "",
+            "applied": bool(ap.get("tag") and ap.get("rule") and ap.get("read")),
+            "applied_dev": ap.get("dev") or st.get("applied_dev"),
+            "read": bool(ap.get("read")),
+            "pool": st.get("pool"), "covered": st.get("covered"),
+            "region_split": st.get("region_split"),
+            "region_window": st.get("region_window"),
+            "kernel_clients": (st.get("kernel_clients") if st.get("kernel_clients") is not None
+                               else _gd_kernel_clients()),
+            "domains": list(_GD_DOMAINS),
+            "probe_age": (int(time.time() - pat) if pat else None),
+            "probe_error": st.get("probe_error") or "", "ts": st.get("ts")}
+
+
 # ---------- #384/#385: в какой стране видят наш адрес (сервис по образцу чужого сканера) ----------
 # Слово хозяина 14.10: «надо этот или подобный сервис реализовать в панеле,
 # он стоит по адресу https://ipregion.vrnt.xyz». Цикл #384 снял первую половину
@@ -18851,6 +19198,40 @@ def _tg_mp_selftest(force=False):
     except Exception as e:
         add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
             str(e)[:160], warn=True)
+    # #503: суд того же рода, только вопрос обратный — `Gemini` обязан читаться
+    # НЕ Россией. Зелёным считается только связка «в живом конфиге службы развод лежит»
+    # плюс «привязанный выход ответил не российской страной»: одно без другого — половина.
+    try:
+        gv = _gd_view()
+        rs = str(gv.get("region_split") or "").upper()
+        rw = str(gv.get("region_window") or "").upper()
+        if not gv["want"]:
+            add("gemini_direct", "Gemini в обход окна YouTube", True,
+                "выключен — Gemini идёт тем же путём, что и YouTube", warn=True)
+        elif gv["why"]:
+            add("gemini_direct", "Gemini в обход окна YouTube", False, gv["why"])
+        elif not gv["read"]:
+            add("gemini_direct", "Gemini в обход окна YouTube", False,
+                "живой конфиг службы не прочитан: " + str(gv.get("probe_error") or "")[:90],
+                warn=True)
+        elif not gv["applied"]:
+            add("gemini_direct", "Gemini в обход окна YouTube", False,
+                "в живом конфиге службы развода нет (ждём подтверждения расхождения): "
+                + (gv.get("probe_error") or "привязка к %s не легла" % (gv.get("dev") or "?")))
+        elif rs and rs != "RU":
+            add("gemini_direct", "Gemini в обход окна YouTube", True,
+                "%s из %s адресов Gemini накрывает окно — с привязкой к %s Google видит %s%s"
+                % (gv.get("covered"), gv.get("pool"), gv.get("dev"), rs,
+                   (" вместо %s, как без привязки" % rw) if rw else ""))
+        elif rs == "RU":
+            add("gemini_direct", "Gemini в обход окна YouTube", False,
+                "привязанный выход читается Россией — разводу не верим")
+        else:
+            add("gemini_direct", "Gemini в обход окна YouTube", False,
+                gv.get("probe_error") or "ответа с привязанного выхода нет — проверка не прошла",
+                warn=True)
+    except Exception as e:
+        add("gemini_direct", "Gemini в обход окна YouTube", False, str(e)[:160], warn=True)
     # #180: TCP от клиента проходит весь путь — :443, развилка по SNI, слушатель, — и сессии
     # всё равно нет: узел сам не дотягивается до адресов Telegram. Это не поломка прокси, и
     # называть её поломкой прокси значит гонять хозяина по неверному следу. Жалобы берём у
@@ -30980,7 +31361,8 @@ def _limits_loop():
                               (_tg_dc_loss_tick, "dc-loss"),
                               (_mr_tick, "media-route"),
                               (_tw_tick, "tiktok-route"),
-                              (_yw_tick, "youtube-route")):
+                              (_yw_tick, "youtube-route"),
+                              (_gd_tick, "gemini-split")):
                 try:
                     _fn()
                 except Exception as e:
@@ -36341,6 +36723,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _yw_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/gemini_direct":
+            # #503: чем разведён `Gemini` и чем отвечают два выхода. Только чтение.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _gd_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/ipregion":
             # #384: снятый ранее замер щупов страны; ничего не мерит, только отдаёт.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -40019,6 +40408,40 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     print("[youtube-route] " + str(e), flush=True)
                 return self._send(200, _yw_view())
+            if p == "/api/gemini_direct":
+                # #503: `on` — «вести Gemini в обход окна YouTube», `check` — «чем
+                # отвечает выход». Пересборка конфига идёт сразу: это не стройка звена,
+                # а одно слово в файле, и оператор обязан услышать об отказе в этом же
+                # ответе. Ни один токен подписчика при этом не поворачивается.
+                b = self._body()
+                if "on" not in b and "check" not in b:
+                    return self._send(400, {"error": "нужно поле on или check"})
+                if "on" in b:
+                    want = bool(b.get("on"))
+                    dev, why = _gd_egress_dev() if want else ("", "")
+                    if want and not dev:
+                        # Включить вслепую нельзя: привязка в никуда не выводит поток,
+                        # а умерщвляет его — замерено и на четвёрке, и на шестёрке.
+                        return self._send(400, {"error": "развод не включается: " + why})
+                    CFG_CACHE["gemini_direct"] = want
+                    _cfg_save()
+                    _audit("gemini_direct", on=want)
+                    _GD_APPLIED_CACHE[0] = 0.0
+                    try:
+                        _apply_state(_load(STATE))
+                    except Exception as e:
+                        # Слово остаётся сказанным: смотритель увидит расхождение и
+                        # пересоберёт сам. Отказ называем честно, а не делаем вид, что
+                        # развод вступил.
+                        return self._send(500, {"error": "Xray: " + str(e)[:160]})
+                    threading.Thread(target=_gd_probe_bg, daemon=True).start()
+                    return self._send(200, _gd_view())
+                try:
+                    if b.get("check"):
+                        _gd_probe(force=True)
+                except Exception as e:
+                    print("[gemini-split] " + str(e), flush=True)
+                return self._send(200, _gd_view())
             if p == "/api/tiktok_variants":
                 # #457: `add` — зарегистрировать новый вариант; `probe:n` / `probe_all`
                 # — замерить (в фоне: песочница мерит до минуты, морда дочитывает опросом);
