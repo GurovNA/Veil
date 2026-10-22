@@ -20,6 +20,7 @@
 """
 import ipaddress
 import io
+import datetime
 import json
 import os
 import contextlib
@@ -48,6 +49,12 @@ UA = "v2rayNG/1.11.28"
 # живые файлы коробки, которым прогон не имеет права менять байты
 LIVE = ["/opt/vpnpanel/hops.json", "/opt/vpnpanel/subs_seen.json",
         "/opt/vpnpanel/bans.json", "/opt/vpnpanel/sub_devices.json"]
+
+
+def _iso(ts):
+    """Метка переписи устройств: тот же почерк UTC, что пишет панель."""
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat(
+        timespec="seconds")
 
 
 def stamp(path):
@@ -142,10 +149,52 @@ class LedgerOfSubscriberNets(Sandbox):
         self.assertEqual(panel._subs_live_in("203.0.113.0/24", 32 * 86400), 1)
 
     def test_pervogo_zapuska_hvataet_perepisi(self):
-        self.keep("_SUBDEV", {"tok": [{"ip": SUB4, "ips": [NEIGHBOR, "мусор"]}]})
+        # перепись ленивая: на первом обращении её в памяти нет вовсе, поэтому
+        # загрузка памяти сетей обязана звать ЗАГРУЗЧИК, а не глобальный словарь.
+        # Полумера — читать память — на живой коробке и провалилась: файл памяти
+        # завёлся с одной сетью вместо трёх десятков переписанных
+        self.keep("_SUBPREF_FILE", os.path.join(self.tmp.name, "sub_prefs.json"))
+        panel._SUBDEV = None
+        panel._SUBPREF = None
+        with open(panel._SUBDEV_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tok": [{"ip": SUB4, "last_ts": _iso(time.time()),
+                               "ips": [NEIGHBOR, "мусор"]}]}, f)
         panel._SUBS_SEEN = None
         nets = sorted(panel._subs_seen_load())
-        self.assertEqual(nets, ["192.0.2.0/24", "203.0.113.0/24"])
+        self.assertEqual(nets, ["192.0.2.0/24", SUB4_NET])
+
+    def test_nepolnyj_fayl_dolivayet_perepisi(self):
+        # боевая природа: файл памяти завёлся ОДНОЙ сетью, а перепись несла три
+        # десятка. Доливка только при пустом файле означала, что неполная память
+        # остаётся неполной навсегда и стоп-кран судит по одному свидетелю
+        self.keep("_SUBPREF_FILE", os.path.join(self.tmp.name, "sub_prefs.json"))
+        file_ts = time.time() - 10
+        with open(panel._SUBS_SEEN_FILE, "w", encoding="utf-8") as f:
+            json.dump({SUB4_NET: file_ts}, f)
+        with open(panel._SUBDEV_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tok": [{"ip": SUB4, "last_ts": _iso(time.time() - 5 * 86400)},
+                               {"ip": NEIGHBOR, "last_ts": _iso(time.time() - 2 * 86400)}]},
+                      f)
+        panel._SUBDEV = None
+        panel._SUBPREF = None
+        panel._SUBS_SEEN = None
+        d = panel._subs_seen_load()
+        self.assertEqual(sorted(d), ["192.0.2.0/24", SUB4_NET])
+        # метка файла свежее метки переписи — черстветь ей не от чего
+        self.assertAlmostEqual(d[SUB4_NET], file_ts, places=3)
+        self.assertEqual(panel._subs_live_in(FRONT_GRID), 1)
+
+    def test_stroka_perepisi_ne_ozhivaet_mertvuyu_set(self):
+        # перепись не вправе врать о свежести: сеть, откуда последний сеанс был
+        # дольше квартала назад, остаётся забытой, а не рождается заново
+        self.keep("_SUBPREF_FILE", os.path.join(self.tmp.name, "sub_prefs.json"))
+        with open(panel._SUBDEV_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tok": [{"ip": SUB4, "last_ts": _iso(time.time() - 91 * 86400)}]}, f)
+        panel._SUBDEV = None
+        panel._SUBPREF = None
+        panel._SUBS_SEEN = None
+        self.assertEqual(panel._subs_seen_load(), {})
+        self.assertEqual(panel._subs_live_in(SUB4_NET), 0)
 
     def test_fayl_pamyati_chitaemyj(self):
         panel._subs_seen_note(SUB4)

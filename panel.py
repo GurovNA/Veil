@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.20"
+VERSION = "2.17.21"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -25932,18 +25932,26 @@ def _subs_seen_load():
             d = {str(k): float(v or 0) for k, v in f.items()}
     except Exception:
         d = {}
-    if not d:
-        # первого запуска хватает строк устройств: они уже лежат в переписи,
-        # а 150 МБ журнала доступа на старте панели читать нечем
-        for rows in (_SUBDEV or {}).values():
-            for r in (rows or []):
-                if not isinstance(r, dict):
-                    continue
-                for ip in [r.get("ip")] + list(r.get("ips") or []):
-                    n = _subs_seen_net(ip)
-                    if n:
-                        d[n] = time.time()
+    # Перепись устройств — факт, файл памяти — лишь её надстройка, поэтому память
+    # доливается ВСЕГДА, а не только при пустом файле: файл, заведшийся неполным
+    # (на бою так и вышло — одна сеть вместо трёх десятков), иначе остался бы
+    # неполным навсегда, а стоп-кран мерил бы живых абонентов нулём. Перепись
+    # ЛЕНИВАЯ, поэтому её ЗОВУТ ЗАГРУЗЧИКОМ: загрузчик возвращает пустоту и
+    # наполняет глобальный словарь, голое чтение `_SUBDEV` на первом обращении пусто
+    _subdev_load()
     now = time.time()
+    for rows in (_SUBDEV or {}).values():
+        for r in (rows or []):
+            if not isinstance(r, dict):
+                continue
+            try:
+                ts = float(datetime.datetime.fromisoformat(r.get("last_ts")).timestamp())
+            except Exception:
+                ts = now
+            for ip in [r.get("ip")] + list(r.get("ips") or []):
+                n = _subs_seen_net(ip)
+                if n:
+                    d[n] = max(float(d.get(n) or 0), ts)
     _SUBS_SEEN = {k: v for k, v in d.items() if now - float(v or 0) <= _SUBS_SEEN_TTL}
     return _SUBS_SEEN
 
