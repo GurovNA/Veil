@@ -1598,6 +1598,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick="setJump('setIps')">📋 IP сервера</button>
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
       <button class="tiny sec" onclick="setJump('setTikTok')">🎵 TikTok</button>
+      <button class="tiny sec" onclick="setJump('setYouTube')">▶️ YouTube</button>
       <button class="tiny sec" onclick="setJump('setIpRegion')">🌍 В какой стране меня видят</button>
       <button class="tiny sec" onclick="setJump('setTorrent')">🧲 Торренты</button>
 <!--veil:btns-->
@@ -1905,6 +1906,22 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
       <div class=msg id=tvMsg></div>
     </div>
+    </div>
+    <div class="card set-block" id=setYouTube>
+    <h3 style="margin:0 0 8px">YouTube через WARP</h3>
+    <p class=mut style="margin:0 0 10px"><span id=ywState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Google тоже решает, в какой стране сидит зритель, по адресу, с которого пришёл запрос. Без туннеля наш узел для Google — заграница (на тестовой коробке замерено: не Россия, и название страны на прямом выходе живое — два промера назвали разные), и выдача, язык и права на показ строятся под эту страну. Личный туннель Cloudflare (WARP) даёт другой выход: тот же замер показал, что Google читает его российским — четыре прогона из четырёх, и на витрине, и в ответе плеера. Это окно поднимает своё звено и ведёт через него адреса YouTube, чтобы Google видел Россию.</p>
+        <p><b>Что не задето.</b> Через эти правила идёт трафик самого сервера, а не подписчики: узел и клиенты окно не замечают. Остальной трафик коробки не перемаршрутизируется; если туннель падает, адреса YouTube идут напрямую, как шли.</p>
+        <p><b>О названном следствии.</b> YouTube отвечает с тех же адресных сетей, что и другие службы Google, — разделить их по адресам нельзя. Через это окно уходят сети Google целиком: поиску и прочим службам Google сервер тоже будет виден Россией. Звено отдельное от TikTok — своё, со своим туннелем; включать и выключать их можно раздельно.</p>
+        <p><b>Кнопка «Вести YouTube через WARP»</b> поднимает звено сразу, не дожидаясь ближайшего тика панели; снятие галки разбирает его целиком: правила, связь и обходное правило снимаются.</p>
+        <p><b>Кнопка «Проверить, что видит Google»</b> шлёт два запроса к одному и тому же адресу YouTube — напрямую и через туннель — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=ywOn onchange=saveYouTube(this.checked)> Вести YouTube через WARP — Google должен видеть Россию</label>
+      <button class="tiny sec" onclick=checkYouTube() id=ywCheckBtn>🔎 Проверить, что видит Google</button>
+    </div>
+    <div class=msg id=ywMsg></div>
     </div>
     <div class="card set-block" id=setWarpManual>
     <h3 style="margin:0 0 8px">Ручной список через WARP</h3>
@@ -6860,6 +6877,44 @@ async function checkTikTok(){
   if(b) b.disabled=false;
   loadTikTok();
 }
+async function loadYouTube(){
+  const el=$('ywState'), on=$('ywOn');
+  if(!el) return;
+  try{
+    const d=await api('/api/youtube_warp');
+    if(on) on.checked=!!d.youtube_on;
+    const rt=String(d.region_tunnel||'').toUpperCase(), rd=String(d.region_direct||'').toUpperCase();
+    if(!d.want){ el.textContent='Выключено — Google видит сервер как есть.'; return; }
+    if(d.up&&d.ready&&rt==='RU') el.innerHTML='▶️ <b>YouTube через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; Google видит <b>RU</b>'+(rd?(' вместо '+esc(rd)):'')+'.';
+    else if(d.up&&rt) el.innerHTML='▶️ <b style="color:var(--warn)">Туннель поднят, а Google видит '+esc(rt)+' вместо RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.';
+    else if(d.up) el.innerHTML='▶️ <b>YouTube через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.';
+    else if(d.error) el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но не идёт</b> — '+esc(d.error)+'.';
+    else el.textContent='Включено, жду первого тика — звено строится.';
+  }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveYouTube(onv){
+  const m=$('ywMsg');
+  if(m) m.textContent=onv?'поднимаю туннель…':'снимаю туннель…';
+  try{
+    await api('/api/youtube_warp',{method:'POST',body:JSON.stringify({on:!!onv})});
+    if(m) m.textContent=onv?'включено — звено строится':'выключено — YouTube идёт как шло';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  setTimeout(loadYouTube, 4000);
+  loadYouTube();
+}
+async function checkYouTube(){
+  const m=$('ywMsg'), b=$('ywCheckBtn');
+  if(m) m.textContent='проверяю, что видит Google…';
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/youtube_warp',{method:'POST',body:JSON.stringify({check:true})});
+    const rt=d.region_tunnel?('в туннеле — '+String(d.region_tunnel).toUpperCase()):'в туннеле — ответ не получен';
+    const rd=d.region_direct?('напрямую — '+String(d.region_direct).toUpperCase()):'напрямую — ответ не получен';
+    if(m) m.textContent='Google видит: '+rt+'; '+rd+(d.probe_error?'; проверка ответила не полностью: '+esc(d.probe_error):'');
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  if(b) b.disabled=false;
+  loadYouTube();
+}
 let tvTimer=0;
 function tvWord(v,region){
   if(v==='green') return '<b style="color:var(--ok)">заграницей'+(region?(' ('+esc(region)+')'):'')+'</b>';
@@ -8927,7 +8982,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -9338,7 +9393,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}

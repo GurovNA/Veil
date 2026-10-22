@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.16"
+VERSION = "2.17.17"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -16020,6 +16020,7 @@ _TW_REG_URL = "https://api.cloudflareclient.com/v0a2223/reg"
 _TW_UA = "wireguard-go-rs"
 _TW_RES_TTL = 300.0      # с какой частотой перерезолвливаем адреса (тик — около минуты)
 _TW_PROBE_TTL = 300.0    # с какой частотой спрашиваем «что видит TikTok» вне явной проверки
+_TW_PROBE_FRESH = 20.0   # пока через поднятое звено ответа нет — мерим чаще (см. `_tw_probe`)
 _TW_BYPASS_PRIO = 190    # ниже нашего базового: помеченный трафик обходит таблицу 204
 _TW_BYPASS_MARK = 45     # 0x2d — метка сокета для щупа «напрямую»
 _TW_MIG_OLD = "/var/lib/tiktok-warp/reg.json"  # аккаунт заплаты, дело передаём файлом
@@ -16155,11 +16156,13 @@ def _tw_cmd(*a, **kw):
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
-def _tw_registered():
-    """Снимок аккаунта WARP. Приватный ключ наружу не печатается нигде: файл `0600` вне репозитория."""
-    reg = _load(_TW_REG) or {}
+def _tw_registered(reg=None):
+    """Снимок аккаунта WARP. Приватный ключ наружу не печатается нигде: файл `0600` вне репозитория.
+    `reg` — где лежит аккаунт: по умолчанию звено TikTok, #493 зовёт своим файлом."""
+    reg = reg or _TW_REG
+    r = _load(reg) or {}
     need = ("private_key", "peer_public_key", "tunnel_v4", "endpoint", "endpoint_port")
-    return reg if all(reg.get(k) for k in need) else None
+    return r if all(r.get(k) for k in need) else None
 
 
 def _tw_register(dest=None):
@@ -16275,18 +16278,19 @@ def _tw_resolve(prev, doms=None):
     return ips
 
 
-def _tw_blocks(ips, tik=True, exact=()):
+def _tw_blocks(ips, tik=True, exact=(), cap=None):
     """/24-блоки адресов плюс семена: внутри блока Akamai ротирует подмножества как
     хочет, поэтому покрытие судится блоком, а не отдельным адресом.
 
     `tik` — класть ли семена и блоки приватного модуля (покрытие TikTok);
-    `exact` — хозяйские маски #388, они идут поверх потолка своим отрезком."""
+    `exact` — хозяйские маски #388, они идут поверх потолка своим отрезком;
+    `cap` — потолок подобранных блоков (своё звено #493 считает свой)."""
     got = []
     for ip in ips:
         net = ".".join(ip.split(".")[:3]) + ".0/24"
         if net not in got:
             got.append(net)
-    got = got[:_TW_CAP]
+    got = got[:(_TW_CAP if cap is None else cap)]
     if tik:
         for s in _TW_SEED:
             if s not in got:
@@ -16317,23 +16321,24 @@ def _tw_covered_ip(ips, nets):
     return ""
 
 
-def _tw_flush_rules():
+def _tw_flush_rules(tbl=None):
     """Снять НАШИ правила. Маршруты умирают вместе со связью сами, а правило — нет:
     после удаления интерфейса оно остаётся смотреть в пустую таблицу и молча копится."""
-    for prio, _net in _tw_rules():
+    for prio, _net in _tw_rules(tbl):
         _tw_cmd("ip", "rule", "del", "priority", str(prio))
 
 
-def _tw_rules():
+def _tw_rules(tbl=None):
     """Наши правила: [(приоритет, сеть)]. Судим только правило, ведущее в нашу таблицу.
 
     Хостовое правило ядро печатает БЕЗ маски — тот же дефект разбора, что у `_mr_rules`."""
+    tbl = _TW_TBL if tbl is None else tbl
     rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
     if rc != 0:
         return []
     got = []
     for line in out.splitlines():
-        if ("lookup " + _TW_TBL) not in line:
+        if not re.search(r"\blookup\s+%s\b" % re.escape(str(tbl)), line):
             continue
         prio = line.split(":", 1)[0].strip()
         m = re.search(r"to\s+([0-9a-fA-F.:]+)(?:/([0-9]+))?", line)
@@ -16344,10 +16349,11 @@ def _tw_rules():
     return got
 
 
-def _tw_routes():
+def _tw_routes(tbl=None):
     """Наши маршруты в таблице: {сеть: интерфейс}. Хостовый маршрут ядро печатает
     БЕЗ маски — разбор как у `_mr_routes`."""
-    rc, out, _ = _tw_cmd("ip", "-o", "route", "show", "table", _TW_TBL)
+    rc, out, _ = _tw_cmd("ip", "-o", "route", "show", "table",
+                         _TW_TBL if tbl is None else str(tbl))
     if rc != 0:
         return {}
     got = {}
@@ -16361,7 +16367,8 @@ def _tw_routes():
     return got
 
 
-def _tw_bypass_present():
+def _tw_bypass_present(mark=None):
+    mark = _TW_BYPASS_MARK if mark is None else mark
     rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
     if rc != 0:
         return False
@@ -16369,26 +16376,29 @@ def _tw_bypass_present():
         if "lookup main" not in line:
             continue
         m = re.search(r"fwmark\s+((?:0x)?[0-9a-fA-F]+)", line)
-        if m and int(m.group(1), 0) == _TW_BYPASS_MARK:
+        if m and int(m.group(1), 0) == mark:
             return True
     return False
 
 
-def _tw_bypass_on():
-    """Пустить помеченный трафик в обход таблицы 204.
+def _tw_bypass_on(mark=None, prio=None):
+    """Пустить помеченный трафик в обход нашей таблицы.
 
     Policy routing судит ПО АДРЕСУ НАЗНАЧЕНИЯ, поэтому «напрямую» до покрытого адреса
     не получить ни `--interface`, ни выбором таблицы (замер на боевой): помогает только
-    метка 0x2d на сокете и правило ниже наших — с ним щуп идёт по main-таблице, как
+    метка на сокете и правило ниже наших — с ним щуп идёт по main-таблице, как
     идёт весь остальной трафик коробки."""
-    if _tw_bypass_present():
+    mark = _TW_BYPASS_MARK if mark is None else mark
+    prio = _TW_BYPASS_PRIO if prio is None else prio
+    if _tw_bypass_present(mark):
         return ""
-    rc, _, err = _tw_cmd("ip", "rule", "add", "priority", str(_TW_BYPASS_PRIO),
-                         "fwmark", "0x%x" % _TW_BYPASS_MARK, "lookup", "main")
+    rc, _, err = _tw_cmd("ip", "rule", "add", "priority", str(prio),
+                         "fwmark", "0x%x" % mark, "lookup", "main")
     return "" if rc == 0 else "обходное правило не поставлено: " + err[:90]
 
 
-def _tw_bypass_del():
+def _tw_bypass_del(mark=None):
+    mark = _TW_BYPASS_MARK if mark is None else mark
     rc, out, _ = _tw_cmd("ip", "-o", "rule", "show")
     if rc != 0:
         return
@@ -16396,18 +16406,27 @@ def _tw_bypass_del():
         if "lookup main" not in line:
             continue
         m = re.search(r"fwmark\s+((?:0x)?[0-9a-fA-F]+)", line)
-        if m and int(m.group(1), 0) == _TW_BYPASS_MARK:
+        if m and int(m.group(1), 0) == mark:
             prio = line.split(":", 1)[0].strip()
             if prio.isdigit():
                 _tw_cmd("ip", "rule", "del", "priority", prio)
 
 
-def _tw_sync(nets, reg):
+def _tw_sync(nets, reg, tbl=None, dev=None, prio_base=None,
+             mark=None, bprio=None):
     """Сводим правила, маршруты и набор сетей пиера к одному списку блоков.
 
     Разрешённые сети — это не только «куда слать», но и «что пускать обратно»: набор
-    обновляем одной операцией вместе с маршрутами (тот же контракт, что у `_mr_sync_cidrs`)."""
-    cur_rules = _tw_rules()
+    обновляем одной операцией вместе с маршрутами (тот же контракт, что у `_mr_sync_cidrs`).
+
+    Всё, что отличает одно звено от другого (таблица, интерфейс, база приоритетов,
+    обходная метка), — параметрами; дефолты = TikTok (#338), #493 зовёт своим звеном."""
+    tbl = _TW_TBL if tbl is None else tbl
+    dev = _TW_IF if dev is None else dev
+    prio_base = _TW_PRIO_BASE if prio_base is None else prio_base
+    mark = _TW_BYPASS_MARK if mark is None else mark
+    bprio = _TW_BYPASS_PRIO if bprio is None else bprio
+    cur_rules = _tw_rules(tbl)
     have = set(n for _, n in cur_rules)
     used = set(p for p, _ in cur_rules)
     for prio, net in cur_rules:
@@ -16419,84 +16438,92 @@ def _tw_sync(nets, reg):
     for net in nets:
         if net in have:
             continue
-        prio = _TW_PRIO_BASE
+        prio = prio_base
         while prio in used:
             prio += 1
         rc, _, err = _tw_cmd("ip", "rule", "add", "priority", str(prio), "to", net,
-                             "lookup", _TW_TBL)
+                             "lookup", str(tbl))
         if rc != 0:
             return "правило не поставлено: " + err[:90]
         used.add(prio)
-    rt = _tw_routes()
+    rt = _tw_routes(tbl)
     for net in nets:
-        if rt.get(net) != _TW_IF:
+        if rt.get(net) != dev:
             # `replace`, а не `add`: маршрут умер вместе с падением линка, а правило
             # его пережило
-            rc, _, err = _tw_cmd("ip", "route", "replace", net, "dev", _TW_IF,
-                                 "src", reg["tunnel_v4"], "table", _TW_TBL)
+            rc, _, err = _tw_cmd("ip", "route", "replace", net, "dev", dev,
+                                 "src", reg["tunnel_v4"], "table", str(tbl))
             if rc != 0:
                 return "маршрут не поставлен: " + err[:90]
-    for net, dev in rt.items():
-        if net not in nets and dev == _TW_IF:
-            _tw_cmd("ip", "route", "del", net, "dev", _TW_IF, "table", _TW_TBL)
+    for net, d in rt.items():
+        if net not in nets and d == dev:
+            _tw_cmd("ip", "route", "del", net, "dev", dev, "table", str(tbl))
     if nets:
-        rc, _, err = _tw_cmd("wg", "set", _TW_IF, "peer", reg["peer_public_key"],
+        rc, _, err = _tw_cmd("wg", "set", dev, "peer", reg["peer_public_key"],
                              "allowed-ips", ",".join(nets))
         if rc != 0:
             return err[:120]
     # обходное правило нужно щупу «напрямую»: живое звено — единственный момент,
     # где оно имеет смысл
-    _tw_bypass_on()
+    _tw_bypass_on(mark, bprio)
     return ""
 
 
-def _tw_link_ready(nets):
+def _tw_link_ready(nets, tbl=None, dev=None):
     """Поднято ли звено НА САНОМ ДЕЛЕ: интерфейс вверх, ключ стоит, пиру известен адрес
     облака, маршруты ведут в него. Тот же контракт, что у `_mr_link_ready`: полуразобранное
     звено после отказа `wg set` поднимать как готовое нельзя."""
-    rc, out, _ = _tw_cmd("ip", "-o", "link", "show", _TW_IF)
+    tbl = _TW_TBL if tbl is None else tbl
+    dev = _TW_IF if dev is None else dev
+    rc, out, _ = _tw_cmd("ip", "-o", "link", "show", dev)
     if rc != 0:
         return False
     if "UP" not in out.partition("<")[2].partition(">")[0].split(","):
         return False
-    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "public-key")
+    rc, out, _ = _tw_cmd("wg", "show", dev, "public-key")
     if rc != 0 or out.strip() in ("", "(none)"):
         return False
-    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "endpoints")
+    rc, out, _ = _tw_cmd("wg", "show", dev, "endpoints")
     if rc != 0 or not out.strip() or "(none)" in out:
         return False
-    rt = _tw_routes()
-    return all(rt.get(n) == _TW_IF for n in nets)
+    rt = _tw_routes(tbl)
+    return all(rt.get(n) == dev for n in nets)
 
 
-def _tw_link_up(reg, nets):
+def _tw_link_up(reg, nets, dev=None, keep=None, mtu=None, tbl=None,
+                prio_base=None, mark=None, bprio=None):
     """Поднимаем интерфейс, вешаем пира, ключ отдаём на стандартный ввод.
 
     `/usr/bin/wg` закрыт профилем ограничения доступа: приватный ключ только трубкой,
     на диске он не остаётся и в аргументах чужим процессам не виден (контракт `_mr_link_up`)."""
-    rc, _, err = _tw_cmd("ip", "link", "add", _TW_IF, "type", "wireguard")
+    dev = _TW_IF if dev is None else dev
+    keep = _TW_KEEP if keep is None else keep
+    mtu = _TW_MTU if mtu is None else mtu
+    rc, _, err = _tw_cmd("ip", "link", "add", dev, "type", "wireguard")
     if rc != 0 and "File exists" not in err:
         return "связь не создана: " + err[:90]
-    _tw_cmd("ip", "-4", "addr", "replace", reg["tunnel_v4"] + "/32", "dev", _TW_IF)
-    rc, _, err = _tw_cmd("wg", "set", _TW_IF, "private-key", "/dev/stdin",
+    _tw_cmd("ip", "-4", "addr", "replace", reg["tunnel_v4"] + "/32", "dev", dev)
+    rc, _, err = _tw_cmd("wg", "set", dev, "private-key", "/dev/stdin",
                          "peer", reg["peer_public_key"],
                          "endpoint", "%s:%s" % (reg["endpoint"], reg["endpoint_port"]),
                          "allowed-ips", ",".join(nets),
-                         "persistent-keepalive", _TW_KEEP,
+                         "persistent-keepalive", str(keep),
                          input=reg["private_key"] + "\n")
     if rc != 0:
         return "веер не настроен: " + err[:90]
-    rc, _, err = _tw_cmd("ip", "link", "set", _TW_IF, "up", "mtu", _TW_MTU)
+    rc, _, err = _tw_cmd("ip", "link", "set", dev, "up", "mtu", str(mtu))
     if rc != 0:
         return "связь не поднята: " + err[:90]
-    return _tw_sync(nets, reg)
+    return _tw_sync(nets, reg, tbl=tbl, dev=dev, prio_base=prio_base,
+                    mark=mark, bprio=bprio)
 
 
-def _tw_handshake_age():
+def _tw_handshake_age(dev=None):
     """Сколько секунд назад было последнее рукопожатие (или нет, если звена нет).
 
     Единочное число в `wg show` облако не принимает — требуется `latest-handshakes`."""
-    rc, out, _ = _tw_cmd("wg", "show", _TW_IF, "latest-handshakes")
+    rc, out, _ = _tw_cmd("wg", "show", _TW_IF if dev is None else dev,
+                         "latest-handshakes")
     if rc != 0:
         return None
     ts = 0
@@ -16511,11 +16538,12 @@ def _tw_handshake_age():
     return int(max(0, time.time() - ts)) if ts > 0 else None
 
 
-def _tw_carries(addr):
+def _tw_carries(addr, dev=None):
     """Несёт ли звено: один пакет до адреса, который обязан идти через туннель.
     Мерить нечем (нет `ping`) — это не доказательство молчания (контракт `_mr_carries`)."""
     try:
-        rc, _, err = _tw_cmd("ping", "-c1", "-W2", "-I", _TW_IF, addr)
+        rc, _, err = _tw_cmd("ping", "-c1", "-W2", "-I",
+                             _TW_IF if dev is None else dev, addr)
     except (OSError, subprocess.SubprocessError):
         return True
     if rc == 127 or "not found" in err:
@@ -16582,10 +16610,14 @@ def _tw_probe(force=False):
     if not _tw_tiktok_on():
         return
     now = time.time()
-    if not force and now - _TW_PROBE_AT < _TW_PROBE_TTL:
+    st = _load(_TW_STATE, {}) or {}
+    # Первый ответ через туннель не ждёт очереди по TTL: пока звено поднято, а
+    # региона через него ещё не измерено, «включил и смотрю» превращалось в
+    # «ждёт до пяти минут» — чередование смыслом имеет только устоявшийся замер.
+    fresh = bool(st.get("up")) and not st.get("region_tunnel")
+    if not force and now - _TW_PROBE_AT < (_TW_PROBE_FRESH if fresh else _TW_PROBE_TTL):
         return
     _TW_PROBE_AT = now
-    st = _load(_TW_STATE, {}) or {}
     nets = list(st.get("nets") or [])
     tgt = str(st.get("probe_ip") or "") or \
         _tw_covered_ip(_tw_seen_ips(), nets) or "71.18.85.9"
@@ -17228,6 +17260,317 @@ def _tv_after():
                 _tv_geo(doc)
     except Exception as e:
         print("[tiktok-variants] " + str(e), flush=True)
+
+
+# ---------- #493: YouTube через WARP — отдельное окно рядом с TikTok ----------
+# Слово хозяина 21.10: «сделай отдельное окно около тикток ну и назови его ютуб»,
+# и попереднее: «можно как то сделать, что ютуб воспитнимал этот ip как русский?».
+# Промер #492 (`/opt/vpnpanel/.relwork/yt_warp_probe.py`, тестовая коробка) ответил
+# числом, а не мнением: выход `Cloudflare` WARP Google читает российским — `GL=RU`
+# на фронте и `country=RU` в ответе плеера, Россия 4 прогона из 4 (один существующий
+# аккаунт и три одноразовых), пять фронтов YouTube через туннель отвечают честно
+# (200, 302, 204 — ни одного зависшего). Без туннеля та же коробка для Google —
+# заграница, и название страны на ней живое: промер #492 называл `FI`, живая свёрка
+# этого окна 21.10 сняла с прямого выхода `GL=SE`. Судим поэтому по факту
+# «не Россия», а не по названию: карточка обязана отвечать на вопрос, видит ли
+# Google Россию, а не пересказывать чужую географию.
+# Полумерья нет: карточка либо ведёт YouTube целиком,
+# либо не нужна.
+# Чем мерится покрытие. Живой резолв десяти доменов меры (прибор f98 держит этот
+# срез заготовкой) дал 238 адресов — сорок четыре /24-блока, и все они легли внутрь
+# агрегатов ниже: по /16 на каждую купленную Google сеть фронта. Отдельными /24 тут
+# не обойтись: пул ротируется между сессиями, плеер сам называет узлы потоков
+# (`*.googlevideo.com`, живьём двадцать хостов за один ответ), и адрес нового потока
+# мог бы остаться за покрытием — видео тогда пошло бы напрямую, а витрина осталась бы
+# в туннеле. Первый срез агрегатов был девять, прибор добавил десятый (`172.253/16`):
+# без него один из сорока четырёх блоков живого резолва оставался бы вне туннеля.
+# Граница та же, что у фикса TikTok: это маршрутизация адресов узла, а не
+# гарантия; трафик подписчиков через эти правила не проходит. О названном
+# следствии: через туннель идут адреса Google целиком — `YouTube` делит их
+# с другими службами Google, отделить их адресно нельзя.
+_YW_IF = "ytw0"
+_YW_TBL = "205"
+_YW_PRIO_BASE = 600       # выше TikTok (200..456) и медиа (100..108): наши правила не пересекаются
+_YW_CAP = 64              # потолок подобранных /24-блоков: агрегаты кладются поверх
+_YW_DIR = "/var/lib/veil-youtube-route"
+_YW_REG = _YW_DIR + "/reg.json"
+_YW_SEEN = _YW_DIR + "/seen.json"
+_YW_STATE = _YW_DIR + "/state.json"
+_YW_MTU = "1280"
+_YW_KEEP = "25"
+_YW_ROT = 900.0           # как часто меняем молчаливый аккаунт: облако считает `POST /reg`
+_YW_RES_TTL = 300.0
+_YW_PROBE_TTL = 300.0    # с какой частотой спрашиваем «что видит Google» вне явной проверки
+_YW_PROBE_FRESH = 20.0   # пока через поднятое звено ответа нет — мерим чаще (см. `_yw_probe`)
+_YW_BYPASS_MARK = 46      # 0x2e — метка сокета для щупа «напрямую» (у TikTok 0x2d)
+_YW_BYPASS_PRIO = 590     # ниже нашей базы: помеченный трафик обходит таблицу 205
+_YW_HOST = "www.youtube.com"
+# Домены меры: фронт, статика, плеерный `API` и узел потоков. Резолвятся тремя
+# взглядами, как покрытие TikTok; агрегаты ниже кладутся поверх подборки.
+_YW_DOMAINS = (
+    "www.youtube.com", "m.youtube.com", "music.youtube.com", "www.youtube-nocookie.com",
+    "s.youtube.com", "i.ytimg.com", "s.ytimg.com", "yt3.ggpht.com",
+    "manifest.googlevideo.com", "youtubei.googleapis.com")
+# Агрегаты покрытия — сняты живьём 21.10 с фронта и пула плеера одной коробкой.
+_YW_AGG = ("64.233.0.0/16", "74.125.0.0/16", "108.177.0.0/16", "142.250.0.0/15",
+           "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "192.178.0.0/16",
+           "209.85.0.0/16", "216.58.0.0/16")
+_YW_ERR = ""
+_YW_ROTATE = 0.0
+_YW_RES_AT = 0.0
+_YW_PROBE_AT = 0.0
+
+
+def _yw_want():
+    """Одно слово для смотрителя: вести ли адреса Google через своё звено."""
+    return bool(CFG_CACHE.get("youtube_warp"))
+
+
+def _yw_registered():
+    return _tw_registered(_YW_REG)
+
+
+def _yw_retire(reason):
+    """Мёртвый аккаунт в расход: новый ключ облако принимает, молчаливый — нет.
+
+    Тот же приговор, что у `_tw_retire`, но счётчик свой: замена аккаунта на одном
+    звене не должна запрещать замену на другом."""
+    global _YW_ROTATE
+    now = time.time()
+    if now - _YW_ROTATE < _YW_ROT:
+        return reason + "; новый аккаунт не раньше чем через %d с" % int(
+            _YW_ROT - (now - _YW_ROTATE))
+    _YW_ROTATE = now
+    try:
+        os.remove(_YW_REG)
+    except OSError:
+        return reason + "; аккаунт не снять"
+    return reason
+
+
+def _yw_blocks(ips):
+    """Подобранные /24 плюс агрегаты Google-фронта поверх потолка."""
+    return _tw_blocks(ips, False, _YW_AGG, _YW_CAP)
+
+
+def _yw_seen_ips():
+    return list((_load(_YW_SEEN, {}) or {}).get("ips") or [])
+
+
+def _yw_rules():
+    return _tw_rules(_YW_TBL)
+
+
+def _yw_routes():
+    return _tw_routes(_YW_TBL)
+
+
+def _yw_flush_rules():
+    _tw_flush_rules(_YW_TBL)
+
+
+def _yw_sync(nets, reg):
+    return _tw_sync(nets, reg, tbl=_YW_TBL, dev=_YW_IF, prio_base=_YW_PRIO_BASE,
+                    mark=_YW_BYPASS_MARK, bprio=_YW_BYPASS_PRIO)
+
+
+def _yw_link_up(reg, nets):
+    return _tw_link_up(reg, nets, dev=_YW_IF, keep=_YW_KEEP, mtu=_YW_MTU,
+                       tbl=_YW_TBL, prio_base=_YW_PRIO_BASE,
+                       mark=_YW_BYPASS_MARK, bprio=_YW_BYPASS_PRIO)
+
+
+def _yw_link_ready(nets):
+    return _tw_link_ready(nets, tbl=_YW_TBL, dev=_YW_IF)
+
+
+def _yw_handshake_age():
+    return _tw_handshake_age(_YW_IF)
+
+
+def _yw_region(ip, direct):
+    """Один HTTPS-щуп: какой страны Google отвечает с этого адреса. `direct` — с меткой
+    0x2e, т.е. в обход нашей таблицы; иначе — как есть, через туннель.
+
+    Судьба ответа — `GL` в разметке фронта: на нём `YouTube` строит и выдачу, и язык.
+    Тот же способ, что у TikTok (#338), только читается другое поле."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(4 if direct else 12)
+        if direct:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, _YW_BYPASS_MARK)
+            except OSError as e:
+                return "", "метка не поставлена: " + str(e)[:60]
+        s.connect((ip, 443))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        t = ctx.wrap_socket(s, server_hostname=_YW_HOST)
+        s = None
+        t.settimeout(5)
+        t.sendall(b"GET / HTTP/1.1\r\nHost: " + _YW_HOST.encode() +
+                  b"\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+        buf = b""
+        while len(buf) < 300000:
+            try:
+                d = t.recv(8192)
+            except socket.timeout:
+                break
+            if not d:
+                break
+            buf += d
+        try:
+            t.close()
+        except Exception:
+            pass
+        m = re.search(rb'"GL":"([A-Z]{2})"', buf)
+        if m:
+            return m.group(1).decode("ascii", "replace"), ""
+        return "", "региона в ответе нет"
+    except Exception as e:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return "", str(e)[:90]
+
+
+def _yw_probe(force=False):
+    """Диагноз «что видит Google»: два щупа против одного покрытого адреса — напрямую
+    (с меткой) и через туннель. Явной проверке `force` обходит черед по TTL."""
+    global _YW_PROBE_AT
+    if not _yw_want():
+        return
+    now = time.time()
+    st = _load(_YW_STATE, {}) or {}
+    # Тот же порядок, что у TikTok: первый ответ через туннель не ждёт очереди по
+    # TTL, иначе поднятое звено показывало бы прочерк до пяти минут после нажатия.
+    fresh = bool(st.get("up")) and not st.get("region_tunnel")
+    if not force and now - _YW_PROBE_AT < (_YW_PROBE_FRESH if fresh else _YW_PROBE_TTL):
+        return
+    _YW_PROBE_AT = now
+    nets = list(st.get("nets") or [])
+    tgt = str(st.get("probe_ip") or "") or _tw_covered_ip(_yw_seen_ips(), nets)
+    why = _tw_bypass_on(_YW_BYPASS_MARK, _YW_BYPASS_PRIO)
+    rd, ed = _yw_region(tgt, True) if tgt else ("", "покрытого адреса нет")
+    if why:
+        ed = (ed + "; " if ed else "") + why
+    rt = ""
+    et = ""
+    if st.get("up") and tgt and _yw_link_ready(nets):
+        rt, et = _yw_region(tgt, False)
+    st.update({"region_direct": rd or None, "region_tunnel": rt or None,
+               "probe_ip": tgt, "probe_at": int(now),
+               "probe_error": "; ".join(x for x in (ed, et) if x)[:180]})
+    _save(_YW_STATE, st, 0o600)
+
+
+def _yw_tick():
+    """Смотритель YouTube-звена: один шаг за тик (тот же порядок, что у `_tw_tick`).
+
+    Без желания оператора — снять ТОЛЬКО своё; с желанием — аккаунт, адреса, звено.
+    Молчание судим пакетом, а не отсутствием рукопожатия, и приговор аккаунту —
+    по своему счётчику. Пустой резолв живое звено не ломает."""
+    global _YW_ERR, _YW_RES_AT
+    if SBX:
+        return
+    st = _load(_YW_STATE, {}) or {}
+    if not _yw_want():
+        if st.get("enabled") or st.get("up"):
+            _yw_flush_rules()
+            _tw_bypass_del(_YW_BYPASS_MARK)
+            _tw_cmd("ip", "link", "del", _YW_IF)
+            _YW_ERR = ""
+            st.update({"enabled": False, "up": False, "count": 0, "nets": [],
+                       "handshake_age": None, "error": "", "ts": _now_iso()})
+            _save(_YW_STATE, st, 0o600)
+        return
+    reg = _yw_registered()
+    why = ""
+    if not reg:
+        reg, why = _tw_register(dest=_YW_REG)
+        if not reg:
+            _YW_ERR = why
+            st.update({"enabled": True, "up": False, "error": why, "ts": _now_iso()})
+            _save(_YW_STATE, st, 0o600)
+            return
+    now = time.time()
+    doms = list(_YW_DOMAINS)
+    seen = _load(_YW_SEEN, {}) or {}
+    fp = ",".join(doms)
+    stale = seen.get("set") != fp
+    prev = _yw_seen_ips() if not stale else []
+    if stale or now - _YW_RES_AT >= _YW_RES_TTL:
+        _YW_RES_AT = now
+        ips = _tw_resolve(prev, doms)
+        if ips:
+            _save(_YW_SEEN, {"ips": ips[:_YW_CAP * 8], "at": int(now),
+                             "set": fp}, 0o600)
+    else:
+        ips = prev
+    if not ips and not prev and st.get("up"):
+        _YW_ERR = ""
+        st.update({"ts": _now_iso()})
+        _save(_YW_STATE, st, 0o600)
+        _yw_probe()
+        return
+    nets = _yw_blocks(ips)
+    rc, _, _ = _tw_cmd("ip", "link", "show", _YW_IF)
+    age = _yw_handshake_age()
+    if rc != 0 or not _yw_link_ready(nets):
+        err = _yw_link_up(reg, nets)
+        age = _yw_handshake_age()
+    else:
+        err = _yw_sync(nets, reg)
+    tgt = _tw_covered_ip(ips, nets)
+    # молчание судим только против адреса, который обязан идти через туннель:
+    # без такого адреса пакет никуда не шлём, а «нет ответа» был бы выдумкой
+    if err == "" and tgt and (age is None or age > 4 * int(_YW_KEEP)) and \
+            not _tw_carries(tgt, _YW_IF):
+        _yw_flush_rules()
+        _tw_bypass_del(_YW_BYPASS_MARK)
+        _tw_cmd("ip", "link", "del", _YW_IF)
+        err, age = "звено молчит: до облака нет ответа", None
+        err = _yw_retire(err)
+    _YW_ERR = err
+    up = (err == "")
+    st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
+               "nets": nets if up else (st.get("nets") or []),
+               "handshake_age": age, "probe_ip": tgt, "error": err,
+               "tunnel_v4": (reg["tunnel_v4"] if up else ""), "ts": _now_iso()})
+    _save(_YW_STATE, st, 0o600)
+    _yw_probe()
+
+
+def _yw_tick_bg():
+    """Тик звена в фоне: отказ не должен ронять поток морды, но обязан быть виден."""
+    try:
+        _yw_tick()
+    except Exception as e:
+        print("[youtube-route] " + str(e), flush=True)
+
+
+def _yw_view():
+    """Снимок для морды и ноги самопроверки: только чтение, ничего не поднимает."""
+    st = _load(_YW_STATE, {}) or {}
+    rc, _, _ = _tw_cmd("ip", "link", "show", _YW_IF)
+    nets = list(st.get("nets") or [])
+    pat = float(st.get("probe_at") or 0)
+    return {"want": _yw_want(), "account": bool(_yw_registered()),
+            "link": rc == 0, "ready": _yw_link_ready(nets), "up": bool(st.get("up")),
+            "count": int(st.get("count") or 0), "nets": nets,
+            "youtube_on": bool(CFG_CACHE.get("youtube_warp")),
+            "region_tunnel": st.get("region_tunnel"),
+            "region_direct": st.get("region_direct"),
+            "probe_age": (int(time.time() - pat) if pat else None),
+            "handshake_age": st.get("handshake_age"),
+            "error": st.get("error") or _YW_ERR,
+            "probe_error": st.get("probe_error") or "",
+            "bypass": _tw_bypass_present(_YW_BYPASS_MARK),
+            "aggregates": list(_YW_AGG), "ts": st.get("ts")}
 
 
 # ---------- #384/#385: в какой стране видят наш адрес (сервис по образцу чужого сканера) ----------
@@ -18387,6 +18730,33 @@ def _tg_mp_selftest(force=False):
                 tv.get("error") or "туннель не поднят")
     except Exception as e:
         add("tiktok_warp", "TikTok через WARP: узел виден заграницей", False,
+            str(e)[:160], warn=True)
+    # #493: обратный запрос того же рода — `YouTube` обязан видеть узел Россией.
+    # Судья тот же, что и у TikTok: не наличие интерфейса, а страна в ответе
+    # самого сервиса; поднятое звено с не-российским ответом фиксом не считается.
+    try:
+        yv = _yw_view()
+        rt = str(yv.get("region_tunnel") or "")
+        if not yv["want"]:
+            add("youtube_warp", "YouTube через WARP: узел виден Россией", True,
+                "выключен — Google видит сервер как есть", warn=True)
+        elif yv["up"] and yv["ready"] and rt == "RU":
+            add("youtube_warp", "YouTube через WARP: узел виден Россией", True,
+                "%d адресных блоков в туннеле — Google видит RU" % yv["count"])
+        elif yv["up"] and rt:
+            add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
+                "туннель поднят, а Google видит %s вместо RU: "
+                % rt + (yv.get("probe_error") or "ответ узла читается не российским"),
+                warn=True)
+        elif yv["up"]:
+            add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
+                yv.get("probe_error") or yv.get("error") or
+                "Google ещё не ответил регионом — проверка не прошла", warn=True)
+        else:
+            add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
+                yv.get("error") or "туннель не поднят")
+    except Exception as e:
+        add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
             str(e)[:160], warn=True)
     # #180: TCP от клиента проходит весь путь — :443, развилка по SNI, слушатель, — и сессии
     # всё равно нет: узел сам не дотягивается до адресов Telegram. Это не поломка прокси, и
@@ -29792,7 +30162,8 @@ def _limits_loop():
                               (_addr_watch_tick, "addr"),
                               (_tg_dc_loss_tick, "dc-loss"),
                               (_mr_tick, "media-route"),
-                              (_tw_tick, "tiktok-route")):
+                              (_tw_tick, "tiktok-route"),
+                              (_yw_tick, "youtube-route")):
                 try:
                     _fn()
                 except Exception as e:
@@ -35138,6 +35509,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _tv_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/youtube_warp":
+            # #493: окно «YouTube» — своё звено WARP, отдельное от TikTok.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _yw_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/ipregion":
             # #384: снятый ранее замер щупов страны; ничего не мерит, только отдаёт.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -38785,6 +39163,25 @@ class H(http.server.BaseHTTPRequestHandler):
                     print("[tiktok-route] " + str(e), flush=True)
                 v = _tw_view()
                 return self._send(200, v)
+            if p == "/api/youtube_warp":
+                # #493: `on` — «вести YouTube через WARP», `check` — «что видит Google».
+                # Звено строится в фоне: первый шаг переписывает десять доменов тремя
+                # взглядами и тянет регистрацию, а вешать на это HTTP-запрос значит
+                # оставить морду ждать дольше, чем живёт терпение клиента.
+                b = self._body()
+                if "on" not in b and "check" not in b:
+                    return self._send(400, {"error": "нужно поле on или check"})
+                if "on" in b:
+                    CFG_CACHE["youtube_warp"] = bool(b.get("on"))
+                    _cfg_save()
+                    _audit("youtube_warp", on=CFG_CACHE["youtube_warp"])
+                    threading.Thread(target=_yw_tick_bg, daemon=True).start()
+                try:
+                    if b.get("check"):
+                        _yw_probe(force=True)
+                except Exception as e:
+                    print("[youtube-route] " + str(e), flush=True)
+                return self._send(200, _yw_view())
             if p == "/api/tiktok_variants":
                 # #457: `add` — зарегистрировать новый вариант; `probe:n` / `probe_all`
                 # — замерить (в фоне: песочница мерит до минуты, морда дочитывает опросом);
