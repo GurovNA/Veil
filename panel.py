@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.18"
+VERSION = "2.17.19"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1943,8 +1943,10 @@ WG_CONF = os.path.join(SBX or "/etc/wireguard", "veilwg.conf")
 WG_ADDR = "10.10.0.1/24"
 # ULA-адреса ВНУТРИ туннелей. Клиенты (INCY/нативный WG) вешают в туннель
 # AllowedIPs ::/0; без собственного v6-адреса в туннеле все IPv6-запросы
-# приложения чёрнеют (на мобильном LTE v6 — норма). Выдаём каждому клиенту
-# v6, выведенный из v4-октета, и делаем masquerade наружу.
+# приложения чёрнеют (на мобильном LTE v6 — норма). С цикла #498 чёрное — намеренно:
+# адрес выдаём только серверной приёмке, клиенту не отдаём, чтобы шестёрка не
+# обходила окна YouTube/TikTok, которые несут четвёрку. Маскарад наружу оставлен
+# для уже установленных клиентов: рвать их ссылки нельзя.
 WG_ADDR6 = "fd10:10::1/64"
 AWG_ADDR6 = "fd20:10::1/64"
 AWG_POOL = "10.20.0."
@@ -1958,7 +1960,13 @@ WG_MTU = 1280
 
 def _tun6(c, prefix="fd10:10::"):
     """IPv6 внутри туннеля из последнего октета v4-адреса клиента.
-    Никакой миграции state.json: адреса детерминированы."""
+    Никакой миграции state.json: адреса детерминированы.
+    Цикл #498: этим адресом панель теперь ТОЛЬКО принимает. Раздавать его клиенту
+    перестали — окно TikTok и окно YouTube несут четвёрку (panel.py:16098), а
+    шестёрка в туннеле идёт мимо них в общее звено. `::/0` в раздаче остаётся:
+    без адреса в интерфейсе послать шестёрку нечем, она чернеет и приложение само
+    уходит на четвёрку; снять же ещё и `::/0` значило бы пустить шестёрку телефона
+    мимо туннеля — утечка реального адреса подписчика."""
     host = str(c.get("address") or "").split("/")[0].rsplit(".", 1)[-1]
     try:
         return prefix + str(int(host)) if host.isdigit() and 0 < int(host) < 256 else ""
@@ -6356,12 +6364,11 @@ def _link(inb, host, client, proto, std=False):
                     f"H2 = {jk['H2']}\n"
                     f"H3 = {jk['H3']}\n"
                     f"H4 = {jk['H4']}\n")
-        a6 = _tun6(client, "fd20:10::")
         if not client.get("client_private_key"):
             raise ValueError("у AmneziaWG-подписчика нет ключа на устройстве — конфиг не соберётся")
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
-                f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
+                f"Address = {client['address']}\n"
                 f"DNS = {inb.get('dns') or '1.1.1.1, 8.8.8.8'}\n"
                 f"MTU = {inb.get('mtu', WG_MTU)}\n"
                 + cli_junk
@@ -6372,12 +6379,11 @@ def _link(inb, host, client, proto, std=False):
                 f"PersistentKeepalive = {inb.get('keepalive', 25)}\n"
                 "")
     if proto == "wireguard":
-        a6 = _tun6(client)
         if not client.get("client_private_key"):
             raise ValueError("у WireGuard-подписчика нет ключа на устройстве — конфиг не соберётся")
         return ("[Interface]\n"
                 f"PrivateKey = {client['client_private_key']}\n"
-                f"Address = {client['address']}" + ((", " + a6 + "/128") if a6 else "") + "\n"
+                f"Address = {client['address']}\n"
                 f"DNS = {inb.get('dns') or '1.1.1.1, 8.8.8.8'}\n"
                 f"MTU = {inb.get('mtu', WG_MTU)}\n\n"
                 "[Peer]\n"
@@ -7477,9 +7483,6 @@ def _incy_link(proto, inb, c, host):
             # не поднимается — ссылка только вводит в заблуждение, снимаем её.
             return None
         addr = (c.get("address") or "10.10.0.2/32").split("/")[0]
-        a6 = _tun6(c)
-        if a6:
-            addr = addr + "," + a6
         key = urllib.parse.quote(c.get("client_private_key") or "", safe="")
         q = ("publickey=" + (inb.get("public_key") or "") + "&address=" + addr
              + "&mtu=" + str(int(inb.get("mtu") or WG_MTU)))
@@ -7675,8 +7678,7 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
             addr += "/32"
         elif "/32/32" in addr:
             addr = "10.10.0.2/32"
-        a6 = _tun6(c, "fd20:10::" if proto == "amneziawg" else "fd10:10::")
-        addrs = [addr] + ([a6 + "/128"] if a6 else [])
+        addrs = [addr]
         psk = inb.get("psk", "")
         # sing-box НЕ понимает xray-овскую форму (secretKey/address/peers[].publicKey/
         # endpoint): он отвергает неизвестные поля, и тогда не запускается ВЕСЬ конфиг,
@@ -7687,7 +7689,8 @@ def _singbox_outbound(proto, inb, c, host, modern=False):
             # ОБЯЗАТЕЛЬНЫ (замерено: "missing allowed ips for peer 0"). `keepalive` —
             # те же 25, что панель пишет в *.conf.
             peer = {"address": _wg_ep(host), "port": int(port), "public_key": pub,
-                    "allowed_ips": ["0.0.0.0/0"] + (["::/0"] if a6 else []),
+                    # ::/0 тут безусловен: это захват, а не адрес в туннеле (#498).
+                    "allowed_ips": ["0.0.0.0/0", "::/0"],
                     "persistent_keepalive_interval": 25}
             if psk:
                 peer["pre_shared_key"] = psk
@@ -14966,15 +14969,53 @@ def _ip6_inbound_live():
     _IP6IN.update(t=now, v=v)
     return v
 
+def _mp_v6_listener_up():
+    """Принимает ли фасад MTProto шестёрку на применяемом порту — по файлу конфигурации
+    nginx, а не по догадке о переключателе. Middle-proxy без этого факта означает:
+    v6-клиент упрётся в refusal, и имя в шестёрку пускать нельзя. С самим движком
+    telemt это не связано: тот терминируется петлёй (`proxy_pass 127.0.0.1:<порт>`),
+    `[network] ipv6` для приёма шестёрки не нужен (#497).
+    Три состояния, и «неизвестно» не сливается с «защищать нечего»: файла состояния
+    нет — MTProto за фасадом никогда не применялся, допускаем; применённый порт назван
+    и накрыт слушателем — допускаем; всё остальное (файл есть, но не читается; конфиг
+    фасада не читается) — не допускаем, публикация по неподтверждённому не бывает."""
+    try:
+        with open(_MUX_STATE, encoding="utf-8") as f:
+            ms = json.load(f) or {}
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+    port = 0
+    if isinstance(ms, dict) and ms.get("applied") and ms.get("mp"):
+        try:
+            port = int(ms.get("mp_port") or 0)
+        except Exception:
+            port = 0
+    if not port:
+        return True
+    try:
+        text = open(_NG_STREAM_INC, encoding="utf-8").read()
+    except Exception:
+        return False
+    v6 = {int(m) for m in re.findall(r"listen\s+\[::\]:(\d+)", text)}
+    return port in v6
+
+
 def _ip6_to_publish():
     """Какой IPv6 кладём в AAAA: '' — если публикацию гасит рубильник #452,
     переключатель гасит v6 или живость не подтверждена. Ложь в DNS хуже отсутствующей записи: телефон уйдёт на адрес,
     по которому узел не живёт, и будет висеть, пока WiFi (v4) работает. Живость
     меряют два свидетельства (#449): исходящее эхо — и, когда оно мертво, входящая
-    внешняя проба порта фасада."""
+    внешняя проба порта фасада.
+    Цикл #497: прежний гейт `tg_mp_ipv6` снят. Тот переключатель владеет слушателем
+    самого telemt и v6-маршрутами к DC, а для публикации имени важно другое — есть
+    ли у фасада чем принять шестёрку; на бою 22.10 связка оказалась ловушкой:
+    `tg_mp_ipv6=false` при работающем `[::]:7443` не давала выпустить AAAA даже по
+    слову хозяина, хотя оба направления шестёрки были проверены живыми."""
     if not _aaaa_publish_want():
         return ""
-    if not _tg_mp_ipv6_want():
+    if _tg_middle_proxy_on() and not _mp_v6_listener_up():
         return ""
     return _pub_ip6_echo() or _ip6_inbound_live()
 
@@ -20551,8 +20592,9 @@ def _front_dns_ensure(domain):
                     urllib.parse.quote(zid), urllib.parse.quote(r0.get("id") or "")))
                 rep.append("AAAA %s — снята: %s" % (domain,
                          "публикация AAAA выключена рубильником" if not _aaaa_publish_want()
-                         else "IPv6 выключен переключателем" if not _tg_mp_ipv6_want()
-                         else "живость IPv6 не подтверждена эхом и внешней пробой"))
+                         else ("у фасада MTProto нет слушателя на шестёрке"
+                               if (_tg_middle_proxy_on() and not _mp_v6_listener_up())
+                               else "живость IPv6 не подтверждена эхом и внешней пробой")))
             continue
         if not ip:
             continue
@@ -22592,9 +22634,13 @@ def _mux_stream_conf(web_port, tls_port, web_domain, vpn_domain, tg_domain="", m
                     if wsnid and wsnid != (web_domain or "").strip().lower() and wsnid not in seen else "")
     # #449: IPv6-путь фасада MTProto делает nginx, а не telemt: 3.5.14 выбрасывает
     # ключ `ip` и `::`-слушателя заводить не умеет, поэтому v6-клиент на `[v6]:<порт>`
-    # ловил отказ, пока v4 жил. Релей ставится только когда в6 не погашен
-    # переключателем; слушает свой порт v6-.only и ведёт на петлевой mtproxy-порт.
-    # `_mux_apply` пишет файл целиком, снятый маршрут и откат уносят релей сами.
+    # ловил отказ, пока v4 жил. Релей слушает свой порт только на шестёрку и ведёт на
+    # петлевой mtproxy-порт; `_mux_apply` пишет файл целиком, снятый маршрут и откат
+    # уносят релей сами.
+    # #497: маршруты движка к DC (`[network] ipv6`, под middle-proxy рвётся тысячами в
+    # час) и приём клиента шестёркой — разные вещи. Релей ставится и когда переключатель
+    # telemt-овского v6 погашен, но включена публикация AAAA: без этого рубильник DNS
+    # было бы нечем выполнить.
     relay_port = int(mp_v6_relay_port or 0)
     mp_v6_relay = ("    # " + _TG_MP_V6_MARK + "\n"
                    "    server {\n"
@@ -23968,7 +24014,8 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
                                  mp_domain=mp_domain if mp else "", mp_port=mp_port if mp else 0,
                                  web_sni=web_sni,
                                  mp_v6_relay_port=(mp_port if (mp and mp_domain and mp_port
-                                                               and _tg_mp_ipv6_want()) else 0)))
+                                                               and (_tg_mp_ipv6_want()
+                                                                    or _aaaa_publish_want())) else 0)))
     # подключаем stream-вставку в nginx.conf (топ-левел); load_module — только если модуль не грузится сам
     main = open(_NG_MAIN_BAK).read()
     changed = False
@@ -29780,13 +29827,18 @@ def _veil_center():
     # #343: честное слово про AAAA — что панель выпустит в v6-семействе и почему.
     ip6_pub = _ip6_to_publish()
     if ip6_pub:
-        ip6_note = ""
+        ip6_note = ("" if _tg_mp_ipv6_want() else
+                    "AAAA выходят, хотя IPv6 у самого telemt погашен: v6-клиента принимает "
+                    "фасад и передаёт движку по петле (#497)")
     elif not _aaaa_publish_want():
         ip6_note = ("AAAA не выпускаются: публикация AAAA выключена рубильником "
                     "«Публиковать AAAA (IPv6)» (цикл #452); осиротевшая запись "
                     "снимается писателями и хранителем")
-    elif not _tg_mp_ipv6_want():
-        ip6_note = "AAAA не выпускаются: IPv6 погашен переключателем «tg_mp_ipv6»"
+    elif _tg_middle_proxy_on() and not _mp_v6_listener_up():
+        # #497: не переключатель telemt решает про DNS, а факт — чем фасаду принять
+        ip6_note = ("AAAA не выпускаются: у фасада MTProto нет слушателя на шестёрке "
+                    "(в применяемом конфиге nginx нет `listen [::]:<порт>`), имя повело бы "
+                    "v6-клиентов на refusal")
     else:
         ip6_note = ("AAAA не выпускаются: живость IPv6 не подтверждена — ни исходящим "
                     "эхом, ни входящей внешней пробой порта фасада; запись повела бы "
@@ -39555,6 +39607,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     out["dropped"] = [x for x in (_VEIL_GUARD.get("ip6_dropped") or "").split(",") if x]
                 except Exception as e:
                     out["guard_error"] = str(e)[:160]
+                if CFG_CACHE["aaaa_publish"]:
+                    # #497: публикация решается по применяемому факту, а не по слову:
+                    # без `[::]`-релея в конфиге nginx AAAA не выйдет, и это надо назвать
+                    # сразу, а не через десять минут молчания.
+                    out["mp_v6_relay"] = ("на месте" if not _tg_middle_proxy_on()
+                                          or _mp_v6_listener_up() else
+                                          "нет в применяемом конфиге — AAAA не выйдут, "
+                                          "пока мюкс не применят заново")
                 return self._send(200, out)
             if p == "/api/media_route":
                 b = self._body()
