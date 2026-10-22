@@ -1599,6 +1599,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
       <button class="tiny sec" onclick="setJump('setTikTok')">🎵 TikTok</button>
       <button class="tiny sec" onclick="setJump('setYouTube')">▶️ YouTube</button>
+      <button class="tiny sec" onclick="setJump('setGemini')">💬 Gemini</button>
       <button class="tiny sec" onclick="setJump('setIpRegion')">🌍 В какой стране меня видят</button>
       <button class="tiny sec" onclick="setJump('setTorrent')">🧲 Торренты</button>
 <!--veil:btns-->
@@ -1922,6 +1923,24 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick=checkYouTube() id=ywCheckBtn>🔎 Проверить, что видит Google</button>
     </div>
     <div class=msg id=ywMsg></div>
+    </div>
+    <div class="card set-block" id=setGemini>
+    <h3 style="margin:0 0 8px">Gemini в обход окна YouTube</h3>
+    <p class=mut style="margin:0 0 10px"><span id=gdState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Окно «YouTube» решает ровно одну задачу: заставить Google читать наш узел Россией, и решает её по адресам назначения. Беда в том, что `Gemini` отвечает из тех же сетей Google, что и `YouTube`: на живой коробке под окном оказалось 56 адресов сервиса из 56 — то есть весь он читается Россией, хотя ему это ни к чему и на качестве ответа сказывается наоборот. Границу хозяин назвал словами: «youtube-ru, gemini -не ru».</p>
+        <p><b>Чем разделено то, что адресом не делится.</b> У двух потоков остаётся один различимый признак — имя сервиса в начале рукопожатия. Его уже читает ядро прокси, поэтому развод живёт в его конфигурации: для доменов `Gemini` положено отдельное кольцо наружу, привязанное к штатному интерфейсу машины. Привязка выводит поток из таблицы окна: на тестовой коробке четыре неподвязанные попытки умерли по таймауту, а пять привязанных дождались ответа — и по четвёрке, и по шестёрке. На бою тот же щуп через окно отвечает Россией, а с привязкой к штатному выходу — другой страной; как именно называется эта страна, карточка говорит числом на кнопке проверки, а не заранее.</p>
+        <p><b>Почему не меткой.</b> Второй способ обхода — пометить сокет и вести помеченное мимо таблицы — для прокси не годится: ядро прокси метку наружу не передаёт. Замерено счётником на фильтре: контрольный сокет с меткой добавил 6 пакетов, а сокеты ядра с тем же полем в конфигурации — ни одного. Пришлось тем, что измеряемо работает: привязкой к интерфейсу.</p>
+        <p><b>Что не задето.</b> Ни одно окно не перестроено: таблицы, звенья и правила «YouTube» и «TikTok» стоят как стояли, в маршрутизации не добавлено ни одного правила. Развод — это ровно одно кольцо и одно правило в конфиге ядра прокси. <b>Веерные входы</b> (туннель, который ядро пересылает само, минуя прокси) разведены быть не могут в принципе: там нечего читать, кроме адреса, а адрес общий — карточка называет число таких подписчиков, а не обещает невозможное.</p>
+        <p><b>Об условии включения.</b> Нужен штатный выход — интерфейс, через который машина ходит сама. Без него переключатель не включится и назовёт причину: привязка к несуществующему интерфейсу поток из окна не выводит, а убивает его. Туннельные интерфейсы запрещены прямо — привязавшись к звену окна, мы отправили бы `Gemini` обратно в Россию.</p>
+        <p><b>Что делает смотритель.</b> Раз в минуту сверяет, что ядро прокси имеет НА САМОМ ДЕЛЕ (читается живой файл конфигурации, а не память панели), с изменившимся штатным выходом пересобирает конфиг — но только если расхождение переживёт два тика подряд и пройдёт черед в пять минут: мигание маршрута не должно дёргать службу подписчиков на каждом шаге.</p>
+        <p><b>Кнопка «Проверить, чем отвечает выход»</b> шлёт два запроса к одному и тому же адресу `Gemini` — как идёт сейчас и с привязкой к штатному выходу — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=gdOn onchange=saveGemini(this.checked)> Вести Gemini в обход окна YouTube — ему Россия не нужна</label>
+      <button class="tiny sec" onclick=checkGemini() id=gdCheckBtn>🔎 Проверить, чем отвечает выход</button>
+    </div>
+    <div class=msg id=gdMsg></div>
     </div>
     <div class="card set-block" id=setFront443>
     <h3 style="margin:0 0 8px">Страница подписчика и раздача на :443</h3>
@@ -6930,6 +6949,46 @@ async function checkYouTube(){
   if(b) b.disabled=false;
   loadYouTube();
 }
+async function loadGemini(){
+  const el=$('gdState'), on=$('gdOn');
+  if(!el) return;
+  try{
+    const d=await api('/api/gemini_direct');
+    if(on) on.checked=!!d.gemini_direct;
+    const rs=String(d.region_split||'').toUpperCase(), rw=String(d.region_window||'').toUpperCase();
+    const gap=(d.kernel_clients?(' Подписчиков, чей туннель ядро пересылает мимо прокси, это не касается: '+d.kernel_clients+'.'):'');
+    if(!d.want){ el.textContent='Выключено — Gemini идёт тем же путём, что и YouTube.'+gap; return; }
+    if(d.why){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но разводить нечем</b> — '+esc(d.why)+'.'; return; }
+    if(!d.read){ el.innerHTML='▶️ <b style="color:var(--warn)">Не прочитан живой конфиг ядра прокси</b> — сказать, что служба имеет, нельзя'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
+    if(!d.applied){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, а в живом конфиге ядра прокси развода нет</b> — смотритель пересоберёт сам'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
+    if(rs&&rs!=='RU'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, выход читается <b>'+esc(rs)+'</b>'+(rw?(' вместо '+esc(rw)):'')+'.'+gap; return; }
+    if(rs==='RU'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а выход всё ещё читается Россией</b> — проверке не верим'+(d.probe_error?(': '+esc(d.probe_error)):'')+'.'; return; }
+    el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', выход ещё не проверен'+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+gap;
+  }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveGemini(onv){
+  const m=$('gdMsg');
+  if(m) m.textContent=onv?'перекладываю конфиг ядра прокси…':'возвращаю Gemini в общий путь…';
+  try{
+    await api('/api/gemini_direct',{method:'POST',body:JSON.stringify({on:!!onv})});
+    if(m) m.textContent=onv?'включено — Gemini идёт в обход окна':'выключено — Gemini идёт как YouTube';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,160); }
+  setTimeout(loadGemini, 4000);
+  loadGemini();
+}
+async function checkGemini(){
+  const m=$('gdMsg'), b=$('gdCheckBtn');
+  if(m) m.textContent='мерю два выхода…';
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/gemini_direct',{method:'POST',body:JSON.stringify({check:true})});
+    const rs=d.region_split?('с привязкой к '+((d.dev||'?'))+' — '+String(d.region_split).toUpperCase()):'с привязкой — ответ не получен';
+    const rw=d.region_window?('как идёт сейчас — '+String(d.region_window).toUpperCase()):'как идёт сейчас — ответ не получен';
+    if(m) m.textContent='Google отвечает: '+rs+'; '+rw+(d.probe_error?'; проверка ответила не полностью: '+esc(d.probe_error):'');
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,160); }
+  if(b) b.disabled=false;
+  loadGemini();
+}
 async function loadFrontPanel(){
   const el=$('fpState'), on=$('fpOn');
   if(!el) return;
@@ -9018,7 +9077,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadFrontPanel();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadGemini();loadFrontPanel();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -9429,7 +9488,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setGemini:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}
