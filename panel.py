@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.27"
+VERSION = "2.17.28"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -15051,9 +15051,21 @@ def _ip6_to_publish():
     самого telemt и v6-маршрутами к DC, а для публикации имени важно другое — есть
     ли у фасада чем принять шестёрку; на бою 22.10 связка оказалась ловушкой:
     `tg_mp_ipv6=false` при работающем `[::]:7443` не давала выпустить AAAA даже по
-    слову хозяина, хотя оба направления шестёрки были проверены живыми."""
+    слову хозяина, хотя оба направления шестёрки были проверены живыми.
+    Нога Р6 (#508, замер L5 23.10 на паре): при сказанном фронте шестёрка гасится
+    безусловно, даже с включённым рубильником. Релей живёт в таблице `ip` и
+    переложить её на `ip6` нечем — у бэка нет адреса, в который фронт мог бы
+    развернуть v6-поток. Значит опубликованная AAAA увела бы v6-клиента прямо на
+    бэк, мимо прыжка: обещанный фронт для него так и не появился бы. Замер и
+    показал, что риск снимается именно публикацией имён: в зоне с 23.10 ноль AAAA
+    и ноль `ip6`-правил DNAT, поэтому до бэка по шестёрке клиент не доезжает."""
     if not _aaaa_publish_want():
         return ""
+    try:
+        if _hop_on():
+            return ""
+    except Exception:
+        pass
     if _tg_middle_proxy_on() and not _mp_v6_listener_up():
         return ""
     return _pub_ip6_echo() or _ip6_inbound_live()
@@ -24037,12 +24049,25 @@ def _front_covered(target):
     return ""
 
 
+def _hop_on():
+    """Включён ли двойной прыжок: назван ли адрес ФРОНТА. Пустое слово — ссылки идут
+    прямо на бэк, и релея на чужой машине панель не ставила.
+
+    Форма одна с `_hop_pub_host` (хост без порта и без слэшей) и названа отдельной
+    ручкой потому, что спрашивать её стали четверо: публикация имён (Р10), ротация
+    адреса (Р1), карточка хопа и смотритель. Разбросанное по телам сравнение
+    `CFG_CACHE.get("hop_public_host")` — это вторая версия одного решения, и она
+    разошлась бы с первой при первой же смене формы слова."""
+    h = (CFG_CACHE.get("hop_public_host") or "").strip()
+    return h if (h and ":" not in h and "/" not in h) else ""
+
+
 def _hop_pub_host():
     """Хост для пользовательских ссылок: ФРОНТ (если двойной прыжок включён),
     иначе домен/IP бэка. SNI/server_name/сертификаты здесь НЕ меняются —
     TLS по-прежнему терминируется на бэке."""
-    h = (CFG_CACHE.get("hop_public_host") or "").strip()
-    if h and ":" not in h and "/" not in h:
+    h = _hop_on()
+    if h:
         return h
     return (CFG_CACHE.get("panel_domain") or "").strip() or (_my_ip() or "127.0.0.1")
 
@@ -24070,6 +24095,56 @@ def _hop_valid_ports(ports):
 def _hop_back_ip():
     return _pub_ip4() or (_my_ip() or "")
 
+
+def _hop_back_name():
+    """Имя, по которому фронт стучится на бэк: опубликованный домен панели, если он
+    назван. Ротация (`#480`) двигает A-запись сама, поэтому ИМЯ переживает смену
+    адреса, а literal-адрес, вписанный в `relay.env` фронта, — нет: прогон 23.10 на
+    тестовой паре (нога L2) показал, что после смены адреса бэка heartbeat фронта
+    уходит в мёртвый адрес и панель слепнет, хотя клиенты прыжка не теряют.
+    Пусто — домена нет, держимся адресом, и тогда запись хопа обязана быть живой."""
+    return (CFG_CACHE.get("panel_domain") or "").strip()
+
+
+def _hop_relay_repoint(old_ip, new_ip):
+    """Ротация сменила адрес БЭКа: перекладываем то, что панель знает о фронтах.
+
+    Живой прогон 23.10 на паре (нога L2) назвал границу риска честно: правил релея,
+    привязанных к публичному адресу бэка, — `0`, потому что `DNAT` смотрит в
+    туннельный адрес, а подменённый endpoint туннеля ожил сам за `0` с роумингом
+    `wg`. То есть ПУТЬ клиентов смена адреса не рвёт. Рвалось другое: запись хопа
+    хранила ВЧЕРАШНИЙ адрес бэка, по нему же генерировались `BEAT_URL` и `REG_URL`
+    установщика, и карточка врала, пока фронт бился в мёртвый адрес. Поэтому здесь:
+
+      1. адрес бэка в записях меняется на живой (и следующий выданный `relay.sh`
+         уже несёт правду);
+      2. `relay_stale_at` помечает, что текст установщика, ВЫДАННЫЙ до смены, устарел
+         — это число читает карточка, а не перестановка правил;
+      3. применённый адрес бэка (`back_applied`) НЕ трогается: это факт С ФРОНТа,
+         его снимает только heartbeat, и выдумывать его на бэке нечем.
+
+    Возвращает число переложенных записей; `0` — хопов нет или ни один не принадлежал
+    прежнему адресу."""
+    if not new_ip:
+        return 0
+    hops = _hop_load()
+    if not hops:
+        return 0
+    moved = 0
+    with _HOP_LOCK:
+        for h in hops:
+            prev = str(h.get("back_ip") or "")
+            if prev and prev != old_ip:
+                continue
+            h["back_ip"] = new_ip
+            h["relay_stale_at"] = int(time.time())
+            moved += 1
+        if moved:
+            _save(HOPS_FILE, hops)
+    if moved:
+        _audit("hop_back_repointed", frm=old_ip or "?", to=new_ip, hops=moved)
+    return moved
+
 def _hop_suggest_ports():
     ports = []
     try:
@@ -24094,6 +24169,28 @@ def _hop_suggest_ports():
             pass
     if 443 not in ports:
         ports.append(443)
+    return sorted(ports)[:_HOP_MAX_PORTS]
+
+
+def _hop_suggest_udp_ports():
+    """UDP-входы бэка, которые есть смысл релееить так же, как TCP.
+
+    Нога Р4: релей умеет UDP с 23.10 (`uports`+`hun`), а панель предложение
+    портов делала только по четверке, поэтому WireGuard-вход оставался вне
+    прыжка. Берём `ListenPort` из конфигов туннелей, которые реально умеем
+    поднять; сам туннель прыжка (`_hop_tun_port`) исключаем — релееить порт,
+    которым прыжок живёт, значит закрывать прыжок."""
+    ports = []
+    for f in (WG_CONF, AWG_CONF):
+        try:
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                m = re.search(r"(?mi)^\s*ListenPort\s*=\s*(\d+)", fh.read())
+            if m:
+                p = int(m.group(1))
+                if p not in ports and p != _hop_tun_port():
+                    ports.append(p)
+        except Exception:
+            pass
     return sorted(ports)[:_HOP_MAX_PORTS]
 
 # Прыжок: адресный пул туннеля фронт<->бэк. 10.30.0.0/28 занят им целиком и не
@@ -24563,8 +24660,11 @@ def _relay_installer(hop, with_register=False):
     udp = " ".join(str(p) for p in (hop.get("udp_ports") or []))
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
     back = hop["back_ip"]
-    reg_url = "https://%s:%d/api/hop/register" % (back, panel_port)
-    beat_url = "https://%s:%d/api/hop/beat" % (back, panel_port)
+    # стук на бэк фронт держит ИМЕНЕМ, если домен назван: адрес бэка двигает ротация,
+    # а имя переставляет сама публикация (нога Р1, замер L2 23.10 на паре)
+    beat_host = _hop_back_name() or back
+    reg_url = "https://%s:%d/api/hop/register" % (beat_host, panel_port)
+    beat_url = "https://%s:%d/api/hop/beat" % (beat_host, panel_port)
     tok = (hop.get("tok") or "") if with_register else ""
     _hop_tunnel_for(hop)
     jk = dict(AWG_JUNK)
@@ -24600,12 +24700,15 @@ def _hop_find_tok(tok):
             return h
     return None
 
-def _hop_preview(front_ip, ports):
+def _hop_preview(front_ip, ports, udp_ports=None):
     front_ip = (front_ip or "").strip()
     ports = [x for x in re.split(r"[,\s]+", str(ports or "").strip()) if x] if isinstance(ports, str) else list(ports or [])
+    udp_ports = ([x for x in re.split(r"[,\s]+", str(udp_ports or "").strip()) if x]
+                 if isinstance(udp_ports, str) else list(udp_ports or []))
     blockers = []
     back = _hop_back_ip()
     pl = _hop_valid_ports(ports)
+    ul = _hop_valid_ports(udp_ports) if udp_ports else []
     if not _hop_is_ip4(front_ip):
         blockers.append("адрес ФРОНТа — не IPv4 (релей работает по IPv4)")
     elif not _dial_addr_ok(front_ip):
@@ -24614,6 +24717,12 @@ def _hop_preview(front_ip, ports):
     if pl is None:
         blockers.append("порты: от 1 до %d значений 1..65535, без повторов" % _HOP_MAX_PORTS)
         pl = []
+    if udp_ports and ul is None:
+        blockers.append("UDP-порты: от 1 до %d значений 1..65535, без повторов" % _HOP_MAX_PORTS)
+        ul = []
+    if set(pl) & set(ul):
+        blockers.append("порт не может быть одновременно в TCP и в UDP-списке: "
+                        "%s" % ", ".join(map(str, sorted(set(pl) & set(ul)))))
     if not _hop_is_ip4(back or ""):
         blockers.append("не удаётся определить публичный IPv4 этого сервера (БЭКа)")
     elif front_ip and front_ip == back:
@@ -24621,17 +24730,19 @@ def _hop_preview(front_ip, ports):
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
     if 22 in pl:
         blockers.append("порт 22 не релееят — отключи SSH фронта от бэка")
-    note = ("На ФРОНТе будет создана nft-таблица veil_relay: DNAT портов [%s] на %s и "
-            "MASQUERADE. Бэк будет видеть IP фронта вместо IP клиента (учёт по IP "
-            "устройств на бэке перестанет различать подписчиков фронта — это ожидаемо). "
-            "Установка обратима: кнопка «Удалить» снимает службу и правила."
-            % (", ".join(map(str, pl)) or "—", back or "?"))
-    return {"front_ip": front_ip, "ports": pl, "back_ip": back,
+    note = ("На ФРОНТе будет создана nft-таблица veil_relay: DNAT портов [%s] по TCP и "
+            "[%s] по UDP на %s и MASQUERADE. Бэк будет видеть IP фронта вместо IP "
+            "клиента (учёт по IP устройств на бэке перестанет различать подписчиков "
+            "фронта — это ожидаемо). Установка обратима: кнопка «Удалить» снимает "
+            "службу и правила."
+            % (", ".join(map(str, pl)) or "—", ", ".join(map(str, ul)) or "—",
+               back or "?"))
+    return {"front_ip": front_ip, "ports": pl, "udp_ports": ul, "back_ip": back,
             "blockers": blockers, "can_apply": not blockers,
             "panel_port": panel_port, "note": note}
 
-def _hop_add(name, front_ip, ports):
-    pv = _hop_preview(front_ip, ports)
+def _hop_add(name, front_ip, ports, udp_ports=None):
+    pv = _hop_preview(front_ip, ports, udp_ports)
     if not pv["can_apply"]:
         raise RuntimeError("; ".join(pv["blockers"]))
     hops = _hop_load()
@@ -24649,7 +24760,7 @@ def _hop_add(name, front_ip, ports):
                            "фронта — максимум %d"
                            % (HOP_TUN_NET, HOP_TUN_NET.num_addresses - 3))
     hop = {"id": hid, "name": (name or "Фронт")[:40], "front_ip": pv["front_ip"],
-           "ports": pv["ports"], "udp_ports": [], "back_ip": pv["back_ip"],
+           "ports": pv["ports"], "udp_ports": pv["udp_ports"], "back_ip": pv["back_ip"],
            "state": "pending",
            "tun_if": HOP_TUN_IF, "tun_priv": priv, "tun_pub": pub,
            "tun_ip": tun_ip, "tun_port": _hop_tun_port(), "wg_dst": _hop_wg_dst(),
@@ -24674,6 +24785,161 @@ def _hop_public(ip, port, timeout=1.6):
     except Exception:
         return False
 
+_HOP_UDP_BURST = 4
+
+
+def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_BURST):
+    """Проба UDP-входа через релей — не отнимая трафик у живого слушателя.
+
+    Бэк шлёт несколько датаграмм на порт фронта. Релей разворачивает их в
+    туннельный адрес бэка, то есть пакеты ОБЯЗАНЫ вернуться на ЭТУ ЖЕ машину с
+    другой стороны. Отсюда два независимых свидетельства, и оба названы числом:
+      `rx`    — сколько пакетов туннельный интерфейс ПРИНЯЛ за окно пробы минус
+                шум idle-окна; это и есть «датаграмма дошла до бэка сквозь фронт»;
+      `отклик` — что ответил порт: свой пакет или «порт закрыт» (ECONNREFUSED).
+    Вердикт складывается из обоих, потому что по отдельности они врут:
+      «up»        — порт сам ответил, ИЛИ в туннель вернулось не меньше sent-1
+                    пакетов (сервис мог промолчать на наше месиво — WireGuard и
+                    Hysteria2 так и делают); `udp=True`;
+      «closed»    — вернулось достаточно пакетов И порт их отверг: DNAT+MASQUERADE
+                    живые, слушателя на порту нет; `udp=True` (путь доказан);
+      «refused»   — отвергнут пакет, а датаграмм в туннель не вернулось: отказ
+                    родил сам фронт (правила DNAT на порт нет или он закрыт в
+                    security group) — путь через релей НЕ доказан; `udp=None`;
+      «silent»    — ни пакетов, ни отказа: UDP на фронт не проходит; `udp=False`;
+      «direct»    — смотритель фронта держит прямой режим релея: возврат идёт мимо
+                    туннеля и не отличим от отказа самого фронта; `udp=None`;
+      «unmeasured»— счётчик приёма туннеля не читается: отказ нельзя приписать
+                    релею; `udp=None`;
+      «no-tunnel» — адрес туннеля на бэке не занят, мерить не с чего; `udp=None`.
+    Сокет подключен к фронту и читает только СВОИ ответы и СВОИ ошибки: чужие
+    датаграммы ему не доставляются (порт занят сервисом), поэтому проба не
+    перехватывает трафик подписчиков. Нога Р4, замер L6 23.10 на паре
+    фронт↔бэк (порт с DNAT и эхом — «up», DNAT без слушателя — «closed» при rx=1,
+    порт без правила — «refused» при rx=0, дроп — «silent»): все четыре состояния
+    ловятся вживую. До этого проба хопа знала только «tcp» — мёртвый WG-порт
+    выглядел бы живым."""
+    import errno
+    stats = "/sys/class/net/%s/statistics/rx_packets" % HOP_TUN_IF
+
+    def _rx():
+        try:
+            with open(stats, encoding="utf-8") as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+
+    hold = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        hold.bind((HOP_TUN_BACK, 0))
+    except OSError as e:
+        hold.close()
+        return {"udp": None, "state": "no-tunnel", "sent": 0, "rx": None,
+                "why": "туннель %s на бэке не поднят (адрес %s занят только когда он "
+                       "живёт): %s" % (HOP_TUN_IF, HOP_TUN_BACK,
+                                       str(e.strerror or e)[:60])}
+    hold.close()
+    if _rx() is None:
+        return {"udp": None, "state": "unmeasured", "sent": 0, "rx": None,
+                "why": "счётчик приёма туннеля %s недоступен (%s): возврат датаграмм "
+                       "нечем мерить, путь не доказан" % (HOP_TUN_IF, stats)}
+    # Отправляющий сокет НАМЕРЕННО не привязан к туннельному адресу: замер L6 23.10
+    # на паре показал, что облако бэка режет пакет, ушедший с чужого источника (с
+    # `10.30.0.2` через наружный интерфейс датаграмма просто исчезала — «silent» на
+    # живом релее). Источник выбирает ядро, а свидетельством релея остаётся `rx`.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(wait)
+    magic = ("veilhop-probe %s " % secrets.token_hex(4)).encode()
+    # шум ДО пробы: keepalive фронтов тоже приходит в туннель, и без вычитания
+    # три «живых» пакета рисовались бы на одном молчании
+    idle0 = _rx()
+    time.sleep(idle)
+    rx0 = _rx()
+    noise = (rx0 - idle0) if (idle0 is not None and rx0 is not None) else 0
+    sent = 0
+    reply = None
+    refused = False
+    why = ""
+    try:
+        s.connect((front_ip, int(port)))
+        for i in range(burst):
+            try:
+                s.send(magic + str(i).encode())
+                sent += 1
+            except OSError as e:
+                why = "не отправлено: %s" % str(e.strerror or e)[:60]
+                break
+            try:
+                reply = len(s.recv(128))
+                break
+            except socket.timeout:
+                continue
+            except OSError as e:
+                if e.errno == errno.ECONNREFUSED:
+                    refused = True
+                else:
+                    why = "ошибка пробы: %s" % str(e.strerror or e)[:60]
+                break
+        if reply is None and not refused and sent:
+            try:
+                s.settimeout(wait * 2)
+                reply = len(s.recv(128))
+            except socket.timeout:
+                pass
+            except OSError as e:
+                if e.errno == errno.ECONNREFUSED:
+                    refused = True
+                else:
+                    why = "ошибка пробы: %s" % str(e.strerror or e)[:60]
+    finally:
+        s.close()
+    rx1 = _rx()
+    if rx0 is None or rx1 is None:
+        return {"udp": None, "state": "unmeasured", "sent": sent, "rx": None,
+                "why": "счётчик приёма туннеля %s пропал во время пробы (%s): путь "
+                       "не доказан" % (HOP_TUN_IF, stats)}
+    got = max(0, (rx1 - rx0) - noise)
+    need = max(1, sent - 1)
+    if reply is not None:
+        verdict = "up"
+        why = "порт фронта ответил (%d байт) — весь путь UDP сквозь релей живой" % reply
+    elif mode == "dir":
+        verdict = "direct"
+        why = ("фронт держит прямой режим релея: возврат идёт мимо туннеля %s, и его "
+               "нечем отличить от отказа самого фронта — UDP не меряется%s"
+               % (HOP_TUN_IF, ", отказа тоже не было" if not refused else ""))
+    elif refused and got >= need:
+        verdict = "closed"
+        why = ("пакетов в туннель вернулось %d (шум idle %d), ядро бэка их отвергнуло: "
+               "DNAT+MASQUERADE живые, слушателя на порту нет" % (got, noise))
+    elif refused:
+        verdict = "refused"
+        why = ("отказ пришёл, но пакетов в туннель вернулось %d из %d (нужно ≥%d): отказ "
+               "родился на самом фронте — правила DNAT на порт нет или порт закрыт в "
+               "security group" % (got, sent, need))
+    elif got >= need:
+        verdict = "up"
+        why = ("пакетов принято туннелем %d при отправленных %d (шум idle %d): датаграммы "
+               "дошли до бэка сквозь фронт, сервис на них молчит" % (got, sent, noise))
+    elif got:
+        verdict = "silent"
+        why = "из %d датаграмм вернулось %d, ответа нет" % (sent, got)
+    else:
+        verdict = "silent"
+        why = "из %d датаграмм в туннель не вернулось ни одной, отказа нет" % sent
+    return {"udp": {"up": True, "closed": True, "silent": False}.get(verdict),
+            "state": verdict, "sent": sent, "rx": got, "why": why[:220]}
+
+def _hop_probe_ports(h):
+    """Проба всех входов фронта: TCP — кольцом бэк→фронт→бэк, UDP — `_hop_udp_probe`."""
+    res = [{"port": p, "tcp": _hop_public(h["front_ip"], p)} for p in (h.get("ports") or [])]
+    for p in (h.get("udp_ports") or []):
+        pr = _hop_udp_probe(h["front_ip"], p, mode=str(h.get("relay_mode") or ""))
+        res.append({"port": p, "udp": pr["udp"], "udp_state": pr["state"],
+                    "why": pr["why"]})
+    return res
+
+
 def _hop_check(hid=None):
     hops = _hop_load()
     targets = [h for h in hops if (hid is None or h.get("id") == hid)]
@@ -24686,18 +24952,29 @@ def _hop_check(hid=None):
             out.append({"id": h["id"], "front_ip": h.get("front_ip"), "state": h.get("state"),
                         "check": [], "error": "адрес запрещён (loopback/metadata) — пробу не делаем"})
             continue
-        res = [{"port": p, "tcp": _hop_public(h["front_ip"], p)} for p in (h.get("ports") or [])]
-        h["last_check"] = {"ts": int(time.time()), "tcp_up": [r["port"] for r in res if r["tcp"]],
-                           "tcp_down": [r["port"] for r in res if not r["tcp"]]}
-        if h["state"] == "pending" and not any(r["tcp"] for r in res):
+        res = _hop_probe_ports(h)
+        tcp = [r for r in res if "tcp" in r]
+        udp = [r for r in res if "udp_state" in r]
+        def _by(*st):
+            return [r["port"] for r in udp if r["udp_state"] in st]
+        h["last_check"] = {"ts": int(time.time()),
+                           "tcp_up": [r["port"] for r in tcp if r["tcp"]],
+                           "tcp_down": [r["port"] for r in tcp if not r["tcp"]],
+                           "udp_up": _by("up"),
+                           "udp_closed": _by("closed"),
+                           "udp_down": _by("silent"),
+                           "udp_unknown": [r["port"] for r in udp
+                                           if r["udp_state"] not in ("up", "closed", "silent")]}
+        if h["state"] == "pending" and not any(r.get("tcp") for r in res):
             pass
         out.append({"id": h["id"], "front_ip": h["front_ip"], "state": h["state"], "check": res})
     _hop_save(hops)
     return {"hops": out,
             "note": "Проба идёт с бэка через фронт: успех = весь путь DNAT+MASQUERADE работает "
                     "(для портов, где сам бэк что-то слушает, это кольцо бэк→фронт→бэк). "
-                    "UDP-порты (WireGuard/Hysteria2) этой пробой не проверяются. "
-                    "Не забудь открыть порты в security group облака фронта."}
+                    "UDP-порты меряются двумя независимыми свидетельствами: сколько датаграмм вернулось в туннель "
+                    "бэка после DNAT на фронте и что ответил порт (свой пакет или «порт закрыт»). "
+                    "Не забудь открыть порты в security group облака фронта — в том числе по UDP."}
 
 def _hop_ssh_job(hid, user, password, ssh_port):
     hop = next((x for x in _hop_load() if x.get("id") == hid), None)
@@ -24876,12 +25153,14 @@ def _hop_ssh_worker(jid):
         registered = "VEILREG:" in out
         h["registered"] = registered
         _hop_save(hops)
-        tcp = [{"port": p, "tcp": _hop_public(host, p)} for p in hop["ports"]]
+        tcp = _hop_probe_ports(dict(hop, front_ip=host))
         h["last_check"] = {"ts": int(time.time()),
-                           "tcp_up": [c["port"] for c in tcp if c["tcp"]],
-                           "tcp_down": [c["port"] for c in tcp if not c["tcp"]]}
+                           "tcp_up": [c["port"] for c in tcp if c.get("tcp")],
+                           "tcp_down": [c["port"] for c in tcp if "tcp" in c and not c["tcp"]]}
         _hop_save(hops)
-        st(3, "done", "TCP открыт: " + (", ".join(str(c["port"]) for c in tcp if c["tcp"]) or "нет (проверь security group)"))
+        st(3, "done", "TCP открыт: " + (", ".join(str(c["port"]) for c in tcp if c.get("tcp")) or "нет (проверь security group)")
+           + ("; UDP: " + ", ".join("%s=%s" % (c["port"], c["udp_state"]) for c in tcp if "udp_state" in c)
+              if any("udp_state" in c for c in tcp) else ""))
         finish(True)
         _audit("hop_bootstrap_ok", id=hid, front_ip=host, ports=hop["ports"])
     except Exception as e:
@@ -25181,6 +25460,7 @@ def _hop_public_view():
             "tun_back": HOP_TUN_BACK, "tun_port": _hop_tun_port(),
             "panel_port": int(CFG_CACHE.get("panel_port", 8444) or 8444),
             "suggest_ports": _hop_suggest_ports(),
+            "suggest_udp_ports": _hop_suggest_udp_ports(),
             "addr_prev": str(CFG_CACHE.get("addr_prev") or ""),
             "addr_changed": int(CFG_CACHE.get("addr_changed") or 0)}
 
@@ -30501,8 +30781,18 @@ def _cf_current_ip():
 
 
 def _cf_set_ip(ip):
-    """Заменить content у всех настроенных A-записей. Вернуть список изменений."""
+    """Заменить content у всех настроенных A-записей. Вернуть список изменений.
+
+    Прыжок (#505, нога Р10): при сказанном ФРОНТЕ имена ссылок ставятся на АДРЕС
+    ФРОНТА, а не на адрес машины ротации. Без этого первая же смена IP уводила
+    подписчиков обратно на бэк — мимо фронтового щита (#507), то есть ровно под тот
+    бан, от которого фронт и ставился. Бэк при этом не теряет пути: релей DNATит в
+    туннель, `wg`-эндпоинт (`_cf_ensure_wg`) по-прежнему ведётся адресом ротации, а
+    номер на выходе фронта — это то, что клиент видит в ссылке.
+    `почему` в отчёте — чтобы оператор читал число с причиной, а не голую стрелку."""
     zid, zone = _cf_zone()
+    front = _hop_on()
+    tgt = front or ip
     changed = []
     for name in _cf_record_names():
         res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
@@ -30510,15 +30800,17 @@ def _cf_set_ip(ip):
         if not res:
             raise RuntimeError("A-запись %s не найдена в зоне %s" % (name, zone))
         for rec in res:
-            if (rec.get("content") or "") == ip:
+            if (rec.get("content") or "") == tgt:
                 continue
-            body = {"type": "A", "name": name, "content": ip,
+            body = {"type": "A", "name": name, "content": tgt,
                     "ttl": int(rec.get("ttl") or 60), "proxied": bool(rec.get("proxied"))}
             _cf_api("PUT", "/zones/%s/dns_records/%s" % (urllib.parse.quote(zid),
                                                          urllib.parse.quote(rec.get("id") or "")),
                     body)
-            changed.append({"name": name, "from": rec.get("content"), "to": ip,
-                            "proxied": body["proxied"]})
+            changed.append({"name": name, "from": rec.get("content"), "to": tgt,
+                            "proxied": body["proxied"],
+                            "почему": ("прыжок: имена ссылок держим на фронте %s" % front)
+                                      if front else ""})
     return changed
 
 
@@ -30578,6 +30870,10 @@ def _rot_apply(ip):
             rep.append("wg-эндпоинт: ошибка %s" % str(e)[:140])
     if prov == "off":
         rep.append("провайдер смены выключен")
+    if _hop_on():
+        rep.append("прыжок: имена ссылок поставлены на ФРОНТ %s, а не на адрес ротации "
+                   "%s — это адрес БЭКА, за ним остаётся `wg`-эндпоинт и туннель релея"
+                   % (_hop_on(), ip))
     return rep
 
 
@@ -30705,12 +31001,26 @@ def _rotate_ip(reason=""):
     cur = _cf_current_ip() if cfg["provider"] in ("cloudflare", "both") else (_pub_ip4() or "")
     if not cur:
         cur = _pub_ip4() or ""
+    # адрес БЭКА снимаем ДО всякой перестановки: `_cf_current_ip()` при сказанном
+    # фронте называет ФРОНТ (имена ссылок смотрят на него), а сверять хопы надо с
+    # прежним адресом этой машины, который `_netplan_primary_fix` ниже меняет
+    back_old = _hop_back_ip()
     new, why = _rot_pick_live(cfg, cur)
     if not new:
         return False, why
     rep = _rot_apply(new)
     rep.append("проба: " + why)
     rep.append(_netplan_primary_fix(new))
+    moved = _hop_relay_repoint(back_old, new)
+    if moved:
+        rep.append("прыжок: адрес бэка %s → %s переложен в %d записях хопа; путь "
+                   "клиентов смена не рвёт (релей `DNAT`ит в туннель, роуминг `wg`"
+                   " довёл за `0` с — замер L2 23.10), но `relay.sh`, выданный до "
+                   "смены, устарел, и карточка это скажет" %
+                   (back_old or "?", new, moved))
+    elif _hop_on():
+        rep.append("прыжок: ни одна запись хопа не держала прежний адрес бэка %s — "
+                   "перекладывать нечего" % (back_old or "?"))
     CFG_CACHE["rot_last_ip"] = new
     _cfg_save()
     with _ROT_LOCK:
@@ -31992,6 +32302,11 @@ def _veil_center():
         ip6_note = ("AAAA не выпускаются: публикация AAAA выключена рубильником "
                     "«Публиковать AAAA (IPv6)» (цикл #452); осиротевшая запись "
                     "снимается писателями и хранителем")
+    elif _hop_on():
+        ip6_note = ("AAAA не выпускаются: включён двойной прыжок, а релей живёт в "
+                    "таблице `ip` и переложить его на шестёрку нечем — опубликованная "
+                    "AAAA увела бы v6-клиента прямо на бэк, мимо фронта; осиротевшая "
+                    "запись снимается хранителем имён (#508, нога Р6)")
     elif _tg_middle_proxy_on() and not _mp_v6_listener_up():
         # #497: не переключатель telemt решает про DNS, а факт — чем фасаду принять
         ip6_note = ("AAAA не выпускаются: у фасада MTProto нет слушателя на шестёрке "
@@ -38257,7 +38572,8 @@ class H(http.server.BaseHTTPRequestHandler):
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, _hop_preview((q.get("ip") or [""])[0],
-                                                (q.get("ports") or [""])[0]))
+                                                (q.get("ports") or [""])[0],
+                                                (q.get("udp_ports") or [""])[0]))
         if p == "/api/hop/bootstatus":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -40895,7 +41211,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     ports = b.get("ports") or []
                     if isinstance(ports, str):
                         ports = [x for x in re.split(r"[,\s]+", ports) if x]
-                    return self._send(200, _hop_add(b.get("name"), b.get("front_ip"), ports))
+                    uports = b.get("udp_ports") or []
+                    if isinstance(uports, str):
+                        uports = [x for x in re.split(r"[,\s]+", uports) if x]
+                    return self._send(200, _hop_add(b.get("name"), b.get("front_ip"),
+                                                    ports, uports))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
             if p == "/api/hop/ssh":
