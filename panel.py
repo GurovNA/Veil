@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.24"
+VERSION = "2.17.25"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -17703,7 +17703,8 @@ _GM_BYPASS_MARK = 47     # 0x2f — у TikTok 0x2d, у YouTube 0x2e
 _GM_BYPASS_PRIO = 690
 _GM_MAX_DOM = 16
 _GM_MAX_IP = 64
-_GM_SANDBOX_N = 90       # песочница щупа #457: стол 210+90=300, приоритет 410+90=500, 10.98.90
+_GM_STALL = 300.0        # порог молчания: живое ядро перерукпожимается само не позже 120 с (замер ytw0 на бою)
+_GM_GRACE = 240.0        # облако отвечает на новый ключ не сразу: первое рукопожатие мерено через 90 с
 _GM_LOGIN_PORT = "9339"  # на этом порту цикл переподключений и есть блок входа
 _GM_TAIL_BYTES = 2000000
 _GM_LOOP_MIN = 10        # окно журнала для приговора «цикл»
@@ -17712,7 +17713,8 @@ _GM_ERR = ""
 _GM_ROTATE = 0.0
 _GM_RES_AT = 0.0
 _GM_PROBE_AT = 0.0
-_GM_LOCK = threading.Lock()   # одна песочница за раз; регистрация тоже под этим замком
+_GM_BUILT_AT = 0.0       # когда связь поднимали в последний раз: до `_GM_GRACE` молчание не судим
+_GM_LOCK = threading.Lock()   # одна пересборка набора сетей за раз; регистрация тоже под этим замком
 
 # Окончания игры, измеренные 23.10 на боевом по живому журналу: вход, API, события,
 # почта поддержки, сокетсерверы событий, сайт и аккаунт Supercell.
@@ -17731,35 +17733,6 @@ _GM_DOMAINS = (
 # выбраны по живому ответу — geojs и ifconfig.co читают один адрес своими ключами.
 _GM_FEEDS = (("geojs", "get.geojs.io", "/v1/ip/geo.json"),
              ("ifconfig", "ifconfig.co", "/json"))
-# щуп внутри песочницы: тот же договор вывода, что у #457, другое поле ответа.
-# Хост и путь берутся из первого фида: гость получает АДРЕС фида, и `Host` со SNI
-# обязаны ему соответствовать, иначе нога будет судить чужую коробку.
-_GM_PROBE_SRC = (
-    "import socket,ssl,sys,re\n"
-    "ip=sys.argv[1]\n"
-    "host=%r\n"
-    "path=%r\n"
-    "try:\n"
-    " s=socket.create_connection((ip,443),timeout=18)\n"
-    " c=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
-    " c.check_hostname=False; c.verify_mode=ssl.CERT_NONE\n"
-    " t=c.wrap_socket(s,server_hostname=host)\n"
-    " s=None\n"
-    " t.settimeout(6)\n"
-    " t.sendall(b'GET '+path.encode()+b' HTTP/1.1\\r\\nHost: '+host.encode()+b'\\r\\n'"
-    "b'User-Agent: Mozilla/5.0\\r\\nConnection: close\\r\\n\\r\\n')\n"
-    " b=b''\n"
-    " while len(b)<60000:\n"
-    "  d=t.recv(8192)\n"
-    "  if not d: break\n"
-    "  b+=d\n"
-    " m=re.search(rb'\"country(?:_iso|_code)?\"\\s*:\\s*\"([A-Za-z]{2})\"',b)\n"
-    " print('REGION='+(m.group(1).decode().upper() if m else 'NONE'))\n"
-    "except Exception as e:\n"
-    " print('ERR='+type(e).__name__)\n"
-    " if s is not None:\n"
-    "  try: s.close()\n"
-    "  except Exception: pass\n") % (_GM_FEEDS[0][1], _GM_FEEDS[0][2])
 
 
 def _gm_want():
@@ -17843,14 +17816,15 @@ def _gm_handshake_age():
     return _tw_handshake_age(_GM_IF)
 
 
-def _gm_fetch(host, path):
+def _gm_fetch(host, path, ip=None):
     """Один HTTPS-ответ фида прямиком с коробки: (адрес, тело, отказ).
 
-    Фиды НЕ покрыты таблицей окна, поэтому main-таблица сама отдаёт прямой выход —
-    метка или привязка к интерфейсу для этой ноги не нужны (в отличие от щупа #493,
-    который обязан достать покрытый адрес)."""
+    Без `ip` фид резолвится сам и main-таблица отдаёт прямой выход — метка или
+    привязка к интерфейсу для этой ноги не нужны. С `ip` щуп идёт по уже сверенному
+    адресу: туннельная нога обязана стучаться ровно в тот адрес, который лежит
+    покрытым, иначе повторный DNS уйдёт на соседа и нога судила бы не это звено."""
     try:
-        ip = socket.gethostbyname(host)
+        ip = ip or socket.gethostbyname(host)
     except OSError as e:
         return "", b"", "резолвер фида: " + str(e)[:60]
     s = t = None
@@ -17899,7 +17873,10 @@ def _gm_whois(buf):
 
 
 def _gm_direct_feeds():
-    """Что коробка видит сама: по чтению на фид. Пустые чтения в список не кладутся."""
+    """Что коробка видит сама: по чтению на фид. Пустые чтения в список не кладутся.
+
+    `host` и `path` остаются в записи намеренно: туннельная нога обязана стучаться
+    тем же словом в тот же адрес, который прочитала прямая нога."""
     got, errs = [], []
     for name, host, path in _GM_FEEDS:
         ip, buf, err = _gm_fetch(host, path)
@@ -17910,24 +17887,58 @@ def _gm_direct_feeds():
         if not (rg or asn):
             errs.append("%s: страны и ASN в ответе нет" % name)
             continue
-        got.append({"feed": name, "region": rg, "asn": asn, "holder": holder, "ip": ip})
+        got.append({"feed": name, "region": rg, "asn": asn, "holder": holder,
+                    "ip": ip, "host": host, "path": path})
     return got, errs
 
 
-def _gm_tunnel_region(reg, feed_ip):
-    """Страна, с которой отвечает тот, кто стоит за веером: песочница #457 на ТОМ ЖЕ
-    аккаунте, живое звено не трогается ни одной командой.
+def _gm_tunnel_region(reg, feed, nets):
+    """Кем отвечает ЖИВОЕ звено: (страна, ASN, держатель, адрес фида, отказ).
 
-    Меряется ТОЛЬКО явной проверкой оператора. Песочница поднимает второй веер с этим
-    же ключом, и трогать её каждый тик — значит каждые 15 минут спорить с облаком из-за
-    аккаунта под ноками подписчиков; цена промера ещё и до 45 с ожидания."""
-    if not (reg and feed_ip):
-        return "", "нет аккаунта или адреса фида"
+    Адрес фида на время промера ложится в стол окна СВОЕЙ точной маской `/32` — тем же
+    механизмом, которым окно покрывает адреса игры, — и щуп идёт тем путём, которым идёт
+    игра. По окончании набор возвращается прежнему: наружу не должно уходить ни одного
+    лишнего правила, даже на секунды.
+
+    Прежняя нога — песочница #457 на том же аккаунте — на бою не просто дорога (до 45 с
+    ожидания) и слепа: второй веер с тем же ключом перетягивает сессию облака на себя, и
+    живое звено глохнет (замер 23.10: сразу после проверки окно потеряло правила, а
+    старому ключу облако рукопожатия не вернуло). Песочница к тому же по договору
+    называет только две буквы страны, поэтому «в туннеле» и «напрямую» нельзя было
+    различить словами — здесь нога называется ASNом и адресом выхода."""
+    if not (reg and feed and feed.get("ip")):
+        return "", "", "", "", "нет аккаунта или адреса фида"
+    if not nets:
+        return "", "", "", "", "звено ещё не покрыло ни одного адреса"
+    host, path, ip = feed["host"], feed["path"], feed["ip"]
     with _GM_LOCK:
-        rg, verdict, why = _tv_sandbox(_GM_SANDBOX_N, reg, feed_ip, src=_GM_PROBE_SRC)
-    if rg:
-        return rg.upper(), ""
-    return "", (why or "песочница не назвала страну")
+        err = _gm_sync(list(nets) + [ip + "/32"], reg)
+        try:
+            addr, buf, why = _gm_fetch(host, path, ip=ip)
+        finally:
+            _gm_sync(list(nets), reg)
+    if why:
+        return "", "", "", "", (err + "; " if err else "") + why
+    rg, asn, holder = _gm_whois(buf)
+    if not (rg or asn):
+        return "", "", "", "", (err + "; " if err else "") + "страны и ASN в ответе нет"
+    return rg, asn, holder, addr, (err or "")
+
+
+def _gm_rekey():
+    """Просим ядро перерукпожатиться, не трогая аккаунт: связь вниз и вверх.
+
+    Возвращает возраст рукопожатия; `None` — если облако на поднятую связь не ответил,
+    и только тогда разговор про молчание имеет смысл."""
+    _tw_cmd("ip", "link", "set", _GM_IF, "down")
+    time.sleep(1)
+    _tw_cmd("ip", "link", "set", _GM_IF, "up")
+    for _ in range(3):
+        time.sleep(3)
+        age = _gm_handshake_age()
+        if age is not None and age <= int(_GM_KEEP):
+            return age
+    return _gm_handshake_age()
 
 
 def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
@@ -17982,8 +17993,9 @@ def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
 def _gm_probe(force=False):
     """Диагноз окна: чем пахнет каждый выход и что в эту минуту делает игра.
 
-    Прямая нога дешёвая и идёт по чередованию TTL; туннельная дорогая (песочница),
-    поэтому только по явной проверке. Расхождение фидов сохраняется как есть."""
+    Прямая нога дешёвая и идёт по чередованию TTL; туннельная перекладывает стол
+    окна и ждёт ответа фида, поэтому только по явной проверке. Расхождение фидов
+    сохраняется как есть."""
     global _GM_PROBE_AT
     if not _gm_want():
         return
@@ -17995,26 +18007,37 @@ def _gm_probe(force=False):
     feeds, errs = _gm_direct_feeds()
     if feeds:
         st["feed_ip"] = feeds[0].get("ip") or st.get("feed_ip")
+    # прежние туннельные чтения переживают чередующиеся промеры: без `force` нога
+    # дорога и не запускается, а прочерк на карточке оператор прочтёт как обрыв звена
     rt = str(st.get("region_tunnel") or "")
+    at = str(st.get("as_tunnel") or "")
+    ht = str(st.get("holder_tunnel") or "")
+    ta = str(st.get("addr_tunnel") or "")
     if force:
-        # адрес для туннельной ноги берётся у ТОГО фида, чьё имя вшито в щуп: гость
-        # резолвить не обязан, и несоответствие адреса и `Host` судило бы чужую коробку
-        pf = next((f for f in feeds if f.get("feed") == _GM_FEEDS[0][0]), None)
+        # туннельная нога берёт ТОТ фид, чей адрес прочитала прямая: промер вслепую,
+        # по чужому адресу или по повторному DNS, судил бы не это звено
+        pf = next((f for f in feeds if f.get("feed") == _GM_FEEDS[0][0]), None) or \
+            (feeds[0] if feeds else None)
+        rt = at = ht = ta = ""
         nets = list(st.get("nets") or [])
         reg = _gm_registered() if _gm_link_ready(nets) else None
         try:
-            rt, why = _gm_tunnel_region(reg, (pf or {}).get("ip") or "")
+            rt, at, ht, ta, why = _gm_tunnel_region(reg, pf, nets)
         except Exception as e:
-            rt, why = "", "%s: %s" % (type(e).__name__, str(e)[:70])
-        if why:
+            rt, at, ht, ta, why = "", "", "", "", "%s: %s" % (type(e).__name__, str(e)[:70])
+        if why and not rt:
             errs.append("в туннеле: " + why)
         elif rt:
-            _audit("game_warp_probe", region=rt, feed=_GM_FEEDS[0][0])
+            _audit("game_warp_probe", region=rt, as_number=at, feed=pf.get("feed"))
     st.update({"feeds_direct": feeds,
                "region_direct": (feeds[0]["region"] if feeds else None),
                "as_direct": (feeds[0]["asn"] if feeds else None),
                "holder_direct": (feeds[0]["holder"] if feeds else None),
+               "addr_direct": (feeds[0]["ip"] if feeds else None),
                "region_tunnel": rt or None,
+               "as_tunnel": at or None,
+               "holder_tunnel": ht or None,
+               "addr_tunnel": ta or None,
                "probe_ip": st.get("feed_ip"), "probe_at": int(now),
                "probe_error": "; ".join(errs)[:200],
                "loop": _gm_login_loop()})
@@ -18026,8 +18049,9 @@ def _gm_tick():
 
     Регистрация аккаунта под `_GM_LOCK`: #494 — гонка клика оператора и тика — для
     первых двух звеньев остаётся открытой, но третьим гонщиком мы не становимся.
-    Пустой резолв живое звено не ломает."""
-    global _GM_ERR, _GM_RES_AT
+    Пустой резолв живое звено не ломает. Молчанием считается отсутствие ответа облака
+    на перерукпожатие, а не отсутствие ответа от конца игры."""
+    global _GM_ERR, _GM_RES_AT, _GM_BUILT_AT
     if SBX:
         return
     st = _load(_GM_STATE, {}) or {}
@@ -18078,16 +18102,28 @@ def _gm_tick():
     if rebuilt:
         err = _gm_link_up(reg, nets)
         age = _gm_handshake_age()
+        _GM_BUILT_AT = now
     else:
         err = _gm_sync(nets, reg)
     tgt = _tw_covered_ip(ips, nets)
-    if err == "" and tgt and (age is None or age > 4 * int(_GM_KEEP)) and \
-            not _tw_carries(tgt, _GM_IF):
-        _gm_flush_rules()
-        _tw_bypass_del(_GM_BYPASS_MARK)
-        _tw_cmd("ip", "link", "del", _GM_IF)
-        err, age = "звено молчит: до облака нет ответа", None
-        err = _gm_retire(err)
+    if err == "" and (age is None or age > _GM_STALL):
+        # Молчание судит НЕ `ping` до игрового окончания: адреса AWS и CloudFront ICMP
+        # отвечают выборочно (замер 23.10 на бою через живое звено: `44.227.138.182`
+        # молчит, `44.227.138.1` молчит, `3.165.190.1` отвечает), поэтому молчание ничего
+        # не доказывает. Прежний судья ровно на этом приговаривал живое звено: боевой
+        # `reg.json` переписывался каждые ~20 минут (12:21:55 и 12:41:59 при окне,
+        # включённом в 11:38:44), то есть окно расходовало по аккаунту на ровном месте.
+        # Живое доказательство — ответ облака на перерукпожатие того же ключа.
+        if age is None and now - _GM_BUILT_AT < _GM_GRACE:
+            err = "ждём ответ облака: рукопожатия ещё нет"
+        else:
+            age = _gm_rekey()
+            if age is None and not (tgt and _tw_carries(tgt, _GM_IF)):
+                _gm_flush_rules()
+                _tw_bypass_del(_GM_BYPASS_MARK)
+                _tw_cmd("ip", "link", "del", _GM_IF)
+                err = _gm_retire("звено молчит: облако не принял перерукпожатие")
+                age = None
     _GM_ERR = err
     up = (err == "")
     st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
@@ -18126,7 +18162,11 @@ def _gm_view():
             "region_direct": st.get("region_direct"),
             "as_direct": st.get("as_direct"),
             "holder_direct": st.get("holder_direct"),
+            "addr_direct": st.get("addr_direct"),
             "region_tunnel": st.get("region_tunnel"),
+            "as_tunnel": st.get("as_tunnel"),
+            "holder_tunnel": st.get("holder_tunnel"),
+            "addr_tunnel": st.get("addr_tunnel"),
             "fan_owner": "Cloudflare WARP",
             "loop": loop, "loop_verdict": loop.get("verdict") or "",
             "probe_age": (int(time.time() - pat) if pat else None),
