@@ -7241,13 +7241,15 @@ function gmFeedsLine(d){
 }
 function gmTunnelLine(d){
   const rt=String(d.region_tunnel||'').toUpperCase();
-  return rt?('в туннеле — '+rt+' ('+(d.fan_owner||'веер')+')')
+  return rt?('в туннеле — '+rt+(d.as_tunnel?(' · AS'+d.as_tunnel):'')
+    +(d.holder_tunnel?(' '+d.holder_tunnel):'')
+    +(d.addr_tunnel?(' через '+d.addr_tunnel):'')+' ('+(d.fan_owner||'веер')+')')
             :'в туннеле не измерено — спросите кнопкой проверки';
 }
 function gmLoopLine(d){
   const l=d.loop||{}, v=String(d.loop_verdict||'');
-  if(v==='цикл') return 'вход запрещён: стучится по '+l.peak+' раза в минуту ('+l.total+' за '+l.minutes+' мин)';
-  if(v==='держится') return 'вход держится: '+l.total+' обращений за '+l.minutes+' мин, максимум '+l.peak+' в минуту';
+  if(v==='цикл') return 'вход запрещён: '+(l.reason||('стучится по '+l.peak+' раза в минуту'))+' ('+l.total+' за '+l.minutes+' мин)';
+  if(v==='держится') return 'вход держится: '+l.total+' обращений за '+l.minutes+' мин, максимум '+l.peak+' в минуту, открытие в '+l.opened+' мин. из '+l.minutes;
   if(v==='не открывали') return 'в игру не заходили '+l.minutes+' мин — подтверждать будет вход';
   if(v==='нет журнала') return 'журнала прокси нет: '+(l.reason||'не прочитан');
   return 'поведение игры ещё не меряно';
