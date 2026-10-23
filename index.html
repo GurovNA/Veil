@@ -2542,6 +2542,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           </div>
           <label class=fldlbl for=hopPorts>Порты ретрансляции (через запятую; до 64; фронтов должен слушать то же, что и ссылки — подставлены автоматически)</label>
           <input id=hopPorts placeholder="443, 7443" maxlength=512 autocomplete=off>
+          <label class=fldlbl for=hopUdpPorts style="margin-top:8px">UDP-порты (WireGuard/AmneziaWG/Hysteria2 — релей перекладывает и датаграммы; оставь пустым, если UDP-входов нет)</label>
+          <input id=hopUdpPorts placeholder="28450" maxlength=512 autocomplete=off>
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=hopPreview()>Предпросмотр</button>
             <button class=sec onclick=hopAdd()>Создать фронт</button>
@@ -3757,6 +3759,8 @@ async function loadHop(){
   renderHop();
   const p=$('hopPorts');
   if(p && !p.value && hopData && hopData.suggest_ports) p.value=hopData.suggest_ports.join(', ');
+  const u=$('hopUdpPorts');
+  if(u && !u.value && hopData && hopData.suggest_udp_ports) u.value=hopData.suggest_udp_ports.join(', ');
 }
 function hopBadge(state,tokLeft,tokAlive){
   if(state==='active') return '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(46,160,67,.15)">🟢 активен</span>';
@@ -3773,7 +3777,7 @@ function hopPendingBox(x){
     +'<input id="hopP_'+x.id+'" type=password placeholder="SSH-пароль" style="width:170px" autocomplete=new-password>'
     +'<button class=tiny onclick="hopSsh(\''+jsStr(x.id)+'\')">⚡ Установить по SSH</button></div>'
     +'<div id="hopBoot_'+x.id+'" style="margin-top:8px;font-size:13px"></div>'
-    +'<div class=mut style="font-size:12px;margin-top:6px">SSH-пароль нужен однократно (для установки ключа панели), нигде не сохраняется. Не забудь открыть порты ['+esc((x.ports||[]).join(', '))+'] в security group облака фронта.</div>'
+    +'<div class=mut style="font-size:12px;margin-top:6px">SSH-пароль нужен однократно (для установки ключа панели), нигде не сохраняется. Не забудь открыть порты ['+esc((x.ports||[]).join(', '))+'] по TCP'+((x.udp_ports||[]).length?(' и ['+esc(x.udp_ports.join(', '))+'] по UDP'):'')+' в security group облака фронта.</div>'
     +'</div></details>';
 }
 function renderHop(){
@@ -3802,12 +3806,13 @@ function renderHop(){
   } else {
     h='<div style="font-weight:600;margin-top:14px;margin-bottom:4px">Фронты</div>';
     h+=hops.map(x=>{
-      const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">TCP-проба '+fmtZ(x.last_check.ts,'t')+': открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+'</div>'):'';
+      const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">проба '+fmtZ(x.last_check.ts,'t')+': TCP открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+(((x.last_check.udp_up||[]).length||(x.last_check.udp_closed||[]).length||(x.last_check.udp_down||[]).length||(x.last_check.udp_unknown||[]).length)?(' · UDP живой путь '+(((x.last_check.udp_up||[]).concat(x.last_check.udp_closed||[])).join(', ')||'—')+((x.last_check.udp_closed||[]).length?(' (из них без слушателя '+x.last_check.udp_closed.join(', ')+')'):'')+((x.last_check.udp_down||[]).length?(' · молчит '+x.last_check.udp_down.join(', ')):'')+((x.last_check.udp_unknown||[]).length?(' · не меряется '+x.last_check.udp_unknown.join(', ')):'')):'')+'</div>'):'';
+      const ud=(x.udp_ports&&x.udp_ports.length)?('<span class=mut style="font-size:12.5px">UDP: '+esc(x.udp_ports.join(', '))+'</span>'):'';
       return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
         +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
         +'<b>'+esc(x.name||'Фронт')+'</b><code style="font-size:13px">'+esc(x.front_ip)+'</code>'
         +hopBadge(x.state,x.tok_left||0,x.tok_alive)
-        +'<span class=mut style="font-size:12.5px">порты: '+esc((x.ports||[]).join(', '))+'</span>'
+        +'<span class=mut style="font-size:12.5px">порты: '+esc((x.ports||[]).join(', '))+'</span>'+ud
         +'<span style="margin-left:auto;display:flex;gap:6px">'
         +'<button class="sec tiny" onclick="hopCheck(\''+jsStr(x.id)+'\')">Проверить</button>'
         +'<button class="sec tiny" onclick="hopDel(\''+jsStr(x.id)+'\',\''+jsStr(x.front_ip)+'\')">Удалить</button></span></div>'
@@ -3817,14 +3822,14 @@ function renderHop(){
   lb.innerHTML=h;
 }
 async function hopPreview(){
-  const ip=$('hopIp').value.trim(), ports=$('hopPorts').value, b=$('hopPrevBox');
+  const ip=$('hopIp').value.trim(), ports=$('hopPorts').value, udp=($('hopUdpPorts').value||''), b=$('hopPrevBox');
   if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
   let d;
-  try{ d=await api('/api/hop/preview?ip='+encodeURIComponent(ip)+'&ports='+encodeURIComponent(ports)); }
+  try{ d=await api('/api/hop/preview?ip='+encodeURIComponent(ip)+'&ports='+encodeURIComponent(ports)+'&udp_ports='+encodeURIComponent(udp)); }
   catch(e){ b.innerHTML=''; setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
   let h='<div style="border:1px solid var(--br);border-radius:10px;padding:10px;font-size:13px;line-height:1.6;margin-top:4px">';
   h+= d.can_apply
-    ? '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(46,160,67,.15)">✅ можно применять — бэк '+esc(d.back_ip)+' ← фронт '+esc(d.front_ip)+', порты '+esc((d.ports||[]).join(', '))+'</span>'
+    ? '<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:rgba(46,160,67,.15)">✅ можно применять — бэк '+esc(d.back_ip)+' ← фронт '+esc(d.front_ip)+', порты '+esc((d.ports||[]).join(', '))+((d.udp_ports||[]).length?(', UDP '+esc((d.udp_ports||[]).join(', '))):'')+'</span>'
     : '<span style="color:var(--err)">❌ '+esc((d.blockers||[]).join('; '))+'</span>';
   h+='<div class=mut style="margin-top:6px">'+esc(d.note||'')+'</div></div>';
   b.innerHTML=h;
@@ -3833,10 +3838,11 @@ async function hopPreview(){
 async function hopAdd(){
   const name=$('hopName').value.trim(), ip=$('hopIp').value.trim();
   const ports=($('hopPorts').value||'').split(/[,\s]+/).filter(Boolean);
+  const udp=($('hopUdpPorts').value||'').split(/[,\s]+/).filter(Boolean);
   if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
   setMsg('hopAddMsg','создаю…','');
   let d;
-  try{ d=await api('/api/hop/add',{method:'POST',body:JSON.stringify({name,front_ip:ip,ports})}); }
+  try{ d=await api('/api/hop/add',{method:'POST',body:JSON.stringify({name,front_ip:ip,ports,udp_ports:udp})}); }
   catch(e){ setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
   $('hopIp').value=''; $('hopName').value=''; $('hopPrevBox').innerHTML='';
   await loadHop();
@@ -3882,15 +3888,20 @@ function pollHopBoot(jid,hid){
   tick();
 }
 async function hopCheck(id){
-  setMsg('hopMsg','TCP-проба с бэка на фронт…','');
+  setMsg('hopMsg','проба с бэка на фронт (TCP и UDP)…','');
   let d;
   try{ d=await api('/api/hop/status',{method:'POST',body:JSON.stringify({id})}); }
   catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
   await loadHop();
   const h=(d.hops||[])[0]||{};
   const chk=h.check||[];
-  const up=chk.filter(r=>r.tcp).map(r=>r.port), dn=chk.filter(r=>!r.tcp).map(r=>r.port);
-  setMsg('hopMsg','TCP на фронте: '+(up.length?('открыт '+up.join(', ')):'ни один порт не отвечает')+(dn.length?(' · закрыт '+dn.join(', ')):'')+'.'+(d.note?(' '+d.note):''), up.length?'ok':'err', true);
+  const t=chk.filter(r=>'tcp' in r), u=chk.filter(r=>'udp_state' in r);
+  const up=t.filter(r=>r.tcp).map(r=>r.port), dn=t.filter(r=>!r.tcp).map(r=>r.port);
+  const uwords=u.map(r=>r.port+'='+({'up':'жив','closed':'путь жив, слушателя нет','refused':'отказ фронта — релей не доказан','silent':'молчит','direct':'не меряется: релей в прямом режиме','unmeasured':'не меряется: счётчик туннеля не читается','no-tunnel':'туннеля нет'}[r.udp_state]||'неизвестно'));
+  setMsg('hopMsg','TCP на фронте: '+(up.length?('открыт '+up.join(', ')):'ни один порт не отвечает')
+    +(dn.length?(' · закрыт '+dn.join(', ')):'')
+    +(u.length()?('; UDP: '+uwords.join(', ')):'')
+    +'.'+(d.note?(' '+d.note):''), (up.length||u.filter(r=>r.udp).length)?'ok':'err', true);
 }
 async function hopDel(id,ip){
   if(!confirm('Удалить фронт '+ip+'?\n\nЕсли сохранился SSH-ключ панели — с фронта будут сняты служба veil-relay, nft-правила и файлы. Если установка была через curl — удаление только из списка, почисти на фронте вручную (команда будет в сообщении).')) return;
