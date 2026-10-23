@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.22"
+VERSION = "2.17.24"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -13520,7 +13520,10 @@ def _drop_user_sessions(login):
 def _perm_for(p, m):
     if not p.startswith("/api/"):
         return None
-    if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook", "/api/hop/register"):
+    if p in ("/api/login", "/api/logout", "/api/me", "/api/bot/webhook",
+             "/api/hop/register", "/api/hop/beat"):
+        # `hop/beat` — heartbeat смотрителя с ФРОНТа: сеанса панели фронт не знает,
+        # его воротой служит тот же одноразовый токен, что и у регистрации (#508, Р2)
         return None
     if p == "/api/onboard/dismiss":
         # Значение живёт в config.json и ОДНО на всю панель: «первый запуск
@@ -16153,10 +16156,11 @@ _WM_MAX_IP = 64
 
 
 
-def _wm_cfg():
+def _wm_cfg(key="warp_manual"):
     """Хозяйский список для туннеля (#388): (домены, маски). Форма та же, что у
-    обхода #387; без ключа в конфиге — два пустых списка."""
-    wm = CFG_CACHE.get("warp_manual")
+    обхода #387; без ключа в конфиге — два пустых списка. #509 зовёт своим ключом:
+    у игры свой список, и он не должен зависеть от того, что лежит в списке TikTok."""
+    wm = CFG_CACHE.get(key)
     if not isinstance(wm, dict):
         return [], []
     doms = [str(x) for x in (wm.get("domains") or []) if isinstance(x, str) and x.strip()]
@@ -16164,24 +16168,25 @@ def _wm_cfg():
     return doms, ips
 
 
-def _wm_nonempty():
-    doms, ips = _wm_cfg()
+def _wm_nonempty(key="warp_manual"):
+    doms, ips = _wm_cfg(key)
     return bool(doms or ips)
 
 
-def _wm_norm(body):
+def _wm_norm(body, max_dom=_WM_MAX_DOM, max_ip=_WM_MAX_IP):
     """Список из тела запроса -> (снимок, None) или (None, названный отказ).
     Разбор формы общий с обходом #387; сверх его рамок — потолок списка и
-    отказ шестого семейства: звено `tkw0` несёт только четвёрку."""
+    отказ шестого семейства: звено `tkw0` несёт только четвёрку.
+    Потолки параметризуются (#509): окно игры называет свои."""
     norm, err = _bypass_norm(body)
     if err:
         return None, err
-    if len(norm["domains"]) > _WM_MAX_DOM:
+    if len(norm["domains"]) > max_dom:
         return None, "слишком длинный список доменов: %d, максимум %d" % (
-            len(norm["domains"]), _WM_MAX_DOM)
-    if len(norm["ips"]) > _WM_MAX_IP:
+            len(norm["domains"]), max_dom)
+    if len(norm["ips"]) > max_ip:
         return None, "слишком длинный список адресов: %d, максимум %d" % (
-            len(norm["ips"]), _WM_MAX_IP)
+            len(norm["ips"]), max_ip)
     v6 = [x for x in norm["ips"] if ":" in x]
     if v6:
         return None, "через туннель идёт только четвёртое семейство: " + v6[0]
@@ -17012,14 +17017,16 @@ def _tv_add():
         return n, ""
 
 
-def _tv_sandbox(n, reg, tgt):
+def _tv_sandbox(n, reg, tgt, src=_TV_PROBE_SRC):
     """Промер варианта в сетевой песочнице: (регион|None, приговор, причина).
     Песочница снимается в любом исходе; на входе — только наши имена vtp/tvh/tvn
     и своя подсеть, стол main и таблица 204 не участвуют ни в одной команде.
     Веер живёт в пространстве хоста, как живое звено: UDP-пакеты туннельного
     модуля, поднятого внутри netns, хостовый NAT не проходят — облако получало
     немаршрутизируемый адрес песочницы и молчало, и «молчание» судило песочницу,
-    а не аккаунт. Изоляция гостя — своим столом и правилом `from подсеть`."""
+    а не аккаунт. Изоляция гостя — своим столом и правилом `from подсеть`.
+    `src` — текст щупа внутри гостя: #509 мёрит им игровое звено, договор
+    вывода (`REGION=<cc>|ERR=<причина>`) общий."""
     ns = "vtp%d" % n
     hv = "tvh%d" % n
     nv = "tvn%d" % n
@@ -17094,7 +17101,7 @@ def _tv_sandbox(n, reg, tgt):
             E("ip", "link", "set", tun, "down")
             E("ip", "link", "set", tun, "up")
             time.sleep(4)
-        rc, out, err = N("python3", "-", tgt, input=_TV_PROBE_SRC, timeout=45)
+        rc, out, err = N("python3", "-", tgt, input=src, timeout=45)
         m = re.match(r"^REGION=(NONE|[A-Z]{2})", str(out or "").strip())
         if m and m.group(1) != "NONE":
             rg = m.group(1)
@@ -17376,6 +17383,8 @@ def _tv_after():
 _YW_IF = "ytw0"
 _YW_TBL = "205"
 _YW_PRIO_BASE = 600       # выше TikTok (200..456) и медиа (100..108): наши правила не пересекаются
+# Коридоры трёх звеньев: 100..108 медиа, 110..173 обход `Gemini`, 190 обход TikTok,
+# 200..456 TikTok, 590 обход YouTube, 600..679 YouTube, 690 обход игры, 700.. игра.
 _YW_CAP = 64              # потолок подобранных /24-блоков: агрегаты кладются поверх
 _YW_DIR = "/var/lib/veil-youtube-route"
 _YW_REG = _YW_DIR + "/reg.json"
@@ -17658,6 +17667,476 @@ def _yw_view():
             "aggregates": list(_YW_AGG), "ts": st.get("ts")}
 
 
+# ---------- #509: окно «Игра» — своё звено WARP для игровых окончаний ----------
+# Слово хозяина 23.10: «игра brawl stars почему то определяет как россия и не
+# работает, разберись и почини». Мерено на боевом: обращение игры к входу
+# (`game.brawlstarsgame.com:9339`) шло напрямую и уходило с узла адресом
+# `62.60.245.204`, который читается Нидерландами пятью независимыми фидами, включая
+# собственное ребро Cloudflare (`loc=NL`, `colo=FRA`). Страна не была Россией — вход
+# всё равно запрещался. Как только игровые окончания легли в окно TikTok (#388), вход
+# прошёл: гейт издателя судит НЕ страну, а ПРИРОДУ выхода — датацентр против
+# Cloudflare. Оставлять это на #388 означало бы врать оператору: звено `tkw0` держит
+# слово чужого хаба — приватного модуля, которого в релизе нет, — карточка TikTok
+# привязана к `tiktok_on`, и игра молча
+# вернулась бы на прямой выход при любом выключении хаба. Поэтому у игры своё звено,
+# свой аккаунт, свой судья и своя карточка — форма окна #493, один в один.
+#
+# Честная граница, которую карточка обязана называть: чем именно издатель отличает
+# датацентр от Cloudflare, нам неизвестно (их гейт отвечает по своему протоколу на
+# порту 9339), поэтому судья меряет НЕ догадку о гейте, а два факта — чем пахнет
+# каждый из выходов и что в эту минуту делает игра в журнале `Xray`.
+_GM_IF = "gmw0"
+_GM_TBL = "206"
+_GM_PRIO_BASE = 700      # выше YouTube (600..679) и его обхода 590; столы 203/204/205 не трогаем
+_GM_CAP = 48             # потолок /24-блоков: 15 окончений дают десятки блоков CloudFront/AWS
+_GM_DIR = "/var/lib/veil-game-route"
+_GM_REG = _GM_DIR + "/reg.json"
+_GM_SEEN = _GM_DIR + "/seen.json"
+_GM_STATE = _GM_DIR + "/state.json"
+_GM_KEY = "game_manual"  # хозяйское дополнение, форма как у #388
+_GM_MTU = "1280"
+_GM_KEEP = "25"
+_GM_ROT = 900.0          # свой счётчик: замена аккаунта на одном звене не запрещает другую
+_GM_RES_TTL = 300.0
+_GM_PROBE_TTL = 900.0    # фиды считают запросы на адрес
+_GM_BYPASS_MARK = 47     # 0x2f — у TikTok 0x2d, у YouTube 0x2e
+_GM_BYPASS_PRIO = 690
+_GM_MAX_DOM = 16
+_GM_MAX_IP = 64
+_GM_SANDBOX_N = 90       # песочница щупа #457: стол 210+90=300, приоритет 410+90=500, 10.98.90
+_GM_LOGIN_PORT = "9339"  # на этом порту цикл переподключений и есть блок входа
+_GM_TAIL_BYTES = 2000000
+_GM_LOOP_MIN = 10        # окно журнала для приговора «цикл»
+_GM_LOOP_CYCLE = 3       # обращений в минуту, при которых говорим «цикл»
+_GM_ERR = ""
+_GM_ROTATE = 0.0
+_GM_RES_AT = 0.0
+_GM_PROBE_AT = 0.0
+_GM_LOCK = threading.Lock()   # одна песочница за раз; регистрация тоже под этим замком
+
+# Окончания игры, измеренные 23.10 на боевом по живому журналу: вход, API, события,
+# почта поддержки, сокетсерверы событий, сайт и аккаунт Supercell.
+_GM_DOMAINS = (
+    "game.brawlstarsgame.com", "api.brawlstars.com", "brawlstars.com",
+    "www.brawlstars.com", "event-assets.brawlstars.com",
+    "brawlstars.inbox.supercell.com", "brawlstars-api.inbox.supercell.com",
+    "lb5.socketserver.event.brawlstars.com", "lb6.socketserver.event.brawlstars.com",
+    "supercell.com", "www.supercell.com", "id.supercell.com",
+    "cdn.id.supercell.com", "assets.social.supercell.com",
+    "collector.snowplow.supercell.com")
+# Чем меряем «что видит коробка»: фида два, каждый называется своим именем,
+# расхождение не усредняется. ipinfo для этой ноги не годится: его фронт на любой
+# не браузерный TLS-отпечаток отвечает `406` пустым телом (мерено 23.10 на этой
+# коробке тем же сокетом; curl с того же адреса получает `200`), поэтому фиды
+# выбраны по живому ответу — geojs и ifconfig.co читают один адрес своими ключами.
+_GM_FEEDS = (("geojs", "get.geojs.io", "/v1/ip/geo.json"),
+             ("ifconfig", "ifconfig.co", "/json"))
+# щуп внутри песочницы: тот же договор вывода, что у #457, другое поле ответа.
+# Хост и путь берутся из первого фида: гость получает АДРЕС фида, и `Host` со SNI
+# обязаны ему соответствовать, иначе нога будет судить чужую коробку.
+_GM_PROBE_SRC = (
+    "import socket,ssl,sys,re\n"
+    "ip=sys.argv[1]\n"
+    "host=%r\n"
+    "path=%r\n"
+    "try:\n"
+    " s=socket.create_connection((ip,443),timeout=18)\n"
+    " c=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
+    " c.check_hostname=False; c.verify_mode=ssl.CERT_NONE\n"
+    " t=c.wrap_socket(s,server_hostname=host)\n"
+    " s=None\n"
+    " t.settimeout(6)\n"
+    " t.sendall(b'GET '+path.encode()+b' HTTP/1.1\\r\\nHost: '+host.encode()+b'\\r\\n'"
+    "b'User-Agent: Mozilla/5.0\\r\\nConnection: close\\r\\n\\r\\n')\n"
+    " b=b''\n"
+    " while len(b)<60000:\n"
+    "  d=t.recv(8192)\n"
+    "  if not d: break\n"
+    "  b+=d\n"
+    " m=re.search(rb'\"country(?:_iso|_code)?\"\\s*:\\s*\"([A-Za-z]{2})\"',b)\n"
+    " print('REGION='+(m.group(1).decode().upper() if m else 'NONE'))\n"
+    "except Exception as e:\n"
+    " print('ERR='+type(e).__name__)\n"
+    " if s is not None:\n"
+    "  try: s.close()\n"
+    "  except Exception: pass\n") % (_GM_FEEDS[0][1], _GM_FEEDS[0][2])
+
+
+def _gm_want():
+    """Одно слово для смотрителя: вести ли адреса игры через своё звено."""
+    return bool(CFG_CACHE.get("game_warp"))
+
+
+def _gm_registered():
+    return _tw_registered(_GM_REG)
+
+
+def _gm_retire(reason):
+    """Мёртвый аккаунт в расход — тот же приговор, что у соседей, но свой счётчик."""
+    global _GM_ROTATE
+    now = time.time()
+    if now - _GM_ROTATE < _GM_ROT:
+        return reason + "; новый аккаунт не раньше чем через %d с" % int(
+            _GM_ROT - (now - _GM_ROTATE))
+    _GM_ROTATE = now
+    try:
+        os.remove(_GM_REG)
+    except OSError:
+        return reason + "; аккаунт не снять"
+    return reason
+
+
+def _gm_domains():
+    """Набор меряемых окончаний: вшитый список плюс хозяйское дополнение."""
+    doms = list(_GM_DOMAINS)
+    for d in (_wm_cfg(_GM_KEY)[0]):
+        if d not in doms:
+            doms.append(d)
+    return doms
+
+
+def _gm_exact():
+    return _wm_exact(_wm_cfg(_GM_KEY)[1])
+
+
+def _gm_norm(body):
+    return _wm_norm(body, _GM_MAX_DOM, _GM_MAX_IP)
+
+
+def _gm_blocks(ips):
+    """Подобранные /24 плюс хозяйские маски своим отрезком поверх потолка."""
+    return _tw_blocks(ips, False, _gm_exact(), _GM_CAP)
+
+
+def _gm_seen_ips():
+    return list((_load(_GM_SEEN, {}) or {}).get("ips") or [])
+
+
+def _gm_rules():
+    return _tw_rules(_GM_TBL)
+
+
+def _gm_routes():
+    return _tw_routes(_GM_TBL)
+
+
+def _gm_flush_rules():
+    _tw_flush_rules(_GM_TBL)
+
+
+def _gm_sync(nets, reg):
+    return _tw_sync(nets, reg, tbl=_GM_TBL, dev=_GM_IF, prio_base=_GM_PRIO_BASE,
+                    mark=_GM_BYPASS_MARK, bprio=_GM_BYPASS_PRIO)
+
+
+def _gm_link_up(reg, nets):
+    return _tw_link_up(reg, nets, dev=_GM_IF, keep=_GM_KEEP, mtu=_GM_MTU,
+                       tbl=_GM_TBL, prio_base=_GM_PRIO_BASE,
+                       mark=_GM_BYPASS_MARK, bprio=_GM_BYPASS_PRIO)
+
+
+def _gm_link_ready(nets):
+    return _tw_link_ready(nets, tbl=_GM_TBL, dev=_GM_IF)
+
+
+def _gm_handshake_age():
+    return _tw_handshake_age(_GM_IF)
+
+
+def _gm_fetch(host, path):
+    """Один HTTPS-ответ фида прямиком с коробки: (адрес, тело, отказ).
+
+    Фиды НЕ покрыты таблицей окна, поэтому main-таблица сама отдаёт прямой выход —
+    метка или привязка к интерфейсу для этой ноги не нужны (в отличие от щупа #493,
+    который обязан достать покрытый адрес)."""
+    try:
+        ip = socket.gethostbyname(host)
+    except OSError as e:
+        return "", b"", "резолвер фида: " + str(e)[:60]
+    s = t = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(8)
+        s.connect((ip, 443))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        t = ctx.wrap_socket(s, server_hostname=host)
+        s = None
+        t.settimeout(6)
+        t.sendall(b"GET " + path.encode() + b" HTTP/1.1\r\nHost: " + host.encode() +
+                  b"\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+        buf = b""
+        while len(buf) < 60000:
+            d = t.recv(8192)
+            if not d:
+                break
+            buf += d
+        return ip, buf, ""
+    except Exception as e:
+        return ip, b"", str(e)[:80]
+    finally:
+        for x in (s, t):
+            if x is not None:
+                try:
+                    x.close()
+                except Exception:
+                    pass
+
+
+def _gm_whois(buf):
+    """(страна, ASN, владелец) из ответа фида. Ключи у двух фидов разные:
+    `country_code`/`asn`/`organization` у geojs, `country_iso`/`asn`/`asn_org` у
+    ifconfig.co — полное имя страны в `country` не подходит, его регулярка пропускает."""
+    m = re.search(rb'"country(?:_iso|_code)?"\s*:\s*"([A-Za-z]{2})"', buf)
+    rg = m.group(1).decode("ascii", "replace").upper() if m else ""
+    m = re.search(rb'"asn"\s*:\s*"?(?:AS)?(\d{2,7})', buf) or re.search(rb'AS(\d{2,7})', buf)
+    asn = m.group(1).decode("ascii", "replace") if m else ""
+    m = re.search(rb'"(?:organization|asn_org)"\s*:\s*"([^"]{1,60})"', buf) or \
+        re.search(rb'"org"\s*:\s*"(?:AS\d+\s+)?([^"]{1,60})"', buf)
+    holder = m.group(1).decode("utf-8", "replace").strip() if m else ""
+    return rg, asn, holder
+
+
+def _gm_direct_feeds():
+    """Что коробка видит сама: по чтению на фид. Пустые чтения в список не кладутся."""
+    got, errs = [], []
+    for name, host, path in _GM_FEEDS:
+        ip, buf, err = _gm_fetch(host, path)
+        if err:
+            errs.append("%s: %s" % (name, err))
+            continue
+        rg, asn, holder = _gm_whois(buf)
+        if not (rg or asn):
+            errs.append("%s: страны и ASN в ответе нет" % name)
+            continue
+        got.append({"feed": name, "region": rg, "asn": asn, "holder": holder, "ip": ip})
+    return got, errs
+
+
+def _gm_tunnel_region(reg, feed_ip):
+    """Страна, с которой отвечает тот, кто стоит за веером: песочница #457 на ТОМ ЖЕ
+    аккаунте, живое звено не трогается ни одной командой.
+
+    Меряется ТОЛЬКО явной проверкой оператора. Песочница поднимает второй веер с этим
+    же ключом, и трогать её каждый тик — значит каждые 15 минут спорить с облаком из-за
+    аккаунта под ноками подписчиков; цена промера ещё и до 45 с ожидания."""
+    if not (reg and feed_ip):
+        return "", "нет аккаунта или адреса фида"
+    with _GM_LOCK:
+        rg, verdict, why = _tv_sandbox(_GM_SANDBOX_N, reg, feed_ip, src=_GM_PROBE_SRC)
+    if rg:
+        return rg.upper(), ""
+    return "", (why or "песочница не назвала страну")
+
+
+def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
+    """Что делает игра по журналу `Xray`: сколько раз в минуту подписчик стучится на
+    порт входа.
+
+    Признак измерен 23.10 на боевом: заблокированный аккаунт открывает соединение на
+    `game.brawlstarsgame.com:9339` по 2-4 раза в минуту, вошедший держит одно и
+    переподключается редко. Единственный судья, который мерит факт для подписчика, а
+    не догадку о чужом гейте. Читается только хвост журнала: `_device_tick` остаётся
+    владельцем смещения и `.pos`-файла, мы здесь ничего не пишем."""
+    host = host or (_GM_DOMAINS[0] if _GM_DOMAINS else "")
+    port = str(port or _GM_LOGIN_PORT)
+    needle = "tcp:%s:%s" % (host, port)
+    if tail is None:
+        try:
+            with open(_XRAY_ACCESS, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - _GM_TAIL_BYTES))
+                tail = f.read().decode("utf-8", "replace")
+        except OSError as e:
+            return {"verdict": "нет журнала", "reason": str(e)[:80], "total": 0,
+                    "peak": 0, "minutes": minutes, "devices": []}
+    now = time.time()
+    buckets, devs = {}, set()
+    for line in str(tail).splitlines():
+        if needle not in line:
+            continue
+        try:
+            t = time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            continue
+        if now - t > minutes * 60:
+            continue
+        k = line[:16]
+        buckets[k] = buckets.get(k, 0) + 1
+        e = _acc_email(line)
+        if e:
+            devs.add(e[:4])
+    total = sum(buckets.values())
+    peak = max(buckets.values()) if buckets else 0
+    if not total:
+        verdict = "не открывали"
+    elif peak >= _GM_LOOP_CYCLE:
+        verdict = "цикл"
+    else:
+        verdict = "держится"
+    return {"verdict": verdict, "total": total, "peak": peak, "minutes": minutes,
+            "devices": sorted(devs), "reason": ""}
+
+
+def _gm_probe(force=False):
+    """Диагноз окна: чем пахнет каждый выход и что в эту минуту делает игра.
+
+    Прямая нога дешёвая и идёт по чередованию TTL; туннельная дорогая (песочница),
+    поэтому только по явной проверке. Расхождение фидов сохраняется как есть."""
+    global _GM_PROBE_AT
+    if not _gm_want():
+        return
+    now = time.time()
+    st = _load(_GM_STATE, {}) or {}
+    if not force and now - _GM_PROBE_AT < _GM_PROBE_TTL:
+        return
+    _GM_PROBE_AT = now
+    feeds, errs = _gm_direct_feeds()
+    if feeds:
+        st["feed_ip"] = feeds[0].get("ip") or st.get("feed_ip")
+    rt = str(st.get("region_tunnel") or "")
+    if force:
+        # адрес для туннельной ноги берётся у ТОГО фида, чьё имя вшито в щуп: гость
+        # резолвить не обязан, и несоответствие адреса и `Host` судило бы чужую коробку
+        pf = next((f for f in feeds if f.get("feed") == _GM_FEEDS[0][0]), None)
+        nets = list(st.get("nets") or [])
+        reg = _gm_registered() if _gm_link_ready(nets) else None
+        try:
+            rt, why = _gm_tunnel_region(reg, (pf or {}).get("ip") or "")
+        except Exception as e:
+            rt, why = "", "%s: %s" % (type(e).__name__, str(e)[:70])
+        if why:
+            errs.append("в туннеле: " + why)
+        elif rt:
+            _audit("game_warp_probe", region=rt, feed=_GM_FEEDS[0][0])
+    st.update({"feeds_direct": feeds,
+               "region_direct": (feeds[0]["region"] if feeds else None),
+               "as_direct": (feeds[0]["asn"] if feeds else None),
+               "holder_direct": (feeds[0]["holder"] if feeds else None),
+               "region_tunnel": rt or None,
+               "probe_ip": st.get("feed_ip"), "probe_at": int(now),
+               "probe_error": "; ".join(errs)[:200],
+               "loop": _gm_login_loop()})
+    _save(_GM_STATE, st, 0o600)
+
+
+def _gm_tick():
+    """Смотритель игрового звена: один шаг за тик (тот же порядок, что у `_yw_tick`).
+
+    Регистрация аккаунта под `_GM_LOCK`: #494 — гонка клика оператора и тика — для
+    первых двух звеньев остаётся открытой, но третьим гонщиком мы не становимся.
+    Пустой резолв живое звено не ломает."""
+    global _GM_ERR, _GM_RES_AT
+    if SBX:
+        return
+    st = _load(_GM_STATE, {}) or {}
+    if not _gm_want():
+        if st.get("enabled") or st.get("up"):
+            _gm_flush_rules()
+            _tw_bypass_del(_GM_BYPASS_MARK)
+            _tw_cmd("ip", "link", "del", _GM_IF)
+            _GM_ERR = ""
+            st.update({"enabled": False, "up": False, "count": 0, "nets": [],
+                       "handshake_age": None, "error": "", "ts": _now_iso()})
+            _save(_GM_STATE, st, 0o600)
+        return
+    reg = None
+    with _GM_LOCK:
+        reg = _gm_registered()
+        if not reg:
+            reg, why = _tw_register(dest=_GM_REG)
+            if not reg:
+                _GM_ERR = why
+                st.update({"enabled": True, "up": False, "error": why, "ts": _now_iso()})
+                _save(_GM_STATE, st, 0o600)
+                return
+    now = time.time()
+    doms = _gm_domains()
+    seen = _load(_GM_SEEN, {}) or {}
+    fp = ",".join(doms)
+    stale = seen.get("set") != fp
+    prev = _gm_seen_ips() if not stale else []
+    if stale or now - _GM_RES_AT >= _GM_RES_TTL:
+        _GM_RES_AT = now
+        ips = _tw_resolve(prev, doms)
+        if ips:
+            _save(_GM_SEEN, {"ips": ips[:_GM_CAP * 8], "at": int(now),
+                             "set": fp}, 0o600)
+    else:
+        ips = prev
+    if not ips and not prev and not _gm_exact() and st.get("up"):
+        _GM_ERR = ""
+        st.update({"ts": _now_iso()})
+        _save(_GM_STATE, st, 0o600)
+        _gm_probe()
+        return
+    nets = _gm_blocks(ips)
+    rc, _, _ = _tw_cmd("ip", "link", "show", _GM_IF)
+    age = _gm_handshake_age()
+    rebuilt = (rc != 0 or not _gm_link_ready(nets))
+    if rebuilt:
+        err = _gm_link_up(reg, nets)
+        age = _gm_handshake_age()
+    else:
+        err = _gm_sync(nets, reg)
+    tgt = _tw_covered_ip(ips, nets)
+    if err == "" and tgt and (age is None or age > 4 * int(_GM_KEEP)) and \
+            not _tw_carries(tgt, _GM_IF):
+        _gm_flush_rules()
+        _tw_bypass_del(_GM_BYPASS_MARK)
+        _tw_cmd("ip", "link", "del", _GM_IF)
+        err, age = "звено молчит: до облака нет ответа", None
+        err = _gm_retire(err)
+    _GM_ERR = err
+    up = (err == "")
+    st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
+               "nets": nets if up else (st.get("nets") or []),
+               "handshake_age": age, "error": err,
+               "tunnel_v4": (reg["tunnel_v4"] if up else ""), "ts": _now_iso()})
+    _save(_GM_STATE, st, 0o600)
+    _gm_probe()
+
+
+def _gm_tick_bg():
+    """Тик звена в фоне: отказ не должен ронять поток морды, но обязан быть виден."""
+    try:
+        _gm_tick()
+    except Exception as e:
+        print("[game-route] " + str(e), flush=True)
+
+
+def _gm_view():
+    """Снимок для морды и ноги самопроверки: только чтение, ничего не поднимает."""
+    st = _load(_GM_STATE, {}) or {}
+    rc, _, _ = _tw_cmd("ip", "link", "show", _GM_IF)
+    nets = list(st.get("nets") or [])
+    doms, ips = _wm_cfg(_GM_KEY)
+    pat = float(st.get("probe_at") or 0)
+    loop = st.get("loop") or {}
+    return {"want": _gm_want(), "game_on": bool(CFG_CACHE.get("game_warp")),
+            "account": bool(_gm_registered()), "link": rc == 0,
+            "ready": _gm_link_ready(nets), "up": bool(st.get("up")),
+            "count": int(st.get("count") or 0), "nets": nets,
+            "domains": doms, "ips": ips,
+            "built_in": list(_GM_DOMAINS),
+            "limits": {"domains": _GM_MAX_DOM, "ips": _GM_MAX_IP},
+            "feeds": [{"feed": n, "host": h} for n, h, _p in _GM_FEEDS],
+            "feeds_direct": st.get("feeds_direct") or [],
+            "region_direct": st.get("region_direct"),
+            "as_direct": st.get("as_direct"),
+            "holder_direct": st.get("holder_direct"),
+            "region_tunnel": st.get("region_tunnel"),
+            "fan_owner": "Cloudflare WARP",
+            "loop": loop, "loop_verdict": loop.get("verdict") or "",
+            "probe_age": (int(time.time() - pat) if pat else None),
+            "handshake_age": st.get("handshake_age"),
+            "error": st.get("error") or _GM_ERR,
+            "probe_error": st.get("probe_error") or "",
+            "bypass": _tw_bypass_present(_GM_BYPASS_MARK),
+            "ts": st.get("ts")}
+
+
 # ---------- #503: Gemini в обход российского выхода окна «YouTube» ----------
 # Слово хозяина 22.10: «главное что бы работало. youtube-ru, gemini -не ru».
 #
@@ -17688,6 +18167,11 @@ _GD_PROBE_TTL = 300.0     # с какой частотой мерим выход
 _GD_APPLY_GAP = 300.0     # не чаще одного пересобрания конфига из-за развода
 _GD_DRIFT_S = 90.0        # расхождение должно пережить два тика, прежде чем тронем Xray
 _GD_POOL_CAP = 32
+# Исключение `Gemini` из окон — выше обоих (TikTok сидит на 200..307, YouTube на
+# 600..640, игра на 700.. и ниже медиа-маршрута (100..108): хозяин выбирает выход для
+# медиа сам.
+_GD_PRIO_BASE = 110
+_GD_NET_CAP = 64          # потолок правил-исключений на семейство
 _GD_ERR = ""
 _GD_PROBE_AT = 0.0
 _GD_APPLY_AT = 0.0
@@ -17697,11 +18181,16 @@ _GD_APPLIED_CACHE = [0.0, None]
 _GD_DOMAINS = ("keyword:gemini", "full:aistudio.google.com", "full:notebooklm.google.com",
                "full:makersuite.google.com", "full:bard.google.com", "full:ai.google.dev",
                "suffix:ai.google.dev", "suffix:generativelanguage.googleapis.com",
-               "suffix:alkimi-pa.googleapis.com", "suffix:aip.googleapis.com")
-_GD_HOSTS = ("gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com")
+               "suffix:alkimi-pa.googleapis.com", "suffix:aip.googleapis.com",
+               # Живой съём 22.10 с боевой коробки: приложение `Gemini` на телефоне
+               # говорит с `robinfrontend-pa`, и ни разу — с `gemini.google.com`.
+               # Без этого имени развод ловил браузер, но не приложение.
+               "suffix:robinfrontend-pa.googleapis.com")
+_GD_HOSTS = ("gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com",
+             "robinfrontend-pa.googleapis.com")
 # Туннельные интерфейсы под запретом: привязавшись к звену окна, отправили бы `Gemini`
 # обратно в Россию — то есть сделали бы ровно то, от чего развод лечит.
-_GD_FORBID = (_TW_IF, _YW_IF, _MR_IF, WG_IFACE, AWG_IFACE)
+_GD_FORBID = (_TW_IF, _YW_IF, _GM_IF, _MR_IF, WG_IFACE, AWG_IFACE)
 
 
 def _gd_want():
@@ -17797,6 +18286,116 @@ def _gd_pool():
     return got[:_GD_POOL_CAP]
 
 
+def _gd_pool6():
+    """Адреса `Gemini` шестёркой: окно накрывает не только четвёрку, и исключение
+    обязано быть с двух сторон — иначе поток уйдёт в Россию по каналу, которого мы
+    не заметили."""
+    got = []
+    for h in _GD_HOSTS:
+        try:
+            for ai in socket.getaddrinfo(h, None, socket.AF_INET6):
+                if ai[4][0] not in got:
+                    got.append(ai[4][0])
+        except Exception:
+            continue
+        if len(got) >= _GD_POOL_CAP:
+            break
+    return got[:_GD_POOL_CAP]
+
+
+def _gd_nets(pool4, pool6):
+    """Сетки исключения — ровно те адреса, которыми сегодня отвечает `Gemini`.
+
+    Агрегатов (/24, /16) здесь намеренно нет: под них попадает `YouTube`, и развод
+    начал бы снимать окно целиком вместо одного сервиса (слово хозяина 22.10:
+    «youtube-ru, gemini -не ru»)."""
+    return (["%s/32" % ip for ip in pool4[:_GD_NET_CAP]],
+            ["%s/128" % ip for ip in pool6[:_GD_NET_CAP]])
+
+
+def _gd_rules(fam=4):
+    """Наши исключения из ядра: [(приоритет, сеть)] своего диапазона, ведущие в `main`.
+
+    Отдельный читатель, а не `_tw_rules`: тот узнаёт правило по номеру таблицы, а мы
+    ведём трафик обратно в `main` — судить нас надо по форме нашего правила."""
+    six = ["-6"] if fam == 6 else []
+    rc, out, _ = _tw_cmd("ip", *six, "-o", "rule", "show")
+    if rc != 0:
+        return []
+    got = []
+    for line in out.splitlines():
+        if "lookup main" not in line or "fwmark" in line:
+            continue
+        prio = line.split(":", 1)[0].strip()
+        if not prio.isdigit() or not _GD_PRIO_BASE <= int(prio) < _GD_PRIO_BASE + _GD_NET_CAP:
+            continue
+        m = re.search(r"\bto\s+([0-9a-fA-F:.]+)(?:/([0-9]+))?", line)
+        if not m or m.group(1) == "all":
+            continue
+        net, mask = m.group(1), m.group(2)
+        if mask is None:
+            net += "/128" if ":" in net else "/32"
+        else:
+            net += "/" + mask
+        got.append((int(prio), net))
+    return got
+
+
+def _gd_flush():
+    """Снять оба исключения: слово выключено — окно снова накрывает всё, как до развода."""
+    for fam in (4, 6):
+        for prio, _net in _gd_rules(fam):
+            _tw_cmd("ip", *(["-6"] if fam == 6 else []) +
+                    ["rule", "del", "priority", str(prio)])
+
+
+def _gd_sync(nets4, nets6):
+    """Пустить `Gemini` мимо окна на уровне ядра.
+
+    Пока развод жил только в маршрутизации `Xray`, он не касался подписчиков
+    веерных входов: их поток ядро несёт по своим правилам, и адрес `Gemini` попадал
+    в таблицу окна — то есть в Россию (замер 22.10 на боевой: 12 адресов пула из 12
+    дают `table 205 dev ytw0`, а телефон сидел на `veilwg`). Исключение выше обоих
+    окон чинит это для всех — и для веерных входов, и для потоков `Xray`, названных
+    адресом (таких в журнале службы 53 %).
+
+    Набор перекладываем целиком и только когда он изменился: снимать и ставить
+    правило на каждом тике — значит на долю секунды возвращать поток в окно."""
+    have4 = {n for _, n in _gd_rules(4)}
+    have6 = {n for _, n in _gd_rules(6)}
+    if have4 == set(nets4) and have6 == set(nets6):
+        return ""
+    _gd_flush()
+    err = ""
+    for i, net in enumerate(nets4):
+        rc, _, e = _tw_cmd("ip", "rule", "add", "priority", str(_GD_PRIO_BASE + i),
+                           "to", net, "lookup", "main")
+        if rc != 0 and not err:
+            err = "исключение четвёрки не поставлено: " + e[:70]
+    for i, net in enumerate(nets6):
+        rc, _, e = _tw_cmd("ip", "-6", "rule", "add", "priority", str(_GD_PRIO_BASE + i),
+                           "to", net, "lookup", "main")
+        if rc != 0 and not err:
+            err = "исключение шестёрки не поставлено: " + e[:70]
+    return err
+
+
+def _gd_escape(ip):
+    """Куда ядро НА САМОМ ДЕЛЕ несёт адрес `Gemini`: имя таблицы из `ip route get`.
+
+    Это и есть применяемый факт развода: пока ответ — таблица окна, карточка не
+    вправе называть развод действующим, каким бы исправным ни был конфиг службы.
+    Маршрут из `main` ядро печатает БЕЗ слова `table` — отсутствие и есть успех."""
+    if not ip:
+        return ""
+    six = ["-6"] if ":" in ip else []
+    rc, out, _ = _tw_cmd("ip", *six, "route", "get", ip)
+    if rc != 0:
+        return ""
+    m = re.search(r"\btable (\S+)", out)
+    return m.group(1) if m else "main"
+
+
 def _gd_region(ip, dev, timeout=8):
     """Страна в ответе Google с одного адреса: с привязкой к `dev` или как есть.
 
@@ -17886,14 +18485,25 @@ def _gd_probe(force=False):
     elif not tgt:
         errs.append("адреса Gemini под окном нет — сравнивать не с чем" if cov == 0
                     else "адресов Gemini не дождались")
-    if tgt:
-        rw, e2 = _gd_region(tgt, "")
-        errs.append(e2)
+    # Число окна берёт свой собственный щуп, а не наш «как есть»: адресом, которым
+    # мы мерили окно, теперь правит исключение ядра, и щуп показывал бы прямой выход
+    # вместо окна (замер 22.10 на бою: `region_window` стал `DE` там, где окно
+    # отвечает `RU`). Окно называет свою страну его смотритель — `region_tunnel`.
+    rw = str((_load(_YW_STATE, {}) or {}).get("region_tunnel") or "")
+    if tgt and not rw:
+        errs.append("окно свою страну ещё не называло")
     if why:
         errs.append(why)
     if not ap.get("read"):
         errs.append("живой конфиг службы не прочитан: " + str(ap.get("error") or "")[:80])
+    # Числа ядра: сколько исключений стоит и куда реально едет накрытый адрес.
+    r4, r6 = _gd_rules(4), _gd_rules(6)
+    tbl = _gd_escape(tgt)
+    if cov and tbl and tbl != "main":
+        errs.append("адрес `Gemini` всё ещё идёт через таблицу %s" % tbl)
     st.update({"enabled": _gd_want(), "dev": dev or None, "pool": len(pool),
+               "pool6": len(_gd_pool6()), "rules": len(r4) + len(r6),
+               "route_tbl": tbl or None,
                "covered": cov, "probe_ip": tgt or None, "probe_at": int(now),
                "region_split": rs or None, "region_window": rw or None,
                "applied_tag": bool(ap.get("tag")), "applied_rule": bool(ap.get("rule")),
@@ -17958,6 +18568,8 @@ def _gd_tick():
         return
     st = _load(_GD_STATE, {}) or {}
     if not _gd_want():
+        if _gd_rules(4) or _gd_rules(6):
+            _gd_flush()
         _gd_reapply(st, "", _gd_applied())
         return
     dev, why = _gd_egress_dev()
@@ -17967,6 +18579,13 @@ def _gd_tick():
         _save(_GD_STATE, st, 0o600)
         return
     _GD_ERR = ""
+    # Исключение ядра — раньше конфига: оно не требует рестарта службы и держит
+    # `Gemini` вне окна даже там, где `Xray` вообще не при чём (веерные входы).
+    kerr = _gd_sync(*_gd_nets(_gd_pool(), _gd_pool6()))
+    if kerr:
+        _GD_ERR = kerr
+        st.update({"enabled": True, "error": kerr, "ts": _now_iso()})
+        _save(_GD_STATE, st, 0o600)
     _gd_reapply(st, dev, _gd_applied())
     _gd_probe()
 
@@ -17990,6 +18609,9 @@ def _gd_view():
             "applied_dev": ap.get("dev") or st.get("applied_dev"),
             "read": bool(ap.get("read")),
             "pool": st.get("pool"), "covered": st.get("covered"),
+            "pool6": st.get("pool6"), "rules": st.get("rules"),
+            "route_tbl": st.get("route_tbl"),
+            "escaped": (st.get("route_tbl") == "main"),
             "region_split": st.get("region_split"),
             "region_window": st.get("region_window"),
             "kernel_clients": (st.get("kernel_clients") if st.get("kernel_clients") is not None
@@ -19197,6 +19819,40 @@ def _tg_mp_selftest(force=False):
                 yv.get("error") or "туннель не поднят")
     except Exception as e:
         add("youtube_warp", "YouTube через WARP: узел виден Россией", False,
+            str(e)[:160], warn=True)
+    # #509: суд того же рода, но вопрос свой — игра обязана пускать вход. Зелёным
+    # считается ТОЛЬКО подтверждённое поведение подписчика: «держится» по журналу
+    # `Xray`. Страна выхода сама по себе фиксом не считается — на боевом узел
+    # читался Нидерландами пятью независимыми фидами, а вход был запрещён.
+    try:
+        gview = _gm_view()
+        rt = str(gview.get("region_tunnel") or "")
+        lv = str(gview.get("loop_verdict") or "")
+        loop = gview.get("loop") or {}
+        where = ("выход в туннеле %s" % rt) if rt else "выход в туннеле не измерен"
+        if not gview["want"]:
+            add("game_warp", "Игра через WARP: вход не ограничен", True,
+                "выключена — игра идёт тем же путём, что и остальной трафик коробки",
+                warn=True)
+        elif lv == "цикл":
+            add("game_warp", "Игра через WARP: вход не ограничен", False,
+                "подписчик открывает вход по %d раза в минуту (%s) — вход по-прежнему "
+                "запрещён%s" % (int(loop.get("peak") or 0), where,
+                                "; " + gview.get("probe_error")
+                                if gview.get("probe_error") else ""), warn=True)
+        elif lv == "держится":
+            add("game_warp", "Игра через WARP: вход не ограничен", True,
+                "%d адресных блоков в туннеле, вход держится (%s)"
+                % (gview["count"], where))
+        elif gview["up"] and gview["ready"]:
+            add("game_warp", "Игра через WARP: вход не ограничен", False,
+                "звено поднято (%s), но в игру не заходили — подтверждать будет вход"
+                % where, warn=True)
+        else:
+            add("game_warp", "Игра через WARP: вход не ограничен", False,
+                gview.get("error") or "туннель не поднят")
+    except Exception as e:
+        add("game_warp", "Игра через WARP: вход не ограничен", False,
             str(e)[:160], warn=True)
     # #503: суд того же рода, только вопрос обратный — `Gemini` обязан читаться
     # НЕ Россией. Зелёным считается только связка «в живом конфиге службы развод лежит»
@@ -23197,6 +23853,9 @@ def _hop_load():
 def _hop_save(hops):
     _save(HOPS_FILE, hops)  # содержит токены регистрации — 0600
     _hop_front_flush()
+    # адрес, только что ставший фронтом, мог унести живой бан: снимаем сразу, не
+    # дожидаясь рестарта панели (#501)
+    _front_shield("реестр фронтов")
 
 _HOP_FRONT = {"ips": None, "ts": 0.0}
 
@@ -23234,6 +23893,10 @@ def _hop_front_addrs():
         ip = str(h.get("front_ip") or "").strip()
         if ip and _dial_addr_ok(ip):
             add(ip)
+        # Туннельный адрес фронта: релея с MASQUERADE бэк видит ВСЕХ подписчиков
+        # этого фронта одним источником `10.30.0.x`, и без доверия этот единственный
+        # адрес уехал бы в бан или в SYN-лимит за поступки целого пула (#508, нога Р9).
+        add(h.get("tun_ip"))
     host = (CFG_CACHE.get("hop_public_host") or "").strip()
     if host and _dial_addr_ok(host):
         if _hop_is_ip4(host) or ":" in host:
@@ -23333,36 +23996,122 @@ def _hop_suggest_ports():
         ports.append(443)
     return sorted(ports)[:_HOP_MAX_PORTS]
 
+# Прыжок: адресный пул туннеля фронт<->бэк. 10.30.0.0/28 занят им целиком и не
+# пересекается с пулом подписчиков AmneziaWG (10.20.0.*), с WireGuard (10.10.0.*)
+# и с путями WARP. Бэк держает в туннеле .1, каждый фронт получает свой адрес от .2.
+HOP_TUN_NET = ipaddress.ip_network("10.30.0.0/28")
+HOP_TUN_BACK = "10.30.0.1"
+HOP_TUN_IF = "sbx-veilhop0" if SBX else "veilhop0"
+HOP_TUN_CONF = os.path.join(SBX or "/etc/amnezia/amneziawg", HOP_TUN_IF + ".conf")
+HOP_TUN_PORT_DEFAULT = 28450     # порт, который слушает туннель бэка
+HOP_MSS = 1240
+
 _RELAY_APPLY_SH = """#!/bin/bash
-# Veil double-hop: применяет nft-правила релея (идемпотентно).
+# Veil double-hop: релей, обёрнутый в AmneziaWG. Поднимает туннель фронт->бэк и
+# перекладывает DNAT В ТУННЕЛЬНЫЙ АДРЕС бэка, поэтому RU-участок занят только
+# UDP прыжка: 23.10 на живом стенде голый DNAT дал 11 пакетов клиента на
+# выходе, обёртка — ноль. Идемпотентно.
 set -euo pipefail
 . /etc/veil-relay/relay.env
-els=$(printf '%s ' $RELAY_PORTS | tr ' ' ','); els=${els%,}
+[ -n "${TUN_PRIV:-}" ] && [ -n "${TUN_PUB:-}" ] || {
+  echo "VEILERR: relay.env без ключей туннеля — это фронт старого (голого) образца, заведи его заново"; exit 6; }
+command -v awg-quick >/dev/null 2>&1 || {
+  echo "VEILERR: на фронте нет AmneziaWG (нет \\`awg-quick\\`): прыжок без обёртки не ставится никогда. AmneziaWG не в штатных репозиториях — модуль ядра + awg-quick ставятся отдельно"; exit 7; }
+umask 077
+mkdir -p /etc/amnezia/amneziawg /etc/veil-relay
+cat > /etc/amnezia/amneziawg/${TUN_IF}.conf <<EOF
+[Interface]
+PrivateKey = ${TUN_PRIV}
+Address = ${TUN_IP}
+Jc = ${JC}
+Jmin = ${JMIN}
+Jmax = ${JMAX}
+S1 = ${S1}
+S2 = ${S2}
+S3 = ${S3}
+S4 = ${S4}
+H1 = ${H1}
+H2 = ${H2}
+H3 = ${H3}
+H4 = ${H4}
+
+[Peer]
+PublicKey = ${TUN_PUB}
+AllowedIPs = ${TUN_PEER}/32
+Endpoint = ${TUN_ENDPOINT}
+PersistentKeepalive = 25
+EOF
+rm -f /etc/amnezia/amneziawg/${TUN_IF}.conf.tmp 2>/dev/null || true
+systemctl enable awg-quick@${TUN_IF} >/dev/null 2>&1 || true
+systemctl restart awg-quick@${TUN_IF}
+# Единственный переключатель: в `pr` ровно один jump на `h_cur`, а `h_cur`
+# держит ОДНО правило. Смотритель фронтов меняет только его, поэтому второй
+# экземпляр правила не может пережить поворот (урок #480 про частичное
+# переприменение).
+els=$(printf '%s ' ${RELAY_PORTS} | tr ' ' ','); els=${els%,}
+uels=$(printf '%s ' ${RELAY_UDP} | tr ' ' ','); uels=${uels%,}
+[ -n "$els" ] || els=0
+[ -n "$uels" ] || uels=0
+# WireGuard-вход бэка Relay добавляет ОДН UDP-строку и правило поворота для неё.
+# Без AWG-входа на бэке (`WG_IN`/`WG_DST` = 0) этих строк в файле быть не должно:
+# `dnat to 10.30.0.1:0` ядро отвергает, и рухнул бы весь релей, а не только прыжок
+# для UDP.
+wgl=""
+if [ "${WG_IN:-0}" != 0 ] && [ "${WG_DST:-0}" != 0 ]; then
+  wgl="    iifname != \\"lo\\" fib daddr type local udp dport ${WG_IN} jump hun"
+fi
 cat > /etc/veil-relay/relay.nft <<EOF
 table ip veil_relay {
   set ports {
     type inet_service
     elements = { $els }
   }
+  set uports {
+    type inet_service
+    elements = { $uels }
+  }
   chain pr {
     type nat hook prerouting priority dstnat; policy accept;
-    iifname != "lo" fib daddr type local tcp dport @ports dnat to $BACK_IP
-    iifname != "lo" fib daddr type local udp dport @ports dnat to $BACK_IP
+    iifname != "lo" fib daddr type local tcp dport @ports jump h_cur
+    iifname != "lo" fib daddr type local udp dport @uports jump h_cur
+${wgl}
   }
+  chain h_cur { }
+  chain h_tun {
+    tcp dport @ports dnat to ${TUN_PEER}
+    udp dport @uports dnat to ${TUN_PEER}
+  }
+  chain h_dir {
+    tcp dport @ports dnat to ${BACK_IP}
+    udp dport @uports dnat to ${BACK_IP}
+  }
+  chain hun { }
   chain po {
     type nat hook postrouting priority srcnat; policy accept;
-    ip daddr $BACK_IP masquerade
+    oifname "${TUN_IF}" ip daddr ${TUN_PEER} masquerade
+    ip daddr ${BACK_IP} masquerade
+  }
+  chain cl {
+    type filter hook forward priority filter; policy accept;
+    oifname "${TUN_IF}" tcp flags syn tcp option maxseg size set ${MSS}
+    iifname "${TUN_IF}" tcp flags syn,ack tcp option maxseg size set ${MSS}
   }
 }
 EOF
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 nft delete table ip veil_relay 2>/dev/null || true
 nft -f /etc/veil-relay/relay.nft
+nft flush chain ip veil_relay h_cur
+nft add rule ip veil_relay h_cur jump h_tun
+nft flush chain ip veil_relay hun
+if [ "${WG_IN:-0}" != 0 ] && [ "${WG_DST:-0}" != 0 ]; then
+  nft add rule ip veil_relay hun "udp dport ${WG_IN} dnat to ${TUN_PEER}:${WG_DST}"
+fi
 """
 
 _RELAY_UNIT = """[Unit]
-Description=Veil double-hop relay (DNAT to BACK)
-After=network-online.target
+Description=Veil double-hop relay (AWG-wrapped DNAT to BACK tunnel)
+After=network-online.target awg-quick@veilhop0.service
 Wants=network-online.target
 
 [Service]
@@ -23375,9 +24124,76 @@ ExecStop=-/bin/sh -c 'nft delete table ip veil_relay 2>/dev/null || true'
 WantedBy=multi-user.target
 """
 
+# Смотритель прыжка на ФРОНТЕ. Тикает раз в TICK секунд и держит два факта
+# согласованными: жив ли туннель и куда ходит клиент. Живой замер 23.10: тик 1 с
+# укладывает переключение «релей -> напрямую» за 1 с и «напрямую -> релей» за 0 с.
+# Про аварийную ветку: «напрямую» — это DNAT в ПУБЛИЧНЫЙ адрес бэка, а не чёрная
+# дыра; сегмент при этом голый, зато подписчик видит сервис. Слово хозяина 22.10:
+# «если бэк больше не видит фронт, клиенты шли на прямую».
+_RELAY_KEEPER_SH = """#!/bin/bash
+# Veil double-hop: смотритель туннеля на фронте. Единственный, кто двигает
+# переключатель `h_cur` и `hun`; наружу сообщает heartbeat с ПРИЛОЖЕННЫМ
+# адресом бэка (тем, что реально стоит на endpoint туннеля), а не с тем, что
+# записано в hop.env.
+set +e
+. /etc/veil-relay/relay.env
+TICK=${TICK:-1}
+PINGS=${PINGS:-2}
+LOG=/run/veil-relay/keeper.log
+BEAT_EVERY=${BEAT_EVERY:-30}
+mkdir -p /run/veil-relay
+say(){ printf '%(%H:%M:%S)T %s\\n' -1 "$*" >> "$LOG"; }
+tun_up(){ nft flush chain ip veil_relay h_cur; nft add rule ip veil_relay h_cur jump h_tun
+          nft flush chain ip veil_relay hun
+          [ "${WG_IN:-0}" = 0 ] || [ "${WG_DST:-0}" = 0 ] || \\
+            nft add rule ip veil_relay hun "udp dport ${WG_IN} dnat to ${TUN_PEER}:${WG_DST}"; }
+dir_up(){ nft flush chain ip veil_relay h_cur; nft add rule ip veil_relay h_cur jump h_dir
+          nft flush chain ip veil_relay hun
+          [ "${WG_IN:-0}" = 0 ] || [ "${WG_DST:-0}" = 0 ] || \\
+            nft add rule ip veil_relay hun "udp dport ${WG_IN} dnat to ${BACK_IP}:${WG_DST}"; }
+alive(){ local i ok=0; for i in $(seq 1 $PINGS); do
+            ping -c 1 -W 1 -I "$TUN_IF" "$TUN_PEER" >/dev/null 2>&1 && ok=$((ok+1)); done
+         [ $ok -gt 0 ]; }
+applied(){ /usr/bin/awg show "$TUN_IF" endpoints 2>/dev/null | awk '{print $2}' | head -1; }
+beat(){ local ap=$(applied) st=$1; [ -n "${BEAT_URL:-}" ] || return 0
+        curl -sk -m 5 -X POST "$BEAT_URL" -H 'Content-Type: application/json' \\
+             -d "{\\"tok\\":\\"${TOK}\\",\\"mode\\":\\"${st}\\",\\"back_applied\\":\\"${ap%%:*}\\",\\"endpoint\\":\\"${ap}\\"}" \\
+             >/dev/null 2>&1; }
+state=""
+say "старт: туннель=$(alive && echo жив || echo мёртв) applied=$(applied)"
+while true; do
+    if alive; then want=tun; else want=dir; fi
+    if [ "$want" != "$state" ]; then
+        [ "$want" = tun ] && tun_up || dir_up
+        say "переключение: $want hcur=$(nft -a list chain ip veil_relay h_cur | grep -c 'jump h_') applied=$(applied)"
+        state=$want
+        beat "$state"
+        last_beat=$(date +%s)
+    fi
+    now=$(date +%s)
+    [ $((now - ${last_beat:-0})) -ge ${BEAT_EVERY} ] && { beat "$state"; last_beat=$now; }
+    sleep "$TICK"
+done
+"""
+
+_RELAY_KEEPER_UNIT = """[Unit]
+Description=Veil double-hop keeper (tunnel liveness and degrade switch)
+After=veil-relay.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/veil-relay-keeper.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 # Универсальный установщик фронта: одинаково исполняется по SSH и через curl|sh.
 _RELAY_INSTALL_TMPL = """#!/bin/bash
-# Veil double-hop FRONT: L4-релей (nft DNAT+MASQUERADE) на __BACK_IP__. Повторно запускаемо.
+# Veil double-hop FRONT: релей, обёрнутый в AmneziaWG, в туннельный адрес бэка.
+# Повторно запускаемо. Голый DNAT в публичный адрес бэка этим шагом не ставится.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "VEILERR: нужен root (sudo -s или curl ... | sudo bash)"; exit 1; }
 if ! command -v nft >/dev/null 2>&1; then
@@ -23389,6 +24205,11 @@ if ! command -v nft >/dev/null 2>&1; then
   fi
 fi
 command -v nft >/dev/null 2>&1 || { echo "VEILERR: nftables не установлен и ставить нечем — установите вручную (apt/dnf install nftables)"; exit 2; }
+modprobe amneziawg >/dev/null 2>&1 || true
+if ! command -v awg-quick >/dev/null 2>&1; then
+  echo "VEILERR: на этом сервере нет AmneziaWG (нет \\`awg-quick\\`), а прыжок без обёртки не ставится: модуль ядра amneziawg и awg-quick берутся из исходников Amnezia, в штатных репозиториях их нет. Поставьте AmneziaWG и запустите установку заново"
+  exit 8
+fi
 busy=""
 for p in __PORTS_SP__; do
   if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$p$"; then
@@ -23396,26 +24217,66 @@ for p in __PORTS_SP__; do
     busy="${busy:+$busy, }:$p${owner:+ ($owner)}"
   fi
 done
+for p in __UDP_SP__ __WG_IN__; do
+  if ss -H -lun 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]$p$"; then
+    busy="${busy:+$busy, }udp:$p"
+  fi
+done
 if [ -n "$busy" ]; then
   echo "VEILERR: на этом сервере уже СЛУШАЮТСЯ порты$busy — релей по ним не сработает. Останови их держателей (например: systemctl stop xray nginx telemt) или укажи в панели только свободные порты, и запусти установку снова"
   exit 3
 fi
 mkdir -p /etc/veil-relay
-printf 'BACK_IP=%s\\nRELAY_PORTS="%s"\\n' "__BACK_IP__" "__PORTS_SP__" > /etc/veil-relay/relay.env
+umask 077
+cat > /etc/veil-relay/relay.env <<VEILEOF
+BACK_IP="__BACK_IP__"
+RELAY_PORTS="__PORTS_SP__"
+RELAY_UDP="__UDP_SP__"
+WG_IN="__WG_IN__"
+TUN_IF="__TUN_IF__"
+TUN_IP="__TUN_IP__"
+TUN_PEER="__TUN_PEER__"
+WG_DST="__WG_DST__"
+TUN_ENDPOINT="__TUN_ENDPOINT__"
+TUN_PRIV="__TUN_PRIV__"
+TUN_PUB="__TUN_PUB__"
+MSS="__MSS__"
+JC="__JC__"
+JMIN="__JMIN__"
+JMAX="__JMAX__"
+S1="__S1__"
+S2="__S2__"
+S3="__S3__"
+S4="__S4__"
+H1="__H1__"
+H2="__H2__"
+H3="__H3__"
+H4="__H4__"
+TOK="__TOK__"
+BEAT_URL="__BEAT_URL__"
+VEILEOF
+chmod 0600 /etc/veil-relay/relay.env
 cat > /usr/local/bin/veil-relay-apply.sh <<'VEILEOF'
 __APPLY_SH__VEILEOF
-chmod 0755 /usr/local/bin/veil-relay-apply.sh
+cat > /usr/local/bin/veil-relay-keeper.sh <<'VEILEOF'
+__KEEPER_SH__VEILEOF
+chmod 0755 /usr/local/bin/veil-relay-apply.sh /usr/local/bin/veil-relay-keeper.sh
 printf 'net.ipv4.ip_forward = 1\\n' > /etc/sysctl.d/99-veil-relay.conf
 sysctl -p /etc/sysctl.d/99-veil-relay.conf >/dev/null 2>&1 || true
 cat > /etc/systemd/system/veil-relay.service <<'VEILEOF'
 __UNIT__VEILEOF
+cat > /etc/systemd/system/veil-relay-keeper.service <<'VEILEOF'
+__KEEPER_UNIT__VEILEOF
 systemctl daemon-reload
 systemctl enable veil-relay >/dev/null 2>&1 || true
+systemctl enable veil-relay-keeper >/dev/null 2>&1 || true
 systemctl restart veil-relay
 sleep 1
 systemctl is-active --quiet veil-relay || { echo "VEILERR: служба veil-relay не активна"; exit 4; }
+systemctl is-active --quiet awg-quick@__TUN_IF__ || { echo "VEILERR: туннель __TUN_IF__ не поднялся (проверь modprobe amneziawg и журнал: systemctl status awg-quick@__TUN_IF__)"; exit 9; }
 nft list table ip veil_relay >/dev/null 2>&1 || { echo "VEILERR: таблица veil_relay не видна в nft"; exit 5; }
-echo "VEILOK: релей активен, порты __PORTS_SP__ -> __BACK_IP__"
+[ "$(nft -a list chain ip veil_relay h_cur | grep -c 'jump h_tun')" = 1 ] || { echo "VEILERR: переключатель релея не встал в туннельную ветку"; exit 10; }
+echo "VEILOK: релей обёрнут в туннель __TUN_IF__, порты __PORTS_SP__ и udp __UDP_SP__/__WG_IN__ -> __TUN_PEER__ (бэк __BACK_IP__ лежит за туннелем)"
 if [ -n "__TOK__" ]; then
   RESP=$(curl -sk -m 20 -X POST "__REG_URL__" -H 'Content-Type: application/json' \\
          -d '{"tok":"__TOK__"}' 2>/dev/null || true)
@@ -23427,18 +24288,208 @@ fi
 exit 0
 """
 
+_HOP_TUN_FILE = f"{BASE}/hop_tunnel.json"
+_HOP_TUN_STATE = {"ok": None, "error": "", "iface": HOP_TUN_IF, "conf": HOP_TUN_CONF}
+_HOP_LOCK = threading.RLock()
+
+
+def _hop_keypair():
+    """Пара ключей AmneziaWG. Спрашивается у живого бинаря, а не сочиняется:
+    кривая Curve25519 в WG берётся из того же пакета, что поднимает интерфейс,
+    и панель уже отказывает по отсутствию `awg-quick` (см. `_tun_tools`)."""
+    for tool in ("/usr/bin/awg", "/usr/bin/wg", "awg", "wg"):
+        if not (os.path.exists(tool) or shutil.which(tool)):
+            continue
+        try:
+            r = subprocess.run([tool, "genkey"], capture_output=True, text=True,
+                               timeout=10, stdin=subprocess.DEVNULL)
+        except Exception:
+            continue
+        priv = (r.stdout or "").strip()
+        if not priv:
+            continue
+        pub = _awg_pubof(priv) or _wg_pubof(priv)
+        if pub:
+            return priv, pub
+    raise RuntimeError("ни `awg genkey`, ни `wg genkey` не дали пару: на бэке нет "
+                       "инструментов туннеля, а прыжок без обёртки не ставится")
+
+
+def _hop_tunnel_keys():
+    """Ключи туннеля бэка: ОДНА пара на все фронты, лежит в `hop_tunnel.json` (0600)."""
+    d = _load(_HOP_TUN_FILE, {}) or {}
+    if isinstance(d, dict) and d.get("private") and d.get("public"):
+        return d
+    priv, pub = _hop_keypair()
+    d = {"private": priv, "public": pub, "created": int(time.time())}
+    _save(_HOP_TUN_FILE, d)
+    return d
+
+
+def _hop_tun_port():
+    """UDP-порт туннеля прыжка на бэке. Отдельный от подписочного `awg0`:
+    два слушателя на одном порту ядро не поднимет."""
+    try:
+        p = int(CFG_CACHE.get("hop_tun_port") or 0)
+    except Exception:
+        p = 0
+    return p if 1 <= p <= 65535 else HOP_TUN_PORT_DEFAULT
+
+
+def _hop_wg_dst():
+    """Порт подписочного AmneziaWG на бэке. Фронт повторяет ЕГО ЖЕ число, поэтому
+    конфиг подписчика не меняется ни одной строкой, кроме адреса (#506, п. 5).
+    0 — входа AmneziaWG нет, и UDP-ветка релея не ставится."""
+    try:
+        p = int(_awg_read_conf().get("port") or 0)
+        if 1 <= p <= 65535:
+            return p
+    except Exception:
+        pass
+    try:
+        inb = (_load(STATE, {}) or {}).get("inbounds") or {}
+        p = int((inb.get("amneziawg") or {}).get("port") or 0)
+        if 1 <= p <= 65535:
+            return p
+    except Exception:
+        pass
+    return 0
+
+
+def _hop_tun_alloc(hops):
+    """Свободный адрес фронта в пуле туннеля (.2 и дальше; .1 держит бэк)."""
+    used = {str(h.get("tun_ip") or "") for h in hops}
+    for i in range(2, HOP_TUN_NET.num_addresses - 1):
+        a = str(HOP_TUN_NET.network_address + i)
+        if a != HOP_TUN_BACK and a not in used:
+            return a
+    return ""
+
+
+def _hop_back_tunnel_write(hops):
+    """Конфиг `veilhop0` на БЭКЕ: адрес .1, порт прыжка, peer на каждый фронт.
+    Идемпотентно: совпавший байт в байт текст не перезапускается (рокот
+    `systemctl restart` на каждом тике уронил бы живой туннель)."""
+    keys = _hop_tunnel_keys()
+    jk = AWG_JUNK
+    lines = ["[Interface]",
+             "PrivateKey = %s" % keys["private"],
+             "ListenPort = %d" % _hop_tun_port(),
+             "Address = %s/%d" % (HOP_TUN_BACK, HOP_TUN_NET.prefixlen)]
+    for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"):
+        lines.append("%s = %s" % (k, jk.get(k, 0)))
+    lines.append("")
+    for h in hops:
+        if not (h.get("tun_pub") and h.get("tun_ip")):
+            continue
+        lines += ["[Peer]",
+                  "PublicKey = %s" % h["tun_pub"],
+                  "AllowedIPs = %s/32" % h["tun_ip"],
+                  "PersistentKeepalive = 25", ""]
+    text = "\n".join(lines).rstrip("\n") + "\n"
+    os.makedirs(os.path.dirname(HOP_TUN_CONF), exist_ok=True)
+    old = ""
+    try:
+        with open(HOP_TUN_CONF, encoding="utf-8") as f:
+            old = f.read()
+    except Exception:
+        old = ""
+    if old == text:
+        _HOP_TUN_STATE["ok"] = True
+        return False
+    fd = os.open(HOP_TUN_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    _hop_back_tunnel_restart()
+    return True
+
+
+def _hop_back_tunnel_restart():
+    """Поднять/перезапустить туннель прыжка на бэке. Инструменты спрашиваются ДО
+    перезапуска: без них `awg-quick@...` — это «Unit not found» в журнал на каждую
+    мутацию хопов (урок v2.17.3 про `_tun_tools`)."""
+    if SBX:
+        _HOP_TUN_STATE["ok"] = None
+        _HOP_TUN_STATE["error"] = "песочница: живой туннель не трогаем"
+        return
+    if not shutil.which("awg-quick"):
+        _HOP_TUN_STATE["ok"] = False
+        _HOP_TUN_STATE["error"] = ("на бэке нет `awg-quick` — туннель прыжка не "
+                                  "поднимается, релей без обёртки не ставится")
+        print("[hop-tunnel] " + _HOP_TUN_STATE["error"], flush=True)
+        return
+    try:
+        subprocess.run(["systemctl", "enable", "awg-quick@" + HOP_TUN_IF],
+                       capture_output=True, text=True, timeout=30,
+                       stdin=subprocess.DEVNULL)
+        r = subprocess.run(["systemctl", "restart", "awg-quick@" + HOP_TUN_IF],
+                           capture_output=True, text=True, timeout=90,
+                           stdin=subprocess.DEVNULL)
+        if r.returncode:
+            _HOP_TUN_STATE["ok"] = False
+            _HOP_TUN_STATE["error"] = ((r.stderr or r.stdout or "").strip()[:200]
+                                       or "restart вернул ненулевой код")
+            print("[hop-tunnel] restart err: " + _HOP_TUN_STATE["error"], flush=True)
+        else:
+            _HOP_TUN_STATE["ok"] = True
+            _HOP_TUN_STATE["error"] = ""
+    except Exception as e:
+        _HOP_TUN_STATE["ok"] = False
+        _HOP_TUN_STATE["error"] = str(e)[:200]
+        print("[hop-tunnel] restart exc: " + str(e), flush=True)
+
+
+def _hop_back_tunnel_ensure():
+    """Пересобрать туннель бэка по реестру фронтов. Вызывается с каждым изменением
+    хопов; пустой реестр = конфиг без peer'ов (туннель стоит, стучаться некому)."""
+    with _HOP_LOCK:
+        return _hop_back_tunnel_write(_hop_load())
+
+
+def _hop_tunnel_for(hop):
+    """Достать из записи ключи и адреса туннеля; старого (голого) образца — отказ."""
+    for k in ("tun_priv", "tun_pub", "tun_ip"):
+        if not str(hop.get(k) or ""):
+            raise RuntimeError("фронт заведён до обёртки: удали запись и добавь "
+                               "заново — голый DNAT в публичный адрес бэка панель "
+                               "больше не отдаёт (#508, нога Р9)")
+    return hop
+
+
 def _relay_installer(hop, with_register=False):
     ports = " ".join(str(p) for p in hop["ports"])
+    udp = " ".join(str(p) for p in (hop.get("udp_ports") or []))
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
-    reg_url = "https://%s:%d/api/hop/register" % (hop.get("back_ip"), panel_port)
+    back = hop["back_ip"]
+    reg_url = "https://%s:%d/api/hop/register" % (back, panel_port)
+    beat_url = "https://%s:%d/api/hop/beat" % (back, panel_port)
     tok = (hop.get("tok") or "") if with_register else ""
+    _hop_tunnel_for(hop)
+    jk = dict(AWG_JUNK)
     body = (_RELAY_INSTALL_TMPL
             .replace("__APPLY_SH__", _RELAY_APPLY_SH)
+            .replace("__KEEPER_SH__", _RELAY_KEEPER_SH)
+            .replace("__KEEPER_UNIT__", _RELAY_KEEPER_UNIT)
             .replace("__UNIT__", _RELAY_UNIT)
-            .replace("__BACK_IP__", hop["back_ip"])
+            .replace("__BACK_IP__", back)
             .replace("__PORTS_SP__", ports)
+            .replace("__UDP_SP__", udp)
+            .replace("__WG_IN__", str(hop.get("wg_dst") or 0))
+            .replace("__WG_DST__", str(hop.get("wg_dst") or 0))
+            .replace("__TUN_IF__", HOP_TUN_IF)
+            .replace("__TUN_IP__", "%s/%d" % (hop["tun_ip"], HOP_TUN_NET.prefixlen))
+            .replace("__TUN_PEER__", HOP_TUN_BACK)
+            .replace("__TUN_PRIV__", hop["tun_priv"])
+            .replace("__TUN_PUB__", hop["tun_pub"])
+            .replace("__TUN_ENDPOINT__", "%s:%d" % (back, _hop_tun_port()))
+            .replace("__MSS__", str(HOP_MSS))
             .replace("__TOK__", tok)
+            .replace("__BEAT_URL__", beat_url)
             .replace("__REG_URL__", reg_url))
+    for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"):
+        body = body.replace("__" + k.upper() + "__", str(jk.get(k, 0)))
     return body
 
 def _hop_find_tok(tok):
@@ -23487,13 +24538,29 @@ def _hop_add(name, front_ip, ports):
     if any((h.get("front_ip") == pv["front_ip"]) for h in hops):
         raise RuntimeError("фронт с таким адресом уже добавлен — обнови его или удали")
     hid = uuidlib.uuid4().hex[:12]
+    # Туннель прыжка: своя пара ключей на фронт, свой адрес в пуле 10.30.0.0/28 и
+    # ПРИЛОЖЕННЫЙ адрес бэка. Поле `back_applied` записывается здесь тем, что бэк
+    # отдаёт наружу СЕЙЧАС, а потом его переписывает только heartbeat с фронта —
+    # то есть в записи живёт факт применения, а не намерение (#508, ноги Р5+Р9).
+    priv, pub = _hop_keypair()
+    tun_ip = _hop_tun_alloc(hops)
+    if not tun_ip:
+        raise RuntimeError("в пулу туннеля %s не осталось адреса для ещё одного "
+                           "фронта — максимум %d"
+                           % (HOP_TUN_NET, HOP_TUN_NET.num_addresses - 3))
     hop = {"id": hid, "name": (name or "Фронт")[:40], "front_ip": pv["front_ip"],
-           "ports": pv["ports"], "back_ip": pv["back_ip"], "state": "pending",
+           "ports": pv["ports"], "udp_ports": [], "back_ip": pv["back_ip"],
+           "state": "pending",
+           "tun_if": HOP_TUN_IF, "tun_priv": priv, "tun_pub": pub,
+           "tun_ip": tun_ip, "tun_port": _hop_tun_port(), "wg_dst": _hop_wg_dst(),
+           "back_applied": pv["back_ip"], "relay_mode": "", "beat_ts": 0,
            "tok": secrets.token_urlsafe(24), "tok_exp": int(time.time()) + 1800,
            "added": int(time.time()), "last_check": None}
     hops.append(hop)
     _hop_save(hops)
-    _audit("hop_add", id=hid, front_ip=pv["front_ip"], ports=pv["ports"])
+    _hop_back_tunnel_ensure()
+    _audit("hop_add", id=hid, front_ip=pv["front_ip"], ports=pv["ports"],
+           tun_ip=tun_ip, back_applied=hop["back_applied"])
     panel_port = pv["panel_port"]
     curl = ("curl -sk https://%s:%s/relay.sh?tok=%s | sudo bash"
             % (pv["back_ip"], panel_port, hop["tok"]))
@@ -23735,9 +24802,154 @@ def _hop_register(tok, peer_ip):
     h["peer_seen"] = peer_ip
     h["registered_ts"] = int(time.time())
     _hop_save(hops)
+    # Фронт заявился — peer этого фронта обязан сидеть на бэке СЕЙЧАС, а не когда
+    # оператор следующий раз тронет хопы: установка релея приходит раньше, чем
+    # бэк успевает перечитать конфиг туннеля, и подписчик фронта стучался бы в
+    # туннель без ключа. Идемпотентно: совпавшие байты не двигают рестарт.
+    _hop_back_tunnel_ensure()
     if not already:
         _audit("hop_register", id=h["id"], front_ip=h.get("front_ip"), peer=peer_ip)
     return {"ok": True, "note": "уже было активно" if already else "фронт активирован"}
+
+_HOP_BEAT_STALE = 120  # с: heartbeat кладётся каждые BEAT_EVERY=30, трое из них молчания = авария
+
+
+def _hop_beat(tok, peer_ip, mode, back_applied, endpoint):
+    """Heartbeat смотрителя с фронта (#508, ноги Р2+Р5).
+
+    Фронт сообщает ДВА факта, которых панель сама не знает: куда сейчас ходит
+    клиент (`tun` — через туннель, `dir` — деградация напрямую) и какой адрес
+    бэка ПРИЛОЖЕН на endpoint туннеля. Второе важно потому, что roaming WireGuard
+    переписывает статический endpoint по аутентифицированному пакету: адрес,
+    записанный при заведении фронта, мог оказаться вчерашним. Поэтому в записи
+    живёт именно применённый адрес, а тик сверяет его с тем, что бэк отдаёт
+    наружу, — расхождение есть сигнал, а не молчаливая ложь.
+
+    Путь публичный (фронт не знает сеанса панели), поэтому ворота — тот же
+    одноразовый токен, что и для регистрации. Заметим, что heartbeat НЕ трогает
+    состав адресов фронта, ради которого `_hop_save` пересобирает щит: здесь это
+    лишняя работа на каждые 30 с, так что пишем файл напрямую.
+    """
+    if mode not in ("tun", "dir"):
+        raise RuntimeError("неизвестный режим смотрителя: " + str(mode)[:16])
+    ap = str(back_applied or "").strip()
+    if ap:
+        try:
+            ap = str(ipaddress.ip_address(ap).compressed)
+        except Exception:
+            raise RuntimeError("приложенный адрес бэка не разберётся: " + ap[:40])
+    hop = _hop_find_tok(tok)
+    if hop is None:
+        raise RuntimeError("ссылка не найдена")
+    with _HOP_LOCK:
+        hops = _hop_load()
+        h = next((x for x in hops if x.get("id") == hop["id"]), None)
+        if h is None:
+            raise RuntimeError("хоп удалён из панели")
+        prev_mode = str(h.get("relay_mode") or "")
+        prev_ap = str(h.get("back_applied") or "")
+        now = int(time.time())
+        h["relay_mode"] = mode
+        h["beat_ts"] = now
+        h["beat_peer"] = peer_ip
+        if endpoint:
+            h["tun_endpoint"] = str(endpoint)[:80]
+        moved = ""
+        if ap and ap != prev_ap:
+            h["back_applied"] = ap
+            moved = ap
+        _save(HOPS_FILE, hops)
+    if prev_mode and prev_mode != mode:
+        _audit("hop_relay_mode", id=h["id"], front_ip=h.get("front_ip"),
+               mode=mode, prev=prev_mode, applied=ap or prev_ap)
+    if moved and prev_ap:
+        # адрес бэка поменялся сам: фронт нашёл бэка roaming'ом. Это событие для
+        # оператора и для ноги Р1 (переукладка релея по новому адресу).
+        _audit("hop_back_applied", id=h["id"], front_ip=h.get("front_ip"),
+               prev=prev_ap, new=moved)
+    return {"ok": True, "note": "принято", "back_ip": hop.get("back_ip") or ""}
+
+
+_HOP_LAST_SAY = {}   # id -> кортеж того, о чём уже сказано в аудит: не спамить на каждый тик
+
+
+def _hop_tun_ping(ip):
+    """Отвечает ли туннельный адрес фронта С бэка. Это второй, независимый от
+    heartbeat, свидетель: фронт мог потерять связь с панелью, но сам туннель
+    держать. Песочница харнесса команд не запускает — там честный `None`
+    («неизвестно»), а не мнимая «мёртв»."""
+    if SBX or not ip:
+        return None
+    try:
+        r = subprocess.run(["/bin/ping", "-c", "1", "-W", "1", "-I", HOP_TUN_IF, ip],
+                           capture_output=True, text=True, timeout=4,
+                           stdin=subprocess.DEVNULL)
+        return r.returncode == 0
+    except Exception:
+        return None
+
+
+def _hop_keeper_tick():
+    """Смотритель хопов на БЭКЕ (#508, ноги Р2+Р5). Панель знает о прыжке только со
+    слов фронта, и этот тик проверяет, насколько те слова свежи и согласованы:
+
+      1. heartbeat. Смотритель на фронте кладёт его каждые 30 с; замолчал на трое
+         — значит либо служба на фронте умерла, либо фронт не добирается до панели.
+         Клиентов это ещё не убивает (фронт переключается сам, замер 23.10: 1 с до
+         «напрямую», 0 с обратно), но панель слепнет и обязана показать это вслух,
+         а не рисовать карточку с вчерашним режимом.
+      2. применённый адрес бэка. `back_applied` приходит С ФРОНТа (это то, что ядро
+         положило на endpoint туннеля roaming'ом), а `_hop_back_ip()` — то, что бэк
+         считает своим наружу прямо сейчас. Расхождение = бэк сменил адрес, и фронт
+         либо уже уехал за ним (тогда новый адрес и есть применённый), либо нет.
+         Пока поле молча совпадает, оператор не узнает, что DNAT `dir`-ветки
+         смотрит в вчерашний адрес.
+    """
+    hops = _hop_load()
+    if not hops:
+        _HOP_LAST_SAY.clear()
+        return
+    live_back = (_hop_back_ip() or "").strip()
+    now = int(time.time())
+    seen = set()
+    touched = False
+    for h in hops:
+        hid = h.get("id")
+        if h.get("state") != "active":
+            _HOP_LAST_SAY.pop(hid, None)
+            continue
+        seen.add(hid)
+        beat = int(h.get("beat_ts") or 0)
+        silent = (now - beat) >= _HOP_BEAT_STALE
+        ping = _hop_tun_ping(str(h.get("tun_ip") or ""))
+        applied = str(h.get("back_applied") or "")
+        drift = bool(applied and live_back and applied != live_back)
+        # «фронт потерян» — это оба свидетеля против нас; без heartbeat при
+        # живом туннеле фронта молчит только канал до панели
+        gone = silent and ping is False
+        for field, want in (("beat_stale", silent), ("tun_down", gone),
+                            ("tun_ok", ping is True), ("back_drift", drift)):
+            if bool(h.get(field)) != want:
+                h[field] = want
+                touched = True
+        if not applied and live_back and bool(h.get("back_drift")):
+            h["back_drift"] = False
+            touched = True
+        say = (1 if silent else 0, 1 if gone else 0, 1 if drift else 0)
+        if _HOP_LAST_SAY.get(hid) != say:
+            _HOP_LAST_SAY[hid] = say
+            _audit("hop_watcher", id=hid, front_ip=h.get("front_ip"),
+                   mode=h.get("relay_mode") or "?", beat_age=(now - beat) if beat else None,
+                   silent=silent, tun_ping=("нет данных" if ping is None else ping),
+                   back_applied=applied, back_live=live_back, drift=drift,
+                   note=("фронт молчит и туннель не отвечает" if gone else
+                         "фронт молчит, туннель отвечает" if silent else
+                         "адрес бэка на фронте не совпадает с живым" if drift else
+                         "фронт на связи"))
+    for hid in [k for k in _HOP_LAST_SAY if k not in seen]:
+        _HOP_LAST_SAY.pop(hid, None)
+    if touched:
+        _save(HOPS_FILE, hops)
 
 def _hop_remove(hid, confirm=False):
     if not confirm:
@@ -23753,13 +24965,21 @@ def _hop_remove(hid, confirm=False):
         try:
             base = ["/usr/bin/ssh", "-p", str(int(h.get("ssh_port") or 22))] + _ssh_opts(key)
             target = "%s@%s" % (h.get("ssh_user") or "root", h.get("front_ip"))
+            ti = str(h.get("tun_if") or HOP_TUN_IF)
             r = subprocess.run(base + [target,
+                "systemctl disable --now veil-relay-keeper >/dev/null 2>&1 || true; "
                 "systemctl disable --now veil-relay >/dev/null 2>&1 || true; "
+                "systemctl disable --now awg-quick@%s >/dev/null 2>&1 || true; "
+                "awg-quick down %s >/dev/null 2>&1 || true; "
                 "nft delete table ip veil_relay 2>/dev/null || true; "
                 "rm -f /etc/veil-relay/relay.env /etc/veil-relay/relay.nft "
-                "/etc/veil-relay/relay.nft /etc/systemd/system/veil-relay.service "
-                "/usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf; "
-                "systemctl daemon-reload; rmdir /etc/veil-relay 2>/dev/null || true; echo VEILPURGED"],
+                "/etc/amnezia/amneziawg/%s.conf "
+                "/etc/systemd/system/veil-relay.service "
+                "/etc/systemd/system/veil-relay-keeper.service "
+                "/usr/local/bin/veil-relay-apply.sh /usr/local/bin/veil-relay-keeper.sh "
+                "/etc/sysctl.d/99-veil-relay.conf; "
+                "systemctl daemon-reload; rmdir /etc/veil-relay 2>/dev/null || true; echo VEILPURGED"
+                % (ti, ti, ti)],
                 capture_output=True, text=True, timeout=45, stdin=subprocess.DEVNULL)
             note = ("очистка на фронте выполнена" if "VEILPURGED" in (r.stdout or "")
                     else "фронт не ответил на очистку — удалил только запись")
@@ -23771,10 +24991,17 @@ def _hop_remove(hid, confirm=False):
                     "снята только запись панели")
         else:
             note = ("ключа SSH нет (установка была через curl) — на фронте останься: "
-                    "systemctl disable --now veil-relay && nft delete table ip veil_relay && "
-                    "rm -rf /etc/veil-relay /usr/local/bin/veil-relay-apply.sh /etc/sysctl.d/99-veil-relay.conf")
+                    "systemctl disable --now veil-relay-keeper veil-relay && "
+                    "awg-quick down %s && nft delete table ip veil_relay && "
+                    "rm -rf /etc/veil-relay /etc/amnezia/amneziawg/%s.conf "
+                    "/usr/local/bin/veil-relay-apply.sh /usr/local/bin/veil-relay-keeper.sh "
+                    "/etc/sysctl.d/99-veil-relay.conf" % (h.get("tun_if") or HOP_TUN_IF,
+                                                           h.get("tun_if") or HOP_TUN_IF))
     hops = [x for x in hops if x.get("id") != hid]
     _hop_save(hops)
+    # peer ушедшего фронта обязан исчезнуть на бэке: иначе мёртвый ключ ещё
+    # принимает пакеты и занимает адрес в пулу туннеля
+    _hop_back_tunnel_ensure()
     if (CFG_CACHE.get("hop_public_host") or "").strip() == (h.get("front_ip") or ""):
         CFG_CACHE.pop("hop_public_host", None)
         _cfg_save()
@@ -23784,20 +25011,37 @@ def _hop_remove(hid, confirm=False):
 
 def _hop_set_public(host):
     host = (host or "").strip().lower()
-    warn = ""
+    hops = _hop_load()
     if host:
         if any(c in host for c in ":/ @\\") or len(host) > 253 or not re.fullmatch(r"[a-z0-9._\-]+", host):
             raise RuntimeError("адрес — домен или IPv4, без протокола, слэшей и порта")
-        hops = _hop_load()
         known = [x.get("front_ip") for x in hops if x.get("front_ip")]
         if host not in known:
-            warn = "ни один добавленный фронт не имеет этот адрес — ссылки могут вести в никуда"
+            raise RuntimeError("ни один добавленный фронт не имеет этот адрес: ссылки "
+                               "уедут в никуда — добавь фронт с этим адресом или сними слово")
+        live = [x for x in hops if x.get("front_ip") == host]
+        if not any(x.get("state") == "active" for x in live):
+            raise RuntimeError("фронт %s ещё не поднялся (состояние %s): релей не "
+                               "установлен, а слово уже отправит на него всех "
+                               "подписчиков" % (host, live[0].get("state") or "?"))
+        # Имя Telegram-прокси обязано быть названо ДО прыжка. Порядок имён ссылки —
+        # маршрут `mp.<база>` → маска → hop → база: если и маршрут, и маска пусты,
+        # адрес фронта становится именем в ссылке, и выдача `tg://proxy` меняется,
+        # хотя стоящее требование — ссылка не меняется никогда (#505, нога Р8).
+        if not ((CFG_CACHE.get("tg_mp_on443") and (CFG_CACHE.get("tg_mp_domain") or "").strip())
+                or (CFG_CACHE.get("tg_mask_domain") or "").strip()):
+            raise RuntimeError("имя Telegram-прокси не названо: без маски и имени "
+                               "маршрута адрес фронта становится ИМЕНЕМ ссылки "
+                               "`tg://proxy`, то есть при перевороте слова ссылка "
+                               "перевыпускается другой — так нельзя")
         CFG_CACHE["hop_public_host"] = host
     else:
         CFG_CACHE.pop("hop_public_host", None)
     _cfg_save()
+    _hop_front_flush()
+    _front_shield("слово публичного адреса ссылок")
     _audit("hop_public_set", host=host or "(reset)")
-    return {"hop_public_host": host, "warn": warn,
+    return {"hop_public_host": host, "warn": "",
             "note": "ссылки подписок и прокси пересоберутся на новый адрес; подписчикам с Telegram "
                     "панель отправит уведомление в течение минуты, на /p появится подсказка"}
 
@@ -23819,15 +25063,22 @@ def _hop_relink(hid):
 def _hop_public_view():
     hops = []
     now = int(time.time())
+    # `tun_priv` — закрытый ключ туннеля фронта. Наружу он не идёт никогда:
+    # карточка хопа читается правом «hop», которое выдаётся отдельно от владельца.
+    hide = ("tok", "tok_exp", "tun_priv")
     for h in _hop_load():
-        d = {k: v for k, v in h.items() if k not in ("tok", "tok_exp")}
+        d = {k: v for k, v in h.items() if k not in hide}
         alive = h.get("state") == "pending" and int(h.get("tok_exp") or 0) > now
         d["tok_alive"] = alive
         d["tok_left"] = max(0, int(h.get("tok_exp") or 0) - now) if h.get("state") == "pending" else 0
+        beat = int(h.get("beat_ts") or 0)
+        d["beat_age"] = (now - beat) if beat else None
         hops.append(d)
     return {"hops": hops,
             "hop_public_host": (CFG_CACHE.get("hop_public_host") or "").strip(),
             "back_ip": _hop_back_ip(),
+            "tun": dict(_HOP_TUN_STATE), "tun_net": str(HOP_TUN_NET),
+            "tun_back": HOP_TUN_BACK, "tun_port": _hop_tun_port(),
             "panel_port": int(CFG_CACHE.get("panel_port", 8444) or 8444),
             "suggest_ports": _hop_suggest_ports(),
             "addr_prev": str(CFG_CACHE.get("addr_prev") or ""),
@@ -25308,6 +26559,64 @@ def _f2b_nft(*args):
     except Exception as e:
         print("[f2b] nft " + " ".join(args[:3]) + ": " + str(e), flush=True)
 
+def _front_bans_lift(where="страховой тик"):
+    """Убрать из списка банов ГОЛЫЕ записи, равные адресу фронта (#501). Вернуть снятое.
+
+    Вето в `_ban_ip` запрещает только НОВЫЕ заявки. А список банов переживает и
+    регистрацию фронта, и перезапуск панели: адрес могли забанить за сутки до того,
+    как оператор вписал его как фронт, и тогда старт панели вернул бы его в `nft`
+    сам, отрезав от сервиса весь пул подписчиков.
+
+    Снимаются ровно ГОЛОСЛОВНЫЕ записи: бан адреса фронта не защищает больше ничего,
+    кроме как самого фронт, и держать его в файле — значит врать оператору, что
+    «фронт забанен». Широкая запись (`/24`, `/16`), внутри которой оказался фронт,
+    остаётся на месте: за её пределами сидит ферма, ради которой её и ставили, а
+    сам фронт от неё спасает ЯДРО — множество `fr4`/`fr6` с `accept` ПЕРЕД дропом
+    (`_f2b_bootstrap`), куда панель кладёт список фронтов.
+    """
+    lifted = []
+    with _BANS_LOCK:
+        for ip in list(BANS):
+            if "/" in str(ip):
+                continue        # широкую запись не трогаем: она банит не фронт
+            front = _front_covered(ip)
+            if not front:
+                continue
+            BANS.pop(ip, None)
+            fam = "b6" if ":" in ip else "b4"
+            _f2b_nft("delete", "element", "inet", "veil_bans", fam, "{ " + ip + " }")
+            lifted.append("%s (фронт %s)" % (ip, front))
+        if lifted:
+            _bans_save()
+    for x in lifted:
+        _audit("front_ban_lifted", ban=x, where=where)
+    if lifted:
+        print("[fronts] снят бан адреса фронта: %s — %s"
+              % ("; ".join(lifted), where), flush=True)
+    return lifted
+
+_FRONT_APPLIED = {"ips": None}
+
+def _front_shield(where="страховой тик"):
+    """Неприкосновенность фронта — и в списке банов, и в ядре. Вернуть снятое.
+
+    Дыра, которую закрывает эта функция, шире отказа `_ban_ip`: бан мог быть
+    поставлен, когда фронта в списке ещё не было, а `veil_bans` перекладывается при
+    каждом старте панели. Поэтому при ЛЮБОМ изменении списка фронтов таблица
+    пересобирается целиком (`_f2b_bootstrap` — тот же путь, что при старте, и он же
+    кладёт `accept` для адресов фронта перед дропом), а голые записи бана фронта
+    уходят из файла. Сверка по списку, а не по флагу «был ли рестарт»: оператор
+    может добавить фронт, не перезапуская панель.
+    """
+    lifted = _front_bans_lift(where)
+    ips = sorted(_hop_front_addrs())
+    # `None` — таблица ещё не собиралась (старт панели): собирает её `_f2b_bootstrap`
+    # сам, пересборка отсюда не нужна. Пустой список наоборот обязан пересобрать:
+    # фронт, которого в списке уже нет, не имеет права оставаться неприкосновенным.
+    if _FRONT_APPLIED["ips"] is not None and ips != _FRONT_APPLIED["ips"]:
+        _f2b_bootstrap()
+    return lifted
+
 def _f2b_bootstrap():
     """Пересоздаёт таблицу (идемпотентно при рестартах панели) и возвращает живые баны."""
     _f2b_nft("delete", "table", "inet", "veil_bans")
@@ -25316,11 +26625,36 @@ def _f2b_bootstrap():
              "{ type filter hook input priority -100; policy accept; }")
     _f2b_nft("add", "set", "inet", "veil_bans", "b4", "{ type ipv4_addr; flags timeout,interval; }")
     _f2b_nft("add", "set", "inet", "veil_bans", "b6", "{ type ipv6_addr; flags timeout,interval; }")
+    # #501/#507: неприкосновенность фронта дописывается ЯДРОМ, а не только словом
+    # панели. Множество `fr4`/`fr6` стоит ПЕРЕД дропом: packet, пришедший с адреса
+    # фронта, получает `accept` и до множества банов не доходит. Это спасает и от
+    # широкой записи (`/24` фермы, внутри которой оказался фронт), и от бана,
+    # поставленного руками или прежним выпуском панели, и от гонки «сначала бан,
+    # потом фронт» — без единого снятого баня чужой фермы.
+    fronts = sorted(_hop_front_addrs())
+    _f2b_nft("add", "set", "inet", "veil_bans", "fr4", "{ type ipv4_addr; flags interval; }")
+    _f2b_nft("add", "set", "inet", "veil_bans", "fr6", "{ type ipv6_addr; flags interval; }")
+    f4 = [a for a in fronts if ":" not in a]
+    f6 = [a for a in fronts if ":" in a]
+    if f4:
+        _f2b_nft("add", "element", "inet", "veil_bans", "fr4", "{ " + ", ".join(f4) + " }")
+    if f6:
+        _f2b_nft("add", "element", "inet", "veil_bans", "fr6", "{ " + ", ".join(f6) + " }")
+    _FRONT_APPLIED["ips"] = fronts
+    _f2b_nft("add", "rule", "inet", "veil_bans", "input",
+             'iifname != "lo" ip saddr @fr4 accept comment "front_accept"')
+    _f2b_nft("add", "rule", "inet", "veil_bans", "input",
+             'iifname != "lo" meta nfproto ipv6 ip6 saddr @fr6 accept comment "front6_accept"')
     _f2b_nft("add", "rule", "inet", "veil_bans", "input",
              'iifname != "lo" ip saddr @b4 drop')
     _f2b_nft("add", "rule", "inet", "veil_bans", "input",
              'iifname != "lo" meta nfproto ipv6 ip6 saddr @b6 drop')
     now = time.time()
+    # Слово о фронте (#501) спрашивается и здесь, ДО замка: снятый при старте бан —
+    # это не новый бан, а ПРЕЖНИЙ, поставленный, когда адреса фронта в списке ещё не
+    # было. Без этой строки такой бан возвращался бы в `nft` при каждом перезапуске
+    # панели и висел бы до истечения срока, отрезая от сервиса весь пул.
+    _front_bans_lift("перекладка банов при старте панели")
     # SSH-замок спрашивается ДО `_BANS_LOCK` и до записи: прежний бан, в который
     # попал адрес хозяина, переживал рестарт панели и возвращался сам собой —
     # именно так «сними бан» превращалось в «снова забанен после обновления».
@@ -31355,14 +32689,19 @@ def _limits_loop():
             # сходит наружу». `_tg_dc_loss_tick` мерит подъём к узлам Telegram:
             # тоже наружу, тоже по несколько метров на адрес. `_mr_tick` ставит
             # и снимает правила маршрутизации — тоже в командную строку.
-            for _fn, _tag in ((_bans_cleanup, "f2b"), (_ssh_sweep, "ssh-ban"),
+            # `_hop_keeper_tick` меряет туннель прыжка тем же `ping`-ом и пишет
+            # hops.json, а не state.json: под замок состояния его класть незачем.
+            for _fn, _tag in ((_bans_cleanup, "f2b"), (_front_shield, "front-shield"),
+                              (_ssh_sweep, "ssh-ban"),
                               (_synfix_tick, "synfix"),
                               (_addr_watch_tick, "addr"),
                               (_tg_dc_loss_tick, "dc-loss"),
                               (_mr_tick, "media-route"),
                               (_tw_tick, "tiktok-route"),
                               (_yw_tick, "youtube-route"),
-                              (_gd_tick, "gemini-split")):
+                              (_gm_tick, "game-route"),
+                              (_gd_tick, "gemini-split"),
+                              (_hop_keeper_tick, "hop-keeper")):
                 try:
                     _fn()
                 except Exception as e:
@@ -36723,6 +38062,20 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(200, _yw_view())
             except Exception as e:
                 return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/game_warp":
+            # #509: окно «Игра» — своё звено WARP, отдельное от TikTok и YouTube.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _gm_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
+        if p == "/api/game_manual":
+            # #509: хозяйское дополнение к игровому списку, форма как у #388.
+            if not _authed(self): return self._send(401, {"error": "unauthorized"})
+            try:
+                return self._send(200, _gm_view())
+            except Exception as e:
+                return self._send(502, {"error": str(e)[:200]})
         if p == "/api/gemini_direct":
             # #503: чем разведён `Gemini` и чем отвечают два выхода. Только чтение.
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
@@ -36985,6 +38338,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 st, js = _pk_login_end(self, self._body() or {})
                 return self._send(st, js)
             if (not _authed(self) and p != "/api/bot/webhook" and p != "/api/hop/register"
+                    and p != "/api/hop/beat"
                     and not p.startswith("/api/ext/") and not p.startswith("/pay/")
                     and not (p.startswith("/p/") and (
                         p.endswith("/forget") or p.endswith("/avatar")
@@ -39575,6 +40929,20 @@ class H(http.server.BaseHTTPRequestHandler):
                                                          self.client_address[0]))
                 except Exception as e:
                     return self._send(400, {"error": str(e)})
+            if p == "/api/hop/beat":
+                # Heartbeat смотрителя с фронта (#508, Р2). Публичный по той же
+                # причине, что и регистрация: сеанса панели фронт не имеет, а
+                # воротами служит его токен. Тело маленькое и частое (раз в 30 с
+                # на фронт), поэтому здесь нет ни отката в журнал, ни уведомлений.
+                try:
+                    b = self._body() or {}
+                    return self._send(200, _hop_beat(_field(b, 'tok').strip(),
+                                                     self.client_address[0],
+                                                     _field(b, 'mode').strip(),
+                                                     _field(b, 'back_applied').strip(),
+                                                     _field(b, 'endpoint').strip()))
+                except Exception as e:
+                    return self._send(400, {"error": str(e)})
             if p == "/api/cert/config":
                 try:
                     b = self._body() or {}
@@ -40408,6 +41776,40 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     print("[youtube-route] " + str(e), flush=True)
                 return self._send(200, _yw_view())
+            if p == "/api/game_warp":
+                # #509: `on` — «вести игру через своё звено», `check` — «чем отвечают
+                # два выхода». Туннельную ногу судит песочница: она дорогая и живёт
+                # только у явной проверки, прямая нога и приговор по журналу дешёвые
+                # и пишутся в тот же снимок.
+                b = self._body()
+                if "on" not in b and "check" not in b:
+                    return self._send(400, {"error": "нужно поле on или check"})
+                if "on" in b:
+                    CFG_CACHE["game_warp"] = bool(b.get("on"))
+                    _cfg_save()
+                    _audit("game_warp", on=CFG_CACHE["game_warp"])
+                    threading.Thread(target=_gm_tick_bg, daemon=True).start()
+                try:
+                    if b.get("check"):
+                        _gm_probe(force=True)
+                except Exception as e:
+                    print("[game-route] " + str(e), flush=True)
+                return self._send(200, _gm_view())
+            if p == "/api/game_manual":
+                # #509: полная замена хозяйского дополнения игры словом хозяина. Шаг
+                # смотрителя делаем сразу, как у #388: набор меряемых окончаний
+                # изменился — звено обязано догонять его в тот же момент, что и ответ морде.
+                norm, err = _gm_norm(self._body())
+                if err:
+                    return self._send(400, {"error": err})
+                CFG_CACHE[_GM_KEY] = norm
+                _cfg_save()
+                _audit("game_manual", domains=len(norm["domains"]), ips=len(norm["ips"]))
+                try:
+                    _gm_tick()
+                except Exception as e:
+                    print("[game-route] " + str(e), flush=True)
+                return self._send(200, _gm_view())
             if p == "/api/gemini_direct":
                 # #503: `on` — «вести Gemini в обход окна YouTube», `check` — «чем
                 # отвечает выход». Пересборка конфига идёт сразу: это не стройка звена,

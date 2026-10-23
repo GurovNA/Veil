@@ -1599,6 +1599,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick="setJump('setRot')">🔁 Автозамена IP</button>
       <button class="tiny sec" onclick="setJump('setTikTok')">🎵 TikTok</button>
       <button class="tiny sec" onclick="setJump('setYouTube')">▶️ YouTube</button>
+      <button class="tiny sec" onclick="setJump('setGame')">🎮 Игра</button>
       <button class="tiny sec" onclick="setJump('setGemini')">💬 Gemini</button>
       <button class="tiny sec" onclick="setJump('setIpRegion')">🌍 В какой стране меня видят</button>
       <button class="tiny sec" onclick="setJump('setTorrent')">🧲 Торренты</button>
@@ -1923,6 +1924,28 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="tiny sec" onclick=checkYouTube() id=ywCheckBtn>🔎 Проверить, что видит Google</button>
     </div>
     <div class=msg id=ywMsg></div>
+    </div>
+    <div class="card set-block" id=setGame>
+    <h3 style="margin:0 0 8px">Игра через WARP</h3>
+    <p class=mut style="margin:0 0 10px"><span id=gmState>—</span></p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это нужно.</b> Хозяин слово 23.10: «игра brawl stars почему то определяет как россия и не работает». Замер на боевом узле показал странную вещь: обращение игры к входу шло напрямую и уходило с сервера адресом, который пять независимых источников (MaxMind, IP2Location, ipinfo, DB-IP и собственное ребро Cloudflare) называют Нидерландами. Страна не была Россией — а вход всё равно запрещался. Как только адреса игры поехали через туннель Cloudflare, вход прошёл. Значит гейт издателя судит не страну, а <b>природу выхода</b>: адрес датацентра он отбраковывает, адрес Cloudflare принимает. Чем именно он их различает, нам неизвестно — игра отвечает по своему протоколу на порту входа.</p>
+        <p><b>Почему своё звено, а не чужое.</b> Тот же результат можно было получить ручным списком окна TikTok, и так оно сначала и лечилось. Но то звено держит совсем другое слово, и карточка TikTok показывает его состояние неверно: выключили бы хабы — и игра молча вернулась бы на прямой выход сервера, ровно в тот блок, из которого её доставали. Поэтому у игры свой туннель, свой аккаунт Cloudflare, свой набор адресов и своя карточка: включается и выключается она сама по себе, и правила TikTok и YouTube она не трогает.</p>
+        <p><b>Чем карточка судит, что фикс работает.</b> Двумя фактами, а не догадкой. Первый — чем отвечают два выхода: панель опрашивает два независимых источника (geojs и ifconfig.co) с прямого адреса и из туннеля, причём источники называются своими именами и расхождение не сглаживается: базы у них разные, на одном адресе они показывают разные страны, и наружу идут обе строки как есть. Второй — что в эту минуту делает игра: панель считает, сколько раз в минуту подписчик открывается на порт входа. Заблокированный аккаунт стучится по 2-4 раза в минуту, вошедший держит одно соединение. Это единственный признак, который мерит именно успех подписчика, и зелёным карточка считает только его.</p>
+        <p><b>Что не задето.</b> Окна TikTok и YouTube стоят как стояли: у игры своя таблица маршрутизации, свой интерфейс и свой аккаунт. Адреса вне игрового списка не перемаршрутизируются, а если звено падает, игра идёт напрямую, как шла до включения. Ручной список выше (окно TikTok) этим окном не управляется.</p>
+        <p><b>Кнопка «Проверить, чем отвечают два выхода»</b> поднимает изолированную песочницу с тем же аккаунтом и спрашивает тот же источник из-за туннеля: живое звено при этом не перестраивается ни на байт. Промер идёт до минуты, поэтому он делается только по кнопке, а не на каждом шаге смотрителя. Проверка поднимает второй веер на том же аккаунте — живое звено начинает спорить с облаком за последний рукопожатный срок, поэтому кнопку жмут по надобности, а не каждые пятнадцать минут.</p>
+      </div></details>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=gmOn onchange=saveGame(this.checked)> Вести игру через своё звено WARP — вход не должен читаться датацентром</label>
+      <button class="tiny sec" onclick=checkGame() id=gmCheckBtn>🔎 Проверить, чем отвечают два выхода</button>
+    </div>
+    <label for=gmText>Дополнить список игры своими окончаниями (подобранные адреса пойдут тем же туннелем; список заменяется целиком)</label>
+    <textarea id=gmText rows=4 placeholder="один домен или адрес на строку:&#10;example-game.com&#10;198.51.100.7" style="width:100%;margin-top:4px;font-family:monospace;font-size:12px"></textarea>
+    <p class=mut id=gmListState style="margin:4px 0 0;font-size:12px">—</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <button class="tiny sec" id=gmListBtn onclick=saveGameList()>Сохранить список</button>
+    </div>
+    <div class=msg id=gmMsg></div>
     </div>
     <div class="card set-block" id=setGemini>
     <h3 style="margin:0 0 8px">Gemini в обход окна YouTube</h3>
@@ -6956,14 +6979,18 @@ async function loadGemini(){
     const d=await api('/api/gemini_direct');
     if(on) on.checked=!!d.gemini_direct;
     const rs=String(d.region_split||'').toUpperCase(), rw=String(d.region_window||'').toUpperCase();
-    const gap=(d.kernel_clients?(' Подписчиков, чей туннель ядро пересылает мимо прокси, это не касается: '+d.kernel_clients+'.'):'');
-    if(!d.want){ el.textContent='Выключено — Gemini идёт тем же путём, что и YouTube.'+gap; return; }
+    const rt=String(d.route_tbl||'').toUpperCase();
+    const kern='; исключений ядра '+(d.rules==null?'не меряно':d.rules)+
+               ', накрытый адрес идёт таблицей '+(rt||'?');
+    const vf=(d.kernel_clients?(' Подписчиков веерных входов ('+d.kernel_clients+') выводит из окна то же исключение ядра — их поток прокси не проходит.'):'');
+    if(!d.want){ el.textContent='Выключено — Gemini идёт тем же путём, что и YouTube.'; return; }
     if(d.why){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но разводить нечем</b> — '+esc(d.why)+'.'; return; }
     if(!d.read){ el.innerHTML='▶️ <b style="color:var(--warn)">Не прочитан живой конфиг ядра прокси</b> — сказать, что служба имеет, нельзя'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
     if(!d.applied){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, а в живом конфиге ядра прокси развода нет</b> — смотритель пересоберёт сам'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
-    if(rs&&rs!=='RU'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, выход читается <b>'+esc(rs)+'</b>'+(rw?(' вместо '+esc(rw)):'')+'.'+gap; return; }
+    if(rt&&rt!=='MAIN'){ el.innerHTML='▶️ <b style="color:var(--warn)">Прокси разводит, а ядро всё ещё несёт Gemini в окно</b>'+kern+' — веерным входам '+esc(String(d.kernel_clients==null?'?':d.kernel_clients))+' поэтому недоступно и то, что видит прокси.'; return; }
+    if(rs&&rs!=='RU'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, выход читается <b>'+esc(rs)+'</b>'+(rw?(', окно отвечает <b>'+esc(rw)+'</b>'):'')+kern+'.'+vf; return; }
     if(rs==='RU'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а выход всё ещё читается Россией</b> — проверке не верим'+(d.probe_error?(': '+esc(d.probe_error)):'')+'.'; return; }
-    el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', выход ещё не проверен'+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+gap;
+    el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', выход ещё не проверен'+kern+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+vf;
   }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
 }
 async function saveGemini(onv){
@@ -7193,6 +7220,106 @@ async function saveBypass(){
   }catch(e){ if(m){ m.textContent='не получилось: '+String(e).slice(0,160); m.className='msg err'; } }
   if(b) b.disabled=false;
 }
+// #509: окно «Игра» — своё звено WARP. Судья говорит двумя фактами: чем отвечают
+// выходы (каждый источник назван своим именем, расхождение не сглаживается) и что
+// в эту минуту делает игра в журнале прокси.
+function gmFeedsLine(d){
+  const f=(d.feeds_direct||[]).map(x=>x.feed+' '+(x.region||'?').toUpperCase()+
+    (x.asn?(' · AS'+x.asn+(x.holder?(' '+x.holder):'')):''));
+  return f.length?('напрямую: '+f.join('; ')):'напрямую: источники не ответили';
+}
+function gmTunnelLine(d){
+  const rt=String(d.region_tunnel||'').toUpperCase();
+  return rt?('в туннеле — '+rt+' ('+(d.fan_owner||'веер')+')')
+            :'в туннеле не измерено — спросите кнопкой проверки';
+}
+function gmLoopLine(d){
+  const l=d.loop||{}, v=String(d.loop_verdict||'');
+  if(v==='цикл') return 'вход запрещён: стучится по '+l.peak+' раза в минуту ('+l.total+' за '+l.minutes+' мин)';
+  if(v==='держится') return 'вход держится: '+l.total+' обращений за '+l.minutes+' мин, максимум '+l.peak+' в минуту';
+  if(v==='не открывали') return 'в игру не заходили '+l.minutes+' мин — подтверждать будет вход';
+  if(v==='нет журнала') return 'журнала прокси нет: '+(l.reason||'не прочитан');
+  return 'поведение игры ещё не меряно';
+}
+async function loadGame(){
+  const el=$('gmState'), on=$('gmOn');
+  if(!el) return;
+  try{
+    const d=await api('/api/game_warp');
+    if(on) on.checked=!!d.game_on;
+    const exits=gmFeedsLine(d)+' | '+gmTunnelLine(d);
+    const v=String(d.loop_verdict||'');
+    if(!d.want){ el.textContent='Выключено — игра идёт тем же путём, что и остальной трафик сервера.'; return; }
+    if(v==='цикл') el.innerHTML='▶️ <b style="color:var(--warn)">Вход по-прежнему запрещён</b> — '+esc(gmLoopLine(d))+'. '+esc(exits)+(d.probe_error?(' ('+esc(d.probe_error)+')'):'')+'.';
+    else if(v==='держится') el.innerHTML='▶️ <b>Игра через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; '+esc(gmLoopLine(d))+'. '+esc(exits)+'.';
+    else if(d.up&&d.ready) el.innerHTML='▶️ <b>Игра через WARP</b> — звено поднято, '+(d.count||0)+' блоков; '+esc(gmLoopLine(d))+'. '+esc(exits)+(d.error?(' ('+esc(d.error)+')'):'')+'.';
+    else if(d.error) el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но не идёт</b> — '+esc(d.error)+'.';
+    else el.textContent='Включено, жду первого тика — звено строится.';
+  }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveGame(onv){
+  const m=$('gmMsg');
+  if(m) m.textContent=onv?'поднимаю туннель…':'снимаю туннель…';
+  try{
+    await api('/api/game_warp',{method:'POST',body:JSON.stringify({on:!!onv})});
+    if(m) m.textContent=onv?'включено — звено строится':'выключено — игра идёт как шла';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  setTimeout(loadGame, 4000);
+  loadGame();
+}
+async function checkGame(){
+  const m=$('gmMsg'), b=$('gmCheckBtn');
+  if(m) m.textContent='проверяю два выхода — до минуты…';
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/game_warp',{method:'POST',body:JSON.stringify({check:true})});
+    if(m) m.textContent=gmFeedsLine(d)+' | '+gmTunnelLine(d)+' | '+gmLoopLine(d)+
+      (d.probe_error?'; проверка ответила не полностью: '+String(d.probe_error).slice(0,160):'');
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  if(b) b.disabled=false;
+  loadGame();
+}
+function renderGameList(d){
+  const st=$('gmListState');
+  if(!st) return;
+  const nd=(d.domains||[]).length, ni=(d.ips||[]).length;
+  const lim=d.limits||{}, nb=(d.built_in||[]).length;
+  st.innerHTML='Вшито окончаний <b>'+nb+'</b>, добавлено хозяйским списком: доменов <b>'+nd+
+    '</b>, адресов и сетей <b>'+ni+'</b>; '
+    +(d.up?('туннель поднят, блоков в нём <b>'+(d.count||0)+'</b>'):'туннель не поднят')
+    +(lim.domains?(' (максимум '+lim.domains+' доменов, '+lim.ips+' адресов)'):'')+'.';
+}
+async function loadGameList(){
+  const st=$('gmListState');
+  if(!st) return;
+  try{
+    const d=await api('/api/game_manual');
+    const ta=$('gmText');
+    if(ta && document.activeElement!==ta) ta.value=(d.domains||[]).concat(d.ips||[]).join('\n');
+    renderGameList(d);
+  }
+  catch(e){ st.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
+}
+async function saveGameList(){
+  const m=$('gmMsg'), ta=$('gmText'), b=$('gmListBtn');
+  if(!ta) return;
+  const body={domains:[], ips:[]};
+  for(const s of ta.value.split('\n').map(x=>x.trim()).filter(Boolean)){
+    if(/^[0-9.]+(\/[0-9]+)?$/.test(s) || s.indexOf(':')>=0 || /^[0-9a-f:.]+\/[0-9]+$/.test(s)) body.ips.push(s);
+    else body.domains.push(s);
+  }
+  if(m){ m.textContent='сохраняю и применяю…'; m.className='msg'; }
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/game_manual',{method:'POST',body:JSON.stringify(body)});
+    renderGameList(d);
+    if(m){ m.textContent=(body.domains.length||body.ips.length)?'список сохранён — смотритель сделал шаг сразу, подобранные адреса догонят на ближайшей мере':'список пуст — остались вшитые окончания игры'; m.className='msg ok'; }
+    loadGameList();
+    loadGame();
+  }catch(e){ if(m){ m.textContent='не получилось: '+String(e).slice(0,160); m.className='msg err'; } }
+  if(b) b.disabled=false;
+}
+
 function renderWarpManual(d){
   const st=$('wmState');
   if(!st) return;
@@ -9077,7 +9204,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
     // возврата из фона пользователь терял вкладку (reload с дефолтного VPN)
     try{sessionStorage.setItem('veil_tab',b.dataset.tab)}catch(e){}
     if(window.scrollY>0){try{window.scrollTo({top:0,left:0,behavior:'instant'})}catch(e2){window.scrollTo(0,0)}}
-    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadGemini();loadFrontPanel();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
+    if(b.dataset.tab==='settings'){autoCheckForUpdate();loadRotate();if(window.veilSweep)veilSweep();loadSched();loadTikTok();loadYouTube();loadGame();loadGameList();loadGemini();loadFrontPanel();loadIpRegion();loadTorrent();loadBypass();loadWarpManual();if(window.veilAjax)veilAjax();}
       if(b.dataset.tab==='subscription')loadSub();
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
@@ -9488,7 +9615,7 @@ function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('С�
 
 var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
 var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
-var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setGemini:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
+var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setGame:"settings",setGemini:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
 function readPerms(pre){var o={};PERM_DEFS.forEach(function(d){var e=document.getElementById(pre+'_'+d[0]);o[d[0]]=!!(e&&e.checked)});return o}
