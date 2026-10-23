@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.26"
+VERSION = "2.17.27"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -16107,6 +16107,8 @@ _TW_UA = "wireguard-go-rs"
 _TW_RES_TTL = 300.0      # с какой частотой перерезолвливаем адреса (тик — около минуты)
 _TW_PROBE_TTL = 300.0    # с какой частотой спрашиваем «что видит TikTok» вне явной проверки
 _TW_PROBE_FRESH = 20.0   # пока через поднятое звено ответа нет — мерим чаще (см. `_tw_probe`)
+_TW_STALL = 300.0        # порог молчания: живое ядро перерукпожимается само не позже 120 с
+_TW_GRACE = 240.0        # облако отвечает на новый ключ не сразу: до первого рукопожатия не судим
 _TW_BYPASS_PRIO = 190    # ниже нашего базового: помеченный трафик обходит таблицу 204
 _TW_BYPASS_MARK = 45     # 0x2d — метка сокета для щупа «напрямую»
 _TW_MIG_OLD = "/var/lib/tiktok-warp/reg.json"  # аккаунт заплаты, дело передаём файлом
@@ -16116,6 +16118,7 @@ _TW_ERR = ""
 _TW_ROTATE = 0.0
 _TW_RES_AT = 0.0
 _TW_PROBE_AT = 0.0
+_TW_BUILT_AT = 0.0       # когда связь поднимали в последний раз: до `_TW_GRACE` молчание не судим
 _TW_MIG_DONE = False
 # 25 доменов заплаты: по ним телефон живьём получает пул Akamai и ByteDance
 _TW_DOMAINS = (
@@ -16606,14 +16609,15 @@ def _tw_link_up(reg, nets, dev=None, keep=None, mtu=None, tbl=None,
                     mark=mark, bprio=bprio)
 
 
-def _tw_handshake_age(dev=None):
-    """Сколько секунд назад было последнее рукопожатие (или нет, если звена нет).
+def _tw_handshake_ts(dev=None):
+    """Метка последнего рукопожатия часами ядра; `0` — облако не ответило ни разу.
 
-    Единочное число в `wg show` облако не принимает — требуется `latest-handshakes`."""
+    `-1` — спросить не удалось (звена нет или `wg` отказал): это НЕ «ни разу», а
+    «не измерено», и судить по такому числу нельзя."""
     rc, out, _ = _tw_cmd("wg", "show", _TW_IF if dev is None else dev,
                          "latest-handshakes")
     if rc != 0:
-        return None
+        return -1
     ts = 0
     for line in out.splitlines():
         parts = line.split()
@@ -16623,7 +16627,17 @@ def _tw_handshake_age(dev=None):
             ts = max(ts, int(parts[-1]))
         except ValueError:
             continue
-    return int(max(0, time.time() - ts)) if ts > 0 else None
+    return ts
+
+
+def _tw_handshake_age(dev=None):
+    """Сколько секунд назад было последнее рукопожатие (или нет, если звена нет).
+
+    Единочное число в `wg show` облако не принимает — требуется `latest-handshakes`."""
+    ts = _tw_handshake_ts(dev)
+    if ts <= 0:
+        return None
+    return int(max(0, time.time() - ts))
 
 
 def _tw_carries(addr, dev=None):
@@ -16637,6 +16651,34 @@ def _tw_carries(addr, dev=None):
     if rc == 127 or "not found" in err:
         return True
     return rc == 0
+
+
+def _tw_rekey(dev=None, age_fn=None):
+    """Просим ядро перерукпожатиться, не трогая аккаунт: связь вниз и вверх.
+
+    Возвращает ВОЗРАСТ НОВОГО рукопожатия, если метка ядра сдвинулась, т.е. облако
+    ответил; `None` — метка стоит на месте, и только тогда разговор про молчание имеет
+    смысл. Судить одним возрастом нельзя: у звена, которое рукопожималось когда-то и
+    потом оглохло, `latest-handshakes` показывает ПРЕЖНЮЮ метку и растёт вечно, так что
+    оправдание «возраст же числится» сделало бы мёртвое звено бессмертным.
+
+    И это единственный живой признак смерти: `ping` до окончания игрового или медиа
+    списка молчит и при здоровом туннеле (замер 23.10 на бою сквозь живое `gmw0`,
+    которое в ту же минуту отдавало `HTTPS` с `404` за `0.32` с: `44.227.138.182` и
+    `44.227.138.1` не отвечают, `3.165.190.1` отвечал утром и замолчал вечером). Прежний
+    судья ровно на этом приговаривал живые звенья и расходовал по аккаунту `WARP` на
+    ровном месте."""
+    dev = _TW_IF if dev is None else dev
+    age = age_fn or (lambda: _tw_handshake_age(dev))
+    before = _tw_handshake_ts(dev)
+    _tw_cmd("ip", "link", "set", dev, "down")
+    time.sleep(1)
+    _tw_cmd("ip", "link", "set", dev, "up")
+    for _ in range(3):
+        time.sleep(3)
+        if _tw_handshake_ts(dev) > before:
+            return age()
+    return None
 
 
 def _tw_region(ip, direct):
@@ -16758,7 +16800,7 @@ def _tw_tick():
     наше; чужую таблицу заплаты в выключенном виде не трогаем); с желанием — сначала
     принять дело у заплаты, потом аккаунт, адреса, звено; молчание — приговор аккаунту
     по образцу `_mr_tick`; пустой резолв живое звено не ломает."""
-    global _TW_ERR, _TW_RES_AT
+    global _TW_ERR, _TW_RES_AT, _TW_BUILT_AT
     if SBX:
         return
     st = _load(_TW_STATE, {}) or {}
@@ -16825,17 +16867,29 @@ def _tw_tick():
     if rebuilt:
         err = _tw_link_up(reg, nets)
         age = _tw_handshake_age()
+        _TW_BUILT_AT = now
     else:
         err = _tw_sync(nets, reg)
     tgt = _tw_covered_ip(ips, nets) or ("71.18.85.9" if tik else "")
-    if err == "" and (age is None or age > 4 * int(_TW_KEEP)) and not _tw_carries(tgt):
-        # молчание судим пакетом, а не отсутствием рукопожатия: `wg` шлёт инициацию
-        # только когда появится трафик или сторожевой пакет
-        _tw_flush_rules()
-        _tw_bypass_del()
-        _tw_cmd("ip", "link", "del", _TW_IF)
-        err, age = "звено молчит: до облака нет ответа", None
-        err = _tw_retire(err)
+    if err == "" and (age is None or age > _TW_STALL):
+        # Молчание судит НЕ `ping` до окончания списка: адреса Akamai, CloudFront и AWS
+        # отвечают на ICMP выборочно (замер 23.10 на бою сквозь живое звено, которое в
+        # ту же минуту отдавало обычный `HTTPS`: `44.227.138.182` молчит, `3.165.190.1`
+        # отвечал утром и замолчал вечером). Прежний судья ровно на этом приговаривал
+        # живое звено и снимал аккаунт (#509 убрал тот же судью у `gmw0`: боевой
+        # `reg.json` переписывался каждые ~20 минут). Живое доказательство — ответ
+        # облака на перерукпожатие того же ключа; пакет до конца списка остаётся
+        # последней подсказкой, когда и перерукпожатие не ответило.
+        if age is None and now - _TW_BUILT_AT < _TW_GRACE:
+            err = "ждём ответ облака: рукопожатия ещё нет"
+        else:
+            age = _tw_rekey()
+            if age is None and not (tgt and _tw_carries(tgt)):
+                _tw_flush_rules()
+                _tw_bypass_del()
+                _tw_cmd("ip", "link", "del", _TW_IF)
+                err = _tw_retire("звено молчит: облако не принял перерукпожатие")
+                age = None
     _TW_ERR = err
     up = (err == "")
     st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
@@ -17392,6 +17446,8 @@ _YW_SEEN = _YW_DIR + "/seen.json"
 _YW_STATE = _YW_DIR + "/state.json"
 _YW_MTU = "1280"
 _YW_KEEP = "25"
+_YW_STALL = 300.0         # порог молчания: живое ядро перерукпожимается само не позже 120 с
+_YW_GRACE = 240.0         # облако отвечает на новый ключ не сразу: до первого рукопожатия не судим
 _YW_ROT = 900.0           # как часто меняем молчаливый аккаунт: облако считает `POST /reg`
 _YW_RES_TTL = 300.0
 _YW_PROBE_TTL = 300.0    # с какой частотой спрашиваем «что видит Google» вне явной проверки
@@ -17413,6 +17469,7 @@ _YW_ERR = ""
 _YW_ROTATE = 0.0
 _YW_RES_AT = 0.0
 _YW_PROBE_AT = 0.0
+_YW_BUILT_AT = 0.0        # когда связь поднимали в последний раз: до `_YW_GRACE` молчание не судим
 
 
 def _yw_want():
@@ -17568,7 +17625,7 @@ def _yw_tick():
     Без желания оператора — снять ТОЛЬКО своё; с желанием — аккаунт, адреса, звено.
     Молчание судим пакетом, а не отсутствием рукопожатия, и приговор аккаунту —
     по своему счётчику. Пустой резолв живое звено не ломает."""
-    global _YW_ERR, _YW_RES_AT
+    global _YW_ERR, _YW_RES_AT, _YW_BUILT_AT
     if SBX:
         return
     st = _load(_YW_STATE, {}) or {}
@@ -17614,21 +17671,30 @@ def _yw_tick():
     nets = _yw_blocks(ips)
     rc, _, _ = _tw_cmd("ip", "link", "show", _YW_IF)
     age = _yw_handshake_age()
-    if rc != 0 or not _yw_link_ready(nets):
+    rebuilt = (rc != 0 or not _yw_link_ready(nets))
+    if rebuilt:
         err = _yw_link_up(reg, nets)
         age = _yw_handshake_age()
+        _YW_BUILT_AT = now
     else:
         err = _yw_sync(nets, reg)
     tgt = _tw_covered_ip(ips, nets)
-    # молчание судим только против адреса, который обязан идти через туннель:
-    # без такого адреса пакет никуда не шлём, а «нет ответа» был бы выдумкой
-    if err == "" and tgt and (age is None or age > 4 * int(_YW_KEEP)) and \
-            not _tw_carries(tgt, _YW_IF):
-        _yw_flush_rules()
-        _tw_bypass_del(_YW_BYPASS_MARK)
-        _tw_cmd("ip", "link", "del", _YW_IF)
-        err, age = "звено молчит: до облака нет ответа", None
-        err = _yw_retire(err)
+    if err == "" and (age is None or age > _YW_STALL):
+        # Молчание судит НЕ `ping` до окончания: Google и CloudFront отвечают на ICMP
+        # выборочно, и живой прогон 23.10 на бою показал звено, которое отдавало обычный
+        # `HTTPS` за `0.32` с и одновременно молчало на пакет до своего же конца списка.
+        # Тот же камень #509 у `gmw0` расходовал по аккаунту `WARP` каждые ~20 минут.
+        # Живое доказательство — ответ облака на перерукпожатие того же ключа.
+        if age is None and now - _YW_BUILT_AT < _YW_GRACE:
+            err = "ждём ответ облака: рукопожатия ещё нет"
+        else:
+            age = _tw_rekey(_YW_IF, _yw_handshake_age)
+            if age is None and not (tgt and _tw_carries(tgt, _YW_IF)):
+                _yw_flush_rules()
+                _tw_bypass_del(_YW_BYPASS_MARK)
+                _tw_cmd("ip", "link", "del", _YW_IF)
+                err = _yw_retire("звено молчит: облако не принял перерукпожатие")
+                age = None
     _YW_ERR = err
     up = (err == "")
     st.update({"enabled": True, "up": up, "count": len(nets) if up else 0,
@@ -17926,19 +17992,8 @@ def _gm_tunnel_region(reg, feed, nets):
 
 
 def _gm_rekey():
-    """Просим ядро перерукпожатиться, не трогая аккаунт: связь вниз и вверх.
-
-    Возвращает возраст рукопожатия; `None` — если облако на поднятую связь не ответил,
-    и только тогда разговор про молчание имеет смысл."""
-    _tw_cmd("ip", "link", "set", _GM_IF, "down")
-    time.sleep(1)
-    _tw_cmd("ip", "link", "set", _GM_IF, "up")
-    for _ in range(3):
-        time.sleep(3)
-        age = _gm_handshake_age()
-        if age is not None and age <= int(_GM_KEEP):
-            return age
-    return _gm_handshake_age()
+    """Перерукпожатие звена игры: то же тело, что у соседей (#510 — механика одна)."""
+    return _tw_rekey(_GM_IF, _gm_handshake_age)
 
 
 def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
