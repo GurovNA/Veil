@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.25"
+VERSION = "2.17.26"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -17949,7 +17949,13 @@ def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
     `game.brawlstarsgame.com:9339` по 2-4 раза в минуту, вошедший держит одно и
     переподключается редко. Единственный судья, который мерит факт для подписчика, а
     не догадку о чужом гейте. Читается только хвост журнала: `_device_tick` остаётся
-    владельцем смещения и `.pos`-файла, мы здесь ничего не пишем."""
+    владельцем смещения и `.pos`-файла, мы здесь ничего не пишем.
+
+    Строка живого журнала выглядит так (боевой замер 23.10): `2026/10/23 13:08:25.853512
+    from <адрес подписчика> accepted tcp:game.brawlstarsgame.com:9339 [vless-xhttp-tls
+    >> direct] email: <uuid>`. Дату разбирает `_acc_ts` — единственный владелец формата:
+    боевой `Xray` пишет слэшами, дефисная форма встречается у старых сборок, и своя
+    вторая читалка на этом молча теряла весь журнал («не открывали» при живых строках)."""
     host = host or (_GM_DOMAINS[0] if _GM_DOMAINS else "")
     port = str(port or _GM_LOGIN_PORT)
     needle = "tcp:%s:%s" % (host, port)
@@ -17967,9 +17973,8 @@ def _gm_login_loop(host=None, port=None, minutes=_GM_LOOP_MIN, tail=None):
     for line in str(tail).splitlines():
         if needle not in line:
             continue
-        try:
-            t = time.mktime(time.strptime(line[:19], "%Y-%m-%d %H:%M:%S"))
-        except ValueError:
+        t = _acc_ts(line)
+        if not t:
             continue
         if now - t > minutes * 60:
             continue
