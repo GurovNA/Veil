@@ -44,7 +44,19 @@ NAMED = (
      ("64.233.0.0/16", "74.125.0.0/16", "108.177.0.0/16", "142.250.0.0/15",
       "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "192.178.0.0/16",
       "209.85.0.0/16", "216.58.0.0/16")),
+    ("сети Amazon (`EC2` и `CloudFront`)",
+     "пункты пробы, названные в журнале как наблюдаемые: окончание игры и фронт "
+     "`CloudFront`, по которым меряли выборочность `ICMP` и затягивание /24",
+     ("44.227.138.0/24", "3.165.190.0/24", "18.64.211.0/24")),
+    ("сеть Akamai",
+     "покрытый адрес окна «TikTok»: к нему TCP устанавливается сквозь звено, и журнал "
+     "называет это числом",
+     ("184.86.251.0/24",)),
 )
+
+# Слово, после которого адрес перестаёт быть чужим: адрес своей коробки нельзя
+# зарегистрировать в чужом реестре, он обязан исчезнуть из дерева (#538).
+OURS_WORDS = ("наш", "наших", "бэк", "коробк", "стенд", "moscow", "aeza", "myproxyru")
 
 DOC_NETS = tuple(ipaddress.ip_network(n) for n in
                  ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32"))
@@ -98,6 +110,14 @@ class TestNoRoutableAddresses(unittest.TestCase):
             if ip is not None and not ip.is_multicast and named_by(ip) is None:
                 bad.append("%s:%d" % (os.path.relpath(f, ROOT), lineno))
         self.assertEqual(bad, [], "не названные адреса хостов в дереве: %s"
+                         % ", ".join(bad))
+
+    def test_named_list_cannot_register_our_own_hosts(self):
+        """Реестр чужих сетей не вправе приютить наш адрес: такое название и есть
+        обход прибора, поэтому оно красное."""
+        bad = ["%s · %s" % (label, net) for label, reason, net in NAMED_NETS
+               if any(w in (label + " " + reason).lower() for w in OURS_WORDS)]
+        self.assertEqual(bad, [], "в чужой реестр записан адрес нашей инфраструктуры: %s"
                          % ", ".join(bad))
 
     def test_named_list_has_no_dead_entries(self):

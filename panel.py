@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.29"
+VERSION = "2.17.30"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1937,6 +1937,15 @@ def _gen_keys():
 # нарочно: `systemctl start wg-quick@sbx-veilwg` обязан провалиться, а не поднять
 # живой туннель. Обычный запуск панели переменную не задаёт — пути те же, что и были.
 SBX = (os.environ.get("VEIL_SYS_SANDBOX") or "").strip()
+# #532: эталон НАСТОЯЩЕЙ двери и слово её объявления. Прибор, который честно
+# подменил транспорт, обязан сказать и слово: иначе замок #502 глушит и его. См. `_cf_api`.
+_REAL_URLOPEN = urllib.request.urlopen
+_CF_DOOR_DECLARED = False
+# #533: намерие #529 названо словом, а не литералом. Верхнеуровневый `if` с `__main__`
+# в тесте обязан быть в файле ОДИН: приборы ищут блок старта первым таким `if`
+# (`aa1`, `cc11`, `z1`), и второй страж — хоть и правильный по смыслу — уводил их в
+# список пусков потоков. См. зубец `E0` в `aa1_single_instance_test.py`.
+_PANEL_IS_MAIN = (__name__ == "__main__")
 
 AWG_IFACE = "sbx-awg0" if SBX else "awg0"
 AWG_CONF = os.path.join(SBX or "/etc/amnezia/amneziawg", "awg0.conf")
@@ -17749,7 +17758,7 @@ def _yw_view():
 # Слово хозяина 23.10: «игра `brawl stars` почему то определяет как россия и не
 # работает, разберись и почини». Мерено на боевом: обращение игры к входу
 # (`game.brawlstarsgame.com:9339`) шло напрямую и уходило с узла адресом
-# `62.60.245.204`, который читается Нидерландами пятью независимыми фидами, включая
+# наружного интерфейса, который читается Нидерландами пятью независимыми фидами, включая
 # собственное ребро Cloudflare (`loc=NL`, `colo=FRA`). Страна не была Россией — вход
 # всё равно запрещался. Как только игровые окончания легли в окно TikTok (#388), вход
 # прошёл: гейт издателя судит НЕ страну, а ПРИРОДУ выхода — датацентр против
@@ -23334,7 +23343,7 @@ def _tg_wd_view():
 # импортировавший панель прибор получал живые нити в своём процессе, а пути
 # `config.json`, `audit.json` и `state.json` песочница не переселяет — нити писали
 # боевые файлы. Так стиратель #309 и свернул живой конфиг до двух ключей.
-if not SBX:
+if not SBX and _PANEL_IS_MAIN:
     threading.Thread(target=_tg_web_guard_loop, daemon=True).start()
     threading.Thread(target=_tg_wd_loop, daemon=True).start()
 
@@ -24205,6 +24214,25 @@ def _hop_suggest_udp_ports():
                     ports.append(p)
         except Exception:
             pass
+    # #530: `hysteria2` живёт в состоянии, а не в туннельном конфиге, и прежний обход
+    # двух файлов его не видел. Со сказанным словом ссылка hy2 уезжает на фронт, а
+    # релей её не несёт — вход пропадает у живых подписчиков. Протоколы берём те же,
+    # что считает UDP манифест портов (`panel.py:34323`).
+    try:
+        st = _load(STATE) or {}
+        for proto, ib in (st.get("inbounds") or {}).items():
+            if not isinstance(ib, dict) or ib.get("disabled"):
+                continue
+            if str(proto).lower() not in ("wireguard", "hysteria2", "amneziawg"):
+                continue
+            try:
+                p = int(ib.get("port"))
+            except Exception:
+                continue
+            if p not in ports and p != _hop_tun_port():
+                ports.append(p)
+    except Exception:
+        pass
     return sorted(ports)[:_HOP_MAX_PORTS]
 
 # Прыжок: адресный пул туннеля фронт<->бэк. 10.30.0.0/28 занят им целиком и не
@@ -24429,8 +24457,9 @@ for p in __PORTS_SP__; do
   fi
 done
 for p in __UDP_SP__ __WG_IN__; do
-  if ss -H -lun 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]$p$"; then
-    busy="${busy:+$busy, }udp:$p"
+  if ss -H -lun 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$p$"; then
+    owner=$(ss -H -lunp "sport = :$p" 2>/dev/null | grep -oE '\\("[a-zA-Z0-9_.-]+' | head -1 | tr -d '("')
+    busy="${busy:+$busy, }udp:$p${owner:+ ($owner)}"
   fi
 done
 if [ -n "$busy" ]; then
@@ -24606,7 +24635,15 @@ def _hop_back_tunnel_write(hops):
     except Exception:
         old = ""
     if old == text:
-        _HOP_TUN_STATE["ok"] = True
+        up, why = _hop_back_tunnel_verify()
+        if up is False:
+            # Конфиг совпал байт в байт, а интерфейса у ядра нет (его сняли руками,
+            # он упал, его перестала держать служба). Молчаливое «ok» на снятом
+            # туннеле — это ровно «рель не стучит, панель спокойна» (#523).
+            _hop_back_tunnel_restart()
+            return False
+        _HOP_TUN_STATE["ok"] = True if up else None
+        _HOP_TUN_STATE["error"] = "" if up else why
         return False
     fd = os.open(HOP_TUN_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -24615,6 +24652,33 @@ def _hop_back_tunnel_write(hops):
         os.fsync(f.fileno())
     _hop_back_tunnel_restart()
     return True
+
+
+def _hop_back_tunnel_verify():
+    """Поднят ли туннель бэка СВОЕЙ парой — спросив у ядра, а не по коду возврата.
+    `(True, "")` только когда `awg show` назвал интерфейс и его ключ совпал с
+    парой из `hop_tunnel.json`; `(False, почему)` — интерфейс не виден или его
+    ведёт чужая пара; `(None, почему)` — спросить нечем, и это не чистота (#523)."""
+    if SBX:
+        return (None, "песочница: живой туннель не трогаем")
+    up, key = _hop_tun_live_pair()
+    if up is None:
+        return (None, "поднятость туннеля %s не прочитана: на бэке нет `awg` "
+                     "или `awg show` не вернулось" % HOP_TUN_IF)
+    if not up:
+        return (False, "туннель %s не поднят: `awg show` его не видит" % HOP_TUN_IF)
+    if not key:
+        return (False, "туннель %s поднят, но его публичный ключ не прочитан"
+                      % HOP_TUN_IF)
+    own = ""
+    try:
+        own = str(_hop_tunnel_keys().get("public") or "")
+    except Exception:
+        own = ""
+    if own and key != own:
+        return (False, "туннель %s поднят чужой парой ключей (%s…), а панель держит "
+                       "%s…" % (HOP_TUN_IF, key[:12], own[:12]))
+    return (True, "")
 
 
 def _hop_back_tunnel_restart():
@@ -24644,8 +24708,12 @@ def _hop_back_tunnel_restart():
                                        or "restart вернул ненулевой код")
             print("[hop-tunnel] restart err: " + _HOP_TUN_STATE["error"], flush=True)
         else:
-            _HOP_TUN_STATE["ok"] = True
-            _HOP_TUN_STATE["error"] = ""
+            up, why = _hop_back_tunnel_verify()
+            _HOP_TUN_STATE["ok"] = True if up else up
+            _HOP_TUN_STATE["error"] = "" if up else why
+            if up is not True:
+                print("[hop-tunnel] restart вернул 0, туннель не подтверждён: "
+                      + str(why), flush=True)
     except Exception as e:
         _HOP_TUN_STATE["ok"] = False
         _HOP_TUN_STATE["error"] = str(e)[:200]
@@ -24714,7 +24782,168 @@ def _hop_find_tok(tok):
             return h
     return None
 
-def _hop_preview(front_ip, ports, udp_ports=None):
+def _hop_addr_dump():
+    """Сырой вывод `ip -o addr list`; `None` — если команда не вернулась.
+
+    Отдельная функция затем, что приборы мерят РАЗБОР настоящих строк, а не живую
+    машину: подставив сюда текст, нога получает тот же код, что идёт на бою."""
+    try:
+        r = subprocess.run(["ip", "-o", "addr", "list"], capture_output=True,
+                           text=True, timeout=8, stdin=subprocess.DEVNULL)
+    except Exception:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _hop_udp_dump():
+    """Сырой вывод `ss -lunp`; `None` — если команда не вернулась. Тот же шов,
+    что у `_hop_addr_dump`."""
+    try:
+        r = subprocess.run(["ss", "-lunp"], capture_output=True, text=True,
+                           timeout=8, stdin=subprocess.DEVNULL)
+    except Exception:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _hop_tun_live_pair():
+    """(поднят ли туннель прыжка, его публичный ключ). Ключ спрашивается У ЯДРА,
+    а не у конфига: снятый конфиг может лежать с прежней парой.
+    `None` в первой позиции — спросить нечем, и это не бывает чистотой."""
+    if not shutil.which("awg"):
+        return (None, "")
+    try:
+        r = subprocess.run(["awg", "show", HOP_TUN_IF], capture_output=True,
+                           text=True, timeout=8, stdin=subprocess.DEVNULL)
+    except Exception:
+        return (None, "")
+    if r.returncode:
+        return (False, "")
+    m = re.search(r"^\s*public key:\s*(\S+)", r.stdout or "", re.M)
+    return (True, m.group(1) if m else "")
+
+
+def _hop_port_squatters(port):
+    """Имена туннельных интерфейсов ЭТОГО бэка, чей `ListenPort` равен `port`.
+    Читается каталог конфигов, а не список процессов: сокет, который держит ядро
+    туннеля, в `ss` идёт без имени процесса (замер 24.10 на дев-коробке)."""
+    got = []
+    dirs = set()
+    for f in (HOP_TUN_CONF, AWG_CONF, WG_CONF):
+        d = os.path.dirname(f)
+        if d:
+            dirs.add(d)
+    for d in sorted(dirs):
+        try:
+            names = sorted(os.listdir(d))
+        except Exception:
+            continue
+        for n in names:
+            if not n.endswith(".conf"):
+                continue
+            stem = n[:-5]
+            if stem in (HOP_TUN_IF, HOP_TUN_IF.replace("sbx-", "")):
+                continue
+            try:
+                text = open(os.path.join(d, n), encoding="utf-8",
+                            errors="ignore").read()
+            except Exception:
+                continue
+            m = re.search(r"(?mi)^\s*ListenPort\s*=\s*(\d+)", text)
+            if m and int(m.group(1)) == port and stem not in got:
+                got.append(stem)
+    return got
+
+
+def _hop_preflight_clashes():
+    """Что на ЭТОМ бэке мешает поднять туннель прыжка (#518).
+
+    До этой меры префлайт знал только про адреса и порты из формы оператора, а
+    прыжок рвался молча тремя способами, которые форма не видит:
+      * UDP-порт туннеля уже слушается — ядро не поднимет второго слушателя на
+        одном порту, `awg-quick@` вернёт ненулевой код, а карточка фронта так и
+        останется «ожидает»;
+      * адрес из пула туннеля держит чужой интерфейс — туннель встанет поверх
+        занятого адреса, и путь фронта уедет не туда;
+      * интерфейс туннеля уже поднят чужой парой ключей — фронт будет стучаться
+        не в ту панель.
+    Мера названа числом на этой дев-коробке: `awgh0` держит и `ListenPort = 28450`
+    (= `HOP_TUN_PORT_DEFAULT`), и `10.30.0.1/29` — ровно адрес бэка из пула.
+    Непрочитанное краснит и называется непрочитанным: чего префлайт не видит,
+    то он и не защищает."""
+    out = []
+    port = _hop_tun_port()
+    addrs = _hop_addr_dump()
+    if addrs is None:
+        return ["адреса этой машины не прочитаны (`ip -o addr list` не вернулось) "
+                "— префлайт не ставит прыжок там, чего он не видит"]
+    held, ours_up = [], False
+    for line in addrs.splitlines():
+        m = re.match(r"^\d+:\s+(\S+?)(?:@\S+)?\s", line)
+        if not m:
+            continue
+        iface = m.group(1)
+        for a in re.findall(r"\binet6?\s+([0-9a-fA-F:.]+)", line):
+            try:
+                ip = ipaddress.ip_address(a)
+            except ValueError:
+                continue
+            if ip in HOP_TUN_NET:
+                held.append((iface, a))
+                if iface == HOP_TUN_IF:
+                    ours_up = True
+    foreign = [(i, a) for i, a in held if i != HOP_TUN_IF]
+    if foreign:
+        out.append("адрес из пула туннеля %s держит чужой интерфейс: %s — туннель "
+                   "прыжка встанет поверх занятого адреса"
+                   % (HOP_TUN_NET, ", ".join("%s (%s)" % t for t in foreign)))
+    who = _hop_port_squatters(port)
+    if who:
+        out.append("UDP-порт туннеля прыжка %d уже назначен интерфейсу: %s — два "
+                   "слушателя на одном порту ядро не поднимет"
+                   % (port, ", ".join(who)))
+    else:
+        raw = _hop_udp_dump()
+        if raw is None:
+            out.append("UDP-слушатели не прочитаны (`ss -lunp` не вернулось) — "
+                       "занятость порта %d не измерена" % port)
+        else:
+            live = []
+            for line in raw.splitlines():
+                cols = line.split()
+                if len(cols) < 4 or cols[0] in ("Netid", "State"):
+                    continue
+                if not cols[3].endswith(":%d" % port):
+                    continue
+                p = re.search(r'"([^"]+)"', line)
+                who_name = p.group(1) if p else "без имени процесса"
+                # Сокет туннеля ядро держит само и процесса в строке не называет:
+                # если туннель прыжка поднят, безымянный слушатель — это ОН.
+                if ours_up and who_name == "без имени процесса":
+                    continue
+                live.append((cols[3], who_name))
+            if live:
+                out.append("на UDP-порту туннеля %d уже есть слушатель: %s — "
+                           "туннель прыжка его не держит"
+                           % (port, ", ".join("%s · %s" % t for t in live)))
+    up, key = _hop_tun_live_pair()
+    own = (_load(_HOP_TUN_FILE, {}) or {}).get("public") or ""
+    if up is None:
+        out.append("ключ поднятого туннеля не прочитан (на бэке нет `awg`) — чем "
+                   "занят %s, неизмерено" % HOP_TUN_IF)
+    elif up:
+        if not key:
+            out.append("туннель %s поднят, но его ключ не прочитан — префлайт не "
+                       "гадает, чужой он или свой" % HOP_TUN_IF)
+        elif key != own:
+            out.append("туннель %s поднят чужой парой ключей (%s), а панель держит %s "
+                       "— снять чужой интерфейс панель не может"
+                       % (HOP_TUN_IF, (key[:12] + "…") if key else "—",
+                          ("свою " + own[:12] + "…") if own else "ещё не созданную пару"))
+    return out
+
+
+def _hop_preview(front_ip, ports, udp_ports=None, with_dns=False):
     front_ip = (front_ip or "").strip()
     ports = [x for x in re.split(r"[,\s]+", str(ports or "").strip()) if x] if isinstance(ports, str) else list(ports or [])
     udp_ports = ([x for x in re.split(r"[,\s]+", str(udp_ports or "").strip()) if x]
@@ -24737,10 +24966,17 @@ def _hop_preview(front_ip, ports, udp_ports=None):
     if set(pl) & set(ul):
         blockers.append("порт не может быть одновременно в TCP и в UDP-списке: "
                         "%s" % ", ".join(map(str, sorted(set(pl) & set(ul)))))
+    tun = _hop_tun_port()
+    if tun in pl or tun in ul:
+        blockers.append("порт туннеля прыжка %d в списке релея — так релей ложится "
+                        "на тот самый UDP, которым фронт держит стук с бэком, и "
+                        "прыжок закрывает себя сам; подсказка портов его снимает "
+                        "именно поэтому" % tun)
     if not _hop_is_ip4(back or ""):
         blockers.append("не удаётся определить публичный IPv4 этого сервера (БЭКа)")
     elif front_ip and front_ip == back:
         blockers.append("адрес ФРОНТа совпадает с этим сервером — бэк не может релеежить сам себя")
+    blockers += _hop_preflight_clashes()
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
     if 22 in pl:
         blockers.append("порт 22 не релееят — отключи SSH фронта от бэка")
@@ -24751,9 +24987,19 @@ def _hop_preview(front_ip, ports, udp_ports=None):
             "службу и правила."
             % (", ".join(map(str, pl)) or "—", ", ".join(map(str, ul)) or "—",
                back or "?"))
-    return {"front_ip": front_ip, "ports": pl, "udp_ports": ul, "back_ip": back,
-            "blockers": blockers, "can_apply": not blockers,
-            "panel_port": panel_port, "note": note}
+    out = {"front_ip": front_ip, "ports": pl, "udp_ports": ul, "back_ip": back,
+           "blockers": blockers, "can_apply": not blockers,
+           "panel_port": panel_port, "note": note}
+    if with_dns:
+        # Числа зоны спрашиваются ОТДЕЛЬНЫМ словом (`with_dns`) и НИЧЕГО не
+        # блокируют (#502): префлайт решает форму релея, а кто владеет A-записью
+        # имени — вопрос к DNS-шагу слова, не к списку портов.
+        out["dns"] = (_cf_a_state(front_ip) if _hop_is_ip4(front_ip) else
+                      {"readable": False, "why": "слово — домен, а не адрес", "target": "",
+                       "names": [], "offenders": [],
+                       "note": "DNS: слово «%s» — домен, его записи ведёт владелец зоны"
+                               % front_ip})
+    return out
 
 def _hop_add(name, front_ip, ports, udp_ports=None):
     pv = _hop_preview(front_ip, ports, udp_ports)
@@ -25402,6 +25648,73 @@ def _hop_remove(hid, confirm=False):
     _audit("hop_remove", id=hid, front_ip=h.get("front_ip"))
     return {"ok": True, "note": note}
 
+def _hop_dns_front_entry(front_ip):
+    """Релеит ли фронт `front_ip` хотя бы один вход панели: `:443` (nginx) или
+    `panel_port`. Перевод имён ссылки на фронт без общего с ним порта отрезает
+    оператору собственную панель: A-запись у панели и у подписчика ОДНА, и по
+    этому имени приходят оба. -> (релеит, словами о непрошенном входе)."""
+    panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
+    want = [443, panel_port]
+    ports = set()
+    for h in _hop_load():
+        if (h.get("front_ip") or "") != (front_ip or ""):
+            continue
+        for x in list(h.get("ports") or []):
+            try:
+                ports.add(int(x))
+            except Exception:
+                pass
+    have = [p for p in want if p in ports]
+    return (bool(have),
+            "" if have else "фронт %s не релеит ни :443, ни :%d" % (front_ip, panel_port))
+
+def _hop_dns_apply():
+    """Переставить имена ссылки туда, куда сказано словом прыжка, а без слова —
+    назад на бэк (#502). Слово — адрес фронта: имена ведут на него; слова нет:
+    имена возвращаются на адрес бэка; слово — домен: его DNS ведёт владелец зоны,
+    панель в него не лезет и говорит это вслух.
+    Ветки «записи нет в зоне» больше не исключение: `_cf_set_ip` заводит имя сам.
+    -> (сделано_или_трогать_нечего, ОДНА строка отчёта). Пустого отчёта тут не
+    бывает — отсутствие токена, отказ зоны, непрошеный фронтский порт и уже
+    актуальные записи названы словами, иначе оператор сказал слово, а перемены не
+    видит (урок #264). `не сделано` красит карточку, а не молчит. Замок общего
+    входа стоит здесь, правка записей — в `_cf_set_ip`."""
+    word = _hop_on()
+    if not word:
+        head = "прыжок выключен: "
+        tgt = _pub_ip4() or ""
+        if not tgt:
+            return (False, head + "адрес бэка не определён — A-записи НЕ проверены, "
+                                  "нужен ручной осмотр")
+    elif _hop_is_ip4(word):
+        head = "прыжок включён: "
+        tgt = word
+        ok, why = _hop_dns_front_entry(word)
+        if not ok:
+            return (False, head + "имена ссылок НЕ переведены на %s: %s — добавь порт входа "
+                                  "панели в релеи фронта и скажи слово снова" % (word, why))
+    else:
+        return (True, "прыжок включён: слово «%s» — домен, его записи ведёт владелец зоны; "
+                      "панель трогает только имена своей зоны" % word)
+    if not (CFG_CACHE.get("cf_token") or "").strip():
+        if not ((CFG_CACHE.get("cf_zone") or "").strip()
+                or (CFG_CACHE.get("panel_domain") or "").strip()):
+            return (True, head + "зоны Cloudflare у панели нет — имена ведёт оператор, "
+                                 "ссылки держатся на адресе %s" % tgt)
+        return (False, head + "токена Cloudflare нет — имена ссылок НЕ переведены на %s, "
+                              "а зона названа: подписчики могли остаться на старом адресе" % tgt)
+    try:
+        ch = _cf_set_ip(tgt)
+    except Exception as e:
+        return (False, head + "DNS-шаг ОТКАЗАЛ: %s — имена могли остаться на старом адресе, "
+                              "проверь зону" % str(e)[:160])
+    if not ch:
+        return (True, head + "имена ссылок уже смотрят на %s (ни одна запись не тронута)" % tgt)
+    made = sum(1 for c in ch if c.get("создана"))
+    return (True, head + ", ".join("%s %s→%s%s" % (c["name"], c["from"], c["to"],
+            " (запись заведена панелью)" if c.get("создана") else "") for c in ch)
+            + (" | заведено имён: %d" % made if made else ""))
+
 def _hop_set_public(host):
     host = (host or "").strip().lower()
     hops = _hop_load()
@@ -25433,10 +25746,15 @@ def _hop_set_public(host):
     _cfg_save()
     _hop_front_flush()
     _front_shield("слово публичного адреса ссылок")
-    _audit("hop_public_set", host=host or "(reset)")
-    return {"hop_public_host": host, "warn": "",
+    # DNS-шаг идёт ПОСЛЕ `_cfg_save`: `_hop_dns_apply` судит уже сказанное слово, а
+    # не то, что оператор только что набрал (#502). Отказ не отменяет слова — он
+    # называется в `warn`, чтобы карточка фронта краснела, а не врала зелёным.
+    dns_ok, dns_rep = _hop_dns_apply()
+    _audit("hop_public_set", host=host or "(reset)", dns=dns_rep, dns_ok=dns_ok)
+    return {"hop_public_host": host, "warn": ("" if dns_ok else dns_rep),
+            "dns": dns_rep, "dns_ok": dns_ok,
             "note": "ссылки подписок и прокси пересоберутся на новый адрес; подписчикам с Telegram "
-                    "панель отправит уведомление в течение минуты, на /p появится подсказка"}
+                    "панель отправит уведомление в течение минуты, на /p появится подсказка. " + dns_rep}
 
 def _hop_relink(hid):
     hops = _hop_load()
@@ -25467,8 +25785,13 @@ def _hop_public_view():
         beat = int(h.get("beat_ts") or 0)
         d["beat_age"] = (now - beat) if beat else None
         hops.append(d)
+    word = (CFG_CACHE.get("hop_public_host") or "").strip().lower()
     return {"hops": hops,
-            "hop_public_host": (CFG_CACHE.get("hop_public_host") or "").strip(),
+            "hop_public_host": word,
+            # `dns` — добавочное число карточки (#502): где сейчас лежат A-записи
+            # имён ссылки и кто их завёл. Пустым оно не бывает: не прочитано —
+            # названо причиной. Блокировать карточку оно не вправе.
+            "dns": _cf_a_state(word if _hop_is_ip4(word) else (_hop_back_ip() or "")),
             "back_ip": _hop_back_ip(),
             "tun": dict(_HOP_TUN_STATE), "tun_net": str(HOP_TUN_NET),
             "tun_back": HOP_TUN_BACK, "tun_port": _hop_tun_port(),
@@ -29844,7 +30167,7 @@ def _svc_loop():
         time.sleep(20)
 
 
-if not SBX:  # #309: нити присмотра живут только без песочницы харнесса
+if not SBX and _PANEL_IS_MAIN:  # #309: нити присмотра живут только у живой панели
     threading.Thread(target=_svc_loop, daemon=True).start()
 
 # ---------- telemt version / update / rollback ----------
@@ -30375,7 +30698,7 @@ def _dynv6_update(force4=None, force6=None):
             _cfg_save()
         if ip4 and _wg_auto_domain() == "wg." + host.lower():
             try:
-                _dynv6_ensure_wg(host, ip4)
+                _dynv6_ensure_wg(host, _hop_on() or ip4)
             except Exception as e:
                 _DDNS["wg_rec"] = "ошибка: " + str(e)[:120]
             else:
@@ -30667,6 +30990,17 @@ def _rot_pick_live(cfg, cur):
 
 
 def _cf_api(method, path, body=None):
+    # Живая дверь (#502). Прибор харнесса читает НАСТОЯЩИЙ `config.json` с рабочим
+    # токеном: без этого замка неосторожный офлайн-прогон уехал бы править боевую
+    # зону — ровно тем адресом, который он посадил в свой снапшот (TEST-NET).
+    # Читалка тоже заперта: прибор обязан объявить `_cf_api` сам, а не получить
+    # живые числа чужой зоны. Замок меряется числом обращений, а не обещанием.
+    # #532: двух слов. Одно объявление двери не открывает: если транспорт не подменён,
+    # путь ведёт ровно в живую зону — и замок обязан остаться глухим.
+    if SBX and (not _CF_DOOR_DECLARED or urllib.request.urlopen is _REAL_URLOPEN):
+        raise RuntimeError("песочница харнесса: живой Cloudflare не трогаем (%s %s) — "
+                           "прибор обязан объявить `_CF_DOOR_DECLARED` и подменить транспорт"
+                           % (method, path.split("?")[0]))
     tok = (CFG_CACHE.get("cf_token") or "").strip()
     if not tok:
         raise RuntimeError("не задан API-токен Cloudflare (Zone → DNS:Edit)")
@@ -30794,25 +31128,166 @@ def _cf_current_ip():
         return ""
 
 
+# Кто завёл A-запись, панель раньше не помнила и не умела (#502): ответ на «имени
+# нет в зоне» был `raise` — и смена IP, и слово прыжка в зоне, где имя ещё не
+# заводили, падали, оставляя подписчиков смотреть на снятый адрес. Теперь панель
+# имя ЗАВОДИТ (серое, ttl 60) и помнит, что оно её: реестр лежит в конфиге, а
+# природу записи при каждом чтении судит ЗОНА, а не реестр — реестр отвечает
+# только на вопрос «кто её завёл».
+CF_A_OWN = "cf_a_created"
+# Сколько секунд карточка фронта считает свежие числа зоны своими: каждое имя —
+# отдельный запрос, а карточка опрашивается часто.
+CF_A_STATE_TTL = 60
+_CF_A_STATE = {"at": 0, "target": "", "st": None}
+
+
+def _cf_a_owned():
+    """Реестр имён, A-запись которых завела панель: {имя: id записи}. Пустой —
+    панель в этой зоне ничего не заводила. Без id имя записано как `нет id`:
+    реестр обязан расти даже тогда, когда зона не вернула id, иначе имя потеряет
+    владельца и следующая правка посчитает свою запись чужой."""
+    raw = CFG_CACHE.get(CF_A_OWN) or {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _cf_a_remember(name, rec_id):
+    """Записать: A-запись имени `name` создана панелью. -> реестр после записи."""
+    own = _cf_a_owned()
+    own[name] = rec_id or "нет id"
+    CFG_CACHE[CF_A_OWN] = own
+    _cfg_save()
+    return own
+
+
+def _cf_a_ensure(name, ip, zid=None):
+    """A-запись имени обязана СУЩЕСТВОВАТЬ: лежит — отдаём как есть (её правит
+    вызывающий), нет — заводим СЕРУЮ (ttl 60, без облака) и помечаем своей.
+    Серая потому, что записью владеет панель: под оранжевым облаком имя отдавало
+    бы чужой край сети и прятало природу соединения, ради которого оно заведено.
+    -> (записи имени, заведена_ли только что)."""
+    if not zid:
+        zid, _ = _cf_zone()
+    res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
+                  (urllib.parse.quote(zid), urllib.parse.quote(name))) or []
+    if res:
+        return res, False
+    made = _cf_api("POST", "/zones/%s/dns_records" % urllib.parse.quote(zid),
+                   {"type": "A", "name": name, "content": ip, "ttl": 60, "proxied": False})
+    rec = made if isinstance(made, dict) else (made[0] if isinstance(made, list) and made else {})
+    _cf_a_remember(name, (rec or {}).get("id") or "")
+    return [rec or {"content": ip, "ttl": 60, "proxied": False}], True
+
+
+def _cf_a_state(target="", force=False):
+    """Что панель ВИДИТ в A-записях имён ссылки и что там должно лежать. Каждое
+    имя получает природу (`наша`/`чужая`), адрес и отметку `не там`; имени без
+    записи — `нет`; сорванного читателя — `не прочитано` с причиной, а не пустой
+    список: молчать хранитель не вправе (урок #264). Слово `note` живёт ЗДЕСЬ,
+    карточка фронта печатает его тем же словом, чтобы два лица одного факта не
+    расходились (тот же порядок, что у судьи игры в #513).
+    Карточка фронта опрашивается часто, а каждое имя — отдельный запрос к зоне,
+    поэтому чтение живёт `CF_A_STATE_TTL` секунд и просится заново по `force`.
+    -> {"readable", "why", "target", "names", "offenders", "note", "at", "fresh"}."""
+    now = int(time.time())
+    if (not force and _CF_A_STATE.get("st") is not None
+            and _CF_A_STATE.get("target") == (target or "").strip().lower()
+            and now - int(_CF_A_STATE.get("at") or 0) < CF_A_STATE_TTL):
+        hit = dict(_CF_A_STATE["st"])
+        hit.update(at=_CF_A_STATE["at"], fresh=False)
+        return hit
+    st = _cf_a_read(target)
+    _CF_A_STATE.update(at=now, target=(target or "").strip().lower(), st=st)
+    return dict(st, at=now, fresh=True)
+
+
+def _cf_a_read(target=""):
+    """Один честный заход в зону без кеша — тело `_cf_a_state`."""
+    target = (target or "").strip().lower()
+    st = {"readable": True, "why": "", "target": target, "names": [], "offenders": [], "note": ""}
+    if not (CFG_CACHE.get("cf_token") or "").strip():
+        st.update(readable=False, why="токен Cloudflare не задан — имена ссылок ведёт оператор")
+        st["note"] = "DNS: не прочитано: " + st["why"]
+        return st
+    try:
+        zid, zone = _cf_zone()
+        names = _cf_record_names()
+    except Exception as e:
+        st.update(readable=False, why=str(e)[:140])
+        st["note"] = "DNS: не прочитано: " + st["why"]
+        return st
+    own = _cf_a_owned()
+    for name in names:
+        item = {"name": name, "owned": name in own, "state": "", "content": "",
+                "proxied": False, "off": False, "why": "", "said": ""}
+        try:
+            res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
+                          (urllib.parse.quote(zid), urllib.parse.quote(name))) or []
+        except Exception as e:
+            item.update(state="не прочитано", off=True, why=str(e)[:140])
+            item["said"] = "не прочитано: " + item["why"]
+            st["readable"] = False
+            st["offenders"].append(name)
+            st["names"].append(item)
+            continue
+        if not res:
+            item.update(state="нет", off=True, said="записи нет")
+            st["offenders"].append(name)
+            st["names"].append(item)
+            continue
+        rec = res[0] if isinstance(res[0], dict) else {}
+        item["state"] = "наша" if name in own else "чужая"
+        item["content"] = (rec.get("content") or "").strip().lower()
+        item["proxied"] = bool(rec.get("proxied"))
+        item["multi"] = len(res) > 1
+        item["said"] = "%s %s%s" % (item["state"], item["content"],
+                                    " под облаком" if item["proxied"] else "")
+        if target and item["content"] != target:
+            item.update(off=True, said=item["said"] + ", а надо %s" % target)
+            st["offenders"].append(name)
+        st["names"].append(item)
+    bad = len(st["offenders"])
+    if not st["names"]:
+        st["note"] = "DNS: имён ссылки в зоне %s не названо — переводить нечего" % zone
+    elif bad:
+        st["note"] = "DNS: %d из %d имён не там, где надо (%s)" % (
+            bad, len(st["names"]), "; ".join(n["said"] for n in st["names"] if n["off"]))
+    else:
+        st["note"] = "DNS: %d имён ссылки смотрят на %s" % (len(st["names"]),
+                                                            target or "нужный адрес")
+    return st
+
+
 def _cf_set_ip(ip):
-    """Заменить content у всех настроенных A-записей. Вернуть список изменений.
+    """Переставить content у всех имён ссылки; имени, которого в зоне нет, запись
+    ЗАВОДИТСЯ серой (#502) — прежний ответ «A-запись не найдена» был исключением и
+    оставлял подписчиков смотреть на снятый адрес. Вернуть список изменений.
 
     Прыжок (#505, нога Р10): при сказанном ФРОНТЕ имена ссылок ставятся на АДРЕС
     ФРОНТА, а не на адрес машины ротации. Без этого первая же смена IP уводила
     подписчиков обратно на бэк — мимо фронтового щита (#507), то есть ровно под тот
     бан, от которого фронт и ставился. Бэк при этом не теряет пути: релей DNATит в
-    туннель, `wg`-эндпоинт (`_cf_ensure_wg`) по-прежнему ведётся адресом ротации, а
-    номер на выходе фронта — это то, что клиент видит в ссылке.
-    `почему` в отчёте — чтобы оператор читал число с причиной, а не голую стрелку."""
-    zid, zone = _cf_zone()
+    туннель. С #530 туда же едет и `wg`-эндпоинт (`_cf_ensure_wg`): прямая стуканка
+    в бэк на WireGuard светит ровно тем же баном, от которого фронт и ставился (#507),
+    а номер на выходе фронта — это то, что клиент видит в ссылке.
+    `почему` в отчёте — чтобы оператор читал число с причиной, а не голую стрелку.
+    Семейство одно: правятся и заводятся ТОЛЬКО A-записи, шестёрку ведёт
+    `_veil_cloudflare_step` (#499)."""
+    zid, _ = _cf_zone()
     front = _hop_on()
     tgt = front or ip
     changed = []
-    for name in _cf_record_names():
-        res = _cf_api("GET", "/zones/%s/dns_records?type=A&name=%s&per_page=5" %
-                      (urllib.parse.quote(zid), urllib.parse.quote(name))) or []
-        if not res:
-            raise RuntimeError("A-запись %s не найдена в зоне %s" % (name, zone))
+    names = _cf_record_names()
+    wgn = _cf_wg_endpoint_name()
+    if wgn and wgn not in names:
+        names = names + [wgn]     # #530: WG едет за фронтом вместе с остальными
+    for name in names:
+        res, made = _cf_a_ensure(name, tgt, zid=zid)
+        if made:
+            changed.append({"name": name, "from": "нет записи", "to": tgt,
+                            "proxied": False, "создана": True,
+                            "почему": ("прыжок: имя заведено и сразу держится на фронте %s" % front)
+                                      if front else ("имя заведено панелью на адрес %s" % tgt)})
+            continue
         for rec in res:
             if (rec.get("content") or "") == tgt:
                 continue
@@ -30826,6 +31301,20 @@ def _cf_set_ip(ip):
                             "почему": ("прыжок: имена ссылок держим на фронте %s" % front)
                                       if front else ""})
     return changed
+
+
+def _cf_wg_endpoint_name():
+    """Имя A-only эндпоинта WireGuard, если оно принадлежит зоне панели, иначе пусто.
+
+    #530: до этой правки `wg.<зона>` жил только в руке ротации (`_cf_ensure_wg` с
+    адресом машины) и в список переезжающих имён не входил, поэтому переворот слова
+    оставлял WG смотреть прямо на бэк. Теперь имя называется отдельно от списка
+    `cf_records`: оператор его туда не писал, и право им владеть — у панели, раз она
+    его завела (`_wg_auto_domain`). Чужая зона (свой `wg_domain` не из `cf_zone`) —
+    пусто: чужое имя панель не трогает."""
+    wd = (_wg_auto_domain() or "").strip().lower()
+    z = (CFG_CACHE.get("cf_zone") or "").strip().lower()
+    return wd if wd and z and wd == "wg." + z else ""
 
 
 def _cf_ensure_wg(ip):
@@ -30872,21 +31361,24 @@ def _rot_apply(ip):
                        for c in ch) if ch else "записи уже актуальны"))
         except Exception as e:
             rep.append("cloudflare: ошибка %s" % str(e)[:160])
-    # A-only эндпоинт WireGuard обязан следовать за IP, иначе подписчики
-    # останутся стучаться в старый адрес (dynv6-ветку чинит хук в _dynv6_update)
-    wd = _wg_auto_domain()
-    z = (CFG_CACHE.get("cf_zone") or "").strip().lower()
-    if wd and z and wd == "wg." + z:
+    # A-only эндпоинт WireGuard обязан следовать за тем адресом, который видит
+    # подписчик: с #530 этим адресом считается ФРОНТ, пока прыжок сказан. Иначе
+    # ближайшая ротация вернёт живые копии AmneziaWG на прямую стуканку в бэк
+    # (dynv6-ветку чинит хук в _dynv6_update)
+    wd = _cf_wg_endpoint_name()
+    if wd:
         try:
-            _cf_ensure_wg(ip)
-            rep.append("wg-эндпоинт: %s → %s" % (wd, ip))
+            wg_ip = _hop_on() or ip
+            _cf_ensure_wg(wg_ip)
+            rep.append("wg-эндпоинт: %s → %s" % (wd, wg_ip))
         except Exception as e:
             rep.append("wg-эндпоинт: ошибка %s" % str(e)[:140])
     if prov == "off":
         rep.append("провайдер смены выключен")
     if _hop_on():
         rep.append("прыжок: имена ссылок поставлены на ФРОНТ %s, а не на адрес ротации "
-                   "%s — это адрес БЭКА, за ним остаётся `wg`-эндпоинт и туннель релея"
+                   "%s — это адрес БЭКА, за ним остаётся только туннель релея; "
+                   "`wg`-эндпоинт с #530 едет тем же адресом фронта"
                    % (_hop_on(), ip))
     return rep
 
@@ -30981,6 +31473,7 @@ def _netplan_primary_fix(ip):
                 tmp = path + ".veil-tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     f.write(yaml.safe_dump(doc, sort_keys=False))
+                os.chmod(tmp, 0o600)
                 os.replace(tmp, path)
             except Exception as e:
                 return "netplan: запись %s не удалась (%s) — порядок не тронут" % (name, str(e)[:80])
@@ -33436,7 +33929,12 @@ except ImportError:
 if PRIV:
     PRIV.bind(sys.modules[__name__])
 
-if not SBX:  # #309: в песочнице харнесса эти нити не заводятся (см. `_tg_web_guard_loop`)
+if not SBX and _PANEL_IS_MAIN:  # #309: в песочнице харнесса эти нити не заводятся
+    # (см. `_tg_web_guard_loop`); #529: и при импорте модуля чужими руками — панель,
+    # прочитанная как модуль, не имеет права выпустить второй поллер Telegram,
+    # смотрителя ротации и писателя конфигов. Сервис при этом стартует именно как
+    # программа (`ExecStart=/usr/bin/python3 /opt/vpnpanel/panel.py`), значит `__main__`
+    # и все нити на месте.
     threading.Thread(target=_ddns_loop, daemon=True).start()
     threading.Thread(target=_rotate_loop, daemon=True).start()
     # Один поток на всю исходящую почту Telegram: ни тик, ни обработчик запроса не
@@ -33775,7 +34273,7 @@ def _autobk_loop():
             print("[autobk] " + str(e), flush=True)
         time.sleep(120)
 
-if not SBX:  # #309: ночной автобэкап чужим процессам не нужен
+if not SBX and _PANEL_IS_MAIN:  # #309: ночной автобэкап чужим процессам не нужен
     threading.Thread(target=_autobk_loop, daemon=True).start()
 
 # ---------- «Переезд» — автоматическая миграция на новый VPS ----------
@@ -34426,11 +34924,11 @@ def _mv_dns(provider="auto", confirm=False):
         except Exception as e:
             raise RuntimeError("Cloudflare: " + str(e)[:200])
         try:
-            wd = _wg_auto_domain()
-            z = (c.get("cf_zone") or "").strip().lower()
-            if wd and z and wd == "wg." + z:
-                _cf_ensure_wg(ip4)
-                report.append("wg-эндпоинт: wg.%s → %s" % (z, ip4))
+            wd = _cf_wg_endpoint_name()
+            if wd:
+                wg_ip = _hop_on() or ip4
+                _cf_ensure_wg(wg_ip)
+                report.append("wg-эндпоинт: %s → %s" % (wd, wg_ip))
         except Exception as e:
             report.append("wg-эндпоинт: ошибка " + str(e)[:140])
     elif provider == "dynv6":
@@ -34532,7 +35030,7 @@ def _mv_loop():
         time.sleep(30)
 
 
-if not SBX:  # #309: расписание переезда крутится только у живой панели
+if not SBX and _PANEL_IS_MAIN:  # #309: расписание переезда крутится только у живой панели
     threading.Thread(target=_mv_loop, daemon=True).start()
 
 
@@ -38587,7 +39085,8 @@ class H(http.server.BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, _hop_preview((q.get("ip") or [""])[0],
                                                 (q.get("ports") or [""])[0],
-                                                (q.get("udp_ports") or [""])[0]))
+                                                (q.get("udp_ports") or [""])[0],
+                                                with_dns=True))
         if p == "/api/hop/bootstatus":
             if not _authed(self): return self._send(401, {"error": "unauthorized"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)

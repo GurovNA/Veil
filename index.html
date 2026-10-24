@@ -3798,8 +3798,19 @@ function renderHop(){
         +(hopData.addr_prev?(' (был '+esc(hopData.addr_prev)+')'):'')
         +' — панель сама уведомила подписчиков в боте, а на страницах /p висит подсказка 7 дней.</div>')
       :('<div class=mut style="font-size:12.5px;margin-top:8px">Если адрес сменится сам (переезд, DDNS, хоп) — панель заметит, уведомит подписчиков в боте и покажет подсказку на их страницах /p.</div>'))
+    +(hopData.dns?('<div class="'+((hopData.dns.offenders||[]).length?'err':'mut')
+      +'" style="font-size:12.5px;margin-top:8px">'
+      +esc(hopData.dns.note||'DNS: состояние имён не прочитано')+'</div>'):'')
     +'<div class=msg id=hopPubMsg></div></div>';
   const hops = hopData.hops||[];
+  const tn = hopData.tun||{};
+  let tunLine='';
+  if(hops.length || tn.ok===false){
+    tunLine='<div style="font-size:12.5px;margin-top:10px">'
+      +(tn.ok===true?('Туннель бэка <code>'+esc(tn.iface||'')+'</code> поднят — стук фронта идёт сквозь него.')
+        :(tn.ok===false?('<span class=err>Туннель бэка <code>'+esc(tn.iface||'')+'</code> НЕ подтверждён: '+esc(tn.error||'')+'</span> — без него прыжок не шифруется; панель поднимет его при следующем изменении фронтов.')
+          :('Туннель бэка <code>'+esc(tn.iface||'')+'</code>: '+esc(tn.error||'состояние не прочитано')+' — панель не может назвать то, чего не измерила.')));
+  }
   let h='';
   if(!hops.length){
     h='<div class=mut style="margin-top:12px">Фронтов пока нет — добавь ниже. Без фронтов панель работает как обычно.</div>';
@@ -3819,6 +3830,7 @@ function renderHop(){
         +lc+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
     }).join('');
   }
+  h+=tunLine;
   lb.innerHTML=h;
 }
 async function hopPreview(){
