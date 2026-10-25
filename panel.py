@@ -354,7 +354,15 @@ def run_protocol_self_test():
     results["_panel"] = {"label": "Панель: живых обработчиков",
                          "status": f"{_veil_busy}/{_veil_max_workers}",
                          "busy": _veil_busy, "max": _veil_max_workers,
-                         "refused": _veil_rejects}
+                         "refused": _veil_rejects,
+                         # #536: молчание на чужом имени. Пустой список имён — это
+                         # «не прочитано», и тогда мера выключена: молчать вслепую
+                         # значило бы отказать всем. Выключенную меру видно сюда.
+                         "sni_silenced": _VEIL_SNI_SILENT,
+                         "sni_names": len(_veil_front_names()),
+                         "sni_gate": ("нет сертификата" if _WEB_CTX is None else
+                                      ("да" if _veil_front_names() else
+                                       "выключена: имена не прочитаны"))}
     # Фоновый тик ждёт замок. Секунды — норма, десятки секунд — чужая ручка
     # держит его сквозь сеть, и подписчик в это время не может ни добавить
     # клиента, ни получить предупреждение о трафике.
@@ -23451,7 +23459,16 @@ def _webproxy_apply(domain):
     _tg_web_ensure()
     subprocess.run(["rm", "-f", "/etc/nginx/sites-enabled/default"], capture_output=True, timeout=10)
     cert, key = _ng_certs(domain)
-    conf = (_NG_WEBPROXY_TEMPLATE.replace("{domain}", domain).replace("{cert}", cert)
+    # #536: под мюксом развилка бросает на этот фронт и имя веб-прокси, и базу — оба наши.
+    # Раньше база обслуживалась случайно: фронт был единственным `server` на порту и потому
+    # играл роль `default`. С блоком молчания `default` — молчание, так что имена надо
+    # назвать явно, иначе собственный домен панели начал бы молчать.
+    msx = _load(_MUX_STATE, {}) or {}
+    base = (CFG_CACHE.get("panel_domain") or "").strip().lower()
+    names = domain
+    if msx.get("applied") and base and base != domain:
+        names = "%s %s" % (domain, base)
+    conf = (_NG_WEBPROXY_TEMPLATE.replace("{domain}", names).replace("{cert}", cert)
             .replace("{key}", key)
             .replace("{tok}", _front_tok_block(serve=_front_panel_upstream())))
     # #249: под живым SNI-мюксом общий :443 держит stream-развилка, а веб-фронт сидит на
@@ -23640,6 +23657,7 @@ _NG_MAIN = "/etc/nginx/nginx.conf"
 _NG_STREAM_INC = "/etc/nginx/veil-mux-stream.conf"
 _NG_CONF_DIR = "/etc/nginx/conf.d"
 _NG_MUX_DEFAULT = _NG_CONF_DIR + "/veil-mux-default.conf"
+_NG_MUX_REJECT = _NG_CONF_DIR + "/veil-mux-reject.conf"   # #536: молчание на чужом имени
 _NG_MUX_MASK = _NG_CONF_DIR + "/veil-mux-mask.conf"
 _NG_MUX_MP_MASK = _NG_CONF_DIR + "/veil-mux-mp-mask.conf"   # #168: маска своего имени у MTProto
 _NG_MAIN_BAK = _NG_MAIN + ".veil-mux.bak"
@@ -23687,6 +23705,92 @@ server {
     location / { try_files $uri $uri/ /index.html; }
 }
 """
+
+# #536: ветка `default` развилки бросает на веб-порт ЛЮБОЙ чужой SNI и соединение
+# без имени. Без этого блока nginx терминалирует их нашим сертификатом и отдаёт
+# страницу — по открытому адресу сканер читает, что это за коробка. `default_server`
+# с `ssl_reject_handshake` не показывает ни сертификата, ни ответа: рукопожатие
+# обрывается, и опознавать становится нечего.
+_MUX_REJECT_TMPL = """# VEIL-MUX молчание на чужом имени (generated) — не редактируйте вручную
+server {
+{listens}
+    server_name _;
+    ssl_reject_handshake on;
+    # голый `HTTP` на `HTTPS`-порт nginx объясняет сам, и в объяснении стоит его
+    # версия — сканеру именно она и интересна
+    server_tokens off;
+}
+"""
+
+
+def _nginx_reject_ok():
+    """Есть ли у nginx `ssl_reject_handshake` (появился в 1.19.4). Нет — блок не
+    пишем: конфигурация с неизвестной директивой не прошла бы `nginx -t` и уронила
+    бы весь фронт, а это дороже молчания."""
+    txt = ""
+    try:
+        p = subprocess.run(["nginx", "-v"], capture_output=True, text=True, timeout=10)
+        txt = (p.stderr or "") + (p.stdout or "")
+    except Exception:
+        return False
+    m = re.search(r"nginx/(\d+)\.(\d+)\.(\d+)", txt)
+    if not m:
+        return False
+    return tuple(int(x) for x in m.groups()) >= (1, 19, 4)
+
+
+def _mux_reject_listens(web_port):
+    """Форма листнеров блока молчания — те же адресные формы, что под этим портом
+    уже держит фронт. Молчание обязано встать В ТУ ЖЕ группу сокетов: петлевой
+    листнер конкретнее wildcard-листнера, и nginx выбирает конкретный — поставь
+    блок на другой адрес, и легитимный веб-SNI уйдёт в молчание вместо фронта
+    (тот же урок, что #151). Второй урок: блок не смеет заводить слушателя там,
+    где его не было (чужая `default_server` тоже не трогается)."""
+    p = str(int(web_port))
+    rx = re.compile(r"(?m)^\s*listen\s+([^\s;]+)([^;\n]*)")
+    forms = []
+    try:
+        names = sorted(os.listdir(_NG_CONF_DIR))
+    except Exception:
+        names = []
+    for nm in names:
+        if not nm.endswith(".conf"):
+            continue
+        try:
+            txt = open(os.path.join(_NG_CONF_DIR, nm), encoding="utf-8",
+                       errors="replace").read()
+        except Exception:
+            continue
+        for m in rx.finditer(txt):
+            addr, rest = m.group(1).strip(), m.group(2) or ""
+            if (addr.rsplit(":", 1)[-1] if ":" in addr else addr) != p:
+                continue
+            if "default_server" in rest or addr in forms:
+                continue
+            forms.append(addr)
+    return "".join("    listen %s ssl default_server;\n" % a for a in forms).rstrip("\n")
+
+
+def _mux_reject_write(web_port):
+    """Написать (или снять) блок молчания под веб-порт мюкса. Возвращает причину,
+    почему блока нет, либо '' — молчащий блок записан."""
+    listens = _mux_reject_listens(web_port)
+    reason = ("" if _nginx_reject_ok() else "nginx без `ssl_reject_handshake`") or \
+             ("" if listens else "под портом %d нет нашего слушателя, которому можно молчать"
+              % int(web_port))
+    if reason:
+        try:
+            os.remove(_NG_MUX_REJECT)
+        except Exception:
+            pass
+        return reason
+    try:
+        with open(_NG_MUX_REJECT, "w", encoding="utf-8") as f:
+            f.write(_MUX_REJECT_TMPL.replace("{listens}", listens))
+    except Exception as e:
+        return "блок молчания не записан: %s" % e
+    return ""
+
 
 def _mux_sni_label(proto):
     """Метка SNI-поддомена для переводимого входа. vless-xhttp остаётся на `vpn` (живые
@@ -26275,6 +26379,8 @@ def _mux_relocate_fronts(web_port):
     for path in sorted(_glob.glob(os.path.join(_NG_CONF_DIR, "*.conf"))):
         if path == _NG_MUX_DEFAULT:
             continue
+        if path == _NG_MUX_REJECT:   # #536: генерируемое молчание не фронт, его листнер вечен
+            continue
         try:
             txt = open(path).read()
         except Exception:
@@ -26302,6 +26408,8 @@ def _mux_front_on_port(port):
     needle = re.compile(r"(?m)^\s*listen\s+(?:\[::\]:)?%s(\s|;|$)" % re.escape(str(int(port))))
     for path in sorted(_glob.glob(os.path.join(_NG_CONF_DIR, "*.conf"))):
         if os.path.abspath(path) == os.path.abspath(_NG_MUX_DEFAULT):
+            continue
+        if os.path.abspath(path) == os.path.abspath(_NG_MUX_REJECT):
             continue
         try:
             txt = open(path, encoding="utf-8", errors="replace").read()
@@ -26504,6 +26612,10 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
         with open(_NG_MUX_DEFAULT, "w") as f:
             f.write(_MUX_DEFAULT_TMPL.replace("{web_port}", str(web_port))
                     .replace("{web_domain}", web_domain).replace("{cert}", cert).replace("{key}", key))
+    # #536: развилка бросает на этот порт и чужой SNI, и соединение без имени. Пусть
+    # nginx молчит на них, а не показывает наш сертификат: причину отсутствия молчания
+    # пишем в состояние мюкса, чтобы выключенная мера была видна, а не предполагалась.
+    reject_reason = _mux_reject_write(web_port)
     # Сайт-маска под мюксом: stream доводит SNI tg.<база> до петлевого mask_port, где nginx
     # терминалирует TLS SAN-сертификатом и отдаёт frontsite. Пишется ДО nginx -t, чтобы проверка
     # конфига его видела. Снимаем старый veil-front.conf-остаток маски, если он держит :443.
@@ -26756,6 +26868,7 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
                        "prev": prev_map.get(_MUX_INBOUND) if vpn_e else None,
                        "entries": entries, "prev_map": prev_map,
                        "moved_web": moved_web,
+                       "reject_off": reject_reason,
                        "sni_prev": sni_prev,
                        "tg_prev": tg_prev if facade_switched else None,
                        "mp_prev": mp_prev if mask_front_switched else None,
@@ -26777,6 +26890,7 @@ def _mux_apply(vpn_domain=None, tg_domain=None, confirm=False, force=False, prot
             "link_host": (vpn_e["domain"] if vpn_e and vpn_e.get("dns_ok") else ""),
             "link_host_ready": link_ready,
             "web_port": web_port, "tls_port": tls_port, "cert_kind": kind,
+            "reject_off": reject_reason,
             "reapplied": bool(mux_live), "inbound": _MUX_INBOUND,
             "moved": [{"proto": e["proto"], "label": e["label"], "domain": e["domain"],
                        "port": e["port"], "dns_ok": bool(e.get("dns_ok"))} for e in entries],
@@ -26884,7 +26998,8 @@ def _mux_nginx_files():
     мюкса, stream-вставка, генерируемые фронт и маска, каждый `conf.d/*.conf` (перенос фронтов
     с :443) и каждый `conf.d/*.veil-mux.bak` (их откат тоже трогает)."""
     import glob as _glob
-    out = [_NG_MAIN, _NG_MAIN_BAK, _NG_STREAM_INC, _NG_MUX_DEFAULT, _NG_MUX_MASK, _NG_MUX_MP_MASK]
+    out = [_NG_MAIN, _NG_MAIN_BAK, _NG_STREAM_INC, _NG_MUX_DEFAULT, _NG_MUX_REJECT,
+           _NG_MUX_MASK, _NG_MUX_MP_MASK]
     for pat in ("*.conf", "*" + _MUX_BAK_SUFFIX):
         out += sorted(_glob.glob(os.path.join(_NG_CONF_DIR, pat)))
     return list(dict.fromkeys(out))
@@ -26960,6 +27075,8 @@ def _revert_nginx_files(web_held, snap=None):
     try: os.remove(_NG_STREAM_INC)
     except Exception: pass
     try: os.remove(_NG_MUX_DEFAULT)
+    except Exception: pass
+    try: os.remove(_NG_MUX_REJECT)
     except Exception: pass
     try: os.remove(_NG_MUX_MASK)
     except Exception: pass
@@ -31829,6 +31946,250 @@ def _host_covered_by(names, host):
             if prefix and "." not in prefix:
                 return True
     return False
+
+
+# ─── #536: молчание на чужом имени ─────────────────────────────────────────
+# Порт панели смотрит наружу, и до этого цикла наружу совпадало всё: сканер без
+# `SNI`, сканер с чужим именем и сканер с голым `HTTP` получали наш сертификат,
+# страницу входа, а ветка редиректа называла вслух наш домен. По открытому `IP`
+# этого достаточно, чтобы опознать панель и внести адрес в стоп-лист. Молчание
+# ставится ДО рукопожатия — ни сертификата, ни `TLS`-алерта, ни `HTTP`-ответа,
+# то есть порт выглядит мёртвым, а не «панелью».
+# Свой источник (петля и адреса самой машины) не гейтится: без `SNI` сюда ходят
+# читалка боя, самовёрка и внутренние пробы, и молчание для них было бы отказом
+# собственным приборам.
+_VEIL_NAMES = []
+_VEIL_NAMES_TS = None
+_VEIL_NAMES_TTL = 300.0
+_VEIL_NAMES_TTL_EMPTY = 20.0
+_VEIL_SNI_SILENT = 0
+_VEIL_SNI_LOGGED = 0.0
+_VEIL_NAMES_WARN_TS = 0.0
+_VEIL_HELLO_PEEK = 0.6
+_VEIL_HELLO_CAP = 16389
+_VEIL_HOST_RE = re.compile(r"(?im)^host:[ \t]*([^\r\n]+)")
+_VEIL_NAME_OK = re.compile(r"^[a-z0-9._-]{1,253}$")
+
+
+def _veil_front_names(now=None):
+    """Имена, под которыми панель вправе отвечать наружу: `SAN` обслуживаемого
+    сертификата плюс имена, которые раздаёт сама панель (домен панели, фронт
+    веб-прокси, имена развилки :443). Разошедшийся список — это не ошибка:
+    сертификат может держать имя, которого ещё нет в конфиге, и наоборот.
+    Пустой список значит «не прочитано», и мера тогда выключена: молчать вслепую
+    значило бы отказать всем, включая хозяина."""
+    global _VEIL_NAMES, _VEIL_NAMES_TS
+    now = time.time() if now is None else now
+    ttl = _VEIL_NAMES_TTL if _VEIL_NAMES else _VEIL_NAMES_TTL_EMPTY
+    if _VEIL_NAMES_TS is not None and now - _VEIL_NAMES_TS < ttl:
+        return _VEIL_NAMES
+    raw = []
+    for p in ((CFG_CACHE.get("panel_cert_path") or "").strip(),
+              (CFG_CACHE.get("cert") or "").strip()):
+        if p and os.path.exists(p):
+            raw += _cert_dns_names(p) or []
+    try:
+        ms = _load(_MUX_STATE, {}) or {}
+    except Exception:
+        ms = {}
+    cfg = CFG_CACHE or {}
+    for d in (cfg.get("panel_domain"), cfg.get("cert_domain"), cfg.get("front_domain"),
+              ms.get("web_domain"), ms.get("web_sni"), ms.get("vpn_domain"),
+              ms.get("tg_domain"), ms.get("mp_domain")):
+        if d:
+            raw.append(str(d))
+    for e in (ms.get("entries") or []):
+        if isinstance(e, dict) and e.get("domain"):
+            raw.append(str(e["domain"]))
+    out = []
+    for n in raw:
+        n = (n or "").strip().lower().rstrip(".")
+        if n and n not in out:
+            out.append(n)
+    _VEIL_NAMES, _VEIL_NAMES_TS = out, now
+    if not out:
+        _veil_names_missing_warn()
+    return out
+
+
+def _veil_names_missing_warn():
+    """Список имён не прочитан — молчание выключено, и событие обязано быть видно:
+    выключенная молча мера хуже отсутствующей. Не чаще раза в минуту."""
+    global _VEIL_NAMES_WARN_TS
+    now = time.time()
+    if now - _VEIL_NAMES_WARN_TS < 60:
+        return
+    _VEIL_NAMES_WARN_TS = now
+    _audit("web_sni_gate_off",
+           reason="имена не прочитаны: ни сертификат, ни конфиг не дали ни одного имени")
+
+
+def _veil_sni_ok(sni):
+    """Годится ли названное имя. Пустое — не годится: под ним нельзя проверить
+    сертификат, и отвечает на него только тот, кто знает адрес, то есть сканер."""
+    names = _veil_front_names()
+    if not names:
+        return True
+    return bool(sni) and _host_covered_by(names, sni)
+
+
+def _veil_hello_sni(buf):
+    """`SNI` из `ClientHello`: имя, пустая строка (привет разобран, имени нет) или
+    `None` (буфер не разобран — обрезан, не запись или битый формат)."""
+    try:
+        if len(buf) < 5 or buf[0] != 0x16:
+            return None
+        rlen = int.from_bytes(buf[3:5], "big")
+        if len(buf) < 5 + rlen:
+            return None
+        h = buf[5:5 + rlen]
+        if len(h) < 42 or h[0] != 0x01:
+            return None
+        sid = int.from_bytes(h[38:39], "big")     # 1+3 заголовок, 2+32 версия и random
+        i = 39 + sid
+        cs = int.from_bytes(h[i:i + 2], "big")
+        i += 2 + cs
+        cp = int.from_bytes(h[i:i + 1], "big")
+        i += 1 + cp
+        if i > len(h):
+            return None
+        if i + 2 > len(h):
+            return ""
+        ext_end = i + int.from_bytes(h[i:i + 2], "big")
+        if ext_end > len(h):
+            return None
+        i += 2
+        while i + 4 <= ext_end:
+            et = int.from_bytes(h[i:i + 2], "big")
+            el = int.from_bytes(h[i + 2:i + 4], "big")
+            body = h[i + 4:i + 4 + el]
+            if len(body) != el:
+                return None
+            if et == 0:
+                if el < 2:
+                    return None
+                lst = int.from_bytes(body[:2], "big")
+                j = 2
+                while j + 3 <= 2 + lst and j + 3 <= len(body):
+                    nt = body[j]
+                    nl = int.from_bytes(body[j + 1:j + 3], "big")
+                    nm = body[j + 3:j + 3 + nl]
+                    if nt == 0 and len(nm) == nl:
+                        got = nm.decode("ascii", "ignore").lower().rstrip(".")
+                        return got if got else ""
+                    j += 3 + nl
+                return ""
+            i += 4 + el
+        return ""
+    except Exception:
+        return None
+
+
+def _veil_peek_hello(sock, wait=_VEIL_HELLO_PEEK):
+    """Собрать первую `TLS`-запись, НЕ читая её: подсмотренное позже уходит в
+    настоящее рукопожатие. Ждём дополнения ровно пока байты идут — недобранный
+    привет сканера не должен держать рабочий поток.
+    Смотреть обязаны ПОСЛЕ `select`: `recv` на сокете без таймаута спит до конца
+    соединения, и тогда предел ожидания — просто украшение, а поток молчаливого
+    сканера держится ровно столько, сколько захочет он сам. И наоборот: уходить
+    можно только когда время вышло и взглянуть не на что — иначе клиент с медленным
+    сетевым стеком молчит за то, что его байт просто ещё не долетел до следующего
+    среза опроса.
+    Время проверяется ПОСЛЕ взгляда, а не до него: взгляд бесплатный (`select` с нулевым
+    таймаутом отвечает сразу), а `wait=0` — это «посмотри один раз», и отказываться от
+    него значит терять привет, который уже в буфере. И наоборот, на готовом сокете
+    выход по времени обязан быть: `MSG_PEEK` не съедает байты, поэтому обрезанный
+    привет держит `select` готовым ВСЕГДА и цикл, судящий время только в ветке
+    «не готово», крутил бы процессор до конца соединения (измерено ножками `B7` и
+    `D6`, gp/f108_sni_silence_test.py). Когда новых байт не прибыло, ждём дешёвой
+    паузой, а не пустым опросом."""
+    buf = b""
+    end = time.time() + max(0.0, wait)
+    while True:
+        ready_left = end - time.time()
+        try:
+            ready = bool(select.select([sock], [], [], max(0.0, min(ready_left, 0.2)))[0])
+        except Exception:
+            ready = True          # опрос не удался: попробуем взгляд, он под охраной
+        if not ready:
+            if end - time.time() <= 0:
+                return buf        # время вышло и взглянуть не на что
+            continue
+        try:
+            data = sock.recv(_VEIL_HELLO_CAP, socket.MSG_PEEK)
+        except Exception:
+            return buf
+        if not data:
+            return buf              # соединение закрыто: дополнений не будет
+        grown = len(data) > len(buf)
+        buf = data
+        if len(buf) >= 5:
+            need = 5 + int.from_bytes(buf[3:5], "big")
+            if len(buf) >= need or len(buf) >= _VEIL_HELLO_CAP:
+                return buf          # запись собрана
+        left = end - time.time()
+        if left <= 0:
+            return buf              # время вышло: что собрали, то и разбирать
+        if not grown:
+            time.sleep(min(0.05, left))     # байт не прибыло: пауза, а не холостой опрос
+
+
+def _veil_silenced(ip, why):
+    """Одно молчание в аудите — не чаще раза в минуту: тот, кто сканирует порт,
+    не обязан диктовать размер журнала."""
+    global _VEIL_SNI_SILENT, _VEIL_SNI_LOGGED
+    with _WEB_ACCEPT_LOCK:
+        _VEIL_SNI_SILENT += 1
+        n = _VEIL_SNI_SILENT
+        now = time.time()
+        do = now - _VEIL_SNI_LOGGED >= 60
+        if do:
+            _VEIL_SNI_LOGGED = now
+    if do:
+        _audit("web_sni_silence", ip=ip, why=why, silenced=n)
+    return n
+
+
+def _veil_gate_tls(sock, peer):
+    """Дверь для `TLS`: пускаем соединение, только если привет назван нашим именем.
+    Свой источник проходит всегда — иначе молчали бы собственные приборы."""
+    ip = (peer or ("",))[0]
+    if _is_self_ip(ip):
+        return True
+    sni = _veil_hello_sni(_veil_peek_hello(sock))
+    if sni is None:
+        _veil_silenced(ip, "неполный привет")
+        return False
+    if not _veil_sni_ok(sni):
+        _veil_silenced(ip, "чужой SNI" if sni else "без SNI")
+        return False
+    return True
+
+
+def _veil_plain_target(sock, peer):
+    """Куда вести того, кто прислал голый `HTTP` на `HTTPS`-порт. Своему — как
+    раньше, на домен панели. Чужому — только если он сам назвал имя, под которое
+    у нас сертификат, и тогда `Location` повторяет ЕГО имя: панель перестала
+    выкрикивать наш домен первому, кто постучал без шифра."""
+    ip = (peer or ("",))[0]
+    if _is_self_ip(ip):
+        return (CFG_CACHE.get("panel_domain") or "127.0.0.1").strip()
+    try:
+        head = sock.recv(2048, socket.MSG_PEEK)
+    except Exception:
+        head = b""
+    m = _VEIL_HOST_RE.search((head or b"").decode("latin-1", "ignore"))
+    host = (m.group(1).strip().lower().rstrip(".") if m else "")
+    if ":" in host:
+        host = host.split(":")[0]
+    if not host or not _VEIL_NAME_OK.match(host):
+        _veil_silenced(ip, "голый http без нашего имени")
+        return ""
+    if not _veil_sni_ok(host):
+        _veil_silenced(ip, "голый http: чужое имя")
+        return ""
+    return host
+
 
 _CERT_PUBLIC_FILES = re.compile(
     r"(?i)^((fullchain|chain|cert|issuers|root)\d*\.pem|README|options-ssl[\w.-]*|.*\.csr)")
@@ -43086,7 +43447,7 @@ class S(socketserver.ThreadingTCPServer):
                 request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
             except OSError:
                 pass
-            sock = self._veil_handshake(request)
+            sock = self._veil_handshake(request, client_address)
             if sock is None:
                 # соединение уже некому обслуживать (молчало, ушло, не TLS, кривой
                 # handshake) — закрываем свои и выходим без обработчика запроса
@@ -43099,7 +43460,7 @@ class S(socketserver.ThreadingTCPServer):
     _VEIL_WAIT_FIRST = 3.0      # секунд ждём первый байт, сидя в своём потоке
     _VEIL_HANDSHAKE_WAIT = 10.0  # секунд на само TLS-рукопожатие
 
-    def _veil_handshake(self, sock):
+    def _veil_handshake(self, sock, peer=None):
         """Первый байт и TLS-рукопожатие — в рабочем потоке соединения, не в нити
         приёма. Возвращает сокет для обработчика (обёрнутый, если TLS) или None,
         если обслуживать уже нечего: такой сокет закрывает вызывающий."""
@@ -43114,17 +43475,22 @@ class S(socketserver.ThreadingTCPServer):
         if not first:
             return None
         if first != b"\x16":
-            # plain-HTTP запрос на HTTPS-порт → 301 на https и закрываем
+            # plain-HTTP запрос на HTTPS-порт → 301 на https и закрываем; кому
+            # можно отвечать таким редиректом, решает `_veil_plain_target`
+            target = _veil_plain_target(sock, peer)
+            if not target:
+                return None
             try:
-                host = (CFG_CACHE.get("panel_domain") or "127.0.0.1").strip()
                 port = CFG_CACHE.get("panel_port", 8443)
                 sock.sendall(("HTTP/1.1 301 Moved Permanently\r\n"
                               "Location: https://%s:%s/\r\n"
                               "Content-Length: 0\r\n"
                               "Connection: close\r\n\r\n"
-                              % (host, int(port))).encode())
+                              % (target, int(port))).encode())
             except Exception:
                 pass
+            return None
+        if not _veil_gate_tls(sock, peer):
             return None
         try:
             sock.settimeout(self._VEIL_HANDSHAKE_WAIT)
@@ -43185,6 +43551,11 @@ class S(socketserver.ThreadingTCPServer):
         try:
             sock = request
             if first == b"\x16" and _WEB_CTX is not None:
+                # отказ отказу рознь: объяснение, написанное внутри `TLS`, отдаёт
+                # чужому соединению наш сертификат — а это ровно то, ради чего
+                # меряется молчание (#536)
+                if not _veil_gate_tls(request, client_address):
+                    return
                 try:
                     request.settimeout(2)
                     sock = _WEB_CTX.wrap_socket(request, server_side=True)
