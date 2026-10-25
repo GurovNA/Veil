@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.30"
+VERSION = "2.17.31"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -24223,16 +24223,6 @@ def _hop_back_ip():
     return _pub_ip4() or (_my_ip() or "")
 
 
-def _hop_back_name():
-    """Имя, по которому фронт стучится на бэк: опубликованный домен панели, если он
-    назван. Ротация (`#480`) двигает A-запись сама, поэтому ИМЯ переживает смену
-    адреса, а literal-адрес, вписанный в `relay.env` фронта, — нет: прогон 23.10 на
-    тестовой паре (нога L2) показал, что после смены адреса бэка heartbeat фронта
-    уходит в мёртвый адрес и панель слепнет, хотя клиенты прыжка не теряют.
-    Пусто — домена нет, держимся адресом, и тогда запись хопа обязана быть живой."""
-    return (CFG_CACHE.get("panel_domain") or "").strip()
-
-
 def _hop_relay_repoint(old_ip, new_ip):
     """Ротация сменила адрес БЭКа: перекладываем то, что панель знает о фронтах.
 
@@ -24358,6 +24348,10 @@ set -euo pipefail
 . /etc/veil-relay/relay.env
 [ -n "${TUN_PRIV:-}" ] && [ -n "${TUN_PUB:-}" ] || {
   echo "VEILERR: relay.env без ключей туннеля — это фронт старого (голого) образца, заведи его заново"; exit 6; }
+[ -n "${BACK_PUB:-}" ] || {
+  echo "VEILERR: relay.env без ключа БЭКА (#553): переставь фронт заново, иначе в пиры ляжет собственная клавиша фронта"; exit 11; }
+[ "${BACK_PUB}" != "${TUN_PUB}" ] || {
+  echo "VEILERR: фронт и бэк держат ОДНУ пару клавишей (#553) — туннель с таким пиром не поднимется"; exit 13; }
 command -v awg-quick >/dev/null 2>&1 || {
   echo "VEILERR: на фронте нет AmneziaWG (нет \\`awg-quick\\`): прыжок без обёртки не ставится никогда. AmneziaWG не в штатных репозиториях — модуль ядра + awg-quick ставятся отдельно"; exit 7; }
 umask 077
@@ -24379,7 +24373,7 @@ H3 = ${H3}
 H4 = ${H4}
 
 [Peer]
-PublicKey = ${TUN_PUB}
+PublicKey = ${BACK_PUB}
 AllowedIPs = ${TUN_PEER}/32
 Endpoint = ${TUN_ENDPOINT}
 PersistentKeepalive = 25
@@ -24584,6 +24578,7 @@ WG_DST="__WG_DST__"
 TUN_ENDPOINT="__TUN_ENDPOINT__"
 TUN_PRIV="__TUN_PRIV__"
 TUN_PUB="__TUN_PUB__"
+BACK_PUB="__BACK_PUB__"
 MSS="__MSS__"
 JC="__JC__"
 JMIN="__JMIN__"
@@ -24613,14 +24608,17 @@ cat > /etc/systemd/system/veil-relay-keeper.service <<'VEILEOF'
 __KEEPER_UNIT__VEILEOF
 systemctl daemon-reload
 systemctl enable veil-relay >/dev/null 2>&1 || true
-systemctl enable veil-relay-keeper >/dev/null 2>&1 || true
+systemctl enable --now veil-relay-keeper >/dev/null 2>&1 || true
 systemctl restart veil-relay
 sleep 1
 systemctl is-active --quiet veil-relay || { echo "VEILERR: служба veil-relay не активна"; exit 4; }
 systemctl is-active --quiet awg-quick@__TUN_IF__ || { echo "VEILERR: туннель __TUN_IF__ не поднялся (проверь modprobe amneziawg и журнал: systemctl status awg-quick@__TUN_IF__)"; exit 9; }
 nft list table ip veil_relay >/dev/null 2>&1 || { echo "VEILERR: таблица veil_relay не видна в nft"; exit 5; }
 [ "$(nft -a list chain ip veil_relay h_cur | grep -c 'jump h_tun')" = 1 ] || { echo "VEILERR: переключатель релея не встал в туннельную ветку"; exit 10; }
-echo "VEILOK: релей обёрнут в туннель __TUN_IF__, порты __PORTS_SP__ и udp __UDP_SP__/__WG_IN__ -> __TUN_PEER__ (бэк __BACK_IP__ лежит за туннелем)"
+systemctl is-active --quiet veil-relay-keeper || { echo "VEILERR: смотритель переключателя не запущен — при мёртвом туннеле фронт останется в туннельной ветке и будет молчать (#554)"; exit 12; }
+sleep 2
+mode=$(nft -a list chain ip veil_relay h_cur | grep -oE 'jump h_(tun|dir)' | head -1)
+echo "VEILOK: релей обёрнут в туннель __TUN_IF__, порты __PORTS_SP__ и udp __UDP_SP__/__WG_IN__ -> __TUN_PEER__ (бэк __BACK_IP__ лежит за туннелем), переключатель: ${mode:-не прочитано}"
 if [ -n "__TOK__" ]; then
   RESP=$(curl -sk -m 20 -X POST "__REG_URL__" -H 'Content-Type: application/json' \\
          -d '{"tok":"__TOK__"}' 2>/dev/null || true)
@@ -24846,9 +24844,15 @@ def _relay_installer(hop, with_register=False):
     udp = " ".join(str(p) for p in (hop.get("udp_ports") or []))
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
     back = hop["back_ip"]
-    # стук на бэк фронт держит ИМЕНЕМ, если домен назван: адрес бэка двигает ротация,
-    # а имя переставляет сама публикация (нога Р1, замер L2 23.10 на паре)
-    beat_host = _hop_back_name() or back
+    # #555: стук держится АДРЕСОМ бэка. Имя для этого не годится: со сказанным
+    # `hop_public_host` публикация переставляет имена ссылки, и среди них база
+    # (`_cf_record_names` держит `@`), то есть фронт бился бы сам в себя —
+    # локально порождённый пакет не проходит цепь `pr` (там `iifname != "lo"`),
+    # а на фронте `:8443` не слушает никто. Замер 25.10 на бою: до слова стук
+    # дошёл (`hop_register` в 08:24:54), после слова он был бы слеп. Адрес бэка
+    # и так стоит в `TUN_ENDPOINT`, поэтому ротация уже требует перестановки
+    # `relay.env`: одно переставление лечит и туннель, и стук (нога Р22).
+    beat_host = back
     reg_url = "https://%s:%d/api/hop/register" % (beat_host, panel_port)
     beat_url = "https://%s:%d/api/hop/beat" % (beat_host, panel_port)
     tok = (hop.get("tok") or "") if with_register else ""
@@ -24869,6 +24873,7 @@ def _relay_installer(hop, with_register=False):
             .replace("__TUN_PEER__", HOP_TUN_BACK)
             .replace("__TUN_PRIV__", hop["tun_priv"])
             .replace("__TUN_PUB__", hop["tun_pub"])
+            .replace("__BACK_PUB__", _hop_tunnel_keys()["public"])
             .replace("__TUN_ENDPOINT__", "%s:%d" % (back, _hop_tun_port()))
             .replace("__MSS__", str(HOP_MSS))
             .replace("__TOK__", tok)
@@ -28710,6 +28715,112 @@ def _ensure_telemt_log_filter():
     except Exception as e:
         print("telemt logfilter: " + str(e)[:120], flush=True)
         return False
+
+_RSYSLOG_SELFFLOOD_DROPIN = "/etc/rsyslog.d/00-veil-rsyslog-selfflood.conf"
+_RSYSLOG_SELFFLOOD_BODY = (
+    "# ВЕИЛ (#547). На полном диске rsyslog сам себя кормит своей ошибкой и раздувает журнал.\n"
+    "# Путь замкнут: `omfile` не может записать строку -> rsyslogd печатает ошибку в stderr ->\n"
+    "# systemd несёт её в journald -> journald по `ForwardToSyslog=yes` (файл\n"
+    "# /usr/lib/systemd/journald.conf.d/syslog.conf, его ставит пакет rsyslog) возвращает её в\n"
+    "# rsyslog уже как обычное сообщение -> `omfile` снова не может записать -> новая ошибка.\n"
+    "# Замер 25.10, окно 01:07:37-01:14:11 (6 мин 34 с): 164 719 строк `rsyslogd` в journald,\n"
+    "# это 418 строк в секунду; 31 494 из них дошли до /var/log/syslog. Усиление двукратное,\n"
+    "# потому что правил на запись два (`*.* -> /var/log/syslog` и `kern.* -> /var/log/kern.log`)\n"
+    "# и отказывается каждое.\n"
+    "# Цена — не шум. Кольцо журнала вытесняет настоящие записи, которые читают приборы\n"
+    "# (`journalctl -u telemt` у панели, sshd-банов, якорь загрузки #545), а ротация на полном\n"
+    "# диске оставила /var/log/syslog.1 размером 0 байт: под шумом потерялась предыстория отказа,\n"
+    "# который надо было разобрать.\n"
+    "# Правило гасит ОТРАЖЁННУЮ копию, а не саму ошибку: первоотказ приходит в journald прямо из\n"
+    "# stderr процесса и остаётся там, а его возврат в `omfile` останавливается до попытки записи,\n"
+    "# поэтому новых stderr-ошибок не рождается и число строк линейно по числу настоящих отказов\n"
+    "# записи.\n"
+    "# Для наблюдения ничего не теряется: в файл эти строки всё равно не могли лечь (он полный),\n"
+    "# а чужие сообщения фильтр не трогает — он смотрит и на программу, и на текст двух служебных\n"
+    "# фраз.\n"
+    "# УРОК этого круга (проверено живьём, 25.10): вложенная форма\n"
+    '#   if $programname == "x" then { if $msg contains "y" then { stop } }\n'
+    "# не работает МОЛЧА — `rsyslogd -N1` её принимает, правило не срабатывает ни на одной строке,\n"
+    "# и ошибиться можно навсегда. Плоская форма с `then stop` сработала с первого пропуска.\n"
+    "# Откат: удалить этот файл и дать `systemctl restart rsyslog`.\n"
+    'if $programname == "rsyslogd" and $msg contains "write error - see https://www.rsyslog.com/solving-rsyslog-write-errors" then stop\n'
+    'if $programname == "rsyslogd" and $msg contains "message lost, could not be processed" then stop\n')
+
+# Текст, которым панель пробирает правило живьём. Одинаковый с двух сторон: одна строка
+# приходит от имени `rsyslogd` (её правило обязано проглотить), вторая — от обычного
+# имени службы (её обязано пропустить). Разница между ними и есть доказательство, что
+# правило действует и что доставка жива: отсутствие обеих означало бы молчание rsyslog.
+_SELFFLOOD_PROBE_TEXT = ("file '/var/log/syslog'[7] write error - see "
+                         "https://www.rsyslog.com/solving-rsyslog-write-errors/ проба")
+
+def _syslog_tail_bytes(limit=65536):
+    """Хвост /var/log/syslog байтами; пустые байты, если прочитать нельзя (нет файла,
+    нет прав, файл только что ротирован)."""
+    try:
+        with open("/var/log/syslog", "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            return f.read()
+    except Exception:
+        return b""
+
+def _ensure_rsyslog_selfflood_filter():
+    """Поставить rsyslog стоп-правило на его же ошибку о нехватке места.
+
+    Возвращает True, если файл был установлен или изменён (и rsyslog перезапущен на
+    новую конфигурацию), False — если на коробке уже лежит байт в байт тот же файл.
+
+    Проверка не по факту записи файла и не по `rsyslogd -N1`: замер 25.10 показал, что
+    вложенная форма правила принимается валидатором и при этом не действует молча. Поэтому
+    после установки панель пропускает по одной строке с одинаковым текстом — от имени
+    `rsyslogd` и от обычного имени — и судит по файлу: первая не легла, вторая легла."""
+    if not shutil.which("rsyslogd"):
+        return False
+    try:
+        try:
+            with open(_RSYSLOG_SELFFLOOD_DROPIN, encoding="utf-8") as f:
+                cur = f.read()
+        except OSError:
+            cur = ""
+        if cur == _RSYSLOG_SELFFLOOD_BODY:
+            return False
+        with open(_RSYSLOG_SELFFLOOD_DROPIN, "w", encoding="utf-8") as f:
+            f.write(_RSYSLOG_SELFFLOOD_BODY)
+        chk = subprocess.run(["rsyslogd", "-N1"], capture_output=True, text=True, timeout=30)
+        if chk.returncode != 0:
+            print("rsyslog selfflood: конфигурация не прошла проверку rc=%s %s"
+                  % (chk.returncode, (chk.stderr or chk.stdout)[-160:]), flush=True)
+            return True
+        r = subprocess.run(["systemctl", "kill", "-s", "HUP", "rsyslog"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            print("rsyslog selfflood: HUP rc=%s %s"
+                  % (r.returncode, (r.stderr or r.stdout)[-120:]), flush=True)
+            return True
+        mark = "veilselfflood%d" % int(time.time())
+        # Первая строка — от имени `rsyslogd`: её правило обязано проглотить.
+        subprocess.run(["logger", "-t", "rsyslogd", _SELFFLOOD_PROBE_TEXT + " " + mark],
+                       capture_output=True, timeout=10)
+        time.sleep(1)
+        blob = _syslog_tail_bytes().decode("utf-8", "replace")
+        if mark in blob:
+            print("rsyslog selfflood: проба легла в /var/log/syslog — правило НЕ действует "
+                  "(проверьте плоскую форму `then stop`)", flush=True)
+            return True
+        # Контроль: тот же текст от обычного имени обязан дойти до файла.
+        subprocess.run(["logger", "-t", "veil-selfflood", _SELFFLOOD_PROBE_TEXT + " " + mark + "2"],
+                       capture_output=True, timeout=10)
+        time.sleep(1)
+        if (mark + "2") not in _syslog_tail_bytes().decode("utf-8", "replace"):
+            print("rsyslog selfflood: контрольная строка не дошла до /var/log/syslog — "
+                  "проверка не засчитана, rsyslog молчит", flush=True)
+            return True
+        _audit("rsyslog_selfflood_on")
+        return True
+    except Exception as e:
+        print("rsyslog selfflood: " + str(e)[:120], flush=True)
+        return False
+
 
 # ---------- P6: зеркалирование rule-set'ов RU/IR + полный sing-box конфиг ----------
 # Панель скачивает свежие rule-set'ы из upstream-релизов и раздаёт их с себя
@@ -43671,6 +43782,7 @@ if __name__ == "__main__":
         _f2b_bootstrap()
         _ensure_logrotate()
         _ensure_telemt_log_filter()
+        _ensure_rsyslog_selfflood_filter()
     except Exception as e:
         print("f2b init: " + str(e), flush=True)
     try:
