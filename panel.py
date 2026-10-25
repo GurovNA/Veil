@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.31"
+VERSION = "2.17.32"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -24230,8 +24230,9 @@ def _hop_relay_repoint(old_ip, new_ip):
     привязанных к публичному адресу бэка, — `0`, потому что `DNAT` смотрит в
     туннельный адрес, а подменённый endpoint туннеля ожил сам за `0` с роумингом
     `wg`. То есть ПУТЬ клиентов смена адреса не рвёт. Рвалось другое: запись хопа
-    хранила ВЧЕРАШНИЙ адрес бэка, по нему же генерировались `BEAT_URL` и `REG_URL`
-    установщика, и карточка врала, пока фронт бился в мёртвый адрес. Поэтому здесь:
+    хранила ВЧЕРАШНИЙ адрес бэка, на него же смотрели прицепка стука в снятом
+    режиме (`--resolve`) и `REG_URL` установщика, и карточка врала, пока фронт бился
+    в мёртвый адрес. Поэтому здесь:
 
       1. адрес бэка в записях меняется на живой (и следующий выданный `relay.sh`
          уже несёт правду);
@@ -24475,7 +24476,16 @@ _RELAY_KEEPER_SH = """#!/bin/bash
 set +e
 . /etc/veil-relay/relay.env
 TICK=${TICK:-1}
-PINGS=${PINGS:-2}
+# #557: деградация требует ТРЁХ потерь подряд, эхо ждём 2 с. Прежняя пара (`PINGS=2`
+# при `-W 1`) разворачивала фронт на прямую раздачу после ДВУХ потерянных ICMP-пар
+# подряд, а под джиттером AmneziaWG (`Jmax=500`) это норма: замер 25.10 на бою дал `dir`
+# на 2 с (11:21:13 -> 11:21:15) и ещё на 47 с (11:12:49 -> 11:13:36), а ручной `ping`
+# сквозь ЭТОТ живой туннель теряет 1 из 4 (RTT 44,9-54,0 мс). В то же окно проба UDP
+# меряла возврат мимо туннеля, то есть ложный `silent` на живом входе. Мера не снята:
+# мёртвый туннель по-прежнему разворачивается на прямую раздачу, но не ценой ложного
+# триггера.
+PINGS=${PINGS:-3}
+PING_WAIT=${PING_WAIT:-2}
 LOG=/run/veil-relay/keeper.log
 BEAT_EVERY=${BEAT_EVERY:-30}
 mkdir -p /run/veil-relay
@@ -24489,11 +24499,19 @@ dir_up(){ nft flush chain ip veil_relay h_cur; nft add rule ip veil_relay h_cur 
           [ "${WG_IN:-0}" = 0 ] || [ "${WG_DST:-0}" = 0 ] || \\
             nft add rule ip veil_relay hun "udp dport ${WG_IN} dnat to ${BACK_IP}:${WG_DST}"; }
 alive(){ local i ok=0; for i in $(seq 1 $PINGS); do
-            ping -c 1 -W 1 -I "$TUN_IF" "$TUN_PEER" >/dev/null 2>&1 && ok=$((ok+1)); done
+            ping -c 1 -W "$PING_WAIT" -I "$TUN_IF" "$TUN_PEER" >/dev/null 2>&1 && ok=$((ok+1)); done
          [ $ok -gt 0 ]; }
 applied(){ /usr/bin/awg show "$TUN_IF" endpoints 2>/dev/null | awk '{print $2}' | head -1; }
-beat(){ local ap=$(applied) st=$1; [ -n "${BEAT_URL:-}" ] || return 0
-        curl -sk -m 5 -X POST "$BEAT_URL" -H 'Content-Type: application/json' \\
+# #556: стук идёт НАШИМ именем, а адресом куда — решает прицепка `--resolve`: живой
+# туннель → туннельный адрес бэка, снятый → его публичный адрес. Голый адрес в URL
+# мера #536 гасит молчанием (без SNI панель не отвечает чужому источнику: 117
+# молчаний на бою за 6 ч, `hop_beat` — 0), а приписка `--resolve` не зависит от
+# публикации, поэтому слово `hop_public_host` переставляет имена ссылки, но не стук.
+beat(){ local ap=$(applied) st=$1 dst=${BACK_IP}
+        [ -n "${BEAT_HOST:-}" ] && [ -n "${BEAT_PORT:-}" ] || return 0
+        [ "$st" = tun ] && dst=${TUN_PEER}
+        curl -sk -m 5 --resolve "${BEAT_HOST}:${BEAT_PORT}:${dst}" -X POST "https://${BEAT_HOST}:${BEAT_PORT}/api/hop/beat" \\
+             -H 'Content-Type: application/json' \\
              -d "{\\"tok\\":\\"${TOK}\\",\\"mode\\":\\"${st}\\",\\"back_applied\\":\\"${ap%%:*}\\",\\"endpoint\\":\\"${ap}\\"}" \\
              >/dev/null 2>&1; }
 state=""
@@ -24564,6 +24582,14 @@ if [ -n "$busy" ]; then
   echo "VEILERR: на этом сервере уже СЛУШАЮТСЯ порты$busy — релей по ним не сработает. Останови их держателей (например: systemctl stop xray nginx telemt) или укажи в панели только свободные порты, и запусти установку снова"
   exit 3
 fi
+# #556: стук без имени не доходит. Голый адрес в URL — это соединение БЕЗ SNI, а на
+# такое мера #536 молчит (замер 25.10 на бою: 117 молчаний на адресе фронта,
+# `hop_beat` — 0). Значит пустое имя панели = заведомо слепой фронт, и ставить его
+# нельзя: отказ здесь честнее молчаливой слепоты через полчаса.
+if [ -z "__BEAT_HOST__" ]; then
+  echo "VEILERR: панель не назвала себя — поле panel_domain пусто, а стук без имени мера #536 гасит молчанием. Укажите домен панели, дождитесь сертификата и запустите установку заново (#556)"
+  exit 14
+fi
 mkdir -p /etc/veil-relay
 umask 077
 cat > /etc/veil-relay/relay.env <<VEILEOF
@@ -24592,9 +24618,13 @@ H2="__H2__"
 H3="__H3__"
 H4="__H4__"
 TOK="__TOK__"
-BEAT_URL="__BEAT_URL__"
+BEAT_HOST="__BEAT_HOST__"
+BEAT_PORT="__BEAT_PORT__"
 VEILEOF
 chmod 0600 /etc/veil-relay/relay.env
+# Единственный источник имен и адресов для шагов ниже: то, что записали, сразу и
+# читаем (`BEAT_HOST`, `BEAT_PORT`, `TUN_PEER`, `BACK_IP`, `TOK`).
+. /etc/veil-relay/relay.env
 cat > /usr/local/bin/veil-relay-apply.sh <<'VEILEOF'
 __APPLY_SH__VEILEOF
 cat > /usr/local/bin/veil-relay-keeper.sh <<'VEILEOF'
@@ -24619,8 +24649,20 @@ systemctl is-active --quiet veil-relay-keeper || { echo "VEILERR: смотрит
 sleep 2
 mode=$(nft -a list chain ip veil_relay h_cur | grep -oE 'jump h_(tun|dir)' | head -1)
 echo "VEILOK: релей обёрнут в туннель __TUN_IF__, порты __PORTS_SP__ и udp __UDP_SP__/__WG_IN__ -> __TUN_PEER__ (бэк __BACK_IP__ лежит за туннелем), переключатель: ${mode:-не прочитано}"
+# #556: установщик сам стучит и смотрит, дошёл ли стук. Молчание здесь — не косметика:
+# с ним панель не знает ни режима переключателя, ни применённого адреса бэка, и
+# пробы UDP начинают верить счётчику туннеля вместо ответа фронта.
+bmode=tun; bdst=${TUN_PEER}
+case "$mode" in *h_dir) bmode=dir; bdst=${BACK_IP} ;; esac
+BCODE=$(curl -sk -m 6 -o /dev/null -w '%{http_code}' --resolve "${BEAT_HOST}:${BEAT_PORT}:${bdst}" \\
+        -X POST "https://${BEAT_HOST}:${BEAT_PORT}/api/hop/beat" -H 'Content-Type: application/json' \\
+        -d "{\\"tok\\":\\"${TOK}\\",\\"mode\\":\\"${bmode}\\",\\"back_applied\\":\\"${BACK_IP}\\",\\"endpoint\\":\\"\\"}" 2>/dev/null || echo 000)
+case "$BCODE" in
+  000) echo "VEILERR: стук до панели не дошёл (код 000) — соединение без ответа, т.е. молчание меры #536 или закрытый наружу порт панели (#556)"; exit 15 ;;
+  *) echo "VEILBEAT: стук принят панелью, код ${BCODE}" ;;
+esac
 if [ -n "__TOK__" ]; then
-  RESP=$(curl -sk -m 20 -X POST "__REG_URL__" -H 'Content-Type: application/json' \\
+  RESP=$(curl -sk -m 20 --resolve "${BEAT_HOST}:${BEAT_PORT}:${BACK_IP}" -X POST "__REG_URL__" -H 'Content-Type: application/json' \\
          -d '{"tok":"__TOK__"}' 2>/dev/null || true)
   case "$RESP" in
     *'"ok": true'*|*'"ok":true'*) echo "VEILREG: фронт зарегистрирован в панели" ;;
@@ -24844,17 +24886,24 @@ def _relay_installer(hop, with_register=False):
     udp = " ".join(str(p) for p in (hop.get("udp_ports") or []))
     panel_port = int(CFG_CACHE.get("panel_port", 8444) or 8444)
     back = hop["back_ip"]
-    # #555: стук держится АДРЕСОМ бэка. Имя для этого не годится: со сказанным
-    # `hop_public_host` публикация переставляет имена ссылки, и среди них база
-    # (`_cf_record_names` держит `@`), то есть фронт бился бы сам в себя —
-    # локально порождённый пакет не проходит цепь `pr` (там `iifname != "lo"`),
-    # а на фронте `:8443` не слушает никто. Замер 25.10 на бою: до слова стук
-    # дошёл (`hop_register` в 08:24:54), после слова он был бы слеп. Адрес бэка
-    # и так стоит в `TUN_ENDPOINT`, поэтому ротация уже требует перестановки
-    # `relay.env`: одно переставление лечит и туннель, и стук (нога Р22).
-    beat_host = back
+    # #556 (доделка к #555): стук держится НАШИМ ИМЕНЕМ, а адресом — прицепкой
+    # `--resolve`: живой туннель → `TUN_PEER` (`10.30.0.1`, не меняется никогда),
+    # снятый туннель → публичный адрес бэка. Голым адресом стук идти не может: с
+    # адресом в URL SNI не отправляется, а соединению без имени мера #536 молчит —
+    # замер 25.10 на бою: 117 молчаний на адресе фронта (84 записи в кольце),
+    # `hop_beat` — 0, при этом тем же POST именем с прицепкой на 10.30.0.1 панель
+    # отвечала кодом 400 (нет токена — значит путь живой).
+    # Голым ИМЕНЕМ (без прицепки) тоже нельзя: со сказанным `hop_public_host`
+    # публикация переставляет имена ссылки, и среди них база (`_cf_record_names`
+    # держит `@`), то есть фронт бился бы сам в себя — локально порождённый пакет не
+    # проходит цепь `pr` (там `iifname != "lo"`), а на фронте `:8443` не слушает
+    # никто (#555 остаётся). Прицепка не зависит от DNS, поэтому ротация адреса бэка
+    # тоже не ломает стук: наружный адрес нужен только когда туннель снят.
+    beat_host = str(CFG_CACHE.get("panel_domain") or "").strip()
+    if not beat_host:
+        raise RuntimeError("панель не назвала своё имя (panel_domain пусто): стук адресом "
+                           "мера #536 гасит молчанием, а слепой фронт заводить нельзя (#556)")
     reg_url = "https://%s:%d/api/hop/register" % (beat_host, panel_port)
-    beat_url = "https://%s:%d/api/hop/beat" % (beat_host, panel_port)
     tok = (hop.get("tok") or "") if with_register else ""
     _hop_tunnel_for(hop)
     jk = dict(AWG_JUNK)
@@ -24877,7 +24926,8 @@ def _relay_installer(hop, with_register=False):
             .replace("__TUN_ENDPOINT__", "%s:%d" % (back, _hop_tun_port()))
             .replace("__MSS__", str(HOP_MSS))
             .replace("__TOK__", tok)
-            .replace("__BEAT_URL__", beat_url)
+            .replace("__BEAT_HOST__", beat_host)
+            .replace("__BEAT_PORT__", str(panel_port))
             .replace("__REG_URL__", reg_url))
     for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"):
         body = body.replace("__" + k.upper() + "__", str(jk.get(k, 0)))
@@ -25155,30 +25205,102 @@ def _hop_public(ip, port, timeout=1.6):
         return False
 
 _HOP_UDP_BURST = 4
+# Окно ПОСЛЕ вспышки: джиттер AmneziaWG (`Jmax=500`) копит пакеты пачками, и
+# последняя отправленная датаграмма физически не успевает вернуться в кадр `wait`.
+# Без запаса проба теряет возврат ровно на том порту, где её и просят (замер 25.10
+# на бою: `27443` дал «из 4 датаграмм вернулось 2» при двух зелёных из четырёх).
+_HOP_UDP_GRACE = 0.9
 
 
-def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_BURST):
+class _HopNonceSniffer:
+    """Считает СВОИ датаграммы, вернувшиеся сквозь релей, по подписи пробы.
+
+    Прежним свидетельством была разность агрегатного счётчика `veilhop0` по приёму
+    минус один шумовой сэмпл. Счётчик считает ВСЁ, что несёт туннель: трафик живых
+    подписчиков, пинги смотрителя, возвраты проб соседних портов. Замер 25.10 на
+    бою назвал цену обеим сторонам лжи: «пакетов принято туннелем 5 при отправленных
+    4 (шум idle 4)» — дельта больше `sent`; «вернулось 2 из 4» — высокий шумовой
+    сэмпл съел настоящий возврат на живом входе. Опасна обратная: на чужой дельте
+    молчаливый вход получает `up`, а на этом вердикте стоят врата `4б` слова
+    `hop_public_host`. Теперь ловим кадры сырым сокетом на туннельном интерфейсе и
+    считаем только те, где лежит неповторимая подпись ЭТОЙ пробы. Не root — `error`,
+    и проба говорит «не измерено», а не прежнюю шумовую оценку."""
+
+    def __init__(self, iface, nonce):
+        self.nonce = nonce
+        self.seen = set()
+        self.error = ""
+        self._stop = threading.Event()
+        self._sock = None
+        self._th = None
+        try:
+            s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+            s.bind((iface, 0))
+            s.settimeout(0.2)
+        except OSError as e:
+            self.error = str(e.strerror or e)[:80]
+            return
+        self._sock = s
+        self._th = threading.Thread(target=self._run, name="hop-sniffer", daemon=True)
+        self._th.start()
+
+    def _run(self):
+        n = len(self.nonce)
+        # предельный срок жизни: если проба бросила нас на исключении, слушатель
+        # обязан умереть сам, а не крутить сырой сокет до конца смены панели
+        end = time.monotonic() + 30
+        while not self._stop.is_set() and time.monotonic() < end:
+            try:
+                data = self._sock.recvfrom(2048)[0]
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            i = data.find(self.nonce)
+            if i >= 0:
+                # номер датаграммы в серии — байты сразу за подписью; трёх хватает,
+                # и тот же срез схлопывает второй экземпляр пакета (ICMP «порт
+                # закрыт» несёт копию заголовка с этой же подписью)
+                self.seen.add(data[i + n:i + n + 3])
+
+    def stop(self):
+        """Гасит слушателя и называет число СВОИХ датаграмм, принятых туннелем."""
+        self._stop.set()
+        if self._th is not None:
+            self._th.join(timeout=1.5)
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        return len(self.seen)
+
+
+def _hop_udp_probe(front_ip, port, mode="", wait=0.35, burst=_HOP_UDP_BURST,
+                   grace=_HOP_UDP_GRACE):
     """Проба UDP-входа через релей — не отнимая трафик у живого слушателя.
 
     Бэк шлёт несколько датаграмм на порт фронта. Релей разворачивает их в
     туннельный адрес бэка, то есть пакеты ОБЯЗАНЫ вернуться на ЭТУ ЖЕ машину с
     другой стороны. Отсюда два независимых свидетельства, и оба названы числом:
-      `rx`    — сколько пакетов туннельный интерфейс ПРИНЯЛ за окно пробы минус
-                шум idle-окна; это и есть «датаграмма дошла до бэка сквозь фронт»;
+      `rx`    — сколько СВОИХ датаграмм (по подписи пробы) принял туннельный
+                интерфейс за окно пробы; это и есть «датаграмма дошла до бэка
+                сквозь фронт»;
       `отклик` — что ответил порт: свой пакет или «порт закрыт» (ECONNREFUSED).
     Вердикт складывается из обоих, потому что по отдельности они врут:
-      «up»        — порт сам ответил, ИЛИ в туннель вернулось не меньше sent-1
-                    пакетов (сервис мог промолчать на наше месиво — WireGuard и
+      «up»        — порт сам ответил, ИЛИ вернулось не меньше sent-1 подписанных
+                    датаграмм (сервис мог промолчать на наше месиво — WireGuard и
                     Hysteria2 так и делают); `udp=True`;
-      «closed»    — вернулось достаточно пакетов И порт их отверг: DNAT+MASQUERADE
-                    живые, слушателя на порту нет; `udp=True` (путь доказан);
-      «refused»   — отвергнут пакет, а датаграмм в туннель не вернулось: отказ
+      «closed»    — вернулось достаточно подписанных датаграмм И порт их отверг:
+                    DNAT+MASQUERADE живые, слушателя на порту нет; `udp=True`
+                    (путь доказан);
+      «refused»   — отвергнут пакет, а своих датаграмм не вернулось: отказ
                     родил сам фронт (правила DNAT на порт нет или он закрыт в
                     security group) — путь через релей НЕ доказан; `udp=None`;
-      «silent»    — ни пакетов, ни отказа: UDP на фронт не проходит; `udp=False`;
+      «silent»    — ни своих датаграмм, ни отказа: UDP на фронт не проходит; `udp=False`;
       «direct»    — смотритель фронта держит прямой режим релея: возврат идёт мимо
                     туннеля и не отличим от отказа самого фронта; `udp=None`;
-      «unmeasured»— счётчик приёма туннеля не читается: отказ нельзя приписать
+      «unmeasured»— сырой слушатель туннеля не открылся: отказ нельзя приписать
                     релею; `udp=None`;
       «no-tunnel» — адрес туннеля на бэке не занят, мерить не с чего; `udp=None`.
     Сокет подключен к фронту и читает только СВОИ ответы и СВОИ ошибки: чужие
@@ -25189,15 +25311,6 @@ def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_
     ловятся вживую. До этого проба хопа знала только «tcp» — мёртвый WG-порт
     выглядел бы живым."""
     import errno
-    stats = "/sys/class/net/%s/statistics/rx_packets" % HOP_TUN_IF
-
-    def _rx():
-        try:
-            with open(stats, encoding="utf-8") as f:
-                return int(f.read().strip())
-        except Exception:
-            return None
-
     hold = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         hold.bind((HOP_TUN_BACK, 0))
@@ -25208,23 +25321,19 @@ def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_
                        "живёт): %s" % (HOP_TUN_IF, HOP_TUN_BACK,
                                        str(e.strerror or e)[:60])}
     hold.close()
-    if _rx() is None:
-        return {"udp": None, "state": "unmeasured", "sent": 0, "rx": None,
-                "why": "счётчик приёма туннеля %s недоступен (%s): возврат датаграмм "
-                       "нечем мерить, путь не доказан" % (HOP_TUN_IF, stats)}
     # Отправляющий сокет НАМЕРЕННО не привязан к туннельному адресу: замер L6 23.10
     # на паре показал, что облако бэка режет пакет, ушедший с чужого источника (с
     # `10.30.0.2` через наружный интерфейс датаграмма просто исчезала — «silent» на
     # живом релее). Источник выбирает ядро, а свидетельством релея остаётся `rx`.
+    magic = ("veilhop-probe %s " % secrets.token_hex(4)).encode()
+    sniffer = _HopNonceSniffer(HOP_TUN_IF, magic)
+    if sniffer.error:
+        return {"udp": None, "state": "unmeasured", "sent": 0, "rx": None,
+                "why": "сырой слушатель туннельного интерфейса %s не открылся (%s): "
+                       "возврат датаграмм нечем мерить, путь не доказан (#558)"
+                       % (HOP_TUN_IF, sniffer.error[:60])}
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(wait)
-    magic = ("veilhop-probe %s " % secrets.token_hex(4)).encode()
-    # шум ДО пробы: `keepalive` фронтов тоже приходит в туннель, и без вычитания
-    # три «живых» пакета рисовались бы на одном молчании
-    idle0 = _rx()
-    time.sleep(idle)
-    rx0 = _rx()
-    noise = (rx0 - idle0) if (idle0 is not None and rx0 is not None) else 0
     sent = 0
     reply = None
     refused = False
@@ -25262,12 +25371,8 @@ def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_
                     why = "ошибка пробы: %s" % str(e.strerror or e)[:60]
     finally:
         s.close()
-    rx1 = _rx()
-    if rx0 is None or rx1 is None:
-        return {"udp": None, "state": "unmeasured", "sent": sent, "rx": None,
-                "why": "счётчик приёма туннеля %s пропал во время пробы (%s): путь "
-                       "не доказан" % (HOP_TUN_IF, stats)}
-    got = max(0, (rx1 - rx0) - noise)
+    time.sleep(grace)
+    got = sniffer.stop()
     need = max(1, sent - 1)
     if reply is not None:
         verdict = "up"
@@ -25279,20 +25384,20 @@ def _hop_udp_probe(front_ip, port, mode="", wait=0.35, idle=0.4, burst=_HOP_UDP_
                % (HOP_TUN_IF, ", отказа тоже не было" if not refused else ""))
     elif refused and got >= need:
         verdict = "closed"
-        why = ("пакетов в туннель вернулось %d (шум idle %d), ядро бэка их отвергнуло: "
-               "DNAT+MASQUERADE живые, слушателя на порту нет" % (got, noise))
+        why = ("своих датаграмм в туннеле %d (отправлено %d), ядро бэка их отвергнуло: "
+               "DNAT+MASQUERADE живые, слушателя на порту нет" % (got, sent))
     elif refused:
         verdict = "refused"
-        why = ("отказ пришёл, но пакетов в туннель вернулось %d из %d (нужно ≥%d): отказ "
+        why = ("отказ пришёл, но своих датаграмм вернулось %d из %d (нужно ≥%d): отказ "
                "родился на самом фронте — правила DNAT на порт нет или порт закрыт в "
                "security group" % (got, sent, need))
     elif got >= need:
         verdict = "up"
-        why = ("пакетов принято туннелем %d при отправленных %d (шум idle %d): датаграммы "
-               "дошли до бэка сквозь фронт, сервис на них молчит" % (got, sent, noise))
+        why = ("своих датаграмм принято туннелем %d при отправленных %d: датаграммы "
+               "дошли до бэка сквозь фронт, сервис на них молчит" % (got, sent))
     elif got:
         verdict = "silent"
-        why = "из %d датаграмм вернулось %d, ответа нет" % (sent, got)
+        why = "из %d датаграмм вернулась %d, ответа нет" % (sent, got)
     else:
         verdict = "silent"
         why = "из %d датаграмм в туннель не вернулось ни одной, отказа нет" % sent
