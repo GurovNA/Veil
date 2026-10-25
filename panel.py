@@ -34299,12 +34299,15 @@ _MV_BASE_FILES = ["panel.py", "index.html", "install.sh", "agent.py", "manifest.
                   "bot_langs.json", "hops.json", "nodes.json", "mux_state.json",
                   "tg_mp_port.json", "globalping_history.json", "FIRST-LOGIN.txt",
                   "audit.json", "login_history.json", "github.token"]
-_MV_BASE_DIRS = ["certs", "avatars", "node_keys", "rulesets", "frontsite", "decoy", "appicons"]
+_MV_BASE_DIRS = ["certs", "avatars", "node_keys", "rulesets", "frontsite", "decoy", "appicons", "qr"]
 _MV_PRIVATE = {"config.json", "state.json", "sessions.json", "sessions_meta.json",
                "passkeys.json", "payments.json", "nodes.json", "hops.json", "bans.json",
                "sub_devices.json", "sub_prefs.json", "proto_activity.json", "bot_langs.json",
                "mux_state.json", "tg_mp_port.json", "mv_state.json", "github.token",
-               "FIRST-LOGIN.txt", "audit.json", "login_history.json", "tg_manual_links.json"}
+               "FIRST-LOGIN.txt", "audit.json", "login_history.json", "tg_manual_links.json",
+               # ключевая пара туннеля бэка (0600, здесь же закрытый WG-ключ) и
+               # снимок развязок обхода — состояние живой коробки, в дерево не едет (#549)
+               "hop_tunnel.json", "bypass_resolved.json"}
 _MV_SINGLE = "/tmp/veil-mv.tar.gz"
 
 
