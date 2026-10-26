@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.33"
+VERSION = "2.17.34"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -24509,7 +24509,17 @@ applied(){ /usr/bin/awg show "$TUN_IF" endpoints 2>/dev/null | awk '{print $2}' 
 # пустой — стук не дошёл ни разу), а приписка `--resolve` не зависит от публикации,
 # поэтому слово `hop_public_host` переставляет имена ссылки, но не стук.
 beat(){ local ap=$(applied) st=$1 dst=${BACK_IP}
-        [ -n "${BEAT_HOST:-}" ] && [ -n "${BEAT_PORT:-}" ] || return 0
+        if [ -z "${BEAT_HOST:-}" ] || [ -z "${BEAT_PORT:-}" ]; then
+            # #565: молчание стука из-за env, написанного ПРЕЖНИМ установщиком. Молчать
+            # нельзя (#556 тот же класс: без стука панель теряет фронт из виду), но и
+            # кричать каждые 30 с нельзя (#547: журнал раздувается собой). Один раз за
+            # запуск смотрителя — и имя причины, а не «стук не засчитан».
+            if [ "${BEAT_SAID:-0}" != 1 ]; then
+                say "стук не идёт: relay.env без BEAT_HOST/BEAT_PORT (#565) — переставь фронт заново"
+                BEAT_SAID=1
+            fi
+            return 0
+        fi
         [ "$st" = tun ] && dst=${TUN_PEER}
         curl -sk -m 5 --resolve "${BEAT_HOST}:${BEAT_PORT}:${dst}" -X POST "https://${BEAT_HOST}:${BEAT_PORT}/api/hop/beat" \\
              -H 'Content-Type: application/json' \\
@@ -25815,7 +25825,11 @@ def _hop_keeper_tick():
                    mode=h.get("relay_mode") or "?", beat_age=(now - beat) if beat else None,
                    silent=silent, tun_ping=("нет данных" if ping is None else ping),
                    back_applied=applied, back_live=live_back, drift=drift,
+                   never_beat=(beat == 0),
                    note=("фронт молчит и туннель не отвечает" if gone else
+                         "ни одного стука с установки: env фронта написан без "
+                         "BEAT_HOST (#565) — перестановка фронта вернёт стук"
+                         if silent and beat == 0 else
                          "фронт молчит, туннель отвечает" if silent else
                          "адрес бэка на фронте не совпадает с живым" if drift else
                          "фронт на связи"))
@@ -28945,6 +28959,133 @@ def _ensure_rsyslog_selfflood_filter():
     except Exception as e:
         print("rsyslog selfflood: " + str(e)[:120], flush=True)
         return False
+
+
+# #564: семи юнитам коробки ранний убийца не указан `OOMScoreAdjust`-ом, и до этого круга
+# ни одна из семи крышек не жила ни в дереве, ни в измерении — их накладывали руками.
+# Руками наложенное исчезает вместе с коробкой и расходится с тем, что должно стоять,
+# молча: панель обязана сама ставить крышку и сама докладывать, где живое число не
+# совпало с записанным. Порядок чисел — урок #542: полностью неубиваемый процесс не
+# уходит один, а выносит соседей, поэтому запас от `-1000` есть у всех, кроме `ssh`
+# (без него коробку уже нечем починить).
+_VEIL_OOM_SHIELDS = (
+    ("ssh.service", -1000, "без входа по ssh коробку нечем починить"),
+    ("systemd-networkd.service", -900, "без сети коробка не дышит: адреса и маршруты"),
+    ("systemd-resolved.service", -900, "без резолва до панели не достать ни переносчику, "
+                                       "ни подписчику"),
+    ("vpnpanel.service", -700, "панель судит о коробке, и её молчание — слепота"),
+    ("telemt.service", -700, "телеграм-подписчик раздаёт ссылки живым клиентам"),
+    ("veil-teleconf-witness.service", -700, "свидетель звонков: его гибель необъяснима "
+                                            "задним числом"),
+    ("xray.service", -500, "основной вход клиентов"),
+)
+_VEIL_OOM_POLICY = "continue"
+
+
+def _veil_oom_dropin(unit):
+    """Путь дроп-ина крышки для юнита (`ssh.service` -> `ssh.service.d/oom.conf`)."""
+    return "/etc/systemd/system/%s.d/oom.conf" % unit
+
+
+def _veil_oom_body(why, score):
+    return ("# ВЕИЛ (#562, #542, #564): %s.\n"
+            "# Ранний убийца выбирает жертву по счёту, а не по разуму: когда память "
+            "кончается,\n"
+            "# он косит то, без чего коробка остаётся без дыхания. Крышку ставит панель, "
+            "она же\n"
+            "# докладывает о расхождении живого числа с записанным.\n"
+            "[Service]\nOOMPolicy=%s\nOOMScoreAdjust=%d\n"
+            % (why, _VEIL_OOM_POLICY, score))
+
+
+def _veil_oom_read(path):
+    """Последние директивы крышки из файла: (число или None, политика или None)."""
+    score = policy = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^\s*OOMScoreAdjust\s*=\s*(-?\d+)\s*$", line)
+                if m:
+                    score = int(m.group(1))
+                    continue
+                m = re.match(r"^\s*OOMPolicy\s*=\s*(\w+)\s*$", line)
+                if m:
+                    policy = m.group(1)
+    except OSError:
+        pass
+    return score, policy
+
+
+def _veil_oom_effective(unit):
+    """Живое состояние юнита: (загрузка, число крышки); число `None` — не прочитано."""
+    try:
+        r = subprocess.run(["systemctl", "show", unit, "-p", "LoadState",
+                            "-p", "OOMScoreAdjust", "--value"],
+                           capture_output=True, text=True, timeout=15)
+    except Exception:
+        return "не прочитано", None
+    # `--value` печатает два свойства в две строки тем же порядком, что в аргументах.
+    parts = (r.stdout or "").split("\n")
+    state = (parts[0] or "").strip() if r.returncode == 0 else "не прочитано"
+    live = None
+    try:
+        live = int((parts[1] or "").strip())
+    except (ValueError, IndexError):
+        pass
+    return state, live
+
+
+def _ensure_oom_shields():
+    """Поставить и сверить крышки раннего убийцы; НИ ОДНА служба не перезапускается.
+
+    Возвращает список юнитов, которым крышка была записана (файл отсутствовал или нёс
+    не те директивы). Идемпотентность меряется СМЫСЛОМ, а не байтами: комментарии в
+    наложенных руками файлах разные, а важны две директивы.
+
+    Перезапуска панель не делает: `OOMScoreAdjust` применяется при старте юнита, а
+    дергать `ssh` или сетевой стек втихаря — тот же класс, что #552: молчаливая цена
+    собственной починки. Поэтому расхождение живого числа с записанным называется
+    отдельной строкой и отдельной записью журнала.
+
+    Крышку не вешают вслепую: пока состояние юнита не прочитано, панель не пишет его файл
+    и говорит, чем именно чтение не удалось (#518, #523 — успех по факту попытки).
+    Порядок один: прочитал юнит — решил про файл — сравнил живое число."""
+    written, skipped = [], []
+    try:
+        for unit, score, why in _VEIL_OOM_SHIELDS:
+            state, live = _veil_oom_effective(unit)
+            if state != "loaded":
+                skipped.append("%s(%s)" % (unit, state))
+                print("oom shield %s: юнит `%s` — крышку не ставим и не сверяем (#564)"
+                      % (unit, state), flush=True)
+                continue
+            path = _veil_oom_dropin(unit)
+            cur_score, cur_policy = _veil_oom_read(path)
+            if cur_score != score or cur_policy != _VEIL_OOM_POLICY:
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(_veil_oom_body(why, score))
+                    written.append(unit)
+                except OSError as e:
+                    print("oom shield %s: файл не записан (%s) — крышки нет, успех не "
+                          "объявлен (#523)" % (unit, str(e)[:60]), flush=True)
+                    continue
+            if live != score:
+                print("oom shield %s: на диске %s, живо %s — директива применяется при "
+                      "старте юнита, панель его не трогает (#564)"
+                      % (unit, score, "не прочитано" if live is None else live), flush=True)
+                _audit_throttled("oom_shield_drift", gap=3600, unit=unit,
+                                 disk=score, live=live)
+        if written:
+            subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=60)
+            _audit("oom_shields_written", units=",".join(written))
+        if skipped:
+            _audit("oom_shields_skipped", units=",".join(skipped))
+        return written
+    except Exception as e:
+        print("oom shields: " + str(e)[:120], flush=True)
+        return written
 
 
 # ---------- P6: зеркалирование rule-set'ов RU/IR + полный sing-box конфиг ----------
@@ -43908,6 +44049,7 @@ if __name__ == "__main__":
         _ensure_logrotate()
         _ensure_telemt_log_filter()
         _ensure_rsyslog_selfflood_filter()
+        _ensure_oom_shields()
     except Exception as e:
         print("f2b init: " + str(e), flush=True)
     try:
