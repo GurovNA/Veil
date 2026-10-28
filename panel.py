@@ -29,7 +29,7 @@ TOKEN_FILE = f"{BASE}/github.token"
 TELEMT_API = "http://127.0.0.1:9091"
 TELEMT_CONF = "/etc/telemt/telemt.toml"
 REPO = "GurovNA/Veil"
-VERSION = "2.17.35"
+VERSION = "2.17.37"
 # 2.15.0: «🟡 кнопка вместо танцев + терминал перестал врать + WARP удалён».
 #        Облако: вместо «прочитай чек-лист и идистрай» появилась кнопка «🟡 создать облачный
 #        вход» — сама заводит веб-транспорт (ws/xhttp/gRPC + TLS) на порт, который проксирует
@@ -1957,6 +1957,23 @@ SBX = (os.environ.get("VEIL_SYS_SANDBOX") or "").strip()
 # подменил транспорт, обязан сказать и слово: иначе замок #502 глушит и его. См. `_cf_api`.
 _REAL_URLOPEN = urllib.request.urlopen
 _CF_DOOR_DECLARED = False
+# #677: перебор адресов начинается с четвёрки — иначе карточка прыжка платит за
+# мёртвую шестёрку. Живой замер боя 28.10: у `api.cloudflare.com` шесть адресов из
+# шести по IPv6 молчат (провайдер режет), а все шесть по IPv4 отвечают за `7` мс.
+# `urllib` берёт адреса в порядке резолвера, имена выходят шестёркой вперёд, и
+# первое обращение после остывания кеша имён стоило `30`–`45` с — вкладка прыжка
+# висела именно столько, а карточка ходит в зону по разу на имя. Порядок меняем
+# здесь один раз на процесс: сортировка устойчивая, адреса не теряются, шестёрка
+# остаётся запасным путём.
+_GAI_REAL = socket.getaddrinfo
+
+def _gai_v4_first(host, port, family=0, type=0, proto=0, flags=0):
+    res = _GAI_REAL(host, port, family, type, proto, flags)
+    if len(res) > 1 and family != socket.AF_INET6:
+        res = sorted(res, key=lambda x: 0 if x[0] == socket.AF_INET else 1)
+    return res
+
+socket.getaddrinfo = _gai_v4_first
 # #533: намерие #529 названо словом, а не литералом. Верхнеуровневый `if` с `__main__`
 # в тесте обязан быть в файле ОДИН: приборы ищут блок старта первым таким `if`
 # (`aa1`, `cc11`, `z1`), и второй страж — хоть и правильный по смыслу — уводил их в
@@ -4415,11 +4432,16 @@ def _build_xray_cfg(st, force_proto=None):
     routing_rules = [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]
     outbounds = [{"protocol": "freedom", "tag": "direct"}]
 
-    # #503: `Gemini` своим кольцом наружу — с привязкой к штатному выходу, чтобы адрес
-    # Google не утаскивал его в российское окно `YouTube`. Порядок правил здесь важен:
-    # `Xray` берёт первое совпадение, поэтому развод стоит выше `ru_bypass`.
+    # #503: `Gemini` своим кольцом наружу, чтобы адрес Google не утаскивал его в
+    # российское окно `YouTube`. #668: когда четвёрку несёт своё звено (`gsw0`),
+    # привязки нет — маршрут выбирает ядро по правилу, и кольцо остаётся затем, чтобы
+    # домен не уехал под `ru_bypass`. #676: в прямом режиме кольцо несёт метку сокета —
+    # привязка разминуется с правилом окна на любом адресе вне нашего пула, метка нет.
+    # Порядок правил здесь важен: `Xray` берёт первое совпадение, поэтому развод стоит
+    # выше `ru_bypass`.
     if CFG_CACHE.get("gemini_direct"):
-        _gd_split(outbounds, routing_rules, _gd_egress_dev()[0])
+        _gd_split(outbounds, routing_rules, _gd_ring_dev()[0],
+                  _gd_link_mode() != "link")
 
     if CFG_CACHE.get("ru_bypass"):
         routing_rules.append({
@@ -18614,14 +18636,64 @@ _GD_CLASH_HOSTS = tuple(_YW_DOMAINS) + (
     "pagead2.googlesyndication.com", "ade.googlesyndication.com",
     "tpc.googlesyndication.com")
 _GD_CLASH_CACHE = [0.0, set(), set()]   # [возраст снимка, четвёрка, шестёрка]
+# #668 вариант А (слово хозяина 28.10, на вопрос «как вывести Gemini из „России" в
+# глазах Google?» — «четвёртое звено WARP»): у развода своё четвёртое звено. Штатный
+# выход коробки база `Google` читает Россией, и это измерено числом: `16` адресов пула
+# из `16` дают `GL=RU` через `net0`, при том что провайдер маркирует коробку `NL`.
+# Звено — ровно то же, что у игры (#509): общий корень `_tw_*`, свой аккаунт, свой
+# интерфейс, своя таблица, свои приоритеты. От окна его отличает направление: окно
+# `YouTube` намерено держит нас в России, звено развода — выводит из неё.
+_GD_IF = "gsw0"
+_GD_TBL = "207"
+_GD_REG = _GD_DIR + "/reg.json"
+_GD_LINK = _GD_DIR + "/link.json"
+_GD_MTU = "1280"
+_GD_KEEP = "25"
+_GD_BYPASS_MARK = 48     # 0x30 — у TikTok 0x2d, у YouTube 0x2e, у игры 0x2f
+# У соседей обход стоит НИЖЕ базы их правил; сюда — не может: ниже `110` живёт
+# медиа-путь, который растёт от `100` вверх, и лезть в чужой диапазон нельзя.
+# Правило `fwmark 0x30 → main` — не щуп, а сам развод (#676): окно накрывает `Google`
+# по адресу, а клиент приносит свои адреса (журнал службы 28.10: `172.217.119.4` вне
+# пула, `424` запроса в кольце развода). Сквозной замер 28.10 на живой службе
+# `Xray 26.3.27` против окна боевой формы (правило на сеть `Google` в таблицу `250`,
+# маршрут той же сети на туннель) судил четыре кольца: звено без метки гибнет в обеих фазах, метка без
+# правила гибнет, метка с правилом отвечает `200`. Привязка к `net0` на ядре
+# 7.0.0-38 сама проваливается из таблицы окна в `main` (маршрут окна не принимает
+# чужой `oif`) — это свойство ядра, и опираться на него нельзя: метка и правило
+# работают и там, где провала нет. Порядок: `175` выше окна YouTube (`600+`) и
+# TikTok (`200+`), ниже нашего потолка исключений (`110..173`), медиа-путь — ниже.
+_GD_BYPASS_PRIO = 175    # сразу за нашим потолком 110..173, до обхода TikTok (190)
+_GD_ROT = 900.0          # свой счётчик: замена аккаунта на одном звене не запрещает другую
+_GD_STALL = 300.0        # порог молчания: живое ядро перерукпожимается само не позже 120 с
+_GD_GRACE = 240.0        # облако отвечает на новый ключ не сразу
+_GD_LOCK = threading.Lock()   # одна пересборка звена за раз; регистрация — под этим замком
+_GD_LINK_ERR = ""
+_GD_ROTATE = 0.0
+_GD_BUILT_AT = 0.0
 # Туннельные интерфейсы под запретом: привязавшись к звену окна, отправили бы `Gemini`
-# обратно в Россию — то есть сделали бы ровно то, от чего развод лечит.
-_GD_FORBID = (_TW_IF, _YW_IF, _GM_IF, _MR_IF, WG_IFACE, AWG_IFACE)
+# обратно в Россию — то есть сделали бы ровно то, от чего развод лечит. Своё звено
+# (`gsw0`) здесь же: кольцу развода привязываться к нему НЕЧЕГО — маршрут до накрытого
+# адреса выбирает ядро по правилу, а привязка к звену убила бы всякий поток, чей адрес
+# в набор не попал (замер 28.10: голый сокет, привязанный к `gmw0`, не принёс ни
+# одного ответа из `16`).
+_GD_FORBID = (_TW_IF, _YW_IF, _GM_IF, _MR_IF, _GD_IF, WG_IFACE, AWG_IFACE)
 
 
 def _gd_want():
     """Одно слово оператора: выводить ли `Gemini` из окна `YouTube`."""
     return bool(CFG_CACHE.get("gemini_direct"))
+
+
+def _gd_warp():
+    """Второе слово оператора: везёт ли четвёрку собственное `WARP`-звено.
+
+    Развод и звено сказываются раздельно, и причина названа числом, а не опасением:
+    промер #492 дал `4` Россия из `4` прогонов, живой подъём этого звена `28.10` дал
+    `8` `RU` из `8` — при том, что штатный выход той же коробки ответил `8` `SE` из
+    `8`. То есть `Cloudflare` выводит поток из окна честно, но страну в глазах
+    `Google` не меняет. Включать его вслед за разводом молча нельзя: коробке, чей
+    собственный выход читается не Россией, звено принесло бы ухудшение."""
+    return bool(CFG_CACHE.get("gemini_warp"))
 
 
 def _gd_egress_dev():
@@ -18648,27 +18720,200 @@ def _gd_egress_dev():
     return "", "штатный выход без интерфейса"
 
 
-def _gd_outbound(dev):
-    return {"protocol": "freedom", "tag": _GD_TAG,
-            "streamSettings": {"sockopt": {"interface": dev}}}
+def _gd_outbound(dev, direct=False):
+    """Кольцо наружу: привязка к `dev` и метка — либо НЕпривязанное, когда везёт звено.
+
+    Непривязанное кольцо — не «забыли привязать», а второй способ: когда четвёрка едет
+    звеном, маршруту до накрытого адреса указывают ядро (`rule` → таблица звена), и
+    привязка только отняла бы поток у тех адресов, что в набор не попали.
+
+    #676: в прямом режиме кольцо несёт метку сокета. Привязки к `dev` мало: политика
+    судит адрес НАЗНАЧЕНИЯ, и адрес `Google` вне пула (журнал боя: `172.217.119.4`)
+    уезжает в таблицу окна, как ни привязывай сокет, — привязка разминуется с правилом
+    только когда адрес в наш набор попал. Метка же уводит в `main` любой адрес."""
+    ob = {"protocol": "freedom", "tag": _GD_TAG}
+    sock = {}
+    if dev:
+        sock["interface"] = dev
+    if direct:
+        sock["mark"] = _GD_BYPASS_MARK
+    if sock:
+        ob["streamSettings"] = {"sockopt": sock}
+    return ob
 
 
 def _gd_rule():
     return {"type": "field", "domain": list(_GD_DOMAINS), "outboundTag": _GD_TAG}
 
 
-def _gd_split(outbounds, routing_rules, dev):
+def _gd_split(outbounds, routing_rules, dev, direct=False):
     """Кладёт развод в сборку: своё кольцо наружу и своё правило по доменам.
 
     Правило добавляется ПОСЛЕ `api`, но ДО `ru_bypass` (вызывающий код держит порядок):
     `Xray` берёт первое совпадение, и российская витрина не должна успеть первой.
     Отдельная функция потому, что судить форму обязаны без командной строки —
-    `_gd_egress_dev` читает ядро, а форма правила от ядра не зависит."""
-    if not dev:
-        return False
-    outbounds.append(_gd_outbound(dev))
+    `_gd_egress_dev` читает ядро, а форма правила от ядра не зависит.
+    #668: кольцо нужно и без привязки — оно выводит `Gemini` из-под `ru_bypass`, а
+    звено уже делает свою половину. Поэтому пустой `dev` больше не отказ.
+    #676: `direct` — четвёрка едет не звеном; тогда кольцо метится, и метка, а не
+    привязка, уводит поток мимо таблицы окна в `main`."""
     routing_rules.append(_gd_rule())
+    outbounds.append(_gd_outbound(dev, direct))
     return True
+
+
+def _gd_link_mode():
+    """Чем ядро сегодня везёт четвёрку: `link` — звеном, `main` — исключением, `off`.
+
+    Читается состояние смотрителя, а не живые правила: решение «привязывать ли кольцо»
+    должно совпадать с тем, что смотритель сделал тик назад, иначе кольцо и правило
+    разойдутся с маршрутом и #662 поймает нас на пересборке каждый тик."""
+    return str((_load(_GD_LINK, {}) or {}).get("mode") or "off")
+
+
+def _gd_ring_dev():
+    """Чем обязано быть привязано кольцо: пустая строка — звеном, выход — напрямую.
+
+    Возвращает (имя, отказ), тот же контракт, что у `_gd_egress_dev`: при живом звене
+    отказа нет и в помине — кольцу там привязываться не к чему и незачем."""
+    if _gd_want() and _gd_warp() and _gd_link_mode() == "link":
+        return "", ""
+    return _gd_egress_dev()
+
+
+# ---------- #668: четвёртое звено (`gsw0`/таблица `207`) — те же адаптеры, что у игры ----------
+
+def _gs_registered():
+    return _tw_registered(_GD_REG)
+
+
+def _gs_rules():
+    return _tw_rules(_GD_TBL)
+
+
+def _gs_flush_rules():
+    _tw_flush_rules(_GD_TBL)
+
+
+def _gs_sync(nets, reg):
+    return _tw_sync(nets, reg, tbl=_GD_TBL, dev=_GD_IF, prio_base=_GD_PRIO_BASE,
+                    mark=_GD_BYPASS_MARK, bprio=_GD_BYPASS_PRIO)
+
+
+def _gs_link_up(reg, nets):
+    return _tw_link_up(reg, nets, dev=_GD_IF, keep=_GD_KEEP, mtu=_GD_MTU,
+                       tbl=_GD_TBL, prio_base=_GD_PRIO_BASE,
+                       mark=_GD_BYPASS_MARK, bprio=_GD_BYPASS_PRIO)
+
+
+def _gs_link_ready(nets):
+    return _tw_link_ready(nets, tbl=_GD_TBL, dev=_GD_IF)
+
+
+def _gs_handshake_age():
+    return _tw_handshake_age(_GD_IF)
+
+
+def _gs_rekey():
+    return _tw_rekey(_GD_IF, age_fn=_gs_handshake_age)
+
+
+def _gs_link_exists():
+    rc, _, _ = _tw_cmd("ip", "link", "show", _GD_IF)
+    return rc == 0
+
+
+def _gs_teardown():
+    """Снять звено целиком: правила, обход, интерфейс. Слово выключено — и пути нет."""
+    _gs_flush_rules()
+    _tw_bypass_del(_GD_BYPASS_MARK)
+    _tw_cmd("ip", "link", "del", _GD_IF)
+
+
+def _gs_retire(reason):
+    """Мёртвый аккаунт в расход — тот же приговор, что у соседей, но свой счётчик."""
+    global _GD_ROTATE
+    now = time.time()
+    if now - _GD_ROTATE < _GD_ROT:
+        _gs_teardown()
+        return reason + "; новый аккаунт не раньше чем через %d с" % int(
+            _GD_ROT - (now - _GD_ROTATE))
+    _GD_ROTATE = now
+    _gs_teardown()
+    try:
+        os.remove(_GD_REG)
+    except OSError:
+        return reason + "; аккаунт не снять"
+    return reason
+
+
+def _gs_tick(nets, pool):
+    """Смотритель четвёртого звена: поднимает `gsw0`, судит молчание, меняет аккаунт.
+
+    Возвращает (режим, регистрация): `link` — четвёрку несёт звено, `main` — звена нет
+    и четвёрку держит исключение в `main` (вне окна, но выход остаётся российским:
+    хуже, чем звено, зато `Gemini` хотя бы отвечает), `off` — слова оператора нет.
+    Молчанием судит НЕ `ping` до адреса `Google`: тот же урок, что у #509 — живое ядро
+    перерукпожимается само не позже `120` с, а отсутствие ответа облака на перерук
+    и есть смерть. Регистрация под `_GD_LOCK`: гонку клика с тиком (#494) закрываем
+    сразу для четвёртого гонщика."""
+    global _GD_LINK_ERR, _GD_BUILT_AT
+    if SBX:
+        return "off", None
+    st = _load(_GD_LINK, {}) or {}
+    if not (_gd_want() and _gd_warp()):
+        if _gs_link_exists() or _gs_rules():
+            _gs_teardown()
+        st.update({"mode": "off", "up": False, "count": 0, "nets": 0,
+                   "handshake_age": None, "error": "", "ts": _now_iso()})
+        _save(_GD_LINK, st, 0o600)
+        return "off", None
+    if not nets:
+        # Резолв молчит — набор пуст. Живое звено на пустом наборе не пересобираем:
+        # `wg set` с пустыми `allowed-ips` — это отказ, а не «ничего не менять».
+        st.update({"mode": "main", "up": False, "count": 0,
+                   "error": "адресов `Gemini` не дождались — звено не строим",
+                   "ts": _now_iso()})
+        _save(_GD_LINK, st, 0o600)
+        return "main", None
+    with _GD_LOCK:
+        reg = _gs_registered()
+        if not reg:
+            reg, why = _tw_register(dest=_GD_REG)
+            if not reg:
+                _GD_LINK_ERR = why
+                st.update({"mode": "main", "up": False, "error": why,
+                           "ts": _now_iso()})
+                _save(_GD_LINK, st, 0o600)
+                return "main", None
+        now = time.time()
+        age = _gs_handshake_age()
+        if not _gs_link_exists() or not _gs_link_ready(nets):
+            err = _gs_link_up(reg, nets)
+            age = _gs_handshake_age()
+            _GD_BUILT_AT = now
+        else:
+            err = _gs_sync(nets, reg)
+        tgt = _tw_covered_ip(pool, nets)
+        if err == "" and (age is None or age > _GD_STALL):
+            if age is None and now - _GD_BUILT_AT < _GD_GRACE:
+                # Первое рукопожатие ещё не успело случиться: правила звена уже лежат,
+                # и поток ждёт облако, а не уезжает в окно.
+                err = "ждём ответ облака: рукопожатия ещё нет"
+            else:
+                age = _gs_rekey()
+                if age is None and not (tgt and _tw_carries(tgt, _GD_IF)):
+                    err = _gs_retire("звено молчит: облако не принял перерукпожатие")
+                    age = None
+    mode = "link" if ((err == "" or "рукопожатия" in err) and _gs_link_ready(nets)) \
+        else "main"
+    _GD_LINK_ERR = err
+    st.update({"mode": mode, "up": err == "", "count": len(nets),
+               "handshake_age": age, "error": err,
+               "tunnel_v4": (reg["tunnel_v4"] if mode == "link" else ""),
+               "ts": _now_iso()})
+    _save(_GD_LINK, st, 0o600)
+    return mode, (reg if mode == "link" else None)
 
 
 def _gd_split_sig(cfg):
@@ -18744,6 +18989,8 @@ def _gd_applied(force=False):
                "tag": ob is not None,
                "dev": str(((ob.get("streamSettings") or {}).get("sockopt") or {})
                           .get("interface") or "") if ob else "",
+               "mark": int(((ob.get("streamSettings") or {}).get("sockopt") or {})
+                           .get("mark") or 0) if ob else 0,
                "rule": any(r.get("outboundTag") == _GD_TAG
                            for r in ((cfg.get("routing") or {}).get("rules") or [])),
                "stale": stale,
@@ -18751,7 +18998,7 @@ def _gd_applied(force=False):
                "sig_drift": shifted, "sig_by": by, "sig": sig}
     except Exception as e:
         res = {"read": False, "error": str(e)[:120], "tag": False, "dev": "",
-               "rule": False, "stale": False, "foreign": False,
+               "mark": 0, "rule": False, "stale": False, "foreign": False,
                "sig_drift": False, "sig_by": "", "sig": ""}
     _GD_APPLIED_CACHE[0] = now
     _GD_APPLIED_CACHE[1] = res
@@ -18862,15 +19109,42 @@ def _gd_rules(fam=4):
     return got
 
 
-def _gd_flush():
-    """Снять оба исключения: слово выключено — окно снова накрывает всё, как до развода."""
-    for fam in (4, 6):
-        for prio, _net in _gd_rules(fam):
-            _tw_cmd("ip", *(["-6"] if fam == 6 else []) +
+def _gd_flush(fam=None):
+    """Снять исключения в `main`: слово выключено — окно снова накрывает всё, как до развода.
+
+    #668: четвёрка больше не живёт исключением, когда звено живо, — снимать её надо
+    отдельно от шестёрки, и этот читатель судит именно по `lookup main`."""
+    for f in ((4, 6) if fam is None else (fam,)):
+        for prio, _net in _gd_rules(f):
+            _tw_cmd("ip", *(["-6"] if f == 6 else []) +
                     ["rule", "del", "priority", str(prio)])
 
 
-def _gd_sync(nets4, nets6):
+def _gd_main(fam, nets):
+    """Переложить исключение одного семейства в `main` — ровно тем же способом, что и до звена."""
+    have = {n for _, n in _gd_rules(fam)}
+    if have == set(nets):
+        return ""
+    _gd_flush(fam)
+    err = ""
+    if fam == 6:
+        for i, net in enumerate(nets):
+            rc, _, e = _tw_cmd("ip", "-6", "rule", "add",
+                               "priority", str(_GD_PRIO_BASE + i),
+                               "to", net, "lookup", "main")
+            if rc != 0 and not err:
+                err = "исключение шестёрки не поставлено: " + e[:70]
+    else:
+        for i, net in enumerate(nets):
+            rc, _, e = _tw_cmd("ip", "rule", "add",
+                               "priority", str(_GD_PRIO_BASE + i),
+                               "to", net, "lookup", "main")
+            if rc != 0 and not err:
+                err = "исключение четвёрки не поставлено: " + e[:70]
+    return err
+
+
+def _gd_sync(nets4, nets6, mode="main", reg=None):
     """Пустить `Gemini` мимо окна на уровне ядра.
 
     Пока развод жил только в маршрутизации `Xray`, он не касался подписчиков
@@ -18880,25 +19154,25 @@ def _gd_sync(nets4, nets6):
     окон чинит это для всех — и для веерных входов, и для потоков `Xray`, названных
     адресом (таких в журнале службы 53 %).
 
+    #668 добавляет второй способ для четвёрки: когда звено живо, те же приоритеты
+    ведут не в `main`, а в таблицу звена — и выход перестаёт быть российским.
+    Шестёрка всегда живёт исключением: адреса у звена только четвёртые.
+
     Набор перекладываем целиком и только когда он изменился: снимать и ставить
     правило на каждом тике — значит на долю секунды возвращать поток в окно."""
-    have4 = {n for _, n in _gd_rules(4)}
-    have6 = {n for _, n in _gd_rules(6)}
-    if have4 == set(nets4) and have6 == set(nets6):
-        return ""
-    _gd_flush()
-    err = ""
-    for i, net in enumerate(nets4):
-        rc, _, e = _tw_cmd("ip", "rule", "add", "priority", str(_GD_PRIO_BASE + i),
-                           "to", net, "lookup", "main")
-        if rc != 0 and not err:
-            err = "исключение четвёрки не поставлено: " + e[:70]
-    for i, net in enumerate(nets6):
-        rc, _, e = _tw_cmd("ip", "-6", "rule", "add", "priority", str(_GD_PRIO_BASE + i),
-                           "to", net, "lookup", "main")
-        if rc != 0 and not err:
-            err = "исключение шестёрки не поставлено: " + e[:70]
-    return err
+    if mode == "link" and reg:
+        # приоритеты 110.. занятые `main`-исключением, звену свободны: освобождаем
+        # их раньше, чем `_tw_sync` станет ставить свои правила
+        _gd_flush(4)
+        return _gs_sync(nets4, reg) or _gd_main(6, nets6)
+    # звена нет: снимаем правила, которые вели бы в пустоту, и держим четвёрку
+    # исключением — вне окна, пусть и с российским выходом
+    _gs_flush_rules()
+    err = _gd_main(4, nets4) or _gd_main(6, nets6)
+    # #676: само разводное правило обязано стоять ДО того, как служба начнёт метить
+    # кольцо, — иначе помеченный поток до первого тика уходил бы в таблицу окна.
+    berr = _tw_bypass_on(_GD_BYPASS_MARK, _GD_BYPASS_PRIO)
+    return err or berr
 
 
 def _gd_escape(ip):
@@ -18917,14 +19191,18 @@ def _gd_escape(ip):
     return m.group(1) if m else "main"
 
 
-def _gd_region(ip, dev, timeout=8):
-    """Страна в ответе Google с одного адреса: с привязкой к `dev` или как есть.
+def _gd_region(ip, dev, timeout=8, mark=0):
+    """Страна в ответе Google с одного адреса: привязка и метка те же, что у кольца.
 
-    Тот же способ, что у окна `YouTube`, только вместо метки привязка — метку это ядро
-    `Xray` не передаёт (замерено), и мерить способом, которого в конфиге нет, было бы
-    обманом на карточке. Имя в щупе берём хозяйское (`_YW_HOST`), а не `Gemini`: страна
-    в ответе `Google` ставится по адресу выхода, поэтому сравнивать надо ровно те же
-    два числа, что сверяет окно, — с привязкой и без неё."""
+    Имя в щупе берём хозяйское (`_YW_HOST`), а не `Gemini`: страна в ответе `Google`
+    ставится по адресу выхода, поэтому сравнивать надо ровно те же два числа, что
+    сверяет окно, — через развод и через окно.
+
+    #676: прямое кольцо несёт метку сокета (замер 28.10 на ядре 26.3.27: ядро
+    передаёт её — `14` пакетов `0x5a`), поэтому и щуп ставит ту же метку: мерить
+    привязкой способ, которого в конфиге больше нет, было бы обманом на карточке.
+    Щуп при этом судит чужое правило ядра, а не своё кольцо, — это и нужно: карточка
+    обязана называть страну, которую увидит подписчик."""
     if not ip:
         return "", "адреса Gemini не дождались"
     s = None
@@ -18933,6 +19211,8 @@ def _gd_region(ip, dev, timeout=8):
         s.settimeout(timeout)
         if dev:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode())
+        if mark:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, mark)
         s.connect((ip, 443))
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
@@ -18993,19 +19273,23 @@ def _gd_probe(force=False):
         return
     _GD_PROBE_AT = now
     st = _load(_GD_STATE, {}) or {}
-    dev, why = _gd_egress_dev()
+    dev, why = _gd_ring_dev()
     ap = _gd_applied(force=True)
     nets = [n for _, n in _tw_rules(_YW_TBL)]
     pool = _gd_pool()
     cov = len([ip for ip in pool if _tw_covered_ip([ip], nets)])
     tgt = _tw_covered_ip(pool, nets) or (pool[0] if pool else "")
     rs, rw, errs = "", "", []
-    if tgt and dev:
-        rs, e1 = _gd_region(tgt, dev)
+    if tgt:
+        # `dev` пуст, когда четвёрку несёт звено: тогда щуп идёт как есть, и правило
+        # само кладёт поток в таблицу звена — мерить «с привязкой» к `gsw0` нельзя,
+        # этот замер 28.10 не принёс ни одного ответа на голом сокете. В прямом режиме
+        # щуп ставит ту же метку, что несёт кольцо (#676).
+        rs, e1 = _gd_region(tgt, dev,
+                            mark=(0 if _gd_link_mode() == "link" else _GD_BYPASS_MARK))
         errs.append(e1)
-    elif not tgt:
-        errs.append("адреса Gemini под окном нет — сравнивать не с чем" if cov == 0
-                    else "адресов Gemini не дождались")
+    else:
+        errs.append("адреса Gemini не дождались — сравнивать не с чем")
     # Число окна берёт свой собственный щуп, а не наш «как есть»: адресом, которым
     # мы мерили окно, теперь правит исключение ядра, и щуп показывал бы прямой выход
     # вместо окна (замер 22.10 на бою: `region_window` стал `DE` там, где окно
@@ -19018,26 +19302,39 @@ def _gd_probe(force=False):
     if not ap.get("read"):
         errs.append("живой конфиг службы не прочитан: " + str(ap.get("error") or "")[:80])
     # Числа ядра: сколько исключений стоит и куда реально едет накрытый адрес.
+    lk = _load(_GD_LINK, {}) or {}
+    mode = str(lk.get("mode") or "off")
     r4, r6 = _gd_rules(4), _gd_rules(6)
+    rlink = len(_gs_rules()) if mode == "link" else 0
     tbl = _gd_escape(tgt)
     # #658: одним адресом судить нельзя. `cov` считается по списку сеток окна и НЕ
     # знает про наше исключение, а `tbl` — это ОДИН адрес: карточка годила называть
     # развод действующим, пока первый адрес уехал в `main`, а остальные `29` из `30`
     # остались окну. Вердикт — числом по всему живому пулу, маршрутом, а не списком.
+    # #668: таблица звена — тоже успех. Считать её «утечкой» значило бы объявить
+    # вылеченным то, что лечим прямо сейчас: `207` есть выход из окна, `205` — нет.
     esc = 0
     for ip in pool:
         t = _gd_escape(ip)
-        if t and t != "main":
+        if t and t not in ("main", _GD_TBL):
             esc += 1
-    if cov and tbl and tbl != "main":
+    if cov and tbl and tbl not in ("main", _GD_TBL):
         errs.append("адрес `Gemini` всё ещё идёт через таблицу %s" % tbl)
     if esc:
         errs.append("%d адресов `Gemini` из %d ядро всё ещё несёт через окно" % (esc, len(pool)))
-    st.update({"enabled": _gd_want(), "dev": dev or None, "pool": len(pool),
-               "pool6": len(_gd_pool6()), "rules": len(r4) + len(r6),
+    if mode != "link" and lk.get("error"):
+        errs.append("звено: " + str(lk.get("error"))[:90])
+    st.update({"enabled": _gd_want(), "mode": mode, "dev": dev or None,
+               "mark": (0 if mode == "link" else _GD_BYPASS_MARK),
+               "pool": len(pool),
+               "pool6": len(_gd_pool6()), "rules": len(r4) + len(r6) + rlink,
                "route_tbl": tbl or None, "esc": esc,
                "covered": cov, "probe_ip": tgt or None, "probe_at": int(now),
                "region_split": rs or None, "region_window": rw or None,
+               "link_count": int(lk.get("count") or 0),
+               "link_age": lk.get("handshake_age"),
+               "link_error": str(lk.get("error") or ""),
+               "account": bool(_gs_registered()),
                "applied_tag": bool(ap.get("tag")), "applied_rule": bool(ap.get("rule")),
                "applied_dev": ap.get("dev") or None,
                "kernel_clients": _gd_kernel_clients(),
@@ -19059,8 +19356,13 @@ def _gd_reapply(st, dev, ap):
     (ротация адреса, подъём линка) не должно выдергивать службу на каждом тике."""
     global _GD_APPLY_AT, _GD_ERR
     now = time.time()
-    want = "on:%s" % dev if _gd_want() else "off"
-    have = ("on:%s" % ap.get("dev")) if (ap.get("tag") and ap.get("rule")) else "off"
+    # #676: способ назван в отпечатке вместе с выходом — кольцо с меткой и кольцо без
+    # неё это не «то же самое»: первое уходит мимо окна на любом адресе, второе только
+    # на адресах нашего пула, и считать их одним значило бы не заметить поломку развода.
+    mark = 0 if _gd_link_mode() == "link" else _GD_BYPASS_MARK
+    want = ("on:%s:%d" % (dev, mark)) if _gd_want() else "off"
+    have = ("on:%s:%d" % (ap.get("dev") or "", int(ap.get("mark") or 0))) \
+        if (ap.get("tag") and ap.get("rule")) else "off"
     # #662: файл на диске, который служба не поднимала, — это НЕ «применено». Лечим его
     # одним рестартом, а не пересборкой: пересборка переложила бы байты, которых нет в
     # `STATE` (ручные горячие латки на бою пропали бы), а служба как раз их и не видит.
@@ -19108,7 +19410,10 @@ def _gd_tick():
     Смена штатного выхода делает привязку мёртвой: связанный с несуществующим
     интерфейсом поток `Xray` не уходит в Россию — он гибнет (замерено на четвёрке и
     шестёрке). Поэтому при расхождении пересобираем конфиг, а не делаем вид, что так и
-    было. Звеньев и таблиц смотритель не касается."""
+    было. #668: у развода появилось своё четвёртое звено, и смотритель звена живёт
+    внутри этого смотрителя — набор сетей у них один (`_gd_pool`), и решать по очереди
+    «кто везёт четвёрку» должен один ход, а не два, иначе кольцо и маршрут разъедутся.
+    Чужих таблиц и чужих звеньев (`tkw0`, `ytw0`, `gmw0`, `tgw0`) не касаемся."""
     global _GD_ERR
     if SBX:
         return
@@ -19116,21 +19421,28 @@ def _gd_tick():
     if not _gd_want():
         if _gd_rules(4) or _gd_rules(6):
             _gd_flush()
+        # #676: слово снято — снимаем и метку: правило без метящего кольца стало бы
+        # мёртвым, а чужой сокет с той же меткой пошёл бы мимо окна без спроса.
+        _tw_bypass_del(_GD_BYPASS_MARK)
+        _gs_tick([], [])
         _gd_reapply(st, "", _gd_applied())
         return
-    dev, why = _gd_egress_dev()
+    pool4, pool6 = _gd_pool(), _gd_pool6()
+    nets4, nets6 = _gd_nets(pool4, pool6)
+    mode, reg = _gs_tick(nets4, pool4)
+    dev, why = _gd_ring_dev()
     if why:
         _GD_ERR = why
-        st.update({"enabled": True, "error": why, "ts": _now_iso()})
+        st.update({"enabled": True, "mode": mode, "error": why, "ts": _now_iso()})
         _save(_GD_STATE, st, 0o600)
         return
     _GD_ERR = ""
     # Исключение ядра — раньше конфига: оно не требует рестарта службы и держит
     # `Gemini` вне окна даже там, где `Xray` вообще не при чём (веерные входы).
-    kerr = _gd_sync(*_gd_nets(_gd_pool(), _gd_pool6()))
+    kerr = _gd_sync(nets4, nets6, mode, reg)
     if kerr:
         _GD_ERR = kerr
-        st.update({"enabled": True, "error": kerr, "ts": _now_iso()})
+        st.update({"enabled": True, "mode": mode, "error": kerr, "ts": _now_iso()})
         _save(_GD_STATE, st, 0o600)
     _gd_reapply(st, dev, _gd_applied())
     _gd_probe()
@@ -19146,11 +19458,29 @@ def _gd_tick_bg():
 def _gd_view():
     """Снимок для морды и ноги самопроверки: только чтение, ничего не пересобирает."""
     st = _load(_GD_STATE, {}) or {}
-    dev, why = _gd_egress_dev()
+    lk = _load(_GD_LINK, {}) or {}
+    dev, why = _gd_ring_dev()
+    mode = str(lk.get("mode") or st.get("mode") or "off")
     ap = _gd_applied()
     pat = float(st.get("probe_at") or 0)
     return {"want": _gd_want(), "gemini_direct": bool(CFG_CACHE.get("gemini_direct")),
+            # #668: слово звена отдельное, и морда обязана видеть его отдельно: развод
+            # без звена держит четвёрку исключением ядра, звено без развода не нужно.
+            "warp": _gd_warp(),
             "dev": dev, "why": why or st.get("error") or "",
+            # #668: чем едет четвёрка — звеном или исключением, и его живые числа.
+            # `via` называет способ словом, а не адресом: морда обязана отличать
+            # «привязан к net0» от «несёт gsw0», это ровно та разница, ради которой
+            # звено и строилось.
+            "mode": mode, "via": (_GD_IF if mode == "link" else dev),
+            # #676: в прямом режиме четвёрку выводит метка сокета, а не привязка —
+            # морда обязана называть способ, которым развод на самом деле едет.
+            "mark": (0 if mode == "link" else _GD_BYPASS_MARK),
+            "link_up": bool(lk.get("up")), "link_age": lk.get("handshake_age"),
+            "link_count": int(lk.get("count") or 0),
+            "link_error": str(lk.get("error") or _GD_LINK_ERR or ""),
+            "account": bool(lk.get("account") or _gs_registered()),
+            "link_tbl": _GD_TBL,
             "applied": bool(ap.get("tag") and ap.get("rule") and ap.get("read")),
             # #662: «есть на диске» и «вступило в службу» — два разных слова, и морда
             # обязана показывать второе, а не первое. `sig_drift` — разводной части на
@@ -20434,13 +20764,27 @@ def _tg_mp_selftest(force=False):
             add("gemini_direct", "Gemini в обход окна YouTube", True,
                 # #658: число по всему живому пулу и МАРШРУТОМ, а не по списку сеток
                 # окна: `covered` не знает про наше исключение и врал в обе стороны.
+                # #668: `via` называет, чем едет четвёрка — своим звеном или
+                # привязанным выходом; это ровно та разница, ради которой звено строили.
                 "%s из %s адресов Gemini ядро всё ещё несёт через окно (сеткой %s) — "
-                "с привязкой к %s Google видит %s%s"
-                % (gv.get("esc"), gv.get("pool"), gv.get("covered"), gv.get("dev"), rs,
+                "%s Google видит %s%s"
+                % (gv.get("esc"), gv.get("pool"), gv.get("covered"),
+                   ("через звено %s" % gv.get("via") if gv.get("mode") == "link"
+                    else "с привязкой к %s" % (gv.get("dev") or "?")), rs,
                    (" вместо %s, как без привязки" % rw) if rw else ""))
         elif rs == "RU":
             add("gemini_direct", "Gemini в обход окна YouTube", False,
-                "привязанный выход читается Россией — разводу не верим")
+                "выход развода (%s) читается Россией — разводу не верим%s"
+                % (gv.get("via") or "?",
+                   "" if gv.get("warp") or gv.get("mode") == "link"
+                   else "; своё звено словом не включено"))
+        elif gv.get("mode") != "link" and gv.get("link_error"):
+            # #668: четвёртого звена нет, и четвёрку держит исключение — поток вне
+            # окна, но выход остаётся тем, каким его видит Google. Называть это
+            # разведом нельзя; говорим числом, чего именно не хватает.
+            add("gemini_direct", "Gemini в обход окна YouTube", False,
+                "своего звена нет (%s) — Gemini идёт штатным выходом вне окна"
+                % str(gv.get("link_error"))[:90], warn=True)
         else:
             add("gemini_direct", "Gemini в обход окна YouTube", False,
                 gv.get("probe_error") or "ответа с привязанного выхода нет — проверка не прошла",
@@ -44727,15 +45071,27 @@ class H(http.server.BaseHTTPRequestHandler):
                 # а одно слово в файле, и оператор обязан услышать об отказе в этом же
                 # ответе. Ни один токен подписчика при этом не поворачивается.
                 b = self._body()
-                if "on" not in b and "check" not in b:
-                    return self._send(400, {"error": "нужно поле on или check"})
+                if "on" not in b and "check" not in b and "warp" not in b:
+                    return self._send(400, {"error": "нужно поле on, warp или check"})
+                if "warp" in b:
+                    # #668: звено включается своим словом, а не в довесок к разводу.
+                    # Живой подъём 28.10 назвал цену: через звено `Google` прочёл
+                    # Россию `8` адресов из `8`, тогда как штатный выход той же
+                    # коробки ответил `8` `SE` из `8` — звено выводит из окна, но
+                    # страну не меняет, и молчаливое включение было бы ухудшением.
+                    on = bool(b.get("warp"))
+                    CFG_CACHE["gemini_warp"] = on
+                    _cfg_save()
+                    _audit("gemini_warp", on=on)
+                    _GD_APPLIED_CACHE[0] = 0.0
+                    threading.Thread(target=_gd_tick_bg, daemon=True).start()
+                    return self._send(200, _gd_view())
                 if "on" in b:
                     want = bool(b.get("on"))
-                    dev, why = _gd_egress_dev() if want else ("", "")
-                    if want and not dev:
-                        # Включить вслепую нельзя: привязка в никуда не выводит поток,
-                        # а умерщвляет его — замерено и на четвёрке, и на шестёрке.
-                        return self._send(400, {"error": "развод не включается: " + why})
+                    # #676: пустой выход больше не отказ. Раньше включение вслепую
+                    # умерщвляло поток привязкой в никуда; теперь четвёрку выводит
+                    # метка и правило `fwmark → main`, и кольцо без привязки просто
+                    # едет штатным выходом, каким ходит вся коробка.
                     CFG_CACHE["gemini_direct"] = want
                     _cfg_save()
                     _audit("gemini_direct", on=want)
@@ -44747,7 +45103,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         # пересоберёт сам. Отказ называем честно, а не делаем вид, что
                         # развод вступил.
                         return self._send(500, {"error": "Xray: " + str(e)[:160]})
-                    threading.Thread(target=_gd_probe_bg, daemon=True).start()
+                    threading.Thread(target=_gd_tick_bg, daemon=True).start()
                     return self._send(200, _gd_view())
                 try:
                     if b.get("check"):
