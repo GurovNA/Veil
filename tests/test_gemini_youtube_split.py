@@ -124,9 +124,12 @@ class Shape(unittest.TestCase):
         for d in panel._GD_DOMAINS:
             self.assertIn(":", d, "домен без префикса формы: " + d)
             self.assertTrue(d.split(":", 1)[0] in ("keyword", "full", "domain", "suffix",
-                                                   "regex"), d)
+                                                   "regex", "regexp"), d)
         self.assertIn("keyword:gemini", panel._GD_DOMAINS)
-        self.assertIn("suffix:generativelanguage.googleapis.com", panel._GD_DOMAINS)
+        # #666: вершиной списка живьём названа форма `regexp` — `suffix:` эта сборка
+        # ядра не матчит ни под чем, а голое имя без якоря матчится и как подстрока.
+        self.assertIn("regexp:(^|\\.)generativelanguage\\.googleapis\\.com$",
+                      panel._GD_DOMAINS)
         # Осиротевший слэш в литерале означал бы правило, которое не совпадает ни с чем.
         for d in panel._GD_DOMAINS:
             self.assertEqual(d.count("/"), 0, d)

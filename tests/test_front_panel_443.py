@@ -172,10 +172,23 @@ class Name(_CfgCase):
             panel.CFG_CACHE.pop("hop_public_host", None)
             self.assertEqual(panel._front_panel_name(), "", bad)
 
-    def test_double_hop_is_refused_because_the_front_is_not_ours(self):
+    def test_double_hop_names_the_zone_base_not_the_front(self):
+        # #635: со словом прыжка ссылки ведут на адрес фронта, но релей правится этой
+        # машиной, TLS терминируется здесь (#572), а credential-куски лежат в наших
+        # конфигах — имя раздачи берётся из базы домена, чья A-запись уже смотрит на
+        # фронт (#502). Прежняя нога звала фронт «чужим» и отказывала: для самосборной
+        # маски это верно, для релея под управлением этой машины — ошибочно.
         panel.CFG_CACHE["panel_domain"] = "example.test"
         panel.CFG_CACHE["hop_public_host"] = "front.other.test"
-        self.assertEqual(panel._front_panel_name(), "")
+        self.assertEqual(panel._front_panel_name(), "example.test")
+
+    def test_double_hop_refuses_address_empty_or_unnamed_base(self):
+        # Слово «имя» значит то же, что и без прыжка: адрес сертификат не проверяется,
+        # поэтому ссылка без порта была бы обещанием без доказательства.
+        panel.CFG_CACHE["hop_public_host"] = "front.other.test"
+        for bad in ("203.0.113.9", "", "127.0.0.1", "example.test:8443", "a/b"):
+            panel.CFG_CACHE["panel_domain"] = bad
+            self.assertEqual(panel._front_panel_name(), "", bad)
 
 
 class LinkShape(_CfgCase):

@@ -1896,6 +1896,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
       <label style="display:flex;gap:6px;align-items:center"><input type=checkbox id=twOn onchange=saveTikTok(this.checked)> Применить фикс — вести TikTok через WARP</label>
       <button class="tiny sec" onclick=checkTikTok() id=twCheckBtn>🔎 Проверить, что видит TikTok</button>
+      <button class="tiny sec" onclick=rotateTikTok() id=twRotateBtn title="Новый бесплатный аккаунт Cloudflare WARP прямо сейчас, не дожидаясь приговора смотрителя">🔄 Сменить WARP-аккаунт</button>
     </div>
     <div class=msg id=twMsg></div>
     <div style="margin-top:10px;border-top:1px solid rgba(128,128,128,.25);padding-top:8px">
@@ -2519,7 +2520,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Какую боль лечит?</b> Telegram-прокси и VPN-порты, торчащие напрямую из-за рубежа, провайдеры начинают «резать». Клиенты жалуются: «не подключается». Двойной прыжок прячет вход: клиент подключается к дешёвому серверу <b>в России</b>, а тот незаметно пересылает трафик на твой основной зарубежный сервер.</p>
         <p><b>Аналогия:</b> фронт — это подъезд в России, а лифт из него ведёт на зарубежный этаж. Провайдер видит только подъезд.</p>
-        <p><b>Что видит клиент?</b> Ссылки не меняются — в них просто появляется второй адрес. Пользователь ничего не настраивает: приложение само выберет нужный путь.</p>
+        <p><b>Что видит клиент?</b> Доменные ссылки не меняются: в них адрес имени просто начинает вести на фронт. IP-ссылки меняются — в них хостом становится фронт, и подписчику придётся перетянуть ссылку заново. Пользователь ничего не настраивает: путь один, и приложение идёт по нему целиком.</p>
         <p><b>Куда тыкать по шагам:</b></p>
         <ol>
           <li>Купи любой дешёвый VPS в России (хватит минимального тарифа) и получи к нему root-SSH.</li>
@@ -2528,7 +2529,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
           <li>«Предпросмотр» — покажет, какие ссылки получат клиенты. Всё ок → «Создать фронт».</li>
           <li>Панель сама зайдёт на фронт по SSH и всё настроит. Готовый фронт виден в списке; «Удалить» — полная отмена.</li>
         </ol>
-        <p><b>Это безопасно?</b> Да. Фронт только пересылает зашифрованный трафик и ничего не может подсмотреть: расшифровка — только на твоём основном сервере.</p>
+        <p><b>Это безопасно?</b> Да. Фронт только пересылает зашифрованный трафик и ничего не может подсмотреть: расшифровка — только на твоём основном сервере. Обратный путь бэка на фронт — отдельный туннель со своей ключевой парой (файл hop_tunnel.json, входит в меру приватного #549): именно он, а не MASQUERADE, не даёт бэку спалиться ответным трафиком.</p>
         <p><b>Новичку:</b> пока всё работает и из РФ — эту вкладку можно не трогать. Открывай, когда клиенты начнут сообщать о проблемах с подключением.</p>
       </div></details>
       <div id=hopPubBox></div>
@@ -3819,6 +3820,20 @@ function renderHop(){
     h+=hops.map(x=>{
       const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">проба '+fmtZ(x.last_check.ts,'t')+': TCP открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+(((x.last_check.udp_up||[]).length||(x.last_check.udp_closed||[]).length||(x.last_check.udp_down||[]).length||(x.last_check.udp_unknown||[]).length)?(' · UDP живой путь '+(((x.last_check.udp_up||[]).concat(x.last_check.udp_closed||[])).join(', ')||'—')+((x.last_check.udp_closed||[]).length?(' (из них без слушателя '+x.last_check.udp_closed.join(', ')+')'):'')+((x.last_check.udp_down||[]).length?(' · молчит '+x.last_check.udp_down.join(', ')):'')+((x.last_check.udp_unknown||[]).length?(' · не меряется '+x.last_check.udp_unknown.join(', ')):'')):'')+'</div>'):'';
       const ud=(x.udp_ports&&x.udp_ports.length)?('<span class=mut style="font-size:12.5px">UDP: '+esc(x.udp_ports.join(', '))+'</span>'):'';
+      // #661: фронт сам измеряет свой адрес наружу и приносит его в стуке. Пока
+      // значение не совпало три раза подряд — это предупреждение, а не перемена.
+      const fm=(x.state!=='active')?'':(x.front_measured&&x.front_measured!==x.front_ip)
+        ?('<div class=err style="font-size:12px;margin-top:4px">фронт наружу виден как <code>'+esc(x.front_measured)+'</code>, а записан <code>'+esc(x.front_ip)+'</code> — переезд вступит после трёх одинаковых стуков (#661)</div>')
+        :(x.front_measured?''
+          :'<div class=mut style="font-size:12px;margin-top:4px">смотритель фронта не приносит измеренный адрес (#661): переставь фронт, и панель сама подхватит его смену</div>');
+      const mv=(x.front_moved_ts&&x.front_move_note)
+        ?('<div class="'+(x.front_move_ok?'mut':'err')+'" style="font-size:12px;margin-top:4px">переезд '+fmtZ(x.front_moved_ts,'t')+': '+esc(x.front_move_note)+'</div>')
+        :'';
+      // #661 приращение 3: вчерашний адрес бэка в env фронта — это мёртвая аварийная
+      // ветка `dir`. Перекладывает его сам фронт по двум свидетелям, карточка лишь
+      // называет расхождение и говорит, что она с ним не делает.
+      const be=(x.state!=='active'||!x.back_env_stale)?''
+        :('<div class=err style="font-size:12px;margin-top:4px">аварийная ветка фронта смотрит на <code>'+esc(x.back_env||'')+'</code>, а бэк наружу <code>'+esc(hopData.back_ip||'')+'</code> — фронт переложит её сам, как только его ядро подтвердит адрес (#661)</div>');
       return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
         +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
         +'<b>'+esc(x.name||'Фронт')+'</b><code style="font-size:13px">'+esc(x.front_ip)+'</code>'
@@ -3827,7 +3842,7 @@ function renderHop(){
         +'<span style="margin-left:auto;display:flex;gap:6px">'
         +'<button class="sec tiny" onclick="hopCheck(\''+jsStr(x.id)+'\')">Проверить</button>'
         +'<button class="sec tiny" onclick="hopDel(\''+jsStr(x.id)+'\',\''+jsStr(x.front_ip)+'\')">Удалить</button></span></div>'
-        +lc+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
+        +lc+fm+be+mv+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
     }).join('');
   }
   h+=tunLine;
@@ -6957,6 +6972,18 @@ async function checkTikTok(){
   if(b) b.disabled=false;
   loadTikTok();
 }
+async function rotateTikTok(){
+  const m=$('twMsg'), b=$('twRotateBtn');
+  if(!confirm('Сменить WARP-аккаунт звена?\n\nПанель заведёт новый бесплатный аккаунт Cloudflare прямо сейчас, не дожидаясь, пока смотритель объявит нынешний молчаливым. Туннель на секунду пересоберётся на новом ключе. Облако считает такие запросы — злоупотреблять не стоит.')) return;
+  if(m) m.textContent='завожу новый аккаунт WARP…';
+  if(b) b.disabled=true;
+  try{
+    const d=await api('/api/tiktok_warp',{method:'POST',body:JSON.stringify({rotate:true})});
+    if(m) m.textContent=d.rotate?('смена: '+esc(d.rotate)):'аккаунт сменён';
+  }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,120); }
+  if(b) b.disabled=false;
+  loadTikTok();
+}
 async function loadYouTube(){
   const el=$('ywState'), on=$('ywOn');
   if(!el) return;
@@ -7010,6 +7037,12 @@ async function loadGemini(){
     if(d.why){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но разводить нечем</b> — '+esc(d.why)+'.'; return; }
     if(!d.read){ el.innerHTML='▶️ <b style="color:var(--warn)">Не прочитан живой конфиг ядра прокси</b> — сказать, что служба имеет, нельзя'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
     if(!d.applied){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, а в живом конфиге ядра прокси развода нет</b> — смотритель пересоберёт сам'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
+    if(d.drift===true){ el.innerHTML='▶️ <b style="color:var(--warn)">Служба несёт вчерашний развод</b> — '+
+      (d.drift_by==='sig'?'разводной части файла у службы нет: кольцо и её правило ядро подняло другие'
+                         :'чем служба вступало, мы не записали — судим временем: файл новее часа службы')+
+      '. '+(d.foreign?'Смотритель перезапустит службу сам, как только расхождение переживёт два тика.':'Перезапуск нужен руками: чьей рукой переписан файл — сказать не можем.')+
+      (d.probe_error?('; '+esc(d.probe_error)):''); return; }
+    if(d.stale){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — файл перезаписан позже службы, но разводная часть в нём та же, что служба и подняла'+kern+'.'; return; }
     if(rt&&rt!=='MAIN'){ el.innerHTML='▶️ <b style="color:var(--warn)">Прокси разводит, а ядро всё ещё несёт Gemini в окно</b>'+kern+' — веерным входам '+esc(String(d.kernel_clients==null?'?':d.kernel_clients))+' поэтому недоступно и то, что видит прокси.'; return; }
     if(rs&&rs!=='RU'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — привязан к '+esc(d.dev||'')+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, выход читается <b>'+esc(rs)+'</b>'+(rw?(', окно отвечает <b>'+esc(rw)+'</b>'):'')+kern+'.'+vf; return; }
     if(rs==='RU'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а выход всё ещё читается Россией</b> — проверке не верим'+(d.probe_error?(': '+esc(d.probe_error)):'')+'.'; return; }
@@ -9446,7 +9479,7 @@ async function loadDashboard(){
       setDashRing('dRam',m.ram_percent);
       setDashRing('dDisk',m.disk_used_percent);
       const dl2=$('dLoadLine');
-      if(dl2)dl2.textContent='Load avg: '+(m.load1||0)+' · свободно на /: '+(m.disk_free_gb||0)+' ГБ';
+      if(dl2){let dt='Load avg: '+(m.load1||0)+' · свободно на /: '+(m.disk_free_gb||0)+' ГБ';if(m.disk_low)dt+=' · ⚠ МЕСТА МАЛО: свободно '+(m.disk_free_mib||0)+' МиБ, порог '+(m.disk_warn_mib||0)+' МиБ; панель повторит это письмом оператору не чаще раза в час';dl2.textContent=dt;}
     }
     renderDashEvents(au,lh);
   }catch(e){}
