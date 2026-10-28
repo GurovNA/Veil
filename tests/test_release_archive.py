@@ -47,6 +47,33 @@ class TestReleaseArchive(unittest.TestCase):
         for name in ("panel.py", "agent.py", "install.sh", "i18n.json", "CHANGELOG.md"):
             self.assertIn(name, got, "архив потерял %s" % name)
 
+    def test_archive_carries_the_bytes_of_this_release(self):
+        """Архив обязан нести байты ЭТОГО дерева, а не память прежнего выпуска (`#539`).
+
+        Прежние ноги мерили только самоцелостность: дайджест совпадал с архивом,
+        члены архива существовали в дереве — и всё это сходилось на архиве,
+        отстававшем от дерева на сорок тегов. Здесь сравниваются байты двух
+        исполняемых листов и литера в архивном журнале.
+        """
+        def blob_of(name):
+            with open(path(name), "rb") as fh:
+                return fh.read()
+
+        want = {name: blob_of(name) for name in ("panel.py", "index.html")}
+        with tarfile.open(path("veil.tar.gz"), "r:gz") as t:
+            for name, blob in want.items():
+                member = t.extractfile(name)
+                self.assertIsNotNone(member, "архив потерял %s" % name)
+                got = member.read()
+                self.assertEqual(len(got), len(blob),
+                                 "архив несёт %s другого размера: %d Б против %d Б в дереве"
+                                 % (name, len(got), len(blob)))
+                self.assertEqual(got, blob, "архив несёт %s не тех байтов, что в дереве" % name)
+            changelog = t.extractfile("CHANGELOG.md").read().decode("utf-8")
+        version = re.search(r'^VERSION = "([0-9.]+)"', read("panel.py"), re.M).group(1)
+        self.assertIn("## [%s]" % version, changelog,
+                      "архивный журнал не знает выпуску %s — архив отстал от дерева" % version)
+
     def test_archive_holds_nothing_forbidden(self):
         for name in members():
             with self.subTest(member=name):
