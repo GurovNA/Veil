@@ -1,4 +1,4 @@
-"""`Gemini` в обход российского выхода окна «YouTube»: кольцо наружу с привязкой к штатному выходу.
+"""`Gemini` в обход российского выхода окна «YouTube»: граница сервиса, метка и своё звено.
 
 Слово хозяина 22.10: «делай как считаешь нужным, главное что бы работало.
 youtube-ru, gemini -не ru».
@@ -6,26 +6,34 @@ youtube-ru, gemini -не ru».
 Почему не адресом. Окно «YouTube» (#493) ставит правила по АДРЕСУ НАЗНАЧЕНИЯ, а
 `Gemini` отвечает из тех же сетей Google, что и `YouTube`. На живой коробке замерено
 накрытие целиком: из 56 адресов сервиса под окном 56 — то есть весь `Gemini` читается
-Россией. Адресом разделить нельзя, различим один признак — имя сервиса в начале
+Россией. Адресом разделить нельзя; различим один признак — имя сервиса в начале
 рукопожатия, и его ядро прокси уже читает на всех входах.
 
-Почему привязкой, а не меткой. Метку сокета это ядро прокси наружу не передаёт (замерено
-счётником на фильтре: контрольный сокет добавил 6 пакетов, кольца ядра с `sockopt.mark`
-и с `sockSettings.mark` — ни одного). Привязка к интерфейсу из-под захваченной таблицы
-выводит поток: неподвязанные попытки умерли по таймауту, привязанные дождались ответа —
-и по четвёрке, и по шестёрке.
+Почему границей, а не перечнем (#678). Список имён всегда отстаёт от живого сервиса
+(#658: 9 имён, накрыто 1). Поэтому кольцу отдан весь `Google` (`keyword:google` плюс
+`gstatic.com`), а сторона `YouTube` и рекламы ограждена ПЕРВОЙ строкой правил: ядро
+берёт первое совпадение, поэтому порядок строк и есть развод.
 
-Что прибор судит по-настоящему. Форму кольца и правила, чтение штатного выхода, запрет
-туннельных интерфейсов, порядок правила относительно `ru_bypass`, правду о живом файле
-службы, темп пересборки при расхождении, перемычки морды и самопроверки — всё по живым
-байтам панели. Ни одна нога не ставит правил, не поднимает звеньев и не перезапускает
-служб: внешние вызовы подменены. Живая свёрка чисел сделана на тестовой коробке и
-описана в теле релиза.
+Почему метка (#676/#679). Метку сокета это ядро наружу передаёт — живой замер 28.10
+счётчиком на фильтре: контрольное кольцо с меткой `0x30` добавило 14 пакетов с той же
+меткой. Метка уводит поток мимо таблицы окна на любом адресе: привязка разминается с
+правилом окна там, где адрес не попал в наш пул, а на общем с окном адресе (#652)
+мимо окна уводит только метка. Поэтому кольцо метится в обоих режимах: в прямом метка
+ведёт в `main` (правило `fwmark 0x30 → main` на 175), в режиме звена — в его таблицу
+(строка 174 выше общего правила).
+
+Что прибор судит по-настоящему. Форму кольца, метки и двух строк правил, чтение
+штатного выхода, запрет туннельных интерфейсов, порядок ограды и границы относительно
+`ru_bypass`, правду о живом файле службы, темп пересборки при расхождении, перемычки
+морды и самопроверки — всё по живым байтам панели. Ни одна нога не ставит правил, не
+поднимает звеньев и не перезапускает служб: внешние вызовы подменены. Живая свёрка
+чисел сделана на тестовой коробке и описана в теле релиза.
 
 Честная граница, названная прибором: карточка обязана говорить, чего развод не умеет.
 `veilwg` и `awg0` ядро пересылает мимо прокси, и по имени сервиса их развести нельзя в
 принципе — карточка обязана называть число таких подписчиков, а не обещать невозможное.
 """
+import ast
 import inspect
 import json
 import os
@@ -95,30 +103,66 @@ def rule(outbound=panel._GD_TAG):
 
 
 class Shape(unittest.TestCase):
-    def test_split_has_its_own_home_and_creates_no_table_or_link(self):
+    def test_split_has_its_own_home_and_its_link_its_own(self):
         self.assertEqual(panel._GD_DIR, "/var/lib/veil-gemini-split")
         self.assertNotEqual(panel._GD_DIR, panel._YW_DIR)
         self.assertNotEqual(panel._GD_DIR, panel._TW_DIR)
         self.assertTrue(panel._GD_STATE.startswith(panel._GD_DIR + "/"))
-        # Развод живёт в конфиге ядра прокси: ни своей таблицы, ни своего звена у него нет.
-        for absent in ("_GD_TBL", "_GD_IF", "_GD_PRIO", "_GD_MARK", "_GD_KEY"):
-            self.assertFalse(hasattr(panel, absent), absent)
+        # Развод живёт в конфиге ядра прокси. Своё звено (#668) — отдельный, необязательный
+        # путь: у него собственные интерфейс, таблица и метка, и он не делит их с соседями.
+        self.assertEqual(panel._GD_IF, "gsw0")
+        self.assertEqual(panel._GD_TBL, "207")
+        self.assertNotIn(panel._GD_IF, (panel._TW_IF, panel._YW_IF,
+                                        panel._GM_IF, panel._MR_IF))
+        self.assertNotIn(panel._GD_TBL, (panel._TW_TBL, panel._YW_TBL, panel._GM_TBL))
+        self.assertNotIn(panel._GD_BYPASS_MARK,
+                         (panel._TW_BYPASS_MARK, panel._YW_BYPASS_MARK,
+                          panel._GM_BYPASS_MARK))
+        self.assertTrue(panel._GD_REG.startswith(panel._GD_DIR + "/"))
+        self.assertTrue(panel._GD_LINK.startswith(panel._GD_DIR + "/"))
+        # #676/#679: метка развода — своя (0x30), и её правила стоят между потолком
+        # исключений и обходом TikTok, а не внутри чужого диапазона.
+        self.assertEqual(panel._GD_BYPASS_MARK, 0x30)
+        self.assertEqual(panel._GD_BYPASS_PRIO, 175)
+        self.assertEqual(panel._GD_MARK_PRIO, 174)
+        self.assertLess(panel._GD_MARK_PRIO, panel._GD_BYPASS_PRIO)
 
-    def test_ring_binds_interface_and_not_address(self):
-        ob = panel._gd_outbound("net0")
-        self.assertEqual(ob["protocol"], "freedom")
-        self.assertEqual(ob["tag"], panel._GD_TAG)
-        self.assertEqual(ob["streamSettings"]["sockopt"]["interface"], "net0")
-        body = json.dumps(ob)
-        self.assertNotIn("address", body)
-        self.assertNotIn("mark", body, "меткой этот движок не выводит поток — замерено")
+    def test_ring_carries_the_mark_in_both_modes(self):
+        # #676: метка стоит и с привязкой, и без неё; привязка — второй замок.
+        bound = panel._gd_outbound("net0", panel._GD_BYPASS_MARK)
+        free = panel._gd_outbound("", panel._GD_BYPASS_MARK)
+        self.assertEqual(bound["protocol"], "freedom")
+        self.assertEqual(bound["tag"], panel._GD_TAG)
+        self.assertEqual(bound["streamSettings"]["sockopt"],
+                         {"interface": "net0", "mark": panel._GD_BYPASS_MARK})
+        self.assertEqual(free["streamSettings"]["sockopt"],
+                         {"mark": panel._GD_BYPASS_MARK})
+        for ob in (bound, free):
+            body = json.dumps(ob)
+            self.assertNotIn("address", body, "кольцо выводит имя, а не адрес")
 
     def test_rule_is_domain_only_and_points_at_its_own_ring(self):
         r = panel._gd_rule()
         self.assertEqual(r["type"], "field")
         self.assertEqual(r["outboundTag"], panel._GD_TAG)
         self.assertNotIn("ip", r, "правило по адресу утащило бы поток обратно под окно")
-        self.assertEqual(sorted(r["domain"]), sorted(panel._GD_DOMAINS))
+        self.assertEqual(r["domain"], list(panel._GD_SCOPE) + list(panel._GD_DOMAINS),
+                         "граница сервиса первой, снятые имена меры — за ней")
+
+    def test_keep_rule_gives_youtube_and_ads_back_to_the_window(self):
+        # #678: ограда — ПЕРВАЯ строка; без неё `keyword:google` утащил бы за кольцо
+        # и ролики, и `youtubei`, и рекламу, которую хозяин 26.10 просил держать в RU.
+        r = panel._gd_keep_rule()
+        self.assertEqual(r["type"], "field")
+        self.assertEqual(r["outboundTag"], "direct")
+        self.assertNotIn("ip", r)
+        self.assertEqual(r["domain"], list(panel._GD_WIN_SIDE))
+        for name in ("regexp:(^|\\.)googlevideo\\.com$",
+                     "regexp:(^|\\.)youtubei\\.googleapis\\.com$",
+                     "doubleclick.net"):
+            self.assertIn(name, panel._GD_WIN_SIDE, name)
+        self.assertIn("keyword:google", panel._GD_SCOPE)
+        self.assertIn("regexp:(^|\\.)gstatic\\.com$", panel._GD_SCOPE)
 
     def test_domains_name_the_service_and_do_not_swallow_whole_google(self):
         for d in panel._GD_DOMAINS:
@@ -139,17 +183,38 @@ class Shape(unittest.TestCase):
         self.assertLessEqual(len(panel._GD_DOMAINS), 16)
 
     def test_tunnel_interfaces_are_forbidden_by_name(self):
-        for iface in (panel._TW_IF, panel._YW_IF, panel._MR_IF,
-                      panel.WG_IFACE, panel.AWG_IFACE):
+        for iface in (panel._TW_IF, panel._YW_IF, panel._GM_IF, panel._MR_IF,
+                      panel._GD_IF, panel.WG_IFACE, panel.AWG_IFACE):
             self.assertIn(iface, panel._GD_FORBID, iface)
 
     def test_the_split_source_carries_no_address_literals(self):
-        src = "".join(inspect.getsource(getattr(panel, n))
-                      for n in ("_gd_egress_dev", "_gd_outbound", "_gd_rule", "_gd_split",
-                                "_gd_applied", "_gd_pool", "_gd_region", "_gd_probe",
-                                "_gd_reapply", "_gd_tick", "_gd_view"))
-        src += repr(panel._GD_DOMAINS) + repr(panel._GD_HOSTS)
-        self.assertEqual(RE_V4.findall(src), [], "в разводе записан адрес, а не имя")
+        # Адрес, вбитый в код развода, устареет молча; решение принимается именем.
+        # Комментарии и докстроки не судятся: они цитируют живые замеры.
+        tree = ast.parse(read("panel.py"))
+        names = ("_gd_egress_dev", "_gd_outbound", "_gd_rule", "_gd_keep_rule",
+                 "_gd_split", "_gd_applied", "_gd_pool", "_gd_pool6", "_gd_clash",
+                 "_gd_nets", "_gd_rules", "_gd_flush", "_gd_main", "_gd_sync",
+                 "_gd_ring_dev", "_gd_link_mode", "_gd_probe", "_gd_reapply",
+                 "_gd_tick", "_gd_view")
+        funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        self.assertEqual(sorted({n.name for n in funcs} & set(names)), sorted(names),
+                         "функция развода пропала из панели")
+        found = []
+        for fn in funcs:
+            if fn.name not in names:
+                continue
+            body = fn.body
+            if body and isinstance(body[0], ast.Expr) and \
+                    isinstance(body[0].value, ast.Constant) and \
+                    isinstance(body[0].value.value, str):
+                body = body[1:]
+            found += ["%s:%s" % (fn.name, c.value)
+                      for b in body for c in ast.walk(b)
+                      if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                      and RE_V4.fullmatch(c.value)]
+        self.assertEqual(found, [], "в разводе записан адрес, а не имя")
+        for tup in ("_GD_DOMAINS", "_GD_HOSTS", "_GD_SCOPE", "_GD_WIN_SIDE", "_GD_PAGE"):
+            self.assertEqual(RE_V4.findall(repr(getattr(panel, tup))), [], tup)
 
     def test_pace_numbers(self):
         self.assertGreaterEqual(float(panel._GD_DRIFT_S), 60.0,
@@ -231,14 +296,21 @@ class Build(unittest.TestCase):
         self.assertEqual(len(rules), 1, len(rules))
         self.assertEqual(rings[0]["streamSettings"]["sockopt"]["interface"], "net0")
 
-    def test_rule_stands_above_ru_bypass_because_xray_takes_the_first_match(self):
+    def test_fence_first_boundary_second_both_above_ru_bypass(self):
+        # #678: `Xray` берёт первое совпадение, поэтому порядок строк и есть развод:
+        # ограда окна первой, граница сервиса второй, российская витрина — после обеих.
         with words(gemini_direct=True, ru_bypass=True), \
                 route_line("default via 192.0.2.1 dev net0"):
             cfg = panel._build_xray_cfg({"inbounds": {}})
-        tags = [r.get("outboundTag") for r in cfg["routing"]["rules"]]
-        self.assertIn("direct", tags)
-        self.assertLess(tags.index(panel._GD_TAG), tags.index("direct"),
-                        "российская витрина не должна успеть первой")
+        rules = cfg["routing"]["rules"]
+        keep = next(i for i, r in enumerate(rules)
+                    if r.get("domain") == list(panel._GD_WIN_SIDE))
+        gd = next(i for i, r in enumerate(rules) if r.get("outboundTag") == panel._GD_TAG)
+        ru = next(i for i, r in enumerate(rules)
+                  if r.get("outboundTag") == "direct"
+                  and (r.get("domain") or []) == ["geosite:category-ru"])
+        self.assertLess(keep, gd, "ограда окна обязана стоять первой")
+        self.assertLess(gd, ru, "российская витрина не должна успеть первой")
 
     def test_general_ring_stays_the_fallback(self):
         with words(gemini_direct=True, ru_bypass=True), \
@@ -246,29 +318,46 @@ class Build(unittest.TestCase):
             cfg = panel._build_xray_cfg({"inbounds": {}})
         self.assertIn("direct", [o["tag"] for o in cfg["outbounds"]])
 
-    def test_no_egress_interface_builds_a_config_without_the_split(self):
-        # Падение в `_build_xray_cfg` означает не «нет развода», а «нет никакого конфига».
+    def test_no_egress_interface_keeps_the_ring_unbound(self):
+        # #676: пустой выход — больше не отказ: кольцо несёт метку и уводит поток мимо
+        # окна правилом `fwmark → main`, а привязка осталась вторым замком.
         with words(gemini_direct=True, ru_bypass=True), route_line("", rc=1, err="нет пути"):
             cfg = panel._build_xray_cfg({"inbounds": {}})
-        self.assertNotIn(panel._GD_TAG, [o["tag"] for o in cfg["outbounds"]])
-        self.assertTrue([r for r in cfg["routing"]["rules"] if r.get("outboundTag") == "direct"],
+        rings = [o for o in cfg["outbounds"] if o["tag"] == panel._GD_TAG]
+        self.assertEqual(len(rings), 1)
+        sock = rings[0]["streamSettings"]["sockopt"]
+        self.assertNotIn("interface", sock)
+        self.assertEqual(sock["mark"], panel._GD_BYPASS_MARK)
+        self.assertTrue([r for r in cfg["routing"]["rules"]
+                         if r.get("outboundTag") == "direct"],
                         "без штатного выхода должен хотя бы оставаться прежний путь")
 
-    def test_split_helper_is_a_noop_without_interface(self):
+    def test_split_helper_words_an_unbound_ring_and_keeps_the_fence_first(self):
         obs, rules = [], []
-        self.assertFalse(panel._gd_split(obs, rules, ""))
-        self.assertEqual((obs, rules), ([], []))
-        self.assertTrue(panel._gd_split(obs, rules, "net0"))
-        self.assertEqual((len(obs), len(rules)), (1, 1))
+        self.assertTrue(panel._gd_split(obs, rules, ""))
+        self.assertEqual((len(obs), len(rules)), (1, 2))
+        self.assertEqual(rules[0], panel._gd_keep_rule())
+        self.assertEqual(rules[1], panel._gd_rule())
+        self.assertNotIn("interface", obs[0]["streamSettings"]["sockopt"])
+        self.assertEqual(obs[0]["streamSettings"]["sockopt"]["mark"],
+                         panel._GD_BYPASS_MARK)
+        obs2, rules2 = [], []
+        self.assertTrue(panel._gd_split(obs2, rules2, "net0"))
+        self.assertEqual(obs2[0]["streamSettings"]["sockopt"],
+                         {"interface": "net0", "mark": panel._GD_BYPASS_MARK})
 
     def test_build_survives_an_unreadable_kernel(self):
         # Упадающий сборщик конфига стоил бы панели всякого конфига, а не одного развода.
+        # #676: развод при этом остаётся хотя бы меткой — без привязки, но с правилом.
         def boom(*a, **k):
             raise RuntimeError("ядро молчит")
         with words(gemini_direct=True, ru_bypass=True), Swap(panel, "_tw_cmd", boom):
             cfg = panel._build_xray_cfg({"inbounds": {}})
-        self.assertNotIn(panel._GD_TAG, [o["tag"] for o in cfg["outbounds"]])
-        self.assertTrue([r for r in cfg["routing"]["rules"] if r.get("outboundTag") == "direct"])
+        rings = [o for o in cfg["outbounds"] if o["tag"] == panel._GD_TAG]
+        self.assertEqual(len(rings), 1, "развод обязан остаться хотя бы меткой")
+        self.assertNotIn("interface", rings[0]["streamSettings"]["sockopt"])
+        self.assertTrue([r for r in cfg["routing"]["rules"]
+                         if r.get("outboundTag") == "direct"])
 
 
 class AppliedTruth(unittest.TestCase):
@@ -414,8 +503,11 @@ class Drift(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, "осиротевшее кольцо обязано быть снято")
 
     def test_agreement_needs_no_rebuild(self):
+        # #676/#679: способ входит в отпечаток вместе с выходом — согласие считается
+        # только с меткой; кольцо без неё это «не то же самое».
         with words(gemini_direct=True):
-            msg = panel._gd_reapply({}, "net0", {"tag": True, "rule": True, "dev": "net0"})
+            msg = panel._gd_reapply({}, "net0", {"tag": True, "rule": True, "dev": "net0",
+                                                 "mark": panel._GD_BYPASS_MARK})
         self.assertEqual(msg, "", msg)
         self.assertEqual(self.calls, [])
 
@@ -432,8 +524,11 @@ class Drift(unittest.TestCase):
         self.assertIn("не пересобран", msg, msg)
         self.assertIn("xray", msg.lower(), msg)
 
-    def test_the_split_never_touches_kernel_routing(self):
-        for name in ("_gd_tick", "_gd_reapply", "_gd_probe", "_gd_probe_bg", "_gd_view"):
+    def test_reconciler_and_view_do_not_speak_to_the_kernel(self):
+        # Работа развода с ядром живёт только в названных адаптерах (`_gd_main`,
+        # `_gs_*`): сверка, отпечаток и снимок морды говорят с файлом, а не с ядром.
+        for name in ("_gd_applied", "_gd_split_sig", "_gd_reapply", "_gd_view",
+                     "_gd_tick_bg", "_gd_probe_bg"):
             src = inspect.getsource(getattr(panel, name))
             for banned in ("ip rule", "ip link", "systemctl", "nft ", "wg set",
                            'route add', "route replace", "_yw_up", "_tw_up"):
@@ -461,16 +556,16 @@ class Wiring(unittest.TestCase):
         self.assertIn('setGemini:"settings"', self.ui)
         self.assertIn("loadGemini()", self.ui[self.ui.find("dataset.tab==='settings'"):])
 
-    def test_both_routes_exist_and_the_refusal_is_worded(self):
+    def test_both_routes_exist_and_the_word_is_required(self):
         self.assertEqual(self.py.count('p == "/api/gemini_direct"'), 2,
                          "ход только в одну сторону")
         # ход зовётся из скрипта, а не из разметки карточки: судим всю морду целиком
         self.assertGreaterEqual(self.ui.count("/api/gemini_direct"), 3,
                                 "у карточки меньше ходов, чем у панели")
         post = self.py[self.py.rfind('p == "/api/gemini_direct"'):][:3000]
-        self.assertIn("развод не включается", post,
-                      "без штатного выхода отказ обязан быть назван")
-        self.assertIn("нужно поле on или check", post)
+        self.assertIn("нужно поле on, warp или check", post,
+                      "холостого хода нет; звено — своим полем (#668)")
+        self.assertIn('"Xray: "', post, "отказ пересборки называется в этом же ответе")
 
     def test_the_word_stays_said_if_the_rebuild_fails(self):
         post = self.py[self.py.rfind('p == "/api/gemini_direct"'):][:3000]
@@ -485,26 +580,41 @@ class Wiring(unittest.TestCase):
                                 "нога самопроверки судит меньше веток, чем есть")
         self.assertIn("Gemini в обход окна YouTube", self.py)
 
-    def test_selfcheck_does_not_call_a_half_measure_green(self):
+    def test_selfcheck_judges_by_the_page_not_by_country(self):
+        # #668: зелёным считается только связка «развод лежит в живом конфиге службы»
+        # плюс «страница Gemini пускает». Страной больше не судим: `GL` со страницы
+        # `YouTube` отвечал `RU` там, где `gemini.google.com` по IPv4 пускал.
         leg = self.py[self.py.find('add("gemini_direct"'):]
         leg = leg[:leg.find("\n    # #180")]
-        self.assertIn('rs != "RU"', leg, "зелёным считается только ответ НЕ российской страны")
-        self.assertIn('rs == "RU"', leg, "Россия при сказанном слове — красное, а не жёлтое")
+        self.assertIn('gp == "ok"', leg, "зелёный — только допуск страницы")
+        self.assertIn('gp == "blocked"', leg, "плашка по стране — красное, а не жёлтое")
+        self.assertIn("страница Gemini пускает", leg)
+        self.assertIn("недоступно в стране", leg)
         self.assertIn('gv["read"]', leg, "непрочитанный живой конфиг — не зелёный")
         self.assertIn('gv["applied"]', leg, "развод в памяти панели — не развод службы")
+        self.assertNotIn('rs != "RU"', leg,
+                         "страну со страницы YouTube больше не судим (#668)")
 
     def test_card_names_the_boundary_it_cannot_cross(self):
         self.assertIn("Веерные входы", self.card)
-        self.assertIn("не могут в принципе", self.card)
+        self.assertIn("разведены быть не могут по именам", self.card)
         self.assertIn("число таких подписчиков", self.card)
         self.assertIn("kernel_clients", self.py)
 
     def test_card_tells_measured_numbers_and_pins_no_country(self):
-        for phrase in ("56 адресов сервиса из 56", "переживёт два тика",
-                       "живой файл конфигурации", "ни одного правила"):
+        for phrase in ("56 адресов сервиса из 56", "под кольцом из них ходило три",
+                       "переживёт два тика", "живой файл конфигурации",
+                       "одно кольцо и две строки правил"):
             self.assertIn(phrase, self.card, phrase)
         for pinned in ("Финляндия", "Швеция", "Германия", "Нидерланды"):
             self.assertNotIn(pinned, self.card, pinned)
+
+    def test_the_card_names_the_second_word_and_its_own_link(self):
+        # #668: звено включается отдельным словом, и морда обязана нести его сама.
+        self.assertIn("id=gdWarp", self.card)
+        self.assertIn("Своё звено WARP", self.card)
+        for hook in ("saveGeminiWarp(", "checkGemini(", "loadGemini("):
+            self.assertIn(hook, self.ui, hook)
 
     def test_split_touches_no_subscriber_material(self):
         block = self.py[self.py.find("# ---------- #503"):self.py.find("# ---------- #384/#385")]

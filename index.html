@@ -1953,10 +1953,10 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <p class=mut style="margin:0 0 10px"><span id=gdState>—</span></p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
         <p><b>Зачем это нужно.</b> Окно «YouTube» решает ровно одну задачу: заставить Google читать наш узел Россией, и решает её по адресам назначения. Беда в том, что `Gemini` отвечает из тех же сетей Google, что и `YouTube`: на живой коробке под окном оказалось 56 адресов сервиса из 56 — то есть весь он читается Россией, хотя ему это ни к чему и на качестве ответа сказывается наоборот. Границу хозяин назвал словами: «youtube-ru, gemini -не ru».</p>
-        <p><b>Чем разделено то, что адресом не делится.</b> У двух потоков остаётся один различимый признак — имя сервиса в начале рукопожатия. Его уже читает ядро прокси, поэтому развод живёт в его конфигурации: для доменов `Gemini` положено отдельное кольцо наружу. Кольцо выводит поток из таблицы окна, но само окно из него не делает: на бою щуп по всему живому пулу показал `16` адресов из `16` — `Google` читает их Россией, при том что провайдер маркирует коробку другой страной. Это и есть цена прежнего способа: штатный выход для базы `Google` остаётся российским, каким бы ни был ярлык провайдера.</p>
+        <p><b>Чем разделено то, что адресом не делится.</b> У двух потоков остаётся один различимый признак — имя сервиса в начале рукопожатия. Его уже читает ядро прокси, поэтому развод живёт в его конфигурации: весь `Google` уходит отдельным кольцом наружу, а `YouTube` с рекламой ограждён ПЕРВОЙ строкой правил и остаётся окну — ядро берёт первое совпадение, поэтому порядок строк и есть развод. Прежняя мера судила перечнем имён, и живой замер `28.10` назвал цену: страница `Gemini` говорит с `36` именами, под кольцом из них ходило три, а остальные висели в окне `6.0` секунды из `6.0` проб, тогда как через кольцо те же имена отвечают `0.03` секунды. Кольцо выводит поток из таблицы окна, но само окно из него не делает: на бою щуп по всему живому пулу показал `16` адресов из `16` — `Google` читает их Россией, при том что провайдер маркирует коробку другой страной. Это и есть цена прежнего способа: штатный выход для базы `Google` остаётся российским, каким бы ни был ярлык провайдера.</p>
         <p><b>Как выводится выход (#668).</b> У развода своё четвёртое звено: `WARP`-туннель (`gsw0`, своя таблица `207`, свой аккаунт) по образцу игрового. Набор адресов у него тот же, что у исключения ядра: пока звено живо, правила наших приоритетов ведут накрытый адрес в таблицу звена, а кольцо наружу НЕ привязывается — маршрут до накрытого адреса выбирает ядро. Без звена всё возвращается к прежнему: исключение в штатную таблицу, кольцо с привязкой к штатному выходу и меткой `0x30`. Привязывать кольцо к самому туннелю нельзя: адрес, который в набор не попал, с привязкой умирает — на игре тот же щуп не принёс ни одного ответа. <b>Звено включается отдельным словом, и это не осторожность зря:</b> живой подъём `28.10` назвал числа — через звено `Google` прочёл Россию `8` адресов из `8`, тогда как штатный выход той же коробки ответил `8` `SE` из `8`. То есть звено честно выводит поток из окна, но страну выхода не меняет: выход `Cloudflare` `Google` читает Россией (промер `#492` — `4` прогона из `4`). На коробке, чей собственный выход читается не Россией, звено было бы ухудшением, поэтому молчаливым его не включают.</p>
         <p><b>Почему метка (#676).</b> Метку сокета эта сборка ядра прокси наружу передаёт — живой замер `28.10` на `Xray 26.3.27` счётчиком на фильтре: контрольное кольцо с меткой `0x30` добавило `14` пакетов с той же меткой, прежняя запись про «метку не передаёт» снята как ошибочная. Поэтому развод теперь держится двумя замками: кольцо наружу помечается `0x30`, а правило `fwmark 0x30 → main` стоит выше окон (`YouTube` на `600+`, `TikTok` на `200+`) и ниже нашего потолка исключений (`110..173`). Сквозной замер против окна боевой формы: звено без метки гибнет в обеих фазах, метка без правила гибнет, метка с правилом отвечает `200`. Привязка к штатному выходу осталась вторым замком; на нынешнем ядре она сама проваливается из таблицы окна в `main`, но на это свойство не опираемся — оно принадлежит ядру, а не нам.</p>
-        <p><b>Что не задето.</b> Ни одно чужое окно не перестроено: таблицы, звенья и правила «YouTube», «TikTok» и игры стоят как стояли, их приоритеты с нашими не пересекаются. Развод — это ровно одно кольцо, одно правило в конфиге ядра прокси и собственные правила `Gemini`-адресов (четвёрка — таблицей звена, шестёрка — исключением). <b>Веерные входы</b> (туннель, который ядро пересылает само, минуя прокси) разведены быть не могут по именам: там нечего читать, кроме адреса, — их выводит то же правило ядра, а карточка называет число таких подписчиков, а не обещает невозможное.</p>
+        <p><b>Что не задето.</b> Ни одно чужое окно не перестроено: таблицы, звенья и правила «YouTube», «TikTok» и игры стоят как стояли, их приоритеты с нашими не пересекаются. Развод — это ровно одно кольцо и две строки правил в конфиге ядра прокси (ограда окна первой, граница сервиса второй) и собственные правила `Gemini`-адресов (четвёрка — таблицей звена, шестёрка — исключением). <b>Веерные входы</b> (туннель, который ядро пересылает само, минуя прокси) разведены быть не могут по именам: там нечего читать, кроме адреса, — их выводит то же правило ядра, а карточка называет число таких подписчиков, а не обещает невозможное.</p>
         <p><b>Об условии включения.</b> Развод включается и без штатного выхода: кольцо тогда выходит без привязки, но с меткой, и правило `fwmark → main` уводит его из окна — этот путь измерен сквозным замером. Туннельные интерфейсы чужих звеньев запрещены прямо — привязавшись к звену окна, мы отправили бы `Gemini` обратно в Россию. Живое своё звено права не имеет: маршрут до накрытого адреса там выбирает ядро.</p>
         <p><b>Что делает смотритель.</b> Раз в минуту поднимает и бережёт звено (свой аккаунт, своё рукопожатие, замена оглохшего аккаунта не чаще раза в `15` минут), сверяет, что ядро прокси имеет НА САМОМ ДЕЛЕ (читается живой файл конфигурации, а не память панели), и с изменившимся разводом пересобирает конфиг — но только если расхождение переживёт два тика подряд и пройдёт черед в пять минут: мигание маршрута не должно дёргать службу подписчиков на каждом шаге.</p>
         <p><b>Кнопка «Проверить, чем отвечает выход»</b> шлёт два запроса к одному и тому же адресу `Gemini` — как идёт сейчас и с выхода развода (звено или привязанный штатный выход — карточка называет и то, и другое словом) — и показывает, какой стране сервис приписывает каждый из ответов. Проверка идёт до полуминуты.</p>
@@ -3627,8 +3627,34 @@ function renderMv(){
     return;
   }
   if(step==='retired'){
-    box.innerHTML='<div style="border:1px solid var(--br);border-radius:10px;padding:12px">'
-      +mvChip('пенсионирован','rgba(46,160,67,.15)')+' <b>Этот хост отслужил</b> — службы остановлены '+fmt(mv.retired_ts)+'. Панель оставлена только для осмотра.'
+    // #687: «службы остановлены» было словами о намерении, а не о результате. Теперь
+    // шаг хранит то, что НЕ погасло и что поднимется после перезагрузки, — карточка
+    // обязана показать это красным, иначе тихий хост выглядит тихим.
+    const leak=[].concat(mv.not_stopped||[],mv.still_enabled||[]);
+    // #690: хост мог быть погашен идеально и всё равно оказаться обрывом пути: под
+    // словом прыжка фронт держит его адрес в своих релеях, и подписчики шли сюда через
+    // него. Красным — до тех пор, пока стук фронта не принесёт новый адрес.
+    const hold=(mv.relay_here||[]);
+    const holdBad=hold.length||(mv.relay_read===false);
+    // #695: имена зоны, оставшиеся на этом адресе, читались только в момент нажатия и
+    // оседали в аудите — перечитанная карточка о них молчала, и хост с висящими
+    // A-записями выглядел чистым. Пустой список здесь значит «прочитано: чисто»,
+    // отсутствие чтения («НЕ проверено») — отдельное слово.
+    const stuck=(mv.still_pointing||[]);
+    const unread=(mv.dns_checked===false);
+    // #698: весть об этом могла не уйти ни в один чат. Слово о недосыле и раньше
+    // попадало в свёрнутый журнал, но лицо карточки — рамка, чип и числа «дошло N
+    // из M» — знало его только в строке сразу после нажатия.
+    const nwhy=(mv.retire_notify_why||'');
+    const retBad=(leak.length||holdBad||stuck.length||unread||nwhy);
+    box.innerHTML='<div style="border:1px solid '+(retBad?'rgba(248,81,73,.4)':'var(--br)')+';border-radius:10px;padding:12px">'
+      +mvChip('пенсионирован',retBad?'rgba(248,81,73,.15)':'rgba(46,160,67,.15)')+' <b>Этот хост отслужил</b> — '+(leak.length?('погашено '+(mv.stopped||[]).length+' служб(ы), НЕ загашено '+leak.length):('службы остановлены'))+' '+fmt(mv.retired_ts)+'. Панель оставлена только для осмотра.'
+      +(leak.length?('<div style="color:var(--err);font-size:13px;margin-top:6px">'+leak.map(x=>esc(x)).join('<br>')+'<div class=mut style="font-size:12.5px;margin-top:4px">Этот хост всё ещё отвечает подписчикам: гаси перечисленное вручную и перепроверь состояние служб.</div></div>'):'')
+      +(stuck.length?('<div style="color:var(--err);font-size:13px;margin-top:6px">📛 '+stuck.length+' имён зоны всё ещё смотрит на этот адрес: '+esc(stuck.join(', '))+' — подписчики стучатся сюда, а входа нет. Поправь A-записи в зоне.</div>'):'')
+      +(unread?('<div style="color:var(--warn);font-size:13px;margin-top:6px">📛 Имён зоны НЕ проверено: '+esc(mv.dns_why||'зона не ответила')+'. Сколько имён осталось за этим адресом — неизвестно.</div>'):'')
+      +(nwhy?('<div style="color:var(--err);font-size:13px;margin-top:6px">📛 Об этом хосте оператора НЕ предупредили: '+esc(nwhy)+' (дошло '+((mv.retire_notified||0))+' из '+((mv.retire_notify_total||0))+'). Это слово живёт в шаге, а не только в строке под кнопкой — карточка напомнит его и после перезагрузки.</div>'):'')
+      +(hold.length?('<div style="color:var(--err);font-size:13px;margin-top:6px">🔁 '+hold.length+' фронт(ов) держали этот адрес в своих релеях (отпечатки: '+esc(hold.join(', '))+'): подписчики шли сюда ЧЕРЕЗ фронт. Стук фронта сам принесёт новому хосту адрес бэка — проверь, что `back_env` фронта равен адресу нового хоста, иначе путь оборван.</div>'):'')
+      +(mv.relay_read===false?('<div style="color:var(--warn);font-size:13px;margin-top:6px">🔁 Чем релеил фронт — НЕ ПРОЧИТАНО: '+esc(mv.relay_why||'книга не открылась')+'. Сколько держателей этого адреса — неизвестно.</div>'):'')
       +mvAddrLine(mv)
       +'<div class=mut style="font-size:13px;margin-top:6px">Когда убедишься, что всё живое на новом хосте — удали этот сервер у хостинга.</div>'
       +mvLogHtml(mv)+'</div>';
@@ -3643,9 +3669,26 @@ function renderMv(){
     const summ=mv.summary||{}, ver=mv.verify||{}, dns=mv.dns||{};
     h+=mvAddrLine(mv);
     if((step==='applied'||step==='verified')&&(ver.tcp_down||ver.web_ok!==undefined)){
-      h+='<div class=mut style="font-size:13px;margin-top:6px">Порты недоступны снаружи: '+esc((ver.tcp_down||[]).join(', ')||'нет')+(ver.web_ok?' · панель отвечает':' · панель НЕ отвечает')+'</div>';
+      // #691: проба была серой справкой под ногами, а шаг — «проверено». Теперь
+      // провальный промер красный и называет числом, а рядом — слово про расписание:
+      // на непроверенном хосте час не наступит никогда.
+      const dead=(ver.ok===false)||(!ver.web_ok)||((ver.tcp_down||[]).length>0);
+      h+='<div style="color:'+(dead?'var(--err)':'var(--mut2)')+';font-size:13px;margin-top:6px">'+
+         (dead?'⛔ ':'')+'Порты недоступны снаружи: '+esc((ver.tcp_down||[]).join(', ')||'нет')+
+         (ver.web_ok?' · панель отвечает':' · панель НЕ отвечает')+
+         (dead?('<br>Связь с новым хостом НЕ подтверждена — шаг «проверено» НЕ выставлен, '+
+                'расписание по нему не сработает. Открой порты и нажми «Проверить ещё раз».'):'')+
+         '</div>';
     }
-    if(dns.ts) h+='<div class=mut style="font-size:13px;margin-top:6px">🌐 DNS ('+esc(dns.provider||'')+'): '+esc((dns.report||[]).join('; '))+'</div>';
+    // #698: числа доставки вестника о переводе домена теперь лежат в шаге, поэтому
+    // карточка может сама сказать «домен переключили, а оператора не предупредили».
+    if(dns.ts){
+      const dwhy=(mv.dns_notify_why||'');
+      h+='<div style="color:'+(dwhy?'var(--err)':'var(--mut2)')+';font-size:13px;margin-top:6px">🌐 DNS ('+esc(dns.provider||'')+'): '+esc((dns.report||[]).join('; '))
+        +(dwhy?(' · 📛 оператора об этом переводе НЕ предупредили: '+esc(dwhy)+' (дошло '+(mv.dns_notified||0)+' из '+(mv.dns_notify_total||0)+')')
+               :((mv.dns_notify_total>0)?(' · весть оператору: дошло '+(mv.dns_notified||0)+' из '+mv.dns_notify_total):''))
+        +'</div>';
+    }
     if(step==='applied'||step==='verified'){
       h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
         +'<button class=sec onclick=mvVerifyBtn()>🔁 Проверить ещё раз</button>'
@@ -3704,6 +3747,13 @@ async function mvPlanBtn(){
   let h='<div style="border:1px solid var(--br);border-radius:10px;padding:10px;font-size:13px;line-height:1.6">';
   h+= d.can_apply? mvChip('✅ план проверен','rgba(46,160,67,.15)') : '<span style="color:var(--err)">❌ '+esc((d.blockers||[]).join('; '))+'</span>';
   h+='<div class=mut style="margin-top:6px">Займут эти же порты: '+esc((d.ports||[]).join(', '))+'</div>';
+  // #690: под словом прыжка A-записи зоны смотрят на фронт, и «имён на этом адресе не
+  // осталось» ровно ничего не значит: путь подписчика жив, пока фронт держит этот адрес
+  // в своих релеях. Число обязано быть видно ДО нажатия, а не со слов подписчиков после.
+  if((d.relay_hold||[]).length)
+    h+='<div style="color:var(--err);margin-top:4px">🔁 '+d.relay_hold.length+' фронт(ов) всё ещё перекладывают подписчиков на ЭТОТ адрес (отпечатки: '+esc((d.relay_hold||[]).join(', '))+'). Стук фронта сам принесёт новому хосту адрес бэка — гаси эту машину только после того, как `back_env` фронта сравняется с адресом нового хоста.</div>';
+  else if(d.relay_read===false)
+    h+='<div style="color:var(--warn);margin-top:4px">🔁 Чем релеит фронт — НЕ ПРОЧИТАНО: '+esc(d.relay_why||'книга не открылась')+'. Сколько держателей этого адреса — неизвестно.</div>';
   h+='<div class=mut style="margin-top:4px">'+esc(d.note||'')+'</div></div>';
   b.innerHTML=h;
 }
@@ -3730,7 +3780,9 @@ async function mvVerifyBtn(){
 async function mvDnsBtn(){
   if(!confirm('Переключить домен на новый хост? Подписчики по домену начнут ходить туда. Старый хост продолжит отвечать по своему IP до пенсионирования.')) return;
   try{ const d=await api('/api/migrate/dns',{method:'POST',body:JSON.stringify({confirm:true})});
-    setMsg('mvMsg','DNS: '+((d.report||[]).join(' · ')),'ok',true);
+    // #692: DNS переключён, а весть об этом могла не уйти ни в один чат — это
+    // отдельное несчастье, и оно обязано быть красным, а не тонуть в зелёной строке.
+    setMsg('mvMsg','DNS: '+((d.report||[]).join(' · ')),(d.notify_why?'err':'ok'),true);
   }catch(e){ setMsg('mvMsg',e.message,'err',true); }
   await loadMv();
 }
@@ -3746,7 +3798,25 @@ async function mvSchedBtn(v){
 async function mvRetireBtn(){
   if(!confirm('Остановить на ЭТОМ хосте Xray, telemt, nginx и zapret2? Подписчики должны уже ходить на новый хост (DNS переключён). Панель останется включённой для осмотра. Отменить нельзя — только переустановка служб вручную.')) return;
   try{ const d=await api('/api/migrate/retire',{method:'POST',body:JSON.stringify({confirm:true})});
-    setMsg('mvMsg','остановлено: '+((d.stopped||[]).join(', ')||'ничего'),'ok',true);
+    // #687: пустой список остановленного больше не выдаётся за успех — отказ по каждому
+    // юниту назван словом и числом.
+    const lk=[].concat(d.not_stopped||[],d.still_enabled||[]);
+    // #690: погашенные службы — ещё не тишина: под словом прыжка фронт мог держать
+    // этот адрес в своих релеях, и обрыв пути подписчики замечают раньше оператора.
+    const hold=(d.relay_here||[]);
+    // #692: «остановлено» и «предупреждено» — два разных несчастья: весть могла не уйти
+    // ни в один чат (бот заблокирован, чатов ноль), и оператор об этом не узнал бы.
+    const nd=(d.notify_total===undefined)?'':(' — весть оператору: дошло '+(d.notified||0)+' из '+(d.notify_total||0)+(d.notify_why?(' ('+d.notify_why+')'):''));
+    setMsg('mvMsg','остановлено: '+((d.stopped||[]).join(', ')||'НИЧЕГО')
+      +(lk.length?(' — ВНИМАНИЕ: не погашено или не снято с автоподъёма '+lk.length+' юнитов: '+lk.join(', ')):'')
+      +(hold.length?(' — ВНИМАНИЕ: '+hold.length+' фронт(ов) всё ещё перекладывали подписчиков на этот адрес (отпечатки: '+hold.join(', ')+') — путь оборвался, дождись, пока стук фронта принесёт новому хосту адрес бэка'):'')
+      +((d.relay_read===false&&!hold.length)?' — ВНИМАНИЕ: чем релеил фронт — НЕ ПРОЧИТАНО ('+(d.relay_why||'книга не открылась')+')':'')
+      +nd,
+      // #695: число имён зоны, оставшихся на этом адресе, оператор обязан видеть сразу
+      // за нажатием, а не со слов подписчиков: это тот же класс, что #681 и #690.
+      +((d.still_pointing||[]).length?(' — ВНИМАНИЕ: '+(d.still_pointing||[]).length+' имён зоны всё ещё смотрят на этот адрес: '+d.still_pointing.join(', ')):'')
+      +(d.dns_checked===false?' — ВНИМАНИЕ: имён зоны НЕ проверено ('+(d.dns_why||'зона не ответила')+')':''),
+      (lk.length||hold.length||d.relay_read===false||d.notify_why||(d.still_pointing||[]).length||d.dns_checked===false)?'err':'ok',true);
   }catch(e){ setMsg('mvMsg',e.message,'err',true); }
   await loadMv();
 }
@@ -3783,6 +3853,51 @@ function hopPendingBox(x){
     +'<div class=mut style="font-size:12px;margin-top:6px">SSH-пароль нужен однократно (для установки ключа панели), нигде не сохраняется. Не забудь открыть порты ['+esc((x.ports||[]).join(', '))+'] по TCP'+((x.udp_ports||[]).length?(' и ['+esc(x.udp_ports.join(', '))+'] по UDP'):'')+' в security group облака фронта.</div>'
     +'</div></details>';
 }
+function hopTransportBox(){
+  // #680: контроль UDP-транспортов прыжка. Пока карточка говорила про прыжок целым
+  // словом, подписчик с WireGuard или Hysteria мог звониться прямо на бэк — фронт
+  // несёт только выписанные ему порты. Теперь каждый транспорт назван строкой:
+  // число, едет ли через фронт, и если нет — каким портом не покрыто.
+  const rows = hopData && hopData.transports;
+  if(!rows || !rows.length) return '';
+  return '<div style="margin-top:10px"><div style="font-weight:600;font-size:12.5px;margin-bottom:4px">📡 UDP-транспорты через фронт</div>'
+    + rows.map(t=>{
+        const r = 'rgba(46,160,67,.15)', g = 'rgba(227,179,65,.15)';
+        return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px;margin-top:3px">'
+          +'<span class=badge style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:'+(t.rides?r:g)+'">'+(t.rides?'✅ фронт':'🟡 бэк')+'</span>'
+          +'<b style="font-size:12.5px">'+esc(t.proto||'')+'</b><code style="font-size:12.5px">'+esc(String(t.port||''))+'</code>'
+          +'<span class="mut" style="font-size:12px;max-width:640px">'+esc(t.why||'')+'</span></div>';
+      }).join('')
+    +'<div class=mut style="font-size:12px;margin-top:6px">Жёлтая строка — этот вход подписчика минует фронт: релей его порт не держит. Панель сама кладёт транспортные порты в релей, но на фронте их надо открыть в security group облака по UDP и переустановить релей.</div></div>';
+}
+function hopAddrPush(){
+  // #688: карточка обещала, что «панель сама уведомила подписчиков», — и молчала о
+  // том, чем кончилась прошлая рассылка. Теперь она показывает числа: сколько чатов
+  // знали, сколько получили весть, сколько нет и почему рассылки не было вовсе.
+  const p = hopData && hopData.addr_push;
+  if(!p||!p.ts) return '';
+  if(p.cool) return '<div class=err style="font-size:12px;margin-top:6px">📛 '+esc(p.why||'кулдаун: рассылка не делалась')+'</div>';
+  const miss = (p.missed||0)>0, why = !!p.why;
+  let s='📣 Весть о смене адреса: дошло '+(p.notified||0)+' из '+(p.total||0)+' чатов';
+  if(miss) s+=' — НЕ дошло '+p.missed+(p.miss&&p.miss.length?(' ('+esc(p.miss.join(', '))+')'):'');
+  if(why) s+=' — '+esc(p.why);
+  return '<div class="'+((miss||why)?'err':'mut')+'" style="font-size:12px;margin-top:6px">'+s+'</div>';
+}
+function hopEpBox(){
+  // #686: контроль прямых адресов машины в ссылках подписчиков. Пока прыжок выключен
+  // это норма (цикл #239 различает ссылки на общем ключе сетевым путём). Со словом
+  // прыжка панель такой адрес в ссылку не кладёт: адрес бэка наружу — ровно тот бан,
+  // от которого фронт и ставился (#507). Запись, заведённая до слова, литерал носит —
+  // строка называет числом, скольким подписчикам надо перевыдать ссылку.
+  // #699: тем же окном называется и нода, чей адрес совпал с адресом машины: её
+  // ссылка ведёт подписчика мимо фронта так же, как `ep_host`. Число — основание
+  // показать строку: без него (0 и 0) окно молчит, как и раньше.
+  const e = hopData && hopData.ep_direct;
+  if(!e || (!e.count && !e.node_own)) return '';
+  return '<div class="'+((e.hop&&(e.count||e.node_own))?'err':'mut')+'" style="font-size:12.5px;margin-top:8px">📎 '
+    +esc(e.why||'')+(e.hop?' — ссылки перевыдайте (обновление подписки не помогает: адрес лежит в записи)':'')
+    +'</div>';
+}
 function renderHop(){
   const pub=$('hopPubBox'), lb=$('hopListBox');
   if(!pub||!lb) return;
@@ -3801,9 +3916,12 @@ function renderHop(){
         +(hopData.addr_prev?(' (был '+esc(hopData.addr_prev)+')'):'')
         +' — панель сама уведомила подписчиков в боте, а на страницах /p висит подсказка 7 дней.</div>')
       :('<div class=mut style="font-size:12.5px;margin-top:8px">Если адрес сменится сам (переезд, DDNS, хоп) — панель заметит, уведомит подписчиков в боте и покажет подсказку на их страницах /p.</div>'))
+    +(hopAddrPush())
     +(hopData.dns?('<div class="'+((hopData.dns.offenders||[]).length?'err':'mut')
       +'" style="font-size:12.5px;margin-top:8px">'
       +esc(hopData.dns.note||'DNS: состояние имён не прочитано')+'</div>'):'')
+    +(hopTransportBox())
+    +(hopEpBox())
     +'<div class=msg id=hopPubMsg></div></div>';
   const hops = hopData.hops||[];
   const tn = hopData.tun||{};
@@ -3821,6 +3939,16 @@ function renderHop(){
     h='<div style="font-weight:600;margin-top:14px;margin-bottom:4px">Фронты</div>';
     h+=hops.map(x=>{
       const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">проба '+fmtZ(x.last_check.ts,'t')+': TCP открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+(((x.last_check.udp_up||[]).length||(x.last_check.udp_closed||[]).length||(x.last_check.udp_down||[]).length||(x.last_check.udp_unknown||[]).length)?(' · UDP живой путь '+(((x.last_check.udp_up||[]).concat(x.last_check.udp_closed||[])).join(', ')||'—')+((x.last_check.udp_closed||[]).length?(' (из них без слушателя '+x.last_check.udp_closed.join(', ')+')'):'')+((x.last_check.udp_down||[]).length?(' · молчит '+x.last_check.udp_down.join(', ')):'')+((x.last_check.udp_unknown||[]).length?(' · не меряется '+x.last_check.udp_unknown.join(', ')):'')):'')+'</div>'):'';
+      // #701: TCP-книга релея: какой вход заведён ПОСЛЕ установки и не попал
+      // в релей. Числа называет панель, карточка только красит строку.
+      const tg=x.tcp_gap;
+      // #702: закрытый пробой порт книги — тоже красная строка, не только
+      // недостающий: «покрыто» без ответа фронта значит мёртвый путь.
+      const tgline=(!tg)?'':('<div class="'+(((tg.missing||[]).length||(tg.down||[]).length)?'err':'mut')+'" style="font-size:12px;margin-top:4px">🧭 TCP-книга: '+esc(tg.why||'')+'</div>');
+      // #704: входы, которых в счёте нет. Это справка, а не тревога: петлевой
+      // вход подписчик не набирает, вход за развилкой идёт числом 443 — релеить
+      // такие числа незачем, и краснеть из-за них карточка не должна.
+      const tgskip=(!tg||!(tg.skipped||[]).length)?'':('<div class=mut style="font-size:12px;margin-top:2px">↳ вне счёта: '+esc((tg.skipped||[]).map(s=>s.port+' '+s.proto+' — '+s.why).join('; '))+'</div>');
       const ud=(x.udp_ports&&x.udp_ports.length)?('<span class=mut style="font-size:12.5px">UDP: '+esc(x.udp_ports.join(', '))+'</span>'):'';
       // #661: фронт сам измеряет свой адрес наружу и приносит его в стуке. Пока
       // значение не совпало три раза подряд — это предупреждение, а не перемена.
@@ -3844,7 +3972,7 @@ function renderHop(){
         +'<span style="margin-left:auto;display:flex;gap:6px">'
         +'<button class="sec tiny" onclick="hopCheck(\''+jsStr(x.id)+'\')">Проверить</button>'
         +'<button class="sec tiny" onclick="hopDel(\''+jsStr(x.id)+'\',\''+jsStr(x.front_ip)+'\')">Удалить</button></span></div>'
-        +lc+fm+be+mv+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
+        +lc+tgline+tgskip+fm+be+mv+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
     }).join('');
   }
   h+=tunLine;
@@ -3946,9 +4074,18 @@ async function hopSetPublic(v){
   if(host && !confirm('Все ссылки подписчикам будут указывать на '+host+'. Убедись, что релей на этот адрес установлен и порты открыты. Продолжить?')) return;
   let d;
   try{ d=await api('/api/hop/public',{method:'POST',body:JSON.stringify({host})}); }
-  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  catch(e){
+    const msg=(e&&e.message)||'ошибка';
+    // #694: слово не отдаётся фронту, у которого проба читает молчание на всех
+    // входах, — подписчикам просто некуда стучаться. Согласие на риск спрашивается
+    // отдельно и только на этот отказ; остальные отказы остаются отказом.
+    if(/молчат/.test(msg)&&confirm('ОПАСНО: '+msg+'\n\nВсё равно сказать слово? Подписчики могут перестать ходить совсем.')){
+      try{ d=await api('/api/hop/public',{method:'POST',body:JSON.stringify({host,force:true})}); }
+      catch(e2){ setMsg('hopPubMsg',(e2&&e2.message)||'ошибка','err',true); return; }
+    } else { setMsg('hopPubMsg',msg,'err',true); return; }
+  }
   await loadHop();
-  setMsg('hopPubMsg',(d.warn?('⚠ '+d.warn+'. '):'')+(host?('адрес = '+host):'сброшен на домен/IP бэка')+'. '+(d.note||''), 'ok', true);
+  setMsg('hopPubMsg',(d.warn?('⚠ '+d.warn+'. '):'')+(host?('адрес = '+host):'сброшен на домен/IP бэка')+'. '+(d.note||''), (d.blind_count?'err':'ok'), true);
 }
 async function doDeploy(c){
   toast('Размещаю на нодах…');
@@ -7031,11 +7168,10 @@ async function loadGemini(){
     const d=await api('/api/gemini_direct');
     if(on) on.checked=!!d.gemini_direct;
     const wp=$('gdWarp'); if(wp) wp.checked=!!d.warp;
-    const rs=String(d.region_split||'').toUpperCase(), rw=String(d.region_window||'').toUpperCase();
+    const gp=String(d.gemini_page||'');
     const rt=String(d.route_tbl||'').toUpperCase();
-    // #668: у развода появилось своё четвёртое звено. Таблица звена — это успех, а не
-    // утечка: `207` выводит поток из окна, `205` — наоборот.
-    const tbl=str(d.link_tbl||'207').toUpperCase();
+    // #668: карточка судит страницей Gemini, а не страной выхода окна.
+    const tbl=String(d.link_tbl||'207').toUpperCase();
     const link=d.mode==='link'
       ? ('звено '+esc(String(d.via||''))+', рукопожатие '+
          (d.link_age==null?'ещё не было':(d.link_age+' с'))+', блоков '+
@@ -7055,9 +7191,9 @@ async function loadGemini(){
       (d.probe_error?('; '+esc(d.probe_error)):''); return; }
     if(d.stale){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — файл перезаписан позже службы, но разводная часть в нём та же, что служба и подняла'+kern+'.'; return; }
     if(rt&&rt!=='MAIN'&&rt!==tbl){ el.innerHTML='▶️ <b style="color:var(--warn)">Прокси разводит, а ядро всё ещё несёт Gemini в окно</b>'+kern+' — веерным входам '+esc(String(d.kernel_clients==null?'?':d.kernel_clients))+' поэтому недоступно и то, что видит прокси.'; return; }
-    if(rs&&rs!=='RU'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — четвёрку несёт '+link+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, выход читается <b>'+esc(rs)+'</b>'+(rw?(', окно отвечает <b>'+esc(rw)+'</b>'):'')+kern+'.'+vf; return; }
-    if(rs==='RU'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а выход всё ещё читается Россией</b> — проверке не верим'+(d.probe_error?(': '+esc(d.probe_error)):'')+'.'; return; }
-    el.innerHTML='▶️ <b>Gemini в обход окна</b> — '+link+', выход ещё не проверен'+kern+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+vf;
+    if(gp==='ok'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — '+link+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, страница Gemini с выхода развода пускает'+kern+'.'+vf; return; }
+    if(gp==='blocked'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а Gemini с выхода отвечает «недоступно в стране»</b>'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
+    el.innerHTML='▶️ <b>Gemini в обход окна</b> — '+link+', страница Gemini с выхода развода ещё не проверена'+kern+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+vf;
   }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
 }
 async function saveGemini(onv){
@@ -7082,14 +7218,17 @@ async function saveGeminiWarp(onv){
 }
 async function checkGemini(){
   const m=$('gdMsg'), b=$('gdCheckBtn');
-  if(m) m.textContent='мерю два выхода…';
+  if(m) m.textContent='мерю страницу Gemini…';
   if(b) b.disabled=true;
   try{
     const d=await api('/api/gemini_direct',{method:'POST',body:JSON.stringify({check:true})});
     const via=d.mode==='link'?('через звено '+(d.via||'?')):('с привязкой к '+(d.dev||'?'));
-    const rs=d.region_split?(via+' — '+String(d.region_split).toUpperCase()):'с выхода развода — ответ не получен';
-    const rw=d.region_window?('как идёт сейчас — '+String(d.region_window).toUpperCase()):'как идёт сейчас — ответ не получен';
-    if(m) m.textContent='Google отвечает: '+rs+'; '+rw+(d.probe_error?'; проверка ответила не полностью: '+esc(d.probe_error):'');
+    const gp=d.gemini_page;
+    let msg;
+    if(gp==='ok') msg='пускает — '+via;
+    else if(gp==='blocked') msg='не пускает: страница отвечает «недоступно в стране» — '+via;
+    else msg='ответ не получен — '+via;
+    if(m) m.textContent='Страница Gemini: '+msg+(d.probe_error?'; проверка ответила не полностью: '+esc(d.probe_error):'');
   }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,160); }
   if(b) b.disabled=false;
   loadGemini();
