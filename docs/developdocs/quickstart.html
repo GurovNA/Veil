@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Начало работы — документация разработчика Veil</title>
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="side">
+  <a class="brand" href="index.html">Veil <span>для разработчика</span></a>
+
+  <div class="grp">Начало работы</div>
+  <ul>
+    <li><a href="index.html">Обзор<small>что из чего состоит</small></a></li>
+    <li><a class="now" href="quickstart.html">Начало работы<small>установка и первый вход</small></a></li>
+    <li><a href="cli.html">Использование CLI<small>панель, установщик, батарея</small></a></li>
+  </ul>
+
+  <div class="grp">Документы репозитория</div>
+  <ul>
+    <li><a href="../ARCHITECTURE.md">Архитектура</a></li>
+    <li><a href="../NODE_API.md">API ноды (<code>/api/ext/*</code>)</a></li>
+    <li><a href="../../../CONTRIBUTING.md">Как вносить правку</a></li>
+    <li><a href="../../../SECURITY.md">Безопасность</a></li>
+    <li><a href="../../../CHANGELOG.md">Журнал выпусков</a></li>
+    <li><a href="../../../README.ru.md">README (русский)</a></li>
+  </ul>
+
+  <div class="grp">На этой странице</div>
+  <ul>
+    <li><a href="#need">Что нужно</a></li>
+    <li><a href="#install">Установка</a></li>
+    <li><a href="#first">Первый вход</a></li>
+    <li><a href="#steps">Что сделать в панели</a></li>
+    <li><a href="#local">Локальная правка</a></li>
+  </ul>
+</nav>
+
+<main>
+<div class="body">
+
+<h1>Начало работы</h1>
+<p class="lead">Пять команд от голой Ubuntu до работающей панели, первый вход и короткий
+разбор того, что делать дальше — и на сервере, и в дереве исходников.</p>
+
+<h2 id="need">Что нужно</h2>
+<ul class="bul">
+  <li>Ubuntu <code>22.04</code> или <code>24.04</code> LTS, чистая установка.</li>
+  <li>Права <code>root</code>: установщик отказывается работать без них.</li>
+  <li>Свободные порты: панель возьмёт <code>8443</code>, если он занят — передвинет на
+      ближайший свободный и скажет об этом вслух.</li>
+  <li>Домен, указывающий на машину, если нужен честный TLS-сертификат. Без домена панель
+      работает с заглушкой <code>CN=Veil</code>.</li>
+</ul>
+
+<h2 id="install">Установка</h2>
+<p>Одной строкой — из публичного релиза (архив <code>veil.tar.gz</code> проверяется по
+<code>veil.tar.gz.sha256</code> до распаковки):</p>
+<pre><code>bash &lt;(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh)</code></pre>
+
+<p>Из скачанного дерева — то же самое, но с интерактивным меню:</p>
+<pre><code>bash install.sh              <span class="c"># меню: установить / переустановить / удалить / показать адрес</span>
+bash install.sh --step 5     <span class="c"># выполнить только один шаг</span>
+bash install.sh --dry-run    <span class="c"># показать команды, ничего не выполняя</span>
+bash install.sh --lang en    <span class="c"># сообщения по-английски (по умолчанию — по локали)</span>
+bash install.sh --help       <span class="c"># список флагов</span></code></pre>
+
+<p>Шаги идут подряд: <code>0 preflight → 1 packages → 2 xray → 3 telemt → 4 zapret2 → 5
+panel → 6 finish</code>.</p>
+
+<table>
+  <tr><th>Шаг</th><th>Что делает</th></tr>
+  <tr><td><code>0</code></td><td>проверка прав, места и того, что машина готова</td></tr>
+  <tr><td><code>1</code></td><td>пакеты: <code>python3 curl openssl tar jq nftables qrencode ca-certificates unzip wireguard-tools certbot</code></td></tr>
+  <tr><td><code>2</code></td><td>Xray (установщик XTLS) и юнит <code>xray.service</code></td></tr>
+  <tr><td><code>3</code></td><td><code>telemt</code> → <code>/opt/telemt</code>, <code>/etc/telemt</code>, <code>/var/lib/telemt</code> и юнит <code>telemt.service</code></td></tr>
+  <tr><td><code>4</code></td><td><code>veil-zapret2</code> — обход блокировок</td></tr>
+  <tr><td><code>5</code></td><td>панель: архив, <code>/opt/vpnpanel</code>, юнит <code>vpnpanel.service</code></td></tr>
+  <tr><td><code>6</code></td><td>итоги: адрес панели и куда смотреть</td></tr>
+</table>
+
+<p>Переменные, которые задают установку без вопросов:</p>
+<pre><code>VEIL_DOMAIN=vpn.example.com VEIL_EMAIL=me@example.com bash install.sh --step 5</code></pre>
+
+<ul class="bul">
+  <li><code>VEIL_PANEL_LOGIN</code> — логин оператора (иначе генерируется).</li>
+  <li><code>VEIL_DOMAIN</code> — домен панели, он же <code>panel_domain</code>.</li>
+  <li><code>VEIL_EMAIL</code> — почта для Let's Encrypt.</li>
+</ul>
+
+<p>Установка пишется в <code>/var/log/veil-install.log</code> (если <code>/var/log</code> недоступен —
+в <code>/tmp/veil-install.log</code>).</p>
+
+<h2 id="first">Первый вход</h2>
+<pre><code>systemctl status vpnpanel.service           <span class="c"># юнит: ExecStart=/usr/bin/python3 /opt/vpnpanel/panel.py</span>
+sudo cat /opt/vpnpanel/FIRST-LOGIN.txt      <span class="c"># логин и пароль первого входа</span>
+journalctl -u vpnpanel -e                   <span class="c"># строка «Veil 2.17.48 слушает …»</span></code></pre>
+
+<p>Дальше — <code>https://&lt;адрес машины&gt;:8443</code> в браузере. Юнит настроен на
+<code>Restart=always</code> с <code>RestartSec=2</code> и <code>LimitNOFILE=65535</code>,
+поэтому упавшая панель поднимется сама.</p>
+
+<div class="warn"><b>Пароль из <code>FIRST-LOGIN.txt</code> меняют сразу.</b>
+Файл лежит на диске, а учётная запись — лицо сервера. Смена — во вкладке настроек,
+там же включается второй фактор и passkey.</div>
+
+<h2 id="steps">Что сделать в панели</h2>
+<ol class="bul">
+  <li><b>Входы.</b> Выбрать протоколы, которые будут выдаваться (Reality, ws, gRPC, Hysteria2,
+      WireGuard, AmneziaWG, MTProxy и остальные — семнадцать). Номера портов брать из таблицы
+      на странице <a href="index.html#ports">Обзор</a>.</li>
+  <li><b>Подписчик.</b> Создать подписчика — панель заведёт клиентов выбранных протоколов и
+      выдаст ссылку подписки <code>/sub/&lt;токен&gt;</code>, карточку <code>/p/&lt;токен&gt;</code>
+      и конфиг sing-box <code>/sb/&lt;токен&gt;</code>.</li>
+  <li><b>Домен и сертификат.</b> Сказанный домен включает выпуск Let's Encrypt; без него
+      ссылки уходят на адрес машины.</li>
+  <li><b>Двойной прыжок.</b> Вкладка прыжка: добавить фронт (тонкий <code>nft</code>-релей),
+      произнести слово <code>hop_public_host</code> — и панель переложит адреса ссылок,
+      DNS-записи зоны и книгу релея. Релей ставится скриптом <code>/relay.sh</code> с
+      одноразовым токеном, который печатает <code>_hop_add</code>.</li>
+  <li><b>Журнал.</b> Все эти шаги попадают в аудит: событие названо и объяснено числом,
+      поэтому «ничего не произошло» тоже видно.</li>
+</ol>
+
+<h2 id="local">Локальная правка</h2>
+<p>Прежде чем считать правку готовой, её проверяют тремя короткими мерками — они же стоят в
+<code>CONTRIBUTING.md</code>:</p>
+<pre><code>python3 -c "import ast; ast.parse(open('panel.py').read())"   <span class="c"># синтаксис панели</span>
+node --check index.html                                        <span class="c"># скрипт морды</span>
+bash -n install.sh                                             <span class="c"># синтаксис установщика</span></code></pre>
+
+<p>Затем — приборы. Деликатная выборка по любой правке из грани <code>_pub_host</code>,
+прыжка, мюкса и сертификатов занимает около шестнадцати минут:</p>
+<pre><code>cd backups/audit-2.16.1/gp
+POOL=small bash battery.sh 727a</code></pre>
+
+<p>Полный прогон, живые ноги и прочие переключатели батареи — на странице
+<a href="cli.html#battery">Использование CLI</a>. Там же описана красная база: прибор,
+который зелёный на байтах до правки, мерить нечего.</p>
+
+<h2 id="next">Дальше</h2>
+<div class="cards">
+  <a class="card" href="cli.html"><b>Использование CLI</b><span>флаги панели, установщика и батареи</span></a>
+  <a class="card" href="../NODE_API.md"><b>API ноды</b><span>токены <code>read</code>/<code>write</code>, ручки <code>/api/ext/*</code></span></a>
+  <a class="card" href="../../../SECURITY.md"><b>Безопасность</b><span>что сообщать приватно и что под защитой</span></a>
+</div>
+
+<footer class="doc">Команды и пути взяты из этого дерева: <code>install.sh</code>
+(строка <code>usage</code> — <code>36–46</code>, шаги — <code>113–470</code>),
+<code>CONTRIBUTING.md</code>, <code>README.ru.md</code>.</footer>
+
+<div class="pager">
+  <a href="index.html"><small>Назад</small>← Обзор</a>
+  <a class="next" href="cli.html"><small>Дальше</small>Использование CLI →</a>
+</div>
+
+</div>
+</main>
+</div>
+</body>
+</html>

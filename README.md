@@ -101,12 +101,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 ## Documentation
 
 - How it is built inside — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Settings words: hop, front pause, auto-recovery, backend addresses — [docs/SETTINGS.md](docs/SETTINGS.md)
+- Emergency order (what to do by hand) — [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Node-side API endpoints, `/api/ext/*` — [docs/NODE_API.md](docs/NODE_API.md)
-- Where it is heading — [docs/ROADMAP.md](docs/ROADMAP.md)
+- What was borrowed from other panels, and in what order — [docs/ROADMAP.md](docs/ROADMAP.md)
+- SNI/`dest` vs FakeTLS, why REALITY is a different class — [docs/SNI_vs_FakeTLS.md](docs/SNI_vs_FakeTLS.md)
+- Getting started and CLI — [docs/developdocs/](docs/developdocs/index.html)
 - Full version history — [`CHANGELOG.md`](CHANGELOG.md)
-- Notes: [SNI vs FakeTLS](docs/SNI_vs_FakeTLS.md)
-- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md), vulnerability reports: [SECURITY.md](SECURITY.md)
-- Public test suite: `python3 -m unittest discover -s tests -t tests`
+- Who decides: [CONTRIBUTING.md](CONTRIBUTING.md), vulnerability reports: [SECURITY.md](SECURITY.md)
+- How a release is verified — the public suite under `tests/` runs in CI, and the per-release instruments are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), section «Как это проверяется»
 - Client subscription & deep-link formats: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## License

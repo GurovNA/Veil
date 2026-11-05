@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Использование CLI — документация разработчика Veil</title>
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="side">
+  <a class="brand" href="index.html">Veil <span>для разработчика</span></a>
+
+  <div class="grp">Начало работы</div>
+  <ul>
+    <li><a href="index.html">Обзор<small>что из чего состоит</small></a></li>
+    <li><a href="quickstart.html">Начало работы<small>установка и первый вход</small></a></li>
+    <li><a class="now" href="cli.html">Использование CLI<small>панель, установщик, батарея</small></a></li>
+  </ul>
+
+  <div class="grp">Документы репозитория</div>
+  <ul>
+    <li><a href="../ARCHITECTURE.md">Архитектура</a></li>
+    <li><a href="../NODE_API.md">API ноды (<code>/api/ext/*</code>)</a></li>
+    <li><a href="../../../CONTRIBUTING.md">Как вносить правку</a></li>
+    <li><a href="../../../SECURITY.md">Безопасность</a></li>
+    <li><a href="../../../CHANGELOG.md">Журнал выпусков</a></li>
+    <li><a href="../../../README.ru.md">README (русский)</a></li>
+  </ul>
+
+  <div class="grp">На этой странице</div>
+  <ul>
+    <li><a href="#panel">panel.py</a></li>
+    <li><a href="#install">install.sh</a></li>
+    <li><a href="#service">vpnpanel.service</a></li>
+    <li><a href="#battery">battery.sh</a></li>
+    <li><a href="#instruments">приборы и красная база</a></li>
+    <li><a href="#hooks">замок pre-push</a></li>
+    <li><a href="#release">версия и выпуск</a></li>
+  </ul>
+</nav>
+
+<main>
+<div class="body">
+
+<h1>Использование CLI</h1>
+<p class="lead">У панели нет команды-обёртки и <code>--help</code>: она умеет запускаться
+как служба и принимать ровно два флага. Всё остальное в работе разработчика делают
+<code>install.sh</code> и батарея приборов.</p>
+
+<h2 id="panel">panel.py</h2>
+<p>Обычный запуск — без аргументов: панель читает <code>config.json</code>, берёт
+<code>panel_port</code> (заводское <code>8443</code>) и встает на него. Перед любым
+записыванием на диск ставится замок порта:</p>
+<pre><code>port = CFG_CACHE.get("panel_port", 8443)
+bind = (CFG_CACHE.get("panel_bind") or "0.0.0.0").strip()
+_taken = _panel_port_taken(bind, port)
+if _taken:
+    print("VEILERR: запуск отменён: " + _taken, file=sys.stderr, flush=True)
+    sys.exit(1)</code></pre>
+<p>Второй экземпляр панели рукой переписал бы живой конфиг ядра под носом у первого,
+поэтому отказ — не вежливость, а защита. Текст <code>VEILERR: запуск отменён</code> и есть
+причина, прочитанная вслух.</p>
+
+<h3>Флаг <code>--dns01-hook</code></h3>
+<pre><code>python3 panel.py --dns01-hook auth      <span class="c"># или cleanup</span></code></pre>
+<p>Это крюк certbot (<code>--manual-auth-hook</code> / <code>--manual-cleanup-hook</code>) для
+выпуска сертификата по DNS-01. Действие читается вторым словом, остальное берётся из окружения
+certbot: обязательны <code>CERTBOT_DOMAIN</code> и <code>CERTBOT_VALIDATION</code>. Работает
+только с Cloudflare. Код возврата — <code>0</code> успех, <code>1</code> отказ, причина уходит
+в <code>stderr</code> с префиксом <code>dns01-hook:</code>.</p>
+
+<h3>Флаг <code>--migrate-apply</code></h3>
+<pre><code>sudo python3 /opt/vpnpanel/panel.py --migrate-apply /tmp/veil-mv.tar.gz</code></pre>
+<p>Ножка «переезда»: разбирает архив, составленный на старой машине, и раскладывает его
+сюда — конфиг, состояние, юниты. Требует <code>root</code>; ошибки печатаются с префиксом
+<code>VEILERR: переезд(apply):</code>. Приватные файлы (<code>_MV_PRIVATE</code>) в такой
+архив не попадают по определению.</p>
+
+<div class="note"><b>Других флагов нет.</b>
+Ни <code>argparse</code>, ни подкоманд, ни <code>--help</code>: список выше — это весь
+<code>if __name__ == "__main__"</code>. Всё остальное делается через HTTP-API мордой или
+curl-запросом к <code>/api/*</code>.</div>
+
+<h2 id="install">install.sh</h2>
+<pre><code>bash install.sh                <span class="c"># интерактивное меню управления</span>
+bash install.sh --step N       <span class="c"># выполнить только шаг N (0–6)</span>
+bash install.sh --dry-run      <span class="c"># показать команды, не выполнять</span>
+bash install.sh --lang ru|en   <span class="c"># язык сообщений</span>
+bash install.sh --help         <span class="c"># это сообщение</span></code></pre>
+
+<p>Любой другой аргумент — отказ с текстом «неизвестный аргумент». Без аргументов меню
+предлагает пять пунктов: установить, переустановить с сохранением данных, переустановить
+с удалением данных, удалить панель полностью, показать адрес панели.</p>
+
+<table>
+  <tr><th>Переменная</th><th>Заводское число</th><th>Что значит</th></tr>
+  <tr><td><code>PANEL_PORT</code></td><td><code>8443</code></td><td>порт панели; занят — сдвигается на свободный</td></tr>
+  <tr><td><code>TELEMT_PORT</code></td><td><code>7443</code></td><td>слушатель MTProxy</td></tr>
+  <tr><td><code>VEIL_DOMAIN</code></td><td>—</td><td>домен панели и адрес выпуска сертификата</td></tr>
+  <tr><td><code>VEIL_EMAIL</code></td><td>—</td><td>почта Let's Encrypt</td></tr>
+  <tr><td><code>VEIL_PANEL_LOGIN</code></td><td>генерируется</td><td>логин первого входа</td></tr>
+</table>
+
+<p>Установщик качает релиз <code>…/releases/latest/download/veil.tar.gz</code> и сверяет его
+по <code>veil.tar.gz.sha256</code> до распаковки. Nginx и sing-box установщик не ставит:
+их подключает сама панель, когда включает SNI-мюкс или sing-box-выдачу.</p>
+
+<h2 id="service">vpnpanel.service</h2>
+<pre><code>systemctl restart vpnpanel             <span class="c"># перезапуск после переноса байтов</span>
+systemctl is-active vpnpanel
+journalctl -u vpnpanel -e              <span class="c"># «Veil 2.17.48 слушает …»</span>
+systemctl cat vpnpanel</code></pre>
+<p>Юнит лежит в <code>/etc/systemd/system/vpnpanel.service</code>, <code>ExecStart</code> —
+<code>/usr/bin/python3 /opt/vpnpanel/panel.py</code>, рядом <code>Restart=always</code>,
+<code>RestartSec=2</code>, <code>LimitNOFILE=65535</code>. Тот же текст пишет и
+<code>--migrate-apply</code>, поэтому юнит на переехавшей машине не отличается.</p>
+
+<div class="warn"><b>Порядок «сначала на бой».</b>
+Панель перезапускают осознанно и сверяют байты до и после: контрольная сумма
+<code>sha256</code> первых двенадцати символов <code>panel.py</code> и <code>index.html</code>
+до перезапуска и строка версии в журнале после. Журнал обязан сказать ту версию, которую
+занесли.</div>
+
+<h2 id="battery">battery.sh — батарея приборов</h2>
+<p>Полигон лежит в <code>backups/audit-2.16.1/gp/</code>: <code>battery.sh</code> и
+<code>209</code> приборов (<code>73</code> <code>cc*</code>, <code>104</code> <code>f*</code>).
+Каждый прибор — самостоятельный <code>*_test.py</code> с нулевым кодом возврата, когда всё
+зелено.</p>
+
+<pre><code>cd backups/audit-2.16.1/gp
+
+bash battery.sh 100              <span class="c"># тег battery100-&lt;метка времени&gt;</span>
+POOL=small bash battery.sh 100s  <span class="c"># деликатный пул (~16 мин против ~113)</span>
+LIVE=1 bash battery.sh 100l      <span class="c"># добавить живые прогоны — решение владельца</span>
+STREAMS=3 bash battery.sh 100    <span class="c"># число потоков пула, по умолчанию 2</span>
+STREAM=2 bash battery.sh 100     <span class="c"># один поток из NSTREAM</span>
+bash battery.sh --list           <span class="c"># состав пула «файл|флаги», без прогона</span></code></pre>
+
+<h3>Кто попадает в пул</h3>
+<ul class="bul">
+  <li>Состав определяется не именем файла: берутся все <code>*_test.py</code> каталога.</li>
+  <li><code>offline_excluded.txt</code> вычёркивает приборы: голое имя — пропустить,
+      <code>имя --флаг</code> — прогнать с этим флагом (совпадение полное, не по подстроке).</li>
+  <li>Приборы с токеном <code>live</code> идут только при <code>LIVE=1</code>.</li>
+  <li><code>POOL=small</code> оставляет ровно то, что перечислено в <code>small_pool.txt</code>
+      целым именем (формат строки — <code>имя секунды</code>). Список растёт вместе с мерами:
+      в этом дереве в нём <code>122</code> прибора на сумму хода <code>1437</code> с, а шапка
+      <code>battery.sh</code> говорит про <code>~16</code> мин в два потока против
+      <code>~113</code> мин полного пула. Сам список закрепляет прибор <code>cc57</code>.</li>
+</ul>
+
+<h3>Отказ до старта</h3>
+<p>Батарея не начинает прогон и выходит с <code>rc=3</code>, назвав число, если:</p>
+<ul class="bul">
+  <li><code>POOL</code> не <code>full</code> и не <code>small</code>;</li>
+  <li><code>STREAMS</code>/<code>STREAM</code> не число или вне диапазона;</li>
+  <li><code>POOL=small</code>, а <code>small_pool.txt</code> пуст или не читается;</li>
+  <li>свободного диска меньше <code>300</code> МиБ, <code>MemAvailable</code> меньше
+      <code>700</code> МиБ, <code>/tmp</code> меньше <code>200</code> МиБ;</li>
+  <li>нет потолка cgroup v2.</li>
+</ul>
+
+<h3>Как судится прогон</h3>
+<p>Потолок памяти — <code>CEIL = MemAvailable * 3 / 4</code>; он пишется в
+<code>/sys/fs/cgroup/battery&lt;TAG&gt;-&lt;метка&gt;</code> как <code>memory.max</code>
+с <code>memory.swap.max=0</code>, а листовой ячейке достаётся весь <code>CEIL</code>, не
+делёжка на потоки. Каждый прибор идёт под <code>timeout</code> (база — <code>600</code> с,
+в пуле бюджет умножается на число потоков, при пересъёме соло — прежний).</p>
+
+<pre><code>logs/battery&lt;TAG&gt;-&lt;метка&gt;.log        <span class="c"># полный ход</span>
+logs/battery&lt;TAG&gt;-&lt;метка&gt;/red.list  <span class="c"># красные</span>
+grep "^=====" logs/battery&lt;TAG&gt;-&lt;метка&gt;.log   <span class="c"># сводка</span></code></pre>
+
+<ul class="bul">
+  <li><code>rc=124</code> — прибор не влез в бюджет; <code>rc=137</code> вместе с
+      <code>oom_kill&gt;0</code> — память; <code>rc=3</code> — сосед держит живой харнесс.</li>
+  <li><b>Пересъём соло (#135).</b> Каждый красный прогоняется один, теми же аргументами:
+      «погасло в одиночку» — мешали соседи, «устояло» — чинить правку или прибор.</li>
+  <li>Если вне потолка убито больше половины пула, прогон объявляется <code>ИСПОРЧЕН</code>
+      и соло-суд недействителен: гнать заново на сытой машине.</li>
+  <li><b>Ворота байтов (#664).</b> В конце сверяются контрольные суммы <code>panel.py</code>
+      и <code>index.html</code> до и после: за прогон дерево не должно шелохнуться — иначе
+      мерился не тот код, который стоит сейчас.</li>
+</ul>
+
+<h2 id="instruments">Приборы и красная база</h2>
+<p>Новая мера заводит свой прибор <code>ccNN_&lt;о чем&gt;_test.py</code> и обязана показать,
+что мерит именно правку: на байтах до неё те же ноги краснеют. Для этого в полигоне лежит
+сним панели этого выпуска:</p>
+<pre><code>python3 cc76_link_host_front_test.py --panel /opt/vpnpanel/panel.py
+<span class="c">#   cc76: зелёных 54, красных 0</span>
+
+python3 cc76_link_host_front_test.py --panel backups/audit-2.16.1/gp/panel-head-854375d.py
+<span class="c">#   cc76: зелёных 1, красных 29   — прибор мерит правку, а не погоду</span></code></pre>
+
+<p>Правильный прибор переживает обе проверки: зелёный на новых байтах и красный на прежних.
+Зелёный на прежних — значит нога ничего не измеряет, и её либо переписывают, либо снимают.
+Правка, которая роняет чужой якорь (ссылку на конкретную строку прежнего кода), примиряется
+открыто: якорь перепривязывают к новому инварианту и пишут в комментарии, чьим словом он снят.</p>
+
+<h2 id="hooks">Замок pre-push</h2>
+<p>В дереве лежит <code>tools/git-hooks/pre-push</code>. Он не даёт живым ключам уйти наружу:
+сверяет точные байты того, что есть на машине (имена полей берутся из объявления панели —
+<code>_SECRET_KEYS</code>, <code>_SECRET_SUFFIX</code>, <code>_MV_PRIVATE</code>), и печатает
+только имена источников, никогда сами значения. Расхождение панели и замка переснимает
+прибор <code>cc36</code>.</p>
+<pre><code>git config core.hooksPath tools/git-hooks     <span class="c"># поставить замок себе</span></code></pre>
+
+<h2 id="release">Версия и выпуск</h2>
+<ul class="bul">
+  <li>Версия — <code>VERSION</code> в <code>panel.py:32</code>; её печатает старт службы
+      и её же ищет установщик.</li>
+  <li>Сводные выпуски — <code>CHANGELOG.md</code> заголовком <code>## [X.Y.Z] - YYYY-MM-DD</code>;
+      внутри — длинные русские записи с числами: контрольные суммы, число ног прибора, тег
+      батареи, красный базовый коммит. Крупные правки текущего цикла живут в сообщениях
+      коммитов в форме <code>#NNN: что починено</code>.</li>
+  <li>Релизный архив — <code>veil.tar.gz</code> с <code>veil.tar.gz.sha256</code>; рядом
+      <code>releases/</code> держит снятые архивы.</li>
+  <li>Коммит, тег, пуш и перенос на бой — шаги, которые делает владелец сервера, а не
+      правка: локально дерево может жить незакоммиченным сколько нужно.</li>
+</ul>
+
+<h2 id="next">Дальше</h2>
+<div class="cards">
+  <a class="card" href="index.html"><b>Обзор</b><span>файлы, пути, порты, поверхность HTTP</span></a>
+  <a class="card" href="quickstart.html"><b>Начало работы</b><span>поставить и войти</span></a>
+  <a class="card" href="../ARCHITECTURE.md"><b>Архитектура</b><span>как идёт путь одного изменения</span></a>
+</div>
+
+<footer class="doc">Флаги, числа и тексты отказов сверены с этим деревом:
+<code>panel.py</code> (<code>if __name__ == "__main__"</code>, <code>_dns01_hook_main</code>,
+<code>_mv_apply_main</code>), <code>install.sh</code>, <code>battery.sh</code>
+(шапка <code>9–27</code>, ворота <code>58–226</code>, суд <code>487–593</code>),
+<code>tools/git-hooks/pre-push</code>.</footer>
+
+<div class="pager">
+  <a href="quickstart.html"><small>Назад</small>← Начало работы</a>
+  <span></span>
+</div>
+
+</div>
+</main>
+</div>
+</body>
+</html>

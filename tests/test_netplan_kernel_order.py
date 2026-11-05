@@ -151,7 +151,7 @@ class KernelPrimarySyncTest(unittest.TestCase):
     def write_yaml(self, addrs):
         import yaml
         body = {"network": {"version": 2, "ethernets": {"net0": {
-            "match": {"macaddress": "MAC-КОРОБКИ"},
+            "match": {"macaddress": "52:54:00:11:22:33"},
             "set-name": "net0",
             "dhcp4": False,
             "addresses": [a + "/32" for a in addrs]}}}}

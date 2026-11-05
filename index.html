@@ -90,6 +90,7 @@ button.tiny{width:auto;padding:7px 12px;margin:0;font-size:13px;font-weight:600;
 .uc-chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent);background:color-mix(in srgb,var(--warn) 8%,transparent)}
 .uc-chip.bad{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,transparent);background:color-mix(in srgb,var(--err) 8%,transparent)}
 .uc-chip.proto{color:var(--acc2);border-color:color-mix(in srgb,var(--acc2) 35%,transparent);background:color-mix(in srgb,var(--acc2) 7%,transparent)}
+.uc-chip.tag{border-style:dashed;opacity:.85}
 .uc-tr{min-width:0}
 .uc-cap{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut);margin:0 0 4px}
 .uc-bar{height:6px;border-radius:99px;background:color-mix(in srgb,var(--br) 70%,transparent);overflow:hidden}
@@ -297,6 +298,13 @@ html{overscroll-behavior-y:contain}
   .proto-ctl select{flex:1 1 auto}
   .client .top{flex-wrap:wrap}
   .client .actions{width:100%;justify-content:flex-end}
+  /* #718: карточка подписчика на телефоне — имя своей строкой, кнопки под ним:
+     семь кнопок в одну строку сжимали имя до огрызка в полсотни пикселей. */
+  .uc-grid{grid-template-columns:1fr}
+  .uc-top{flex-wrap:wrap}
+  .uc-sp{display:none}
+  .uc-name{flex:1 1 auto;white-space:normal;overflow:visible;overflow-wrap:anywhere}
+  .uc-act{flex:0 0 100%;justify-content:flex-end;flex-wrap:wrap}
   .status-line{flex-wrap:wrap;justify-content:center}
   .hero .row{gap:6px}
   .hero .xrbtns{margin-left:0;flex-wrap:wrap;justify-content:center;row-gap:6px}
@@ -726,7 +734,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     <button data-tab=site>🌐 Сайт, домен, сертификация</button>
     <button data-tab=settings>⚙️ Настройки</button>
     <button data-tab=ai>🤖 Ассистент</button>
-    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🔀 Двойной прыжок</button><button data-tab=migrate>🚚 Переезд</button><button data-tab=security>🔑 Безопасность</button><button data-tab=pay>💳 Оплата</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=logs>🧾 Логи</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button><button data-tab=flux style="display:none">🌀 OpenFlux</button>
+    <button data-tab=subscription>🔗 Подписка</button><button data-tab=nodes>🖥️ Ноды</button><button data-tab=hop>🔀 Двойной прыжок</button><button data-tab=migrate>🚚 Переезд</button><button data-tab=hosters>🏢 Хостеры</button><button data-tab=security>🔑 Безопасность</button><button data-tab=pay>💳 Оплата</button><button data-tab=appearance>🎨 Оформление</button>    <button data-tab=telegrambot>🤖 Telegram Bot</button><button data-tab=logs>🧾 Логи</button><button data-tab=journal>📋 Журналы</button><button data-tab=diagnostics>🩺 Диагностика</button><button data-tab=flux style="display:none">🌀 OpenFlux</button>
   </nav>
 
   <div id=tab-dashboard class="tab-pane">
@@ -744,6 +752,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class=kpi-cap>📈 Трафик за сутки</div>
         <div class=kpi-val><b id=dToday>—</b><span class=kpi-delta id=dTodayDelta></span></div>
         <div class=kpi-sub id=dTodaySub>неделя: — · месяц: —</div>
+      </div>
+      <div class="card dash-kpi" id=dHostersCard style="cursor:pointer" title="Нажми — панель откроет вкладку «Хостеры»" onclick=quickTab('hosters')>
+        <div class=kpi-cap>🏢 Хостеры</div>
+        <div class=kpi-val><b id=dHosters>—</b><span class=kpi-tot id=dHostersTot></span></div>
+        <div class=kpi-sub id=dHostersSub>где куплены машины</div>
       </div>
     </div>
     <div class=dash-mid>
@@ -958,6 +971,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div id=editWho class=muted></div>
       <label for="editName">Имя подписки</label>
       <input id=editName maxlength=40 placeholder="как подписчик видит себя сам">
+      <label for="editTags">Метки (через запятую) <span class=muted style="font-weight:normal">— твои пометки для поиска, до 8; подписчик их не видит</span></label>
+      <input id=editTags maxlength=200 placeholder="например: друг, оплатил до лета, 2 устройства">
       <label for="editLimit">Лимит, ГБ (0=безлимит)</label>
       <input id=editLimit type=number min=0 step=0.5>
       <label for="editExpMode">Срок действия <span id=editExpNow class=muted></span></label>
@@ -1577,6 +1592,22 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
       <div class=msg id=muxMsg></div>
     </div>
+    <div class="card set-block" id=selfSniCard>
+    <h3 style="margin:0 0 8px">🌀 Маскировка Reality: свой сайт <span class=mut style="font-weight:400;font-size:12px">(selfSNI: подписчик видит ваш домен и ваш сайт)</span></h3>
+    <p class=mut style="margin:0 0 10px">Сейчас Reality-входы прячутся за чужими сайтами (<code>cloud.yandex.ru</code>, <code>www.samsung.com</code>). Здесь маской станет ваш собственный сайт: <b>www.&lt;ваш домен&gt;</b> с игрой «8BIT HAVEN». Проверяющий без ключа получит ваш сертификат и ваш сайт.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Зачем?</b> Маска нужна, чтобы вход нельзя было опознать как VPN. Сейчас в рукопожатии звучит чужой известный сайт, после включения — ваш собственный. Размен: ваш домен становится «лицом» прокси — если его заблокируют по имени, упадут и ссылки, и маска.</p>
+      <p><b>Что со старыми ссылками?</b> Старые Reality-ссылки перестанут работать, пока клиент не обновит подписку. Свежие выдачи уже будут с новым именем — предупредите подписчиков.</p>
+      <p><b>Что сделает панель:</b> заведёт DNS-запись и имя в сертификат, поднимет сайт на внутреннем порту, впишет его в развилку :443 и переключит маску всех включённых Reality-входов. Всё с проверкой конфига и откатом при ошибке.</p>
+    </div></details>
+    <div id=selfSniBox class=mut style="font-size:13px;line-height:1.6"><span class=mut style="font-size:12px">Нажмите «Обновить», чтобы увидеть состояние.</span></div>
+    <div style="margin-top:10px" class="row">
+      <button class="sec" onclick=selfSniApply()>▶ Включить свой сайт</button>
+      <button class="tiny sec" onclick=selfSniRevert()>⟲ Вернуть прежнюю маску</button>
+      <button class="tiny sec" onclick=loadSelfSni()>⟳ Обновить</button>
+    </div>
+    <div class=msg id=selfSniMsg></div>
+    </div>
   </div></div>
 
   <div id=tab-settings class="tab-pane">
@@ -1774,6 +1805,40 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <p><b>Какие порты под защитой.</b> Список собирается сам из живых входов прокси: его публичный слушатель (обычно 7443) и общий порт 443, когда включён маршрут MTProto на :443 — тогда клиенты с новых ссылок стучатся именно туда. Сюда же можно дописать свои порты, если на узле висит что-то ещё, что вы хотите закрыть от сканеров.</p>
         <p><b>Осторожно с 443.</b> Общий порт 443 служит не только прокси: через него же идут сайт и веб-прокси. Лимит считается на адрес источника, поэтому у посетителей из одной большой сети (мобильный оператор, офисный NAT, общедомовой роутер) суммарные новые соединения могут упереться в 600 в минуту. Панель снимает 443 из-под защиты, как только маршрут MTProto выключен, — если сайт начал жаловаться на «хост недоступен», галочку маршрута или этот порт надо убрать.</p>
         <p><b>Безопасно ли?</b> Да: правила не трогают вход в панель, VPN-протоколы и сайт-заглушку на других портах, а свои адреса (включая loopback и собственные IP сервера) проходят всегда — иначе панель проверяла бы сама себя и попадала под лимит. Панель пересобирает правила при смене портов, при включении и снятии маршрута прокси и раз в минуту, если таблица исчезла (например после перезагрузки сервера).</p>
+      </div></details>
+    </div>
+    <div style="margin:12px 0">
+      <label><input type=checkbox id=scanEnabled> Анти-скан: называть обметание защищённых портов событием из счётчиков SYN-защиты <span class=mut id=scanState style="font-size:12px"></span></label>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;font-size:12px">
+        <label for=scanRate>Лимит SYN на адрес, в минуту</label>
+        <input id=scanRate type=number style="width:96px;font-size:12px">
+        <label for=scanBurst>Запас на всплеск</label>
+        <input id=scanBurst type=number style="width:80px;font-size:12px">
+        <label for=scanRejMin>Волна: отбито в минуту от</label>
+        <input id=scanRejMin type=number style="width:80px;font-size:12px">
+        <label for=scanSrcMin>или адресов от</label>
+        <input id=scanSrcMin type=number style="width:80px;font-size:12px">
+        <label style="display:flex;gap:4px;align-items:center"><input type=checkbox id=scanNotify> о волне писать и в чат</label>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;font-size:12px">
+        <label style="display:flex;gap:4px;align-items:center"><input type=checkbox id=scanAuto> #117: банить сам, если адрес получил отказ НАШЕЙ защиты и назван списком сканеров</label>
+        <label for=scanAutoMax>не больше адресов в час</label>
+        <input id=scanAutoMax type=number style="width:70px;font-size:12px">
+      </div>
+      <p class=mut style="margin:6px 0 0;font-size:11.5px" id=scanTuneNote></p>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <button class="tiny sec" onclick=scanRefresh()>📡 Посмотреть обметание</button>
+        <input id=scanBanIp type=text placeholder="адрес, например 203.0.113.9" style="flex:1;min-width:170px;font-size:12px">
+        <button class="tiny sec" onclick=scanBlockOne()>Заблокировать</button>
+        <button class="tiny sec" onclick=scanAllowOne()>В «не банить»</button>
+      </div>
+      <p class=mut style="margin:6px 0 0;font-size:11.5px" id=scanMsg></p>
+      <div id=scanBox style="margin-top:8px;font-size:12px"></div>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Что здесь?</b> SYN-защита выше уже считает, сколько чужих адресов стучится в защищённые порты и сколько пакетов она отбила. Анти-скан берёт ЭТИ ЖЕ счётчики: когда за минуту накопилось больше порога отбитых пакетов или к портам потянулось подозрительно много разных адресов, панель записывает в журнал событие «идёт сканирование». Ничего нового она не щупает и никого сама не банит — только называет то, что защита уже насчитала.</p>
+        <p><b>Зачем менять лимиты?</b> Коробке с десятью тысячами подписчиков и коробке с тремя телефонами подходят разные числа. Лимит на адрес — сколько новых соединений в минуту проходит спокойно; «запас на всплеск» — сколько из них разрешено подряд при старте приложения. Ниже 60 в минуту лимит начнёт резать семейный роутер и офисный NAT (оттуда идут все разом), выше 6000 — шторм уже не отличить от клиента.</p>
+        <p><b>Рука оператора.</b> Кнопки ниже списка адресов банят РОВНО ОДИН названный адрес — целые сети и провайдеров панель без проверки не режет (урок #500: сетка `/16` по лёгшим абонентам оставила людей без связи на двое суток). Бан прошёл те же ворота, что и автобан: живой SSH-сеанс и список «не банить» не пострадают. Адрес из списка «не банить» — ваш офис, ваш VPN — панель не тронет никогда.</p>
+        <p><b>Увидеть своими глазами.</b> «Посмотреть обметание» печатает последние числа: сколько адресов в окне метра, сколько пакетов отбито с прошлого замера, какие адреса панель видит по именам и что уже забанено рукой.</p>
       </div></details>
     </div>
     <div style="margin:12px 0">
@@ -2361,9 +2426,10 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
             <span id="subUsersCount" class=mut style="font-size:12px;font-weight:normal">—</span>
           </summary>
           <div class=row style="margin:10px 0 8px">
-            <input type=text id=subUsersSearch placeholder="🔍 Поиск подписчика: имя, токен, протокол" autocomplete=off style="flex:1;min-width:220px" oninput=subUsersRender()>
+            <input type=text id=subUsersSearch placeholder="🔍 Поиск подписчика: имя, метка, токен, протокол" autocomplete=off style="flex:1;min-width:220px" oninput=subUsersRender()>
             <button type=button class="tiny sec" onclick="$('subUsersSearch').value='';subUsersRender()" title="Сбросить поиск">✕</button>
           </div>
+          <p class=mut style="margin:0 0 8px;font-size:12px">🏷 Метки — твои личные пометки у подписчика (например «друг», «оплатил до лета»): ставятся в ⚙ настройках, до 8 штук, участвуют в поиске; подписчик их не видит.</p>
           <div id="subUsersList">
             <p class=mut>Загрузка списка пользователей...</p>
           </div>
@@ -2556,6 +2622,53 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         </div>
       </details>
       <div class="msg" id=hopMsg></div>
+    </div>
+  </div>
+
+  <div id=tab-hosters class="tab-pane">
+    <div class="card set-block">
+      <h3>🏢 Хостеры: состояние машин и смена IP</h3>
+      <p class=mut style="line-height:1.7">Здесь панель помнит, у кого куплены твои VPS. Добавь API-ключ из личного кабинета провайдера — и карточка покажет состояние машины, срок оплаты и баланс, а кнопки позволят перезагрузить её или сменить IP прямо отсюда. Ключ хранится на сервере и наружу не отдаётся; подписчики и ссылки его не видят.</p>
+      <details class=expl><summary>Объяснить простым языком</summary><div>
+        <p><b>Зачем это.</b> Раньше, чтобы перезагрузить фронт или сменить адрес, приходилось идти на сайт провайдера. Вкладка делает то же самое из панели: одна карточка на машину, у каждой — «Проверить», «Перезагрузить» и «Смена IP».</p>
+        <p><b>Откуда берётся ключ.</b> В личном кабинете провайдера есть раздел API. Копируешь ключ оттуда и вставляешь в «Добавить хостера». Для OneDash у ключа должен быть непустой белый список IP: иначе опасные операции провайдер не примет — панель скажет это словами. После добавления ключ уже не показывается; можно только заменить его новым.</p>
+        <p><b>Смена IP.</b> У AEZA — платная замена основного адреса с баланса провайдера. У OneDash — список вариантов: если у аккаунта есть право бесплатной смены, деньги не спишутся; если машину придётся пересоздать, панель попросит отдельное подтверждение. После смены адреса открой «🔀 Двойной прыжок»: новый адрес фронта подхватится смотрителем (три одинаковых стука) или кнопкой «Вести имена через этот фронт».</p>
+        <p><b>Чего вкладка не делает.</b> Она не покупает и не продлевает VPS, не трогает данные на машине и не удаляет её — только смотрит состояние, перезагружает и меняет IP, если это разрешил сам провайдер.</p>
+      </div></details>
+      <div id=hsListBox style="margin-top:12px"><span class=mut>загрузка…</span></div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick=hsShowAdd()>➕ Добавить хостера</button>
+        <button class=sec onclick=hsCheck()>🔄 Проверить всех</button>
+      </div>
+      <div class=msg id=hsMsg></div>
+    </div>
+  </div>
+
+  <div id=hsAddBox class="dialog hidden">
+    <div class=dcard>
+      <div class=row><b id=hsAddTitle>Добавить хостера</b><button class=tiny onclick=hsHideAdd()>Отмена</button></div>
+      <label class=fldlbl for=hsProvider>Провайдер</label>
+      <select id=hsProvider onchange=hsProbeReset()>
+        <option value=aeza>AEZA (my.aeza.net)</option>
+        <option value=onedash>OneDash (api.rdp-onedash.ru)</option>
+      </select>
+      <label class=fldlbl for=hsKey>API-ключ провайдера (секрет)</label>
+      <input id=hsKey type=password autocomplete=new-password placeholder="Вставь ключ из личного кабинета">
+      <div style="margin-top:8px"><button class=sec onclick=hsProbe()>🔑 Проверить ключ и показать машины</button></div>
+      <div id=hsProbeBox style="margin-top:10px"></div>
+      <div id=hsVpsBox></div>
+      <div id=hsFormBox style="display:none;margin-top:8px">
+        <label class=fldlbl for=hsName>Имя для панели</label>
+        <input id=hsName maxlength=64 placeholder="Например: Москва-фронт">
+        <label class=fldlbl for=hsRole>Роль машины</label>
+        <select id=hsRole>
+          <option value=front>Фронт (Россия, вход для клиентов)</option>
+          <option value=back>Бэк (основной сервер)</option>
+          <option value=spare>Запасной</option>
+        </select>
+        <button onclick=hsSave()>💾 Сохранить хостера</button>
+      </div>
+      <div class=msg id=hsAddMsg></div>
     </div>
   </div>
 
@@ -3031,19 +3144,26 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
 </div><script>
 async function updateMetrics(){
-  try{
-    const resp = await fetch('/api/metrics');
-    if(!resp.ok) return;
-    const m = await resp.json();
-    const cpu = Math.max(0, Math.min(100, m.cpu_percent || 0));
-    const cg = document.getElementById('stCpuGauge');
-    if(cg) cg.style.strokeDashoffset = 100 - cpu;
-    const cv = document.getElementById('stCpuV'); if(cv) cv.textContent = cpu.toFixed(0) + '%';
-    const ct = document.getElementById('stCpuT'); if(ct) ct.textContent = (m.load1 != null ? 'load ' + m.load1 : 'нагрузка');
-    const ps = m.ports_status || {}, keys = Object.keys(ps);
-    const sp = document.getElementById('stPorts');
-    if(sp) sp.textContent = keys.length ? (keys.filter(k=>ps[k]).length + ' / ' + keys.length) : '—';
-  }catch(e){}
+  // #734 (слово хозяина: «во вкладке vpn не работает … нагрузка на цп, кол-во
+  // открытых портов»). Прежде запрос шёл сырым `fetch` без `X-Sid`: у сессии,
+  // живущей в `localStorage` (телефон, «запомнить меня»), панель отвечала 401,
+  // отказ глотался молча — и плитки дожидались прочерка, по которому нельзя
+  // было отличить «нет ответа» от «нагрузка нулевая». `api()` сам несёт
+  // заголовок сессии, когда куки нет; отказ теперь назван.
+  let m=null;
+  try{ m = await api('/api/metrics'); }catch(e){}
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  if(!m){
+    set('stCpuV','нет ответа'); set('stCpuT','нагрузка'); set('stPorts','—');
+    return;
+  }
+  const cpu = Math.max(0, Math.min(100, m.cpu_percent || 0));
+  const cg = document.getElementById('stCpuGauge');
+  if(cg) cg.style.strokeDashoffset = 100 - cpu;
+  set('stCpuV', cpu.toFixed(0) + '%');
+  set('stCpuT', (m.load1 != null ? 'load ' + m.load1 : 'нагрузка'));
+  const ps = m.ports_status || {}, keys = Object.keys(ps);
+  set('stPorts', keys.length ? (keys.filter(k=>ps[k]).length + ' / ' + keys.length) : '—');
 }
 
 function escapeHtml(s){
@@ -3099,10 +3219,17 @@ function subCard(c, kids){
     ? '<span class="uc-chip" title="срок действия">📅 '+escapeHtml(fmtLocal(c.expiry))+'</span>'
     : '<span class="uc-chip">∞ срок</span>';
   // --- протоколы ---
+  // #720: полтора десятка плашек съедали пол-карточки — список входов спрятан
+  // под свёртку «Доступные протоколы» с числом. «Нет протоколов» — беда, а не
+  // список: эта плашка остаётся на виду, разворачивать её незачем.
   const protos=c.protos||[];
-  const protoChips = protos.length
-    ? protos.map(p=>'<span class="uc-chip proto">'+escapeHtml(protoLabels[p.proto]||p.label||p.proto)+(p.port?' · '+p.port:'')+'</span>').join('')
-    : '<span class="uc-chip bad">нет протоколов</span>';
+  const protoChips = protos.map(p=>'<span class="uc-chip proto">'+escapeHtml(protoLabels[p.proto]||p.label||p.proto)+(p.port?' · '+p.port:'')+'</span>').join('');
+  const protoDet = protos.length
+    ? '<details class="uc-det uc-protos"><summary title="Все конфигурации этой подписки: протокол · порт входа. Разверни, чтобы посмотреть и скопировать ссылки ниже.">🔌 Доступные протоколы · '+protos.length+'</summary>'
+      +'<div class="uc-chips" style="margin-top:7px">'+protoChips+'</div></details>'
+    : '<div class="uc-chips"><span class="uc-chip bad">нет протоколов</span></div>';
+  // --- метки владельца (#719): свои пометки для поиска, подписчик их не видит ---
+  const tagChips=(c.tags||[]).map(t=>'<span class="uc-chip tag" title="твоя метка для поиска — подписчик её не видит">🏷 '+escapeHtml(t)+'</span>').join('');
   const cliChip = c.client
     ? '<span class="uc-chip'+(c.client_old?' warn':'')+'" title="клиент">👤 '+escapeHtml(c.client)+(c.client_version?' '+escapeHtml(c.client_version):'')+(c.client_old?' ⚠ старое ядро':'')+'</span>'
     : '';
@@ -3218,8 +3345,8 @@ function subCard(c, kids){
         + '<button class="uc-i" title="Настройки подписки: имя, срок (в том числе до конкретной даты), лимит, семья" onclick="subSettings(\''+jsStr(c.uuid||'')+'\')">⚙</button>'
       + '</span>'
     + '</div>'
-    + '<div class="uc-chips">'+famChip+status+expChip+cliChip+'</div>'
-    + '<div class="uc-chips">'+protoChips+'</div>'
+    + '<div class="uc-chips">'+famChip+status+expChip+cliChip+tagChips+'</div>'
+    + protoDet
     + tr
     + linksDet
     + useDet
@@ -3324,6 +3451,7 @@ function subSrvKey(g){
   const p=[];
   const add=function(c){if(!c)return;
     p.push(c.name||'',c.sub_token||'',c.uuid||'',c.client||'');
+    (c.tags||[]).forEach(function(t){p.push(t||'');}); // #719: метки участвуют в поиске
     (c.protos||[]).forEach(function(x){p.push((x.proto||'')+' '+(x.label||''));});
     if(c.links&&typeof c.links==='object')p.push(Object.keys(c.links).join(' '));
     (c.family||[]).forEach(function(m){p.push(m.name||'',m.uuid||'',m.sub_token||'');});};
@@ -3346,7 +3474,7 @@ function subUsersRender(){
   }
   if(!shown.length){
     el.className='';
-    el.innerHTML='<p class=mut style="margin:12px 4px 0">Ничего не найдено по запросу «'+escapeHtml(q)+'». Уточни имя, токен или протокол.</p>';
+    el.innerHTML='<p class=mut style="margin:12px 4px 0">Ничего не найдено по запросу «'+escapeHtml(q)+'». Уточни имя, метку, токен или протокол.</p>';
     return;
   }
   el.className='uc-grid';
@@ -3557,7 +3685,7 @@ function renderBoot(d){
 }
 
 // ---- Двойной прыжок (RU-фронт → зарубежный бэк) ----
-let hopData=null, hopBootTimer=null;
+let hopData=null, hopBootTimer=null, HOP_PF={};
 var mvData=null, mvTimer=null, mvJob=null;
 const MV_STEP_TXT={prepared:"готовим и передаём архив",precheck:"подключаемся и проверяем новый хост",
   applied:"данные перенесены — ждёт проверки",verified:"ждёт переключения DNS",
@@ -3870,6 +3998,38 @@ function hopTransportBox(){
       }).join('')
     +'<div class=mut style="font-size:12px;margin-top:6px">Жёлтая строка — этот вход подписчика минует фронт: релей его порт не держит. Панель сама кладёт транспортные порты в релей, но на фронте их надо открыть в security group облака по UDP и переустановить релей.</div></div>';
 }
+function hopInbBox(){
+  // #730: список входов панели с тумблером «фронт» — слово хозяина 30.10. Пока
+  // карточка говорила целым словом «прыжок включён», WireGuard и AmneziaWG молча
+  // жили на бэке, а включить или выключить фронт ОДНОГО входа было нечем. Строка
+  // называет вход, семью и порт, своё имя (или «без своего имени»), положение
+  // тумблера и что это значит сейчас — слова приходят от панели.
+  const rows = hopData && hopData.inbounds;
+  if(!rows || !rows.length) return '';
+  return '<div style="margin-top:12px"><div style="font-weight:600;font-size:12.5px;margin-bottom:2px">🧩 Входы и фронт</div>'
+    +'<div class=mut style="font-size:12px;margin-bottom:6px">Тумблер решает, ходить ли подписчикам этого входа через фронт. Выключенный вход звонится напрямую на бэк: имя панель держит на бэке, а вход без своего имени несёт в ссылке адрес бэка. При смене адреса фронта двигаются только имена включённых входов; при смене адреса бэка включённые не трогаются.</div>'
+    + rows.map(r=>{
+        const on=!!r.front, dis=!!r.disabled;
+        return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px;margin-top:5px'+(dis?';opacity:.55':'')+'">'
+          +'<b style="font-size:12.5px">'+esc(r.proto||'')+'</b>'
+          +'<code style="font-size:12px">'+esc((r.fam||'')+':'+String(r.port||''))+'</code>'
+          +(r.name?'<span class=mut style="font-size:12px">имя <code>'+esc(r.name)+'</code></span>'
+                 :'<span class=mut style="font-size:12px">без своего имени</span>')
+          +'<button class="'+(on?'':'sec')+' tiny" style="margin-left:auto'+(on?'':';border-color:var(--err);color:var(--err)')+'" onclick="hopInbToggle(\''+jsStr(r.proto)+'\','+(on?'false':'true')+')">'+(on?'⏸ Выключить фронт':'▶ Включить фронт')+'</button>'
+          +'</div>'
+          +'<div class="'+((r.trouble||dis)?'mut':(on?'mut':''))+'" style="font-size:12px;margin-top:1px">'+esc(r.why||'')+'</div>';
+      }).join('')
+    +'<div class=msg id=hopInbMsg></div></div>';
+}
+async function hopInbToggle(proto,on){
+  setMsg('hopInbMsg',(on?'включаю':'выключаю')+' фронт входа '+proto+'…','');
+  let d;
+  try{ d=await api('/api/hop/inbound/front',{method:'POST',body:JSON.stringify({proto,on})}); }
+  catch(e){ setMsg('hopInbMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopInbMsg',(d.note||((on?'фронт включён':'фронт выключен')+' для '+proto))
+    +(d.report?(' · '+d.report):''), d.ok===false?'err':'ok', true);
+}
 function hopAddrPush(){
   // #688: карточка обещала, что «панель сама уведомила подписчиков», — и молчала о
   // том, чем кончилась прошлая рассылка. Теперь она показывает числа: сколько чатов
@@ -3882,6 +4042,174 @@ function hopAddrPush(){
   if(miss) s+=' — НЕ дошло '+p.missed+(p.miss&&p.miss.length?(' ('+esc(p.miss.join(', '))+')'):'');
   if(why) s+=' — '+esc(p.why);
   return '<div class="'+((miss||why)?'err':'mut')+'" style="font-size:12px;margin-top:6px">'+s+'</div>';
+}
+function hopAgo(s){
+  // одна мера возраста на весь блок: сек → мин → ч → сут
+  s=Math.max(0,Math.round(s||0));
+  if(s<60) return s+' с';
+  if(s<3600) return Math.round(s/60)+' мин';
+  if(s<86400){ const h=s/3600; return (h<10?h.toFixed(1):Math.round(h)).toString().replace('.0','')+' ч'; }
+  return Math.round(s/86400)+' сут';
+}
+const HOP_STATES={
+  ONLINE:['🟢','rgba(46,160,67,.15)','фронт ведёт имена, входы отвечают'],
+  DEGRADED:['🟡','rgba(227,179,65,.15)','имена на фронте, но свидетель молчит'],
+  BLOCKED:['⛔','rgba(248,81,73,.15)','адрес фронта назван списком блокировок'],
+  FAILOVER:['🟠','rgba(248,166,87,.15)','имена на бэке — слово снял сторож'],
+  MAINTENANCE:['⏸','rgba(139,148,158,.18)','фронт нарочно на паузе рукой оператора: имена увезены, новые соединения на самом фронте заперты'],
+  RECOVERING:['🔄','rgba(88,166,255,.15)','переключение выполняется, решение ещё не подтверждено']
+};
+const BACK_STATES={
+  STABLE:['🟢','rgba(46,160,67,.15)','службы отвечают по всем адресам, дорога из России есть'],
+  PARTIAL:['🟡','rgba(227,179,65,.15)','службы живы, но картина из России неполная: до адреса не дойти или его не мерили'],
+  DEGRADED:['🟠','rgba(248,166,87,.15)','главный адрес жив, а часть пула молчит серией подряд'],
+  SWITCHABLE:['🔴','rgba(248,81,73,.15)','главный адрес мёртв — живая замена в пуле найдена'],
+  NO_RESERVE:['⛔','rgba(248,81,73,.18)','главный адрес мёртв, а живой замены в пуле нет'],
+  AUTO_OFF:['✋','rgba(139,148,158,.18)','главный адрес мёртв — автоматику выключил хозяин, решает рука'],
+  UNMEASURED:['❔','rgba(139,148,158,.15)','адреса ещё не меряли: слово «норма» здесь не сказано']
+};
+function hopStatusBar(){
+  // ТЗ §7: одно слово о состоянии прыжка. Карточка печатает снимок панели
+  // (`status` + `failover`) и ничего не додумывает: состояние, активный адрес,
+  // резерв, судьба бэка, сколько подписчиков в сети, когда мерили в последний раз,
+  // история переключений и последняя причина.
+  const s = hopData && hopData.status;
+  if(!s) return '';
+  const chip = HOP_STATES[s.state]||['❔','rgba(139,148,158,.15)',String(s.state)];
+  let out='<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--br);border-radius:9px">'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<span class=badge style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:700;background:'+chip[1]+'">'+chip[0]+' '+esc(s.state)+'</span>'
+    +'<span class=mut style="font-size:12px">'+esc(chip[2])+'</span></div>'
+    +'<div class="'+(s.state==='ONLINE'?'mut':'err')+'" style="font-size:12.5px;margin-top:6px">🗣 '+esc(s.reason)+'</div>'
+    +'<div class=mut style="font-size:12.5px;margin-top:4px">'
+    +'📍 слова прыжка: '+(s.word?('<b>'+esc(s.word)+'</b>'):'нет — имена ведут напрямую')
+    +' · фронт '+esc(s.front||'без адреса')
+    +' · резервный фронт: '+esc(s.reserve||'нет')+' — '+esc(s.reserve_note||'')
+    +'</div>'
+    +'<div class=mut style="font-size:12.5px">'
+    +'🖥 бэк '+esc(s.back||'не определён')+' — '+esc(s.back_state||'не мерено')
+    +' · в сети '+((s.clients||0)>0?('<b>'+s.clients+'</b>'):'<b>0</b>')+' подписчик(а)'
+    +' · стук фронта: '+(s.beat_ts?('<span title='+JSON.stringify(fmtZ(s.beat_ts,'dt'))+'>('+hopAgo(s.beat_age)+' назад)</span>'):'не был')
+    +' · проба сторожа: '+(s.probe_ts?('<span title='+JSON.stringify(fmtZ(s.probe_ts,'dt'))+'>('+hopAgo(s.probe_age)+' назад)</span>'):'не было')
+    +'</div>';
+  const f = hopData.failover;
+  if(f && (f.held||f.auto_closed)){
+    out+='<div class="err" style="font-size:12.5px;margin-top:6px">🔒 '
+      +(f.held?('ворота переключений заняты: решение «'+esc(f.who||'')+'» ('+esc(f.dir||'')+') идёт '+hopAgo(f.busy_age)):'')
+      +(f.auto_closed?(' '+(f.held?'· ':'')+'автоматика переключений закрыта ещё '+hopAgo(f.auto_left)+' — '+(f.auto_reason?esc(f.auto_reason):'причина: качели')):'')
+      +'</div>';
+  }
+  const hist = (f&&f.history)||s.history||[];
+  if(hist.length){
+    out+='<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12.5px;color:var(--acc)">📒 журнал решений о переключении — '+hist.length+' (разворотов: '+((s.flips||f&&f.flips)||0)+')</summary>'
+      +'<div style="padding:6px 4px 0;font-size:12px" class=mut>'
+      +hist.map(function(h){
+        return '<div style="margin-top:2px">'+fmtZ(h.ts,'dt')+' · '+esc(h.who||'?')+' · '+(h.manual?'рукой':'автоматикой')
+          +' → '+esc(h.dir||'')+' · '+(h.ok?('✅ '+h.secs+' с'+(h.waited?(' (ждал '+h.waited+' с)'):'')):'⛔ '+esc(h.err||'отказ'))
+          +'</div>';}).join('')
+      +'</div></details>';
+  } else {
+    out+='<div class=mut style="font-size:12px;margin-top:6px">📒 переключений панель ещё не делала — журнал пуст.</div>';
+  }
+  const rv = s.reserve||'';
+  out+='<div style="margin-top:7px;font-size:12px" class=mut>🛟 резервный фронт: '
+    +(rv?('<b>'+esc(rv)+'</b> — '+esc(s.reserve_note||'')):esc(s.reserve_note||'резервного фронта в книге нет'))
+    +'</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">'
+    +'<button class="sec" onclick="hopReserve(\'set\')">🛟 Назначить резерв</button>'
+    +(rv?('<button class="sec" onclick="hopReserve(\'check\')">🔍 Проверить резерв</button>'
+         +'<button class="sec" onclick="hopReserve(\'drop\')">✖ Снять резерв</button>'):'')
+    +'</div>';
+  const rc = s.recover||{};
+  out+='<div style="margin-top:7px;font-size:12px" class=mut>🔄 автовозврат на фронт: '
+    +(!rc.on?'не за чем — сторож имена не отводил'
+      :('проб подряд <b>'+esc(rc.oks||0)+'</b> из '+esc(rc.need||3)
+        +(rc.refuse?', '+esc(rc.refuse):', готов двигать имена')
+        +(rc.ru?(', проба из РФ: '+esc(rc.ru)+(rc.ru==='не меряно'
+                ?' — решение на двух своих свидетелях (стук фронта и TCP-проба входов с бэка)':'')):'')
+        +(rc.note?', | последняя проба: '+esc(rc.note):'')
+        +(rc.ts?', | мерил '+hopAgo(Math.max(0,Math.floor(Date.now()/1000)-rc.ts))+' назад':'')))
+    +'</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">'
+    +(rc.off?'<button class="sec" onclick="hopRecover({off:false})">▶ Разрешить автовозврат</button>'
+             :'<button class="sec" onclick="hopRecover({off:true})">⛔ Запретить автовозврат</button>')
+    +'<button class="sec" onclick="hopRecover({now:true})">🔍 Померить сейчас</button>'
+    +'</div>';
+  const on = !!s.maint;
+  out+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+    +(on
+      ?('<button class="sec" onclick="hopMaint(false)">▶ Возобновить фронт</button>'
+        +'<span class=mut style="font-size:12px">пауза стоит '+hopAgo(Math.max(0,Math.floor(Date.now()/1000)-(s.maint_ts||Math.floor(Date.now()/1000))))
+        +' — возврат по живым свидетелям: стук фронта и ответы входов (свои) плюс зонды из РФ (чужой сервис); '
+        +'если чужой сервис молчит, решение держится на двух своих и называется в карточке</span>')
+      :('<button class="sec" onclick="hopMaint(true)">⏸ Фронт на паузу</button>'
+        +'<span class=mut style="font-size:12px">вывод фронта из работы, не снимая записи: имена уходят на резерв, если он назначен и проверен, — иначе на бэк; '
+        +'фронт дополнительно запирает НОВЫЕ соединения (идущие сессии не рвёт), поэтому к его числу не стукнутся ни кэш resolv\'а, ни сохранённая подписка; '
+        +'мониторинг не гаснет, автоматика слово не вернёт</span>'))
+    +'</div>'
+    // ТЗ §7 п.4: слово «пауза» без слова о замке обещает то, чего фронт мог не
+    // сделать. Панель меряла замок сама — карточка печатает её слово, а не своё.
+    +(on?('<div class=mut style="font-size:12px;margin-top:4px">🔒 '+esc(s.lock_word||'замок не проверен: фронт не отвечал')
+        +(s.lock_at?(' · мерил '+hopAgo(Math.max(0,Math.floor(Date.now()/1000)-s.lock_at))+' назад'):'')
+        +(s.lock_by?(' · рука: '+esc(s.lock_by)):'')
+        +(s.maint_by?(' · паузу включил: '+esc(s.maint_by)):' · паузу включил: не назван')+'</div>'):'')
+    +'<div class=msg id=hopMaintMsg></div></div>';
+  return out;
+}
+function hopGuardBox(){
+  // #709: сторож мёртвого фронта. Пока слово прыжка сказано, панель сама стучится
+  // во все входы фронта; #737 (слово хозяина: «сократить время») сократила срок:
+  // стук раз в 100 с, и если ВСЕ молчат дольше пяти минут — сама снимает слово,
+  // уводит имена на бэк и шлёт весть. Строка называет, что
+  // сторож видит сейчас, и чем кончился прошлый откат.
+  const g = hopData && hopData.guard;
+  if(!g) return '';
+  if(g.done && !g.word){
+    const miss = g.done_ok===false;
+    let s='🛡 Сторож: фронт '+esc(g.done_front||'')+' молчал дольше '+Math.round((g.blind||300)/60)+' мин — панель сама сняла слово и увела имена на бэк '+esc(g.done_target||'')+' ('+fmtZ(g.done,'dt')+').';
+    if(miss) s+=' DNS-шаг тогда ответил отказом — имена проверь руками.';
+    if(g.msg_total!==null&&g.msg_total!==undefined) s+=' Весть: дошло '+(g.msg_sent||0)+' из '+(g.msg_total||0)+' чатов.';
+    return '<div class="'+(miss?'err':'mut')+'" style="font-size:12px;margin-top:8px">'+s+'</div>';
+  }
+  if(!g.word) return '';
+  const mins=Math.max(1,Math.round((g.blind||300)/60));
+  let s='🛡 Сторож фронта: ';
+  if(g.silent_s>0){
+    s+='ВСЕ входы молчат '+Math.max(1,Math.round(g.silent_s/60))+' мин из '+mins+' — на '+mins+'-й минуте панель сама снимет слово и уведёт имена на бэк.';
+  } else if(g.up&&g.up.length){
+    s+='вход '+esc(String(g.up[0]))+' отвечает — фронт жив (проба со стороны бэка).';
+  } else {
+    s+='стучится во все входы раз в '+Math.round((g.every||100))+' с; '+(g.note?esc(g.note):'жалоб нет')+'.';
+  }
+  if(g.error) s+=' Отказ прошлого отката: '+esc(g.error)+'.';
+  return '<div class="'+(g.silent_s>0?'err':'mut')+'" style="font-size:12px;margin-top:8px">'+s+'</div>';
+}
+function hopHolderLine(d){
+  // #716: держатель `front.<база>` — запись, по которой панель находит фронт после
+  // переустановки коробки (#661). Карточка называла зону и имена, а его — нет.
+  // Судья один — адрес фронта; цвет и слово приходят от панели.
+  const h = d && d.holder;
+  if(!h || !h.name) return '';
+  return '<div class="'+(h.ok?'mut':'err')+'" style="font-size:12px;margin-top:2px">🧷 '+esc(h.why||'')+'</div>';
+}
+function hopMuxBox(){
+  // #721: раскладка TLS-входов после возврата на бэк — все через :443 или каждый
+  // на своём порту. Раньше это было видно только предпросмотром во вкладке «Мюкс»,
+  // и после возврата никто не сверял состав с тем, что мюкс запомнил.
+  const m = hopData && hopData.mux;
+  if(!m || !m.total) return '';
+  const own = (m.own||[]).map(x=>esc(x.proto)+':'+esc(String(x.port))).join(', ');
+  let s;
+  if(m.uniform) s='🌀 Мюкс: все '+m.total+' TLS-входа идут через :443 — каждый под своим именем.';
+  else if((m.muxed||[]).length){
+    s='🌀 Мюкс: через :443 идут '+m.muxed.length+' из '+m.total+'; каждый на своём порту — '+own
+      +'. Так бывает, когда мюкс применяли неполным списком: открой вкладку «Мюкс», отметь все галочки и нажми «Применить».';
+  } else {
+    s='🌀 Мюкс не применён: каждый TLS-вход на своём порту — '+own
+      +'. Подписчики ходят на свои порты, а не на общий :443.';
+  }
+  if((m.dropped||[]).length)
+    s+=' Память применения: прошлый прогон снял с :443 — '+esc(m.dropped.join(', '))+'.';
+  const bad = m.applied && !m.uniform;
+  return '<div class="'+(bad?'err':'mut')+'" style="font-size:12.5px;margin-top:8px">'+s+'</div>';
 }
 function hopEpBox(){
   // #686: контроль прямых адресов машины в ссылках подписчиков. Пока прыжок выключен
@@ -3898,6 +4226,116 @@ function hopEpBox(){
     +esc(e.why||'')+(e.hop?' — ссылки перевыдайте (обновление подписки не помогает: адрес лежит в записи)':'')
     +'</div>';
 }
+function backAddrRows(b){
+  // ТЗ §4: одна строка на адрес пула — чем мерили и что показали два свидетеля.
+  // Слова о беде приходят от панели, карточка их только называет: «службы молчат»
+  // и «из России не дойти» — разные беды и разные действия хозяина. Кнопка переезда
+  // стоит у адреса, которого надзор наглядно насчитал живым (`_BACK_OK_N` удач
+  // подряд и состоявшаяся проба из РФ); у мёртвого и у нещупанного кнопки нет.
+  const rows = b.addrs||[];
+  if(!rows.length) return '<div class=mut style="font-size:12px;margin-top:6px">🗂 адресов пула ещё не меряли — список встанет на первом прогоне надзора или по кнопке ниже.</div>';
+  const w = {dead:'службы на входах не ответили', blocked:'из России до адреса не дойти',
+    blind:'проба из России не состоялась — про блокировку тут слова нет',
+    unmeasured:'замера по адресу не было: это не «жив» и не «мёртв»', good:''};
+  const n = b.fail_n||3, k = b.ok_n||2;
+  return '<div style="margin-top:6px">'+rows.map(function(r,i){
+    const bad = (r.fails||0) >= n;
+    const cand = !r.primary && r.verdict==='good' && (r.oks||0) >= k;
+    let s = (r.primary?'🎯 ':'· ')+'<b>'+esc(r.ip)+'</b>'
+      +(b.home===r.ip?' <span class=mut>(домашний — за ним имена вернутся)</span>':'')
+      +(r.live?' 🟢':(bad?' 🔴':' ⚪'))
+      +' — службы '+(r.live?('ответили'+((r.ms===null||r.ms===undefined)?'':(' за '+Math.round(r.ms)+' мс'))):'молчат')
+      +' · входы '+((r.ports_live||0)+' из '+(r.ports||0))
+      +' · пробы из РФ '+((r.ru_total||0)?((r.ru_ok||0)+' из '+r.ru_total):'не было')
+      +' · '+(r.fails?('провалов подряд '+r.fails):('удач подряд '+(r.oks||0)))
+      +(r.since?(' · мерили '+hopAgo(Math.max(0,Math.floor(Date.now()/1000)-r.since))+' назад'):'');
+    const word = w[r.verdict];
+    if(word) s += '<br><span style="margin-left:18px">'+esc(word)
+      +(r.why?(' · '+esc(r.why)):'')+(r.ru_why?(' · проба: '+esc(r.ru_why)):'')+'</span>';
+    return '<div class="'+(bad?'err':'mut')+'" style="font-size:12px;margin-top:3px">'+s
+      +(cand?(' <button class="sec tiny" onclick="backAddrMove('+i+')">🛫 переехать сюда</button>'):'')
+      +'</div>';
+  }).join('')+'</div>';
+}
+function backOrderRow(b){
+  // ТЗ §4: явная иерархия — Первый (Primary), Второй (Secondary), Третий (Tertiary).
+  // Надзор эти места уже посчитал (вердикты, серии, пробы из РФ), а карточка
+  // печатала пул по алфавиту, и «кто следующий» хозяин выводил сам. Порядок считает
+  // панель (`_back_order`), здесь только слова.
+  const o = b.order||[];
+  if(!o.length) return '';
+  const nm = ['Первый','Второй','Третий'], en = ['Primary','Secondary','Tertiary'];
+  return '<div class=mut style="font-size:12px;margin-top:4px">🏅 иерархия: '
+    +o.map(function(x,i){
+      return nm[i]+'/'+en[i]+' <b>'+esc(x.ip)+'</b>'+((x.role&&x.role!=='запас')?(' — '+esc(x.role)):'');
+    }).join(' · ')
+    +(b.home&&b.home!==b.primary
+      ?('<br><span class="'+(b.home_refuse?'err':'ok')+'" style="font-size:12px">'
+        +(b.home_refuse?('↩ возврата нет: '+esc(b.home_refuse))
+                        :('↩ имена вернутся на '+esc(b.home)+' сами, как только тот отмерит серию'))
+        +'</span>')
+      :'')
+    +'</div>';
+}
+function backDecisionRows(b){
+  // ТЗ §4: история решений. Кто двигал адрес — рука или автоматика, с какого числа
+  // на какое, и что за собой потянул шаг (зона, ядро, книга фронтов). Отказ тоже
+  // запись: «решили и не вышло» читается отдельно от «не решали».
+  const d = (b.decisions||[]).slice().reverse();
+  if(!d.length) return '<div class=mut style="font-size:12px;margin-top:6px">📒 надзор адресов ещё не двигал бэк — журнал пуст.</div>';
+  return '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12.5px;color:var(--acc)">📒 журнал переездов адреса бэка — '+d.length+'</summary>'
+    +'<div style="padding:6px 4px 0;font-size:12px" class=mut>'
+    +d.map(function(x){
+      return '<div style="margin-top:2px">'+fmtZ(x.ts,'dt')+' · '+(x.frm?esc(x.frm):'переезд впервые')
+        +' → <b>'+esc(x.to||'—')+'</b> · '+(x.ok?'сошлось':'отказ')
+        +' · '+esc(x.who||(x.manual?'рукой':'автоматикой'))
+        +(x.reason?(' · причина: '+esc(x.reason)):'')
+        +(x.note?('<br><span style="margin-left:14px">'+esc(x.note)+'</span>'):'')
+        +'</div>';
+    }).join('')+'</div></details>';
+}
+function backHealthBox(){
+  // ТЗ §4: здоровье адресов бэка и дорога к переезду рукой хозяина. Карточка
+  // ПЕЧАТАЕТ снимок, который посчитал надзор, и ничего не мерит сама: пробы служб,
+  // чужие зонды и разбор зоны живут на нити наблюдения (урок #676 — холодная
+  // карточка не имеет права висеть на чужом ответе). Рядом две ручки: посмотреть
+  // живые числа, не принимая решения, и переехать на названный адрес.
+  const b = hopData && hopData.back_health;
+  if(!b) return '';
+  const chip = BACK_STATES[b.state]||['❔','rgba(139,148,158,.15)',String(b.state)];
+  const warm = b.state==='STABLE' || b.state==='PARTIAL';
+  const res = b.reserve||[], dead = b.dead||[];
+  return '<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--br);border-radius:9px">'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<span class=badge style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:700;background:'+chip[1]+'">'+chip[0]+' '+esc(b.state)+'</span>'
+    +'<span class=mut style="font-size:12px">надзор адресов бэка · прогон раз в '+((b.tick_s||90)+' с')+' · отказ — '+(b.fail_n||3)+' провала подряд · снова жив — '+(b.ok_n||2)+' удачи подряд</span>'
+    +'</div>'
+    +'<div class="'+(warm?'mut':'err')+'" style="font-size:12.5px;margin-top:6px">🩺 '+esc(b.note||'снимок не прочитан')+'</div>'
+    +'<div class=mut style="font-size:12.5px;margin-top:4px">'
+    +'🖥 главный: <b>'+esc(b.primary||'не определён')+'</b>'
+    +' · живых замен: '+(res.length?('<b>'+res.length+'</b> ('+esc(res.join(', '))+')'):'<b>0</b>')
+    +' · молчат серией: '+(dead.length?esc(dead.join(', ')):'нет')
+    +' · имён в зоне: '+((b.names||0)?('<b>'+b.names+'</b>'):'<b>0</b>')
+    +(b.names_note?(' — '+esc(b.names_note)):'')
+    +'</div>'
+    +'<div class="'+(b.auto?'mut':'err')+'" style="font-size:12px;margin-top:2px">'
+    +(b.auto?('↻ автоматика живого адреса работает: переезд случится сам на '+((b.fail_n||3))+'-м провале подряд и упрётся в общий кулдаун поворота')
+            :'🖐 автоматика смены адреса выключена в окне «Поворот» — ни один переезд сам не случится, только кнопкой')
+    +(b.cool_left?(' · кулдаун: ещё '+hopAgo(b.cool_left)+' адрес не двигают'):'')
+    +(b.age===null||b.age===undefined?'':(' · мерили '+hopAgo(b.age)+' назад'))
+    +'</div>'
+    +backOrderRow(b)
+    +backAddrRows(b)
+    +backDecisionRows(b)
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+    +'<button class="sec tiny" onclick="backHealthLook()">🔍 Посмотреть адреса</button>'
+    +'<span class=mut style="font-size:12px">тот же замер, что делает надзор, но по кнопке и без решения: переезд — отдельной кнопкой</span>'
+    +'</div>'
+    +'<div class=mut style="font-size:12px;margin-top:4px">🚪 входы пробы: '+esc((b.ports||[]).join(', ')||'не заданы')
+    +(b.threshold?(' · порог достаточности проб из РФ — '+b.threshold+'%'):'')
+    +'</div>'
+    +'<div class=msg id=backHealthMsg></div></div>';
+}
 function renderHop(){
   const pub=$('hopPubBox'), lb=$('hopListBox');
   if(!pub||!lb) return;
@@ -3911,6 +4349,13 @@ function renderHop(){
     +'<button onclick=hopSetPublic()>Применить</button>'
     +(cur?'<button class=sec onclick=\'hopSetPublic("")\'>Сбросить</button>':'')
     +'</div>'
+    +(((hopData.hops||[]).length)
+      ?('<div style="margin-top:10px;padding:8px 10px;border:1px dashed var(--err);border-radius:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        +'<button class="sec" style="border-color:var(--err);color:var(--err)" onclick=hopRollback()>🛑 Аварийный откат на бэк</button>'
+        +'<span class=mut style="font-size:12px">снимет слово прыжка и вернёт ВСЕ имена ссылок на бэк — на тот адрес, который фронт держит в релее. Фронт и держатель адреса остаются на месте.</span></div>')
+      :'')
+    +(hopStatusBar())
+    +(hopGuardBox())
     +((hopData.addr_changed&&(Date.now()/1000-hopData.addr_changed<30*86400))
       ?('<div class=mut style="font-size:12.5px;margin-top:8px">🔔 Адрес в ссылках менялся '+fmtZ(hopData.addr_changed,'dt')
         +(hopData.addr_prev?(' (был '+esc(hopData.addr_prev)+')'):'')
@@ -3920,8 +4365,13 @@ function renderHop(){
     +(hopData.dns?('<div class="'+((hopData.dns.offenders||[]).length?'err':'mut')
       +'" style="font-size:12.5px;margin-top:8px">'
       +esc(hopData.dns.note||'DNS: состояние имён не прочитано')+'</div>'):'')
+    +(hopHolderLine(hopData.dns))
+    +(hopData.dns?('<div style="margin-top:6px"><button class="sec tiny" onclick="hopDnsRepeat()">🔁 Переложить имена</button> <span class=mut style="font-size:12px">повтор DNS-шага по текущему слову: со словом — на фронт, без слова — на бэк; входы и релей не трогает</span></div>'):'')
+    +(hopInbBox())
     +(hopTransportBox())
     +(hopEpBox())
+    +(hopMuxBox())
+    +(backHealthBox())
     +'<div class=msg id=hopPubMsg></div></div>';
   const hops = hopData.hops||[];
   const tn = hopData.tun||{};
@@ -3929,8 +4379,10 @@ function renderHop(){
   if(hops.length || tn.ok===false){
     tunLine='<div style="font-size:12.5px;margin-top:10px">'
       +(tn.ok===true?('Туннель бэка <code>'+esc(tn.iface||'')+'</code> поднят — стук фронта идёт сквозь него.')
-        :(tn.ok===false?('<span class=err>Туннель бэка <code>'+esc(tn.iface||'')+'</code> НЕ подтверждён: '+esc(tn.error||'')+'</span> — без него прыжок не шифруется; панель поднимет его при следующем изменении фронтов.')
-          :('Туннель бэка <code>'+esc(tn.iface||'')+'</code>: '+esc(tn.error||'состояние не прочитано')+' — панель не может назвать то, чего не измерила.')));
+        :(tn.ok===false?('<span class=err>Туннель бэка <code>'+esc(tn.iface||'')+'</code> НЕ подтверждён: '+esc(tn.error||'')+'</span> — без него прыжок не шифруется; кнопка «Починить туннель» пересоберёт его по реестру фронтов.')
+          :('Туннель бэка <code>'+esc(tn.iface||'')+'</code>: '+esc(tn.error||'состояние не прочитано')+' — панель не может назвать то, чего не измерила.')))
+      +(hops.length?('<div style="margin-top:6px"><button class="sec tiny" onclick="hopTunFix()">Починить туннель</button></div>'):'')
+      +'</div>';
   }
   let h='';
   if(!hops.length){
@@ -3939,6 +4391,13 @@ function renderHop(){
     h='<div style="font-weight:600;margin-top:14px;margin-bottom:4px">Фронты</div>';
     h+=hops.map(x=>{
       const lc=(x.last_check&&x.last_check.ts)?('<div class=mut style="font-size:12px;margin-top:4px">проба '+fmtZ(x.last_check.ts,'t')+': TCP открыт '+((x.last_check.tcp_up||[]).join(', ')||'—')+((x.last_check.tcp_down||[]).length?(' · закрыт '+x.last_check.tcp_down.join(', ')):'')+(((x.last_check.udp_up||[]).length||(x.last_check.udp_closed||[]).length||(x.last_check.udp_down||[]).length||(x.last_check.udp_unknown||[]).length)?(' · UDP живой путь '+(((x.last_check.udp_up||[]).concat(x.last_check.udp_closed||[])).join(', ')||'—')+((x.last_check.udp_closed||[]).length?(' (из них без слушателя '+x.last_check.udp_closed.join(', ')+')'):'')+((x.last_check.udp_down||[]).length?(' · молчит '+x.last_check.udp_down.join(', ')):'')+((x.last_check.udp_unknown||[]).length?(' · не меряется '+x.last_check.udp_unknown.join(', ')):'')):'')+'</div>'):'';
+      // #716: стук смотрителя фронта — жив ли он и когда стучал. Порог судит панель
+      // (`beat_stale`), карточка только красит; у ещё не установленного фронта стука
+      // нет по делу, и строки нет.
+      const bt=(x.state==='active')?(x.beat_stale
+        ?'<div class=err style="font-size:12px;margin-top:4px">🫀 стук смотрителя: молчит '+Math.max(2,Math.round((x.beat_age||0)/60))+' мин — служба на фронте или канал до панели умер; клиентов это ещё не роняет (фронт уходит напрямую сам)</div>'
+        :'<div class=mut style="font-size:12px;margin-top:4px">🫀 стук смотрителя: '+(x.beat_age==null?'ни одного не было — смотритель на фронте не установлен или ещё не стучал':Math.max(0,Math.round(x.beat_age))+' с назад')+'</div>')
+        :'';
       // #701: TCP-книга релея: какой вход заведён ПОСЛЕ установки и не попал
       // в релей. Числа называет панель, карточка только красит строку.
       const tg=x.tcp_gap;
@@ -3950,12 +4409,25 @@ function renderHop(){
       // такие числа незачем, и краснеть из-за них карточка не должна.
       const tgskip=(!tg||!(tg.skipped||[]).length)?'':('<div class=mut style="font-size:12px;margin-top:2px">↳ вне счёта: '+esc((tg.skipped||[]).map(s=>s.port+' '+s.proto+' — '+s.why).join('; '))+'</div>');
       const ud=(x.udp_ports&&x.udp_ports.length)?('<span class=mut style="font-size:12.5px">UDP: '+esc(x.udp_ports.join(', '))+'</span>'):'';
-      // #661: фронт сам измеряет свой адрес наружу и приносит его в стуке. Пока
-      // значение не совпало три раза подряд — это предупреждение, а не перемена.
+      // #661, #121: фронт сам измеряет свой адрес наружу и приносит его в стуке.
+      // Судит окно последних стуков и БОЛЬШИНСТВО, а не «три одинаковых подряд»:
+      // облако качает выходом .88/.89/.88, и прежнего условия переезд не досчитал
+      // бы никогда. Числа окна, провайдера и вердикт называет панель (`addr_witness`).
+      const aw=x.addr_witness||null;
       const fm=(x.state!=='active')?'':(x.front_measured&&x.front_measured!==x.front_ip)
-        ?('<div class=err style="font-size:12px;margin-top:4px">фронт наружу виден как <code>'+esc(x.front_measured)+'</code>, а записан <code>'+esc(x.front_ip)+'</code> — переезд вступит после трёх одинаковых стуков (#661)</div>')
+        ?('<div class=err style="font-size:12px;margin-top:4px">фронт наружу виден как <code>'+esc(x.front_measured)+'</code>, а записан <code>'+esc(x.front_ip)+'</code>'
+          +(aw?(' — из '+aw.hist_n+' последних стуков он звучал '+aw.measured_n+' раз, записанный '+aw.cur_n+'; переезд вступит, когда он зазвучит не меньше '+aw.beats_need+' раз и чаще записанного (#121)'):'')
+          +'</div>')
         :(x.front_measured?''
           :'<div class=mut style="font-size:12px;margin-top:4px">смотритель фронта не приносит измеренный адрес (#661): переставь фронт, и панель сама подхватит его смену</div>');
+      // #124: карточка обязана назвать ОБОИХ свидетелей адреса и сказать, чего им не
+      // досчиталось. Пока она молчала, хозяин на бою шесть раз набивал новый адрес в
+      // слове прыжка и шесть раз читал «ни один фронт его не имеет», не зная, что
+      // панель тот адрес уже знает из стука и от облака машины.
+      const awwords=(!aw)?'':(aw.words||[]).map(function(w){return '<div class=mut style="font-size:11.5px;margin-top:2px">↳ '+esc(w)+'</div>';}).join('');
+      const awneed=(!aw||!(aw.need||[]).length)?'':('<div class=mut style="font-size:11.5px;margin-top:2px">чего ждёт автоматика: '+esc((aw.need||[]).join(' · '))+'</div>');
+      const awred=!!aw&&(aw.disagree||(aw.candidates||[]).length||(!aw.bound&&!(aw.hist_n>0))||(aw.prov&&aw.prov!==aw.front_ip)||(aw.lead&&aw.lead!==aw.front_ip));
+      const awline=(!aw)?'':('<div class="'+(awred?'err':'mut')+'" style="font-size:12px;margin-top:4px">👁 свидетели адреса: '+esc(aw.why||'')+'</div>'+awwords+awneed);
       const mv=(x.front_moved_ts&&x.front_move_note)
         ?('<div class="'+(x.front_move_ok?'mut':'err')+'" style="font-size:12px;margin-top:4px">переезд '+fmtZ(x.front_moved_ts,'t')+': '+esc(x.front_move_note)+'</div>')
         :'';
@@ -3964,19 +4436,521 @@ function renderHop(){
       // называет расхождение и говорит, что она с ним не делает.
       const be=(x.state!=='active'||!x.back_env_stale)?''
         :('<div class=err style="font-size:12px;margin-top:4px">аварийная ветка фронта смотрит на <code>'+esc(x.back_env||'')+'</code>, а бэк наружу <code>'+esc(hopData.back_ip||'')+'</code> — фронт переложит её сам, как только его ядро подтвердит адрес (#661)</div>');
+      // #731: слово прыжка не сказано, а фронт в книге активен — у оператора нет
+      // ни одной кнопки, чтобы отдать имена ЭТОМУ фронту: поле слова надо заполнять
+      // руками, хотя адрес панель уже знает (ступ/книга). Кнопка говорит слово сама.
+      // Слово читается прямо из `hopData`: кусок карточки исполняется и отдельно
+      // (прибор Р18), где `cur` объявления `renderHop` в поле зрения нет.
+      const cur=(hopData.hop_public_host||'');
+      const useb=(x.state==='active'&&!cur&&x.front_ip)
+        ?('<div style="margin-top:8px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">'
+          +'<button class="ok tiny" onclick="hopFrontUse(\''+jsStr(x.front_ip)+'\')">▶ Вести имена подписчиков через этот фронт</button>'
+          +'<span class=mut style="font-size:12px;max-width:620px">слово прыжка сейчас не сказано — имена на бэке. Кнопка скажет словом адрес <code>'+esc(x.front_ip)+'</code>: панель передвинет A-записи имён включённых входов на фронт и перепроверит зону.</span></div>')
+        :'';
+      // #123: рука хозяина — применить НОВЫЙ адрес фронта. До этой кнопки переезд
+      // чинила только автоматика, а на бою 03.11 она была слепа (смотритель не мерил,
+      // облако качало выходом), и хозяин шесть раз слышал отказ на набранное в слове
+      // прыжка число. Поле предзаполнено адресом свидетеля, но редактируется: набрать
+      // можно и то, чего свидетели ещё не назвали, — панель тогда назовёт, почему она
+      // это берёт, и всё равно проверит живой пробе (#694).
+      const aId='hopNewAddr_'+String(x.id||'').replace(/[^A-Za-z0-9_-]/g,'');
+      const abbad=!!(aw&&aw.suggest&&aw.worthy===false);
+      const abcap=(!aw||!aw.suggest)
+        ?('свидетели адрес не называют — '+esc((aw&&aw.why)||'панель его не знает'))
+        :abbad
+          ?('свидетели зовут <code>'+esc(aw.suggest)+'</code>, но этот адрес не годится фронту — панель откажет и с этой кнопки; набери другой'
+            +' · '+esc(aw.why||''))
+          :('свидетели называют <code>'+esc(aw.suggest)+'</code>'
+            +(aw.due?' — автоматика применит его сама со следующим тиком, рука может не ждать':'; рука может не ждать'));
+      const ab=(x.state!=='active')?''
+        :('<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          +'<input id="'+aId+'" class=inp style="width:180px" value="'+esc((aw&&aw.suggest)||'')+'" placeholder="новый адрес фронта" autocomplete=off spellcheck=false>'
+          +'<button class="'+(abbad?'sec':'ok')+' tiny" onclick="hopApplyAddr(\''+jsStr(x.id)+'\',\''+jsStr(aId)+'\')">▶ Применить новый адрес фронта</button>'
+          +'<span class="'+(abbad?'err':'mut')+'" style="font-size:12px;max-width:640px">'+abcap
+            +' · панель перетащит запись, слово прыжка, держателя, имена ссылок и туннель через общие ворота ТЗ §8; на мёртвый адрес слово не ставится (#694).</span></div>');
+      // #97: «можно брать этот адрес или нет» — слово про списки и про ОБЛИК ответа
+      // на чужой звонок. Меряет панель, карточка только красит; результат живёт в
+      // HOP_PF по адресу, поэтому перерисовка вкладки его не съедает. Мера стучит
+      // числом: у слова-домена стука нет, и кнопка тут не нужна — панель ответила
+      // бы красным отказом на заведомо пустой вопрос.
+      const pf=HOP_PF[String(x.front_ip||'')]||null;
+      const isIp=/^\d+\.\d+\.\d+\.\d+$/.test(String(x.front_ip||''));
+      let pfline='';
+      if(isIp){
+        if(pf&&pf.busy) pfline='<div class=mut style="font-size:12px;margin-top:4px">🛡 стучу на :'+esc(String(pf.port||443))+' трижды — без имени, своим и заведомо чужим; до 12 с…</div>';
+        else if(pf&&pf.err) pfline='<div class=err style="font-size:12px;margin-top:4px">🛡 проверка адреса не вышла: '+esc(pf.err)+'</div>';
+        else if(pf){
+          const v=pf.data||{};
+          pfline='<div class="'+(v.can_take?'mut':'err')+'" style="font-size:12px;margin-top:4px">'
+            +(v.can_take?'🛡 ':'🛡 ⛔ ')+esc((v.words||[]).join(' · '))+'</div>'
+            +'<div class=mut style="font-size:11.5px;margin-top:2px">'
+            +esc(((v.knock||{}).tries||[]).map(function(t){return (t.sni||'—')+': '+(t.why||'')+(t.ms!=null?(' ('+t.ms+' мс)'):'');}).join(' | '))
+            +'</div>'
+            +'<div class=mut style="font-size:11.5px;margin-top:2px">'+esc(v.note||'')+'</div>';
+        }
+      }
       return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
         +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
         +'<b>'+esc(x.name||'Фронт')+'</b><code style="font-size:13px">'+esc(x.front_ip)+'</code>'
         +hopBadge(x.state,x.tok_left||0,x.tok_alive)
         +'<span class=mut style="font-size:12.5px">порты: '+esc((x.ports||[]).join(', '))+'</span>'+ud
         +'<span style="margin-left:auto;display:flex;gap:6px">'
+        +(isIp?('<button class="sec tiny" onclick="hopAddrCheck(\''+jsStr(x.front_ip)+'\')">🛡 Облик адреса</button>'):'')
         +'<button class="sec tiny" onclick="hopCheck(\''+jsStr(x.id)+'\')">Проверить</button>'
         +'<button class="sec tiny" onclick="hopDel(\''+jsStr(x.id)+'\',\''+jsStr(x.front_ip)+'\')">Удалить</button></span></div>'
-        +lc+tgline+tgskip+fm+be+mv+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
+        +useb+ab+pfline+lc+bt+tgline+tgskip+fm+awline+be+mv+(x.state==='pending'?hopPendingBox(x):'')+'</div>';
     }).join('');
   }
   h+=tunLine;
   lb.innerHTML=h;
+}
+// ---------- Хостеры: карточки, окно добавления, смена IP ----------
+let HS_DATA=null, HS_EDIT=null, HS_PROBE=null, HS_PICKED=null, HS_IPS={};
+function hsFind(id){return ((HS_DATA&&HS_DATA.hosters)||[]).filter(function(h){return h.id===id;})[0]||null;}
+function hsStateWord(st){
+  const s=String((st&&st.state)||'').toLowerCase();
+  if(s==='active')return ['работает','var(--ok)'];
+  if(s==='suspended'||s==='blocked'||s==='off'||s==='error'||s==='deleted')return [s,'var(--err)'];
+  if(s==='pending'||s==='queued'||s==='processing'||s==='provisioning')return [s,'var(--warn,#d29922)'];
+  return [s||'неизвестно',''];
+}
+function hsStateBadge(st){
+  const w=hsStateWord(st);
+  const col=w[1];
+  return '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid '+(col||'var(--br)')+';'+(col?('color:'+col+';'):'')+'">'+esc(w[0])+'</span>';
+}
+function hsCard(h){
+  const st=h.status||{};
+  const known=!!(st&&st.state!==undefined);
+  let lines='';
+  if(h.error)lines+='<div class=err style="font-size:12.5px;margin-top:6px">⚠ '+esc(h.error)+'</div>';
+  if(known){
+    lines+='<div style="font-size:12.5px;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'
+      +hsStateBadge(st)
+      +(st.ip?'<code style="font-size:13px">'+esc(st.ip)+'</code>':'')
+      +(st.product?'<span class=mut>'+esc(st.product)+'</span>':'')
+      +(st.location?'<span class=mut>· '+esc(st.location)+'</span>':'')
+      +(st.expires_at?'<span class=mut>· оплачено до '+esc(fmtZ(st.expires_at,'dt'))+'</span>':'')
+      +'</div>';
+    let l2='';
+    if(st.balance!==undefined&&st.balance!==null)l2+='баланс: <b>'+esc(String(st.balance))+'</b>'+(st.currency?' '+esc(st.currency):'');
+    if(st.task)l2+=(l2?' · ':'')+'задача провайдера: '+esc(st.task);
+    if(l2)lines+='<div class=mut style="font-size:12.5px;margin-top:4px">'+l2+'</div>';
+  }else if(!h.error){
+    lines+='<div class=mut style="font-size:12.5px;margin-top:6px">состояние ещё не спрашивали — нажми «Проверить»</div>';
+  }
+  if(h.checked_at)lines+='<div class=mut style="font-size:12px;margin-top:4px">проверено: '+esc(fmtZ(h.checked_at,'t'))+(h.fresh?'':' · устарело')+'</div>';
+  const acts='<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<button class="sec tiny" onclick="hsCheck(\''+jsStr(h.id)+'\')">🔄 Проверить</button>'
+    +'<button class="sec tiny" onclick="hsIpShow(\''+jsStr(h.id)+'\')">🌐 Смена IP</button>'
+    +'<button class="sec tiny" onclick="hsReboot(\''+jsStr(h.id)+'\')">⟳ Перезагрузить</button>'
+    +'<span style="margin-left:auto;display:flex;gap:6px">'
+    +'<button class="sec tiny" onclick="hsEdit(\''+jsStr(h.id)+'\')">✏️</button>'
+    +'<button class="tiny danger" onclick="hsDelete(\''+jsStr(h.id)+'\')">🗑</button></span></div>';
+  return '<div style="border:1px solid var(--br);border-radius:10px;padding:10px;margin-top:8px">'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><b>'+esc(h.name||h.vps_id)+'</b>'
+    +'<span class=mut style="font-size:12px;border:1px solid var(--br);border-radius:999px;padding:1px 8px">'+esc(h.role_title||h.role)+'</span>'
+    +'<span class=mut style="font-size:12.5px">'+esc(h.provider_title)+' · VPS '+esc(h.vps_id)+'</span>'
+    +(!h.key_set?'<span class=err style="font-size:12px">ключ не задан</span>':'<span class=mut style="font-size:12px">ключ '+esc(h.key_fp)+'</span>')
+    +'</div>'+lines+acts+'<div id="hsIps_'+esc(h.id)+'"></div></div>';
+}
+function renderHosters(){
+  const box=$('hsListBox'); if(!box)return;
+  if(!HS_DATA){box.innerHTML='<span class=mut>список не прочитан — открой вкладку заново</span>';return;}
+  const hs=HS_DATA.hosters||[];
+  if(!hs.length){box.innerHTML='<p class=mut>Хостеров пока нет. Нажми «Добавить хостера», вставь API-ключ из кабинета провайдера — панель покажет машины аккаунта и возьмёт нужную под наблюдение.</p>';return;}
+  box.innerHTML=hs.map(hsCard).join('');
+}
+async function loadHosters(){
+  try{HS_DATA=await api('/api/hosters');}
+  catch(e){HS_DATA=null;setMsg('hsMsg','список не прочитан: '+e.message,'err');}
+  renderHosters();
+  hsTileFromData(HS_DATA);
+}
+async function hsCheck(id){
+  setMsg('hsMsg',id?'спрашиваю провайдера…':'спрашиваю провайдеров — это может занять несколько секунд…','mut');
+  try{
+    HS_DATA=await api('/api/hosters/check',{method:'POST',body:JSON.stringify(id?{id:id}:{})});
+    renderHosters();hsTileFromData(HS_DATA);
+    const bad=(HS_DATA.hosters||[]).filter(function(h){return h.error;});
+    setMsg('hsMsg',bad.length?('проверено, но у '+bad.length+' машин провайдер не ответил: '+bad.map(function(h){return h.name||h.vps_id;}).join(', ')):'готово','ok');
+  }catch(e){setMsg('hsMsg',e.message,'err');}
+}
+async function hsReboot(id){
+  const h=hsFind(id); if(!h)return;
+  if(!confirm('Перезагрузить «'+(h.name||h.vps_id)+'» ('+h.provider_title+')?\n\nМашина на минуту пропадёт из сети — все соединения через неё оборвутся.'))return;
+  try{
+    await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'reboot',confirm:true})});
+    toast('Команда перезагрузки отправлена','ok');
+    hsCheck(id);
+  }catch(e){setMsg('hsMsg',e.message,'err');}
+}
+async function hsIpShow(id){
+  const box=$('hsIps_'+id); if(!box)return;
+  if(box.dataset.on==='1'){box.innerHTML='';box.dataset.on='';return;}
+  box.innerHTML='<div class=mut style="font-size:12.5px;margin-top:8px">спрашиваю варианты у провайдера…</div>';
+  try{
+    const d=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'ip_list'})});
+    HS_IPS[id]=d;
+    box.dataset.on='1';
+    box.innerHTML=hsIpHtml(id,d);
+    hsIpProbe(id);
+  }catch(e){box.dataset.on='';box.innerHTML='<div class=err style="font-size:12.5px;margin-top:8px">'+esc(e.message)+'</div>';}
+}
+// #738: панель сама щупает адреса, которые выдал провайдер, — раньше хозяин
+// проверял каждый руками в чужом сервисе, прежде чем выбрать.
+// #741: там же панель говорит, есть ли адрес в списках блокировок. Раньше хозяин
+// сверялся с `cheburcheck`, а панель звала тот же адрес «недоступен» — правы были оба:
+// это две разные меры, и теперь обе названы каждая своим словом.
+async function hsIpProbe(id,force){
+  const d=HS_IPS[id]; if(!d)return;
+  const box=$('hsIps_'+id);
+  d.probing=true; d.probeErr='';
+  if(box)box.innerHTML=hsIpHtml(id,d);
+  try{
+    const r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'ip_probe',rkn_force:!!force})});
+    d.probe=r.res||{}; d.probePorts=r.ports||[]; d.probeMain=r.main_ip||'';
+    d.probeObserver=r.observer||'';
+    d.rkn=r.rkn||{}; d.rknSrc=r.rkn_src||[]; d.rknAt=r.rkn_at||0;
+    d.rknCount=r.rkn_count||0; d.rknErr=r.rkn_err||'';
+    d.ru=r.ru||null;
+  }catch(e){d.probeErr=(e&&e.message)||'проверка не вышла';}
+  d.probing=false;
+  if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
+}
+function hsIpWhyTxt(w){
+  // Отказ и тишина — разные новости: «порт закрыт» значит, что на адресе кто-то есть,
+  // «молчит» — что пакеты утонули. Ни то, ни другое не про списки блокировок (#738).
+  if(w==='refused')return '⛔ порты закрыты, адрес жив';
+  if(w==='unreach')return '⚠ маршрута до адреса нет';
+  return '❌ молчит';
+}
+function hsIpRknRead(id){
+  // зеркала, которые реально прочитаны: у пустого `n` слова про адрес нет, и
+  // показывать «в списках нет» по непрочитанному списку значило бы соврать (#741)
+  return ((HS_IPS[id]||{}).rknSrc||[]).filter(function(s){return (s.n||0)>0;});
+}
+function hsIpRknTxt(id,ip){
+  // Одно слово-вердикт на адрес: брать или нельзя (#742). Решает только список
+  // блокировок — живость свободного адреса ни о чём не говорит, и в вердикт не
+  // пускается: хозяин выбирал по ней и ошибался.
+  const d=HS_IPS[id]||{};
+  if(d.probing)return '';
+  const read=hsIpRknRead(id); if(!read.length)return '';
+  const v=(d.rkn||{})[ip]; if(!v)return '';
+  const hits=read.filter(function(s){return (v.in||[]).indexOf(s.id)>=0;});
+  if(!hits.length)return ' · ✅ брать можно — ни одно зеркало его не знает';
+  const words=hits.map(function(s){return s.title+' '+(v.nets[s.id]||'');});
+  return ' · ⛔ брать нельзя — в списке: '+words.join(' · ')+
+         (hits.length<read.length?' (прочие зеркала его не знают)':'');
+}
+function hsIpMarkTxt(id,ip){
+  const d=HS_IPS[id]||{};
+  if(d.probing)return ' · меряю…';
+  const v=(d.probe||{})[ip];
+  if(!v)return '';
+  const ru=hsRuTxt(id,ip);
+  const verdict=hsIpRknTxt(id,ip);
+  if(verdict){
+    // вердикт первым; живость дописывается только там, где она новость (сервис
+    // уже отвечает) и у нынешнего адреса машины (мёртвый нынешний — авария)
+    if(v.up)return verdict+' · сервис отвечает'+ru;
+    if(ip===d.probeMain)return verdict+' · '+hsIpWhyTxt(v.why)+ru;
+    return verdict+ru;
+  }
+  // вердикта нет (зеркала не прочитаны) — прежнее слово про живость (#738)
+  if(!v.up)return ' · '+hsIpWhyTxt(v.why)+ru;
+  let p=(d.probePorts&&d.probePorts.length?d.probePorts.map(String):Object.keys(v.ports||{}))
+       .filter(function(k){return (v.ports[k]||{}).up;});
+  return ' · ✅ '+(p.length?p.join('/'):'отвечает')+(v.ms!=null?' · '+v.ms+' мс':'')+ru;
+}
+// #743: «видно ли из России». Живые замеры 31.10 сказали границу меры заранее:
+// пинг из РФ мёртв даже на живых коробках (провайдеры режут ICMP), а на ГОЛЫЙ адрес
+// не отвечает наш же разветвитель — это маска от сканеров (#723), и «недоступен» там
+// значит «мы сами не пускаем», а не «закрыли». Судить можно только ИМЯ раздачи, и
+// только когда адрес машины совпал с его записью. Число берётся из журнала монитора
+// вкладки «Прокси» (тот же зонд, та же пара чисел), новый замер — по кнопке.
+async function hsRuProbe(id){
+  const d=HS_IPS[id]; if(!d)return;
+  const box=$('hsIps_'+id);
+  d.ruBusy=true; d.ruErr=''; d.ruLive=null;
+  if(box)box.innerHTML=hsIpHtml(id,d);
+  try{
+    const r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'ru_probe'})});
+    d.ruLive={name:r.name||'',ok:Number(r.ok||0),total:Number(r.total||0),
+              at:Number(r.at||0),cities:r.cities||[]};
+  }catch(e){d.ruErr=(e&&e.message)||'замер не вышел';}
+  d.ruBusy=false;
+  if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
+}
+function hsRuNow(id){
+  // чем панель уже располагает: кнопка всегда свежее журнала, журнала нет — молчим
+  const d=HS_IPS[id]||{};
+  if(d.ruLive&&d.ruLive.total)return d.ruLive;
+  const ru=d.ru||{};
+  if(ru.match&&Number(ru.total||0))return ru;
+  return null;
+}
+function hsRuTxt(id,ip){
+  // короткое слово на адрес: только у того адреса, что назван нынешним и на который
+  // смотрит имя раздачи; свободные адреса Россией не судятся (#743)
+  const d=HS_IPS[id]||{};
+  if(!d.ru||!d.ru.match||ip!==d.probeMain)return '';
+  const n=hsRuNow(id);
+  if(!n)return '';
+  return ' · 🇷🇺 из РФ '+Number(n.ok||0)+'/'+Number(n.total||0);
+}
+function hsRuHtml(id){
+  const d=HS_IPS[id]||{};
+  if(!d.ru)return '';
+  if(d.ruBusy)return '<div class=mut style="margin-top:6px">🇷🇺 мерю из России зондами…</div>';
+  const ru=d.ru;
+  if(!ru.name||!ru.match){
+    return '<div class=mut style="margin-top:6px">🇷🇺 Про Россию по этой машине ничего не скажу: '+
+           esc(ru.why||'имя раздачи не названо')+
+           '. На голый адрес не отвечает наш же разветвитель — это маска от сканеров, а не блокировка.'+
+           (d.ruErr?' '+esc(d.ruErr):'')+'</div>';
+  }
+  let h='<div class=mut style="margin-top:6px">';
+  const n=hsRuNow(id);
+  if(n){
+    h+='🇷🇺 Из России по '+esc(ru.name)+': дошли '+Number(n.ok||0)+' из '+Number(n.total||0)+
+       (Number(n.total||0)>Number(n.ok||0)?(' · недошли '+(Number(n.total||0)-Number(n.ok||0))):'')+
+       (n.cities&&n.cities.length?' ('+esc(n.cities.join(', '))+')':'')+
+       (n.at?' · '+esc(_ago(new Date(n.at*1000).toISOString())):'')+
+       (d.ruLive?' — по кнопке':' — из журнала монитора');
+  }else{
+    h+='🇷🇺 По '+esc(ru.name)+' замеров из России ещё не было';
+  }
+  if(d.ruErr)h+='<div class=err style="margin-top:4px">'+esc(d.ruErr)+'</div>';
+  return h+'</div>';
+}
+function hsIpRknHtml(id,keys){
+  const d=HS_IPS[id]||{};
+  if(d.probing||!d.probe)return '';
+  const read=hsIpRknRead(id);
+  let h='';
+  if(read.length){
+    h+='<div class=mut style="margin-top:6px">Списки блокировок: '+
+       read.map(function(s){return esc(s.title)+' — '+s.n+' сетей';}).join(' · ')+
+       (d.rknAt?' · скачаны '+esc(_ago(new Date(d.rknAt*1000).toISOString())):'')+'</div>';
+    h+='<div class=mut>По ним из проверенных адресов: в списке '+Number(d.rknCount||0)+
+       ' · вне списка '+(keys.length-Number(d.rknCount||0))+'</div>';
+    if(d.rknErr)h+='<div class=mut style="margin-top:4px">⚠ '+esc(d.rknErr)+
+       ' — говорю по прежней выгрузке, её давность названа выше.</div>';
+  }else if(d.rknErr){
+    h+='<div class=err style="margin-top:6px">списки блокировок не скачались: '+esc(d.rknErr)+
+       ' — про них тут ни слова, живость адресов измерялась всё равно.</div>';
+  }else return '';
+  // границы меры названы вслух: чебурчек и панель спорили именно из-за них (#741)
+  h+='<div class=mut style="margin-top:4px">Это чужие выгрузки списков, не официальный реестр, '+
+     'и не ответ на вопрос «видно ли адрес из России». Адрес может стоять в списке и отвечать, '+
+     'и не стоять в нём и молчать — «в списке» и «недоступен» не одно и то же.</div>';
+  return h;
+}
+function hsIpVerdictHtml(id){
+  const d=HS_IPS[id]||{};
+  if(!d.probing&&!d.probe&&!d.probeErr)return '';
+  let h='<div style="margin-top:6px;border-top:1px dotted var(--br);padding-top:6px">';
+  if(d.probing){h+='<div class=mut>меряю доступность адресов…</div>';}
+  else if(d.probeErr){h+='<div class=err>проверка доступности не вышла: '+esc(d.probeErr)+'</div>';}
+  else{
+    const keys=Object.keys(d.probe||{});
+    const up=keys.filter(function(k){return (d.probe[k]||{}).up;});
+    const quiet=function(w){return keys.filter(function(k){const v=d.probe[k]||{};return !v.up&&v.why===w;}).length;};
+    h+='<div class=mut>Проверено адресов: '+keys.length+' · отвечает '+up.length+
+       ' · порты закрыты '+quiet('refused')+' · маршрута нет '+quiet('unreach')+
+       ' · молчит '+quiet('silent')+
+       (d.probePorts&&d.probePorts.length?' (входы '+esc(d.probePorts.join('/'))+')':'')+'</div>';
+    keys.forEach(function(k){
+      h+='<div>'+esc(k+hsIpMarkTxt(id,k))+(k===d.probeMain?' <span class=mut>— нынешний адрес машины</span>':'')+'</div>';
+    });
+    // Свободные адреса пула молчат все до одного: на них ещё некому слушать. Без этого
+    // слова «отвечает 0 из 24» читается как приговор каждому адресу (#738).
+    const rest=keys.filter(function(k){return k!==d.probeMain;});
+    if(rest.length&&!rest.some(function(k){return (d.probe[k]||{}).up;})){
+      h+='<div class=mut style="margin-top:4px">Ни один свободный адрес не отвечает, и это не приговор: '
+        +'на адресе, который ещё не назначен машине, слушать некому. Мера годится там, где сервис уже '
+        +'живёт, — смени адрес и нажми эту кнопку снова: новый адрес панель проверит уже по-настоящему.</div>';
+    }
+  }
+  h+=hsIpRknHtml(id,Object.keys(d.probe||{}));
+  h+=hsRuHtml(id);
+  h+='<div class=mut style="margin-top:4px"> Живость меряет эта машина'+(d.probeObserver?' (<b>'+esc(d.probeObserver)+'</b>)':'')+
+     ' — она за границей, и «отвечает» здесь значит «адрес живой», а не «его видно из России». '+
+     'Списки блокировок читаются отдельно и своим словом.</div>';
+  h+='<button class="tiny" style="margin-top:6px" onclick="hsIpProbe(\''+jsStr(id)+'\')">🔁 Проверить доступность ещё раз</button>';
+  h+=' <button class="tiny" style="margin-top:6px" onclick="hsIpProbe(\''+jsStr(id)+'\',true)">📕 Перечитать списки блокировок</button>';
+  h+=' <button class="tiny" style="margin-top:6px" onclick="hsRuProbe(\''+jsStr(id)+'\')">🇷🇺 Проверить из России</button>';
+  return h+'</div>';
+}
+function hsIpHtml(id,d){
+  let h='<div style="margin-top:8px;border-top:1px dashed var(--br);padding-top:8px;font-size:12.5px">';
+  h+='<div class=mut>Адреса машины: '+((d.ips||[]).map(function(x){return esc(x.ip)+(x.main?' (основной)':'');}).join(', ')||'—')+'</div>';
+  if(d.provider==='aeza'){
+    h+='<div style="margin-top:6px">Платная замена основного IP'+(d.price!=null?(': <b>'+esc(String(d.price))+'</b>'+(d.currency?' '+esc(d.currency):'')):' — цену провайдер не назвал')+'. Новый адрес выдаст провайдер после списания с баланса.</div>';
+    h+='<button class="tiny danger" style="margin-top:6px" onclick="hsIpChange(\''+jsStr(id)+'\')">💳 Сменить основной IP</button>';
+  }else{
+    const ch=d.ips||[];
+    if(!ch.length){h+='<div class=err style="margin-top:6px">Провайдер не вернул ни одного варианта — смена сейчас недоступна.</div>';return h+hsIpVerdictHtml(id)+'</div>';}
+    h+='<label class=fldlbl for=hsNewIp_'+esc(id)+' style="margin-top:6px">Новый адрес</label><select id=hsNewIp_'+esc(id)+' style="max-width:340px">'+ch.map(function(x){return '<option value="'+esc(x.id)+'">'+esc(x.ip+hsIpMarkTxt(id,x.ip))+'</option>';}).join('')+'</select>';
+    h+='<div style="margin-top:4px" '+(d.free_change?'':'class=mut')+'>'+(d.free_change?'✅ Доступна бесплатная смена — деньги не спишутся.':'Смена платная'+(d.price!=null?(': '+esc(String(d.price))+(d.currency?' '+esc(d.currency):'')):'')+'; провайдер выставит ссылку на оплату.')+'</div>';
+    if(d.requires_recreate)h+='<div class=err style="margin-top:4px">⚠ Провайдер предупредил: машину придётся пересоздать — данные будут потеряны. Панель спросит отдельное подтверждение.</div>';
+    h+='<button class="tiny danger" style="margin-top:6px" onclick="hsIpChange(\''+jsStr(id)+'\')">🌐 Сменить IP</button>';
+  }
+  h+=hsIpVerdictHtml(id);
+  return h+'</div>';
+}
+async function hsIpChange(id){
+  const h=hsFind(id), d=HS_IPS[id]; if(!h||!d)return;
+  let newIp='', allow=false;
+  if(d.provider==='onedash'){
+    const sel=$('hsNewIp_'+id);
+    newIp=sel?sel.value:'';
+    if(!newIp){setMsg('hsMsg','выбери новый адрес в списке','err');return;}
+  }
+  let msg='Сменить IP машины «'+(h.name||h.vps_id)+'»? Старый адрес перестанет отвечать'+(h.role==='front'?' — клиенты на минуту потеряют вход, пока новый адрес не подхватится':'')+'.';
+  if(d.price!=null&&!d.free_change)msg+='\n\nЦена смены: '+d.price+(d.currency?' '+d.currency:'')+'.';
+  if(d.requires_recreate)msg+='\n\n⚠ Провайдер предупреждает: машину придётся ПЕРЕСОЗДАТЬ, данные будут потеряны.';
+  if(!confirm(msg))return;
+  if(d.requires_recreate){allow=confirm('Провайдер пересоздаст машину. Подтвердить потерю данных?');if(!allow)return;}
+  const b={id:id,action:'ip_change',confirm:true};
+  if(newIp)b.new_ip=newIp;
+  if(allow)b.allow_data_loss=true;
+  setMsg('hsMsg','меняю IP…','mut');
+  try{
+    const r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify(b)});
+    const box=$('hsIps_'+id);
+    if(r.payment_url){
+      if(box)box.innerHTML='<div style="margin-top:8px"><a href="'+esc(r.payment_url)+'" target=_blank rel=noopener>💳 Оплатить смену IP у провайдера</a><div class=mut style="font-size:12px;margin-top:4px">Провайдер выставил счёт: адрес сменится после оплаты.</div></div>';
+      setMsg('hsMsg','провайдер выставил счёт — открой ссылку в карточке','ok');
+    }else{
+      HS_IPS[id]=null;
+      if(box){box.dataset.on='';box.innerHTML='';}
+      setMsg('hsMsg','смена IP: '+(r.status||'принято')+(h.role==='front'?' — открой «Двойной прыжок» и переведи имена на новый адрес кнопкой у фронта':'')+(allow?' · машина пересоздаётся':''),'ok');
+      hsCheck(id);
+    }
+  }catch(e){setMsg('hsMsg',e.message,'err');}
+}
+function hsProbeReset(){
+  HS_PROBE=null;HS_PICKED=null;
+  if($('hsProbeBox'))$('hsProbeBox').innerHTML='';
+  if($('hsVpsBox'))$('hsVpsBox').innerHTML='';
+  if($('hsFormBox'))$('hsFormBox').style.display='none';
+}
+function hsShowAdd(){
+  HS_EDIT=null;HS_PICKED=null;HS_PROBE=null;
+  $('hsAddTitle').textContent='Добавить хостера';
+  $('hsProvider').disabled=false;
+  $('hsKey').value='';
+  $('hsKey').placeholder='Вставь ключ из личного кабинета';
+  $('hsProvider').value='aeza';
+  $('hsName').value='';
+  $('hsRole').value='spare';
+  hsProbeReset();
+  setMsg('hsAddMsg','','');
+  showModal('hsAddBox');
+}
+function hsHideAdd(){
+  hideModal();
+  if($('hsKey'))$('hsKey').value='';
+  HS_EDIT=null;HS_PICKED=null;HS_PROBE=null;
+}
+function hsPickVps(el){
+  if(!el)return;
+  HS_PICKED={vps_id:el.value,ip:el.getAttribute('data-ip')||'',name:el.getAttribute('data-name')||'',role:el.getAttribute('data-role')||'spare'};
+  $('hsFormBox').style.display='';
+  if(!$('hsName').value)$('hsName').value=HS_PICKED.name||HS_PICKED.vps_id;
+  $('hsRole').value=HS_PICKED.role||'spare';
+}
+async function hsProbe(){
+  const provider=$('hsProvider').value;
+  const key=($('hsKey').value||'').trim();
+  if(!key){setMsg('hsAddMsg','вставь API-ключ','err');return;}
+  setMsg('hsAddMsg','проверяю ключ и читаю машины…','mut');
+  if($('hsVpsBox'))$('hsVpsBox').innerHTML='';
+  if($('hsFormBox'))$('hsFormBox').style.display='none';
+  try{
+    const d=await api('/api/hosters/probe',{method:'POST',body:JSON.stringify({provider:provider,api_key:key})});
+    HS_PROBE=d;
+    const acc=d.account||{};
+    $('hsProbeBox').innerHTML='<div style="border:1px solid var(--br);border-radius:8px;padding:8px;font-size:12.5px">'
+      +'<b>'+esc(d.title)+'</b> — ключ принят. Баланс: <b>'+esc(String(acc.balance==null?'—':acc.balance))+'</b>'+(acc.currency?' '+esc(acc.currency):'')+(acc.email?' · '+esc(acc.email):'')+'</div>';
+    const vps=d.vps||[];
+    if(!vps.length){$('hsVpsBox').innerHTML='<p class=mut>В аккаунте нет машин — купи VPS у провайдера и повтори.</p>';setMsg('hsAddMsg','ключ принят, но машин в аккаунте нет','ok');return;}
+    const sugg=(typeof hopData!=='undefined'&&hopData&&hopData.hop_public_host)||'';
+    $('hsVpsBox').innerHTML='<label class=fldlbl>Какую машину вести</label>'+vps.map(function(x,i){
+      const role=(x.ip&&sugg&&x.ip===sugg)?'front':'spare';
+      return '<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;font-size:13px">'
+        +'<input type=radio name=hsVpsPick value="'+esc(x.vps_id)+'" data-ip="'+esc(x.ip)+'" data-name="'+esc(x.name)+'" data-role="'+role+'" onchange=hsPickVps(this) style="margin-top:3px">'
+        +'<span><b>'+esc(x.name||x.vps_id)+'</b> · '+esc(x.ip||'—')+' · '+esc(x.state||'')+(x.product?' · '+esc(x.product):'')+(x.location?' · '+esc(x.location):'')+(x.expires_at?' · до '+esc(fmtZ(x.expires_at,'dt')):'')+'</span></label>';
+    }).join('');
+    const first=document.querySelector('input[name=hsVpsPick]');
+    if(first){first.checked=true;hsPickVps(first);}
+    setMsg('hsAddMsg','ключ принят','ok');
+  }catch(e){HS_PROBE=null;setMsg('hsAddMsg',e.message,'err');}
+}
+async function hsSave(){
+  const name=($('hsName').value||'').trim();
+  const role=$('hsRole').value||'spare';
+  let body;
+  if(HS_EDIT){
+    body={id:HS_EDIT.id,name:name,role:role,provider:HS_EDIT.provider,vps_id:HS_EDIT.vps_id};
+    const k=($('hsKey').value||'').trim();
+    if(k)body.api_key=k;
+  }else{
+    if(!HS_PICKED){setMsg('hsAddMsg','выбери машину из списка','err');return;}
+    const k=($('hsKey').value||'').trim();
+    if(!k){setMsg('hsAddMsg','вставь API-ключ','err');return;}
+    body={name:name,role:role,provider:$('hsProvider').value,vps_id:HS_PICKED.vps_id,api_key:k};
+  }
+  setMsg('hsAddMsg','сохраняю…','mut');
+  try{
+    const v=await api('/api/hosters/save',{method:'POST',body:JSON.stringify(body)});
+    hsHideAdd();
+    toast('Хостер «'+(name||body.vps_id)+'» сохранён','ok');
+    await loadHosters();
+    if(v&&v.id)hsCheck(v.id);
+  }catch(e){setMsg('hsAddMsg',e.message,'err');}
+}
+function hsEdit(id){
+  const h=hsFind(id); if(!h)return;
+  HS_EDIT=h;HS_PICKED=null;HS_PROBE=null;
+  $('hsAddTitle').textContent='Хостер: '+(h.name||h.vps_id);
+  $('hsProvider').value=h.provider;
+  $('hsProvider').disabled=true;
+  $('hsKey').value='';
+  $('hsKey').placeholder='оставь пустым — ключ не менять';
+  $('hsProbeBox').innerHTML='';
+  $('hsVpsBox').innerHTML='<p class=mut>VPS: <b>'+esc(h.vps_id)+'</b> · '+esc(h.provider_title)+'. Чтобы сменить машину, удали карточку и добавь заново.</p>';
+  $('hsName').value=h.name||'';
+  $('hsRole').value=h.role||'spare';
+  $('hsFormBox').style.display='';
+  setMsg('hsAddMsg','','');
+  showModal('hsAddBox');
+}
+async function hsDelete(id){
+  const h=hsFind(id); if(!h)return;
+  if(!confirm('Убрать карточку «'+(h.name||h.vps_id)+'» из панели?\n\nСама машина у провайдера не удаляется.'))return;
+  try{
+    HS_DATA=await api('/api/hosters/delete',{method:'POST',body:JSON.stringify({id:id,confirm:true})});
+    renderHosters();hsTileFromData(HS_DATA);
+    toast('Карточка удалена','ok');
+  }catch(e){setMsg('hsMsg',e.message,'err');}
+}
+function hsTileFromData(d){
+  const v=$('dHosters'),tot=$('dHostersTot'),s=$('dHostersSub');
+  if(!v||!s)return;
+  if(!d||!d.hosters){v.textContent='—';if(tot)tot.textContent='';s.textContent='состояние не прочитано';s.style.color='';return;}
+  const hs=d.hosters;
+  v.textContent=hs.length;
+  if(tot)tot.textContent=hs.length?'машин':'';
+  if(!hs.length){s.textContent='добавь API-ключ во вкладке «Хостеры»';s.style.color='';return;}
+  const bad=hs.filter(function(h){return h.error||(h.status&&String(h.status.state||'').toLowerCase()!=='active');});
+  const unknown=hs.filter(function(h){return !h.status&&!h.error;});
+  if(bad.length){s.textContent='⚠ '+bad.map(function(h){return h.name||h.vps_id;}).join(', ')+' — требуют внимания';s.style.color='var(--err)';}
+  else if(unknown.length){s.textContent='нажми «Проверить» во вкладке «Хостеры»';s.style.color='';}
+  else{s.textContent='все на связи: '+hs.map(function(h){return h.name||h.vps_id;}).join(', ');s.style.color='';}
 }
 async function hopPreview(){
   const ip=$('hopIp').value.trim(), ports=$('hopPorts').value, udp=($('hopUdpPorts').value||''), b=$('hopPrevBox');
@@ -4060,6 +5034,16 @@ async function hopCheck(id){
     +(u.length()?('; UDP: '+uwords.join(', ')):'')
     +'.'+(d.note?(' '+d.note):''), (up.length||u.filter(r=>r.udp).length)?'ok':'err', true);
 }
+// #705: починка туннеля по слову оператора — пересборка по реестру фронтов и
+// перезапуск, только когда проверка ядра не назвала туннель поднятым.
+async function hopTunFix(){
+  setMsg('hopMsg','пересобираю туннель бэка по реестру фронтов…','');
+  let d;
+  try{ d=await api('/api/hop/tunnel/rebuild',{method:'POST',body:JSON.stringify({})}); }
+  catch(e){ setMsg('hopMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopMsg',d.note||'туннель пересобран', d.ok===true?'ok':(d.ok===false?'err':''), true);
+}
 async function hopDel(id,ip){
   if(!confirm('Удалить фронт '+ip+'?\n\nЕсли сохранился SSH-ключ панели — с фронта будут сняты служба veil-relay, nft-правила и файлы. Если установка была через curl — удаление только из списка, почисти на фронте вручную (команда будет в сообщении).')) return;
   let d;
@@ -4086,6 +5070,166 @@ async function hopSetPublic(v){
   }
   await loadHop();
   setMsg('hopPubMsg',(d.warn?('⚠ '+d.warn+'. '):'')+(host?('адрес = '+host):'сброшен на домен/IP бэка')+'. '+(d.note||''), (d.blind_count?'err':'ok'), true);
+}
+// #97: «можно ли брать этот адрес» — панель стучится на :443 сама и читает два
+// зеркала списков блокировок. Мера для АДРЕСА, а не для фронта: ответ на чужой
+// звонок показывает, сидит ли на адресе прежний жилец и не закрыт ли порт фильтром.
+async function hopAddrCheck(ip){
+  ip=String(ip||'').trim(); if(!ip) return;
+  HOP_PF[ip]={busy:true};
+  renderHop();
+  try{
+    const d=await api('/api/hop/preflight',{method:'POST',body:JSON.stringify({ip:ip})});
+    HOP_PF[ip]={busy:false, data:d};
+  }catch(e){ HOP_PF[ip]={busy:false, err:(e&&e.message)||'проверка не вышла'}; }
+  renderHop();
+}
+// #731: кнопка у строки фронта — сказать словом адрес, который панель уже знает.
+// Переезд адреса фронта сторож (#709) может встретить откатом на бэк; тогда слово
+// снято, а кнопки отдать имена этому фронту нет вовсе. Кнопка делает то же, что
+// «Применить» с адресом в поле: слово, DNS-шаг, держатель, отчёт.
+async function hopFrontUse(ip){
+  ip=String(ip||'').trim(); if(!ip) return;
+  if(!confirm('Все ссылки подписчикам будут указывать на '+ip+' (фронт).\n\nПанель передвинет A-записи имён включённых входов на этот адрес и перепроверит зону. Продолжить?')) return;
+  const el=$('hopPubHost'); if(el) el.value=ip;
+  setMsg('hopPubMsg','веду имена подписчиков на '+ip+'…','');
+  let d;
+  try{ d=await api('/api/hop/public',{method:'POST',body:JSON.stringify({host:ip})}); }
+  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopPubMsg',(d.warn?('⚠ '+d.warn+'. '):'')+'адрес = '+ip+'. '+(d.note||''),(d.dns_ok?'ok':'err'),true);
+}
+// #123: рука — применить новый адрес фронта. Это НЕ «сказать слово»: панель тем же
+// шагом, что и автоматика свидетелей, передвигает запись, слово, держателя, имена
+// ссылок, память сторожа и туннель — и идёт через общие ворота ТЗ §8. Живая причина
+// кнопки: 03.11 на бою автоматика была слепа (смотритель не мерил адрес, облако
+// качало выходом), а набранное руками число отвергалось, потому что в книге лежал
+// вчерашний адрес. Отчёт панели — одна строка в `hopPubMsg`.
+async function hopApplyAddr(id,fld){
+  const el=$(fld); const ip=String((el&&el.value)||'').trim();
+  if(!ip){ setMsg('hopPubMsg','набери адрес фронта, который надо принять','err',true); return; }
+  if(!/^\d+\.\d+\.\d+\.\d+$/.test(ip)){ setMsg('hopPubMsg','адрес не разобран в IPv4: '+ip,'err',true); return; }
+  if(!confirm('Передвинуть фронт на '+ip+'?\n\nПанель перетащит на него запись, слово прыжка, держателя адреса, A-записи имён, память сторожа и туннель смотрителя. Новый адрес обязан ответить живой пробе — на мёртвый слово не ставится (#694). Продолжить?')) return;
+  setMsg('hopPubMsg','перекладываю фронт на '+ip+'…','');
+  let d;
+  try{ d=await api('/api/hop/apply_addr',{method:'POST',body:JSON.stringify({addr:ip,id:id})}); }
+  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopPubMsg',(d.ok?'✅ ':'⛔ ')+(d.note||'адрес применён'), d.ok?'ok':'err', true);
+}
+// #717: повтор DNS-шага одной кнопкой — имена по текущему слову (со словом на фронт,
+// без слова на бэк). Входы, релей и слово не трогает; отчёт панели — одна строка.
+async function hopDnsRepeat(){
+  setMsg('hopPubMsg','перекладываю имена по слову…','');
+  let d;
+  try{ d=await api('/api/hop/dns',{method:'POST',body:'{}'}); }
+  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopPubMsg',(d.ok?'✅ ':'⛔ ')+(d.report||'шаг выполнен'), d.ok?'ok':'err', true);
+}
+// #711: аварийный откат — одна дверь вместо трёх ручных шагов живой аварии 29.10.
+async function hopRollback(){
+  if(!confirm('Аварийный откат на бэк:\n\n1) снять слово прыжка — ссылки перестанут указывать на фронт;\n2) вернуть ВСЕ имена ссылок на бэк — на адрес, который фронт держит в релее;\n3) записать это в журнал.\n\nПодписчики пойдут прямо на бэк. Продолжить?')) return;
+  setMsg('hopPubMsg','откатываю на бэк…','');
+  let d;
+  try{ d=await api('/api/hop/rollback',{method:'POST',body:JSON.stringify({})}); }
+  catch(e){ setMsg('hopPubMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopPubMsg',(d.ok?'✅ ':'⛔ ')+(d.note||'откат сделан'), d.ok?'ok':'err', true);
+}
+// ТЗ §7: пауза и возобновление фронта — одной ручкой, с подтверждением и живыми
+// свидетелями на возврат. Панель отвечает словом; отказ тоже слово, а не молчание.
+// ТЗ §5: резервный фронт. Рука хозяина назначает его из поднятых записей книги,
+// тут же мерит тремя свидетелями и снимает. Карточка про резерва только читает —
+// зондов от неё не идёт, чужой бюджет не горит.
+async function hopReserve(kind){
+  let body={};
+  if(kind==='set'){
+    const v=prompt('Резервный фронт:\n\nвпиши адрес ИЛИ id поднятого фронта из книги. Резервом может быть только ДРУГАЯ поднятая машина — со своими портами и стуком смотрителя. Когда основной фронт встанет на паузу, имена пойдут на резерв, а не на голый бэк.\n\nПанель сразу проверит его тремя свидетелями (стук, ответы входов, зонды из РФ) — это чужой бюджет, поэтому проверка идёт по руке, а не на каждом открытии окна.');
+    if(v===null) return;
+    body={ip:String(v).trim()};
+  } else if(kind==='check'){
+    if(!confirm('Проверить резерв тремя свидетелями заново? Это чужие зонды из РФ.')) return;
+    body={check:true};
+  } else {
+    if(!confirm('Снять резервный фронт? Пауза снова будет вести имена на бэк.')) return;
+    body={drop:true};
+  }
+  setMsg('hopMaintMsg','жду ответа панели…','');
+  let d;
+  try{ d=await api('/api/hop/reserve',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e){ setMsg('hopMaintMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopMaintMsg',(d.ok?'✅ ':'⛔ ')+(d.note||d.error||'шаг выполнен'), d.ok?'ok':'err', true);
+}
+async function hopRecover(body){
+  if(body && body.now){
+    if(!confirm('Померить фронт сейчас? Это чужие зонды из РФ плюс TCP-проба входов.\n\nАвтовозврат не двигает имена после одной удачной пробы: нужны несколько проб подряд и период стабильности после аварии.')) return;
+  } else if(body && body.off===true){
+    if(!confirm('Запретить автоматике возвращать имена на фронт?\n\nПанель продолжит его мерить и писать числа в карточку, но слово будет двигать только рука.')) return;
+  } else if(body && body.off===false){
+    if(!confirm('Разрешить автовозврат?')) return;
+  }
+  setMsg('hopMaintMsg','жду ответа панели…','');
+  let d;
+  try{ d=await api('/api/hop/recover',{method:'POST',body:JSON.stringify(body||{})}); }
+  catch(e){ setMsg('hopMaintMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopMaintMsg',(d.ok?'✅ ':'⛔ ')+(d.note||d.error||'готово'), d.ok?'ok':'err', true);
+}
+async function hopMaint(on){
+  const ask = on
+    ? 'Пауза фронта (режим обслуживания):\n\n1) слова прыжка не станет — имена ссылок уйдут на резерв, а резерва нет — на бэк;\n2) на самом фронте кладётся замок новых соединений: подписчик по сохранённой подписке больше не позвонится по числу фронта, а идущие сессии живут;\n3) мониторинг НЕ гаснет — стук и пробы адреса продолжат мериться;\n4) автоматика не вернёт слово сама — только эта кнопка.\n\nПродолжить?'
+    : 'Возобновить фронт:\n\nпанель сначала поднимет сервисы фронта и снимет замок новых соединений, а потом спросит трёх живых свидетелей — стук смотрителя, ответы входов адреса и зонды из РФ. Непроверенный фронт получит отказ, а не обещание, и замок вернётся вместе с паузой. Продолжить?';
+  if(!confirm(ask)) return;
+  // ТЗ §7 «журнал действий администратора»: запись без имени различает только
+  // время, поэтому рука представляется сама. Имя помнится — переспрашивать каждые
+  // пять минут значит дождаться прочерка в журнале.
+  let name='';
+  try{name=localStorage.getItem('veil_maint_by')||''}catch(e){}
+  name=prompt((on?'Кто заводит паузу':'Кто снимает паузу')+'? Имя попадёт в журнал действий.', name);
+  if(name===null) return;
+  name=String(name).trim().slice(0,40);
+  try{if(name)localStorage.setItem('veil_maint_by',name)}catch(e){}
+  setMsg('hopMaintMsg', on?'перевожу фронт на паузу и кладу замок…':'поднимаю сервисы фронта, снимаю замок и мерю пробы…','');
+  let d;
+  try{ d=await api('/api/hop/maint',{method:'POST',body:JSON.stringify({on:!!on, by:name})}); }
+  catch(e){ setMsg('hopMaintMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopMaintMsg',(d.ok?'✅ ':'⛔ ')+(d.note||'шаг выполнен'), d.ok?'ok':'err', true);
+}
+async function backHealthLook(){
+  // ТЗ §4: хозяйская проба без хозяйского решения — те же числа, что копит надзор,
+  // но ни переезда, ни вестей, ни ворот ждать не надо.
+  if(!confirm('Проверить адреса бэка:\n\n1) панель один раз спросит службы на входах каждого адреса;\n2) если надобно — прощупает дорогу из России чужими зондами, это не быстрее минуты;\n3) решение о переезде НЕ принимается: ничего не двинется.\n\nПродолжить?')) return;
+  setMsg('backHealthMsg','мерю адреса бэка — ждём ответы служб и пробы из РФ…','');
+  let d;
+  try{ d=await api('/api/back/health',{method:'POST',body:'{}'}); }
+  catch(e){ setMsg('backHealthMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('backHealthMsg',(d.ok?'✅ ':'⛔ ')+(d.note||'замер не описан'), d.ok?'ok':'err', true);
+}
+async function backAddrMove(i){
+  // ТЗ §4: переезд бэка рукой хозяина на названный адрес. Шаг тянет за собой три
+  // книги: A-записи имён зоны, порядок адресов на машине и адрес бэка в книге
+  // фронтов. Чисел в ссылки подписчиков не кладётся — там остаются имена (§3).
+  const b = (hopData&&hopData.back_health)||{};
+  const ip = ((b.addrs||[])[i]||{}).ip;
+  if(!ip) return;
+  const was = b.primary||'не определён';
+  if(!confirm('Переезд бэка на адрес '+ip+':\n\n1) главный адрес: '+was+' → '+ip+';\n2) A-записи имён зоны передвигает шаг зоны — ссылки остаются именами, чисел в них нет;\n3) адрес становится главным для исходящих с машины;\n4) адрес бэка перекладывается в книге фронтов;\n5) ушедший адрес остаётся в пуле и ждёт '+(b.ok_n||2)+' удач подряд, чтобы снова стать кандидатом.\n\nПродолжить?')) return;
+  setMsg('backHealthMsg','перекладываю адрес бэка на '+ip+'…','');
+  let d;
+  try{ d=await api('/api/back/addr',{method:'POST',body:JSON.stringify({ip:ip})}); }
+  catch(e){ setMsg('backHealthMsg',(e&&e.message)||'ошибка','err',true); return; }
+  if(d.state==='COOLDOWN' &&
+     confirm((d.note||'кулдаун ещё держит адрес')+'\n\nОбойти кулдаун этой кнопкой? обход попадёт в журнал как обход рукой оператора.')){
+    setMsg('backHealthMsg','перекладываю вопреки кулдауну…','');
+    try{ d=await api('/api/back/addr',{method:'POST',body:JSON.stringify({ip:ip,force:true})}); }
+    catch(e){ setMsg('backHealthMsg',(e&&e.message)||'ошибка','err',true); return; }
+  }
+  await loadHop();
+  setMsg('backHealthMsg',(d.ok?'✅ ':'⛔ ')+(d.note||'шаг не описан'), d.ok?'ok':'err', true);
 }
 async function doDeploy(c){
   toast('Размещаю на нодах…');
@@ -5715,11 +6859,13 @@ async function doAdd(){
   }
 }
 
-let editUuid=null, editToken='', editFamOf='', editName0='';
+let editUuid=null, editToken='', editFamOf='', editName0='', editTags0='';
 function showEdit(c){
   editUuid=c.uuid; editToken=c.sub_token||''; editFamOf=c.family_of||''; editName0=c.name||'';
   $('editWho').textContent=(c.name||'')+' · '+(protoLabels[c.proto]||c.proto||'');
   $('editName').value=c.name||'';
+  editTags0=(c.tags||[]).join(', ');
+  const _etg=$('editTags'); if(_etg)_etg.value=editTags0;
   $('editLimit').value=c.limit_gb||0;
   $('editCycle').value=c.reset_cycle||'';
   $('editDevs').value=c.max_devices||0;
@@ -5903,6 +7049,11 @@ async function doEdit(){
     const nm=($('editName').value||'').trim();
     if(nm && nm!==editName0) body.name=nm;
     if(!nm && editName0){ $('editMsg').textContent='Имя не может быть пустым';$('editMsg').className='msg err';return; }
+    const _tgv=$('editTags');
+    if(_tgv){
+      const tv=(_tgv.value||'').trim();
+      if(tv!==editTags0) body.tags=tv;
+    }
     const m=($('editExpMode')||{}).value||'keep';
     if(m==='date'){
       const v=($('editExpDate').value||'').trim();
@@ -6210,6 +7361,7 @@ function closeModal(){
     if(id==='tgAddBox')hideTgAdd();
     if(id==='tgTagBox'||id==='tgRotBox')hideTgEdit();
     if(id==='impBox')hideImp();
+    if(id==='hsAddBox')hsHideAdd();
   }
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
@@ -6768,7 +7920,7 @@ async function swRun(id){
   loadVeilCenter();
   if(id==='cert'||id==='names'){ loadCert&&loadCert(); }
   if(id==='mask'){ loadFront&&loadFront(); }
-  if(id==='mux'){ loadWebmux&&loadWebmux(); }
+  if(id==='mux'){ loadWebmux&&loadWebmux(); loadSelfSni&&loadSelfSni(); }
 }
 // Токен источника — тем же писателям, что жили до мастера; значение живёт только в
 // поле ввода и наружу из этой функции не печатается.
@@ -7172,13 +8324,37 @@ async function loadGemini(){
     const rt=String(d.route_tbl||'').toUpperCase();
     // #668: карточка судит страницей Gemini, а не страной выхода окна.
     const tbl=String(d.link_tbl||'207').toUpperCase();
-    const link=d.mode==='link'
-      ? ('звено '+esc(String(d.via||''))+', рукопожатие '+
-         (d.link_age==null?'ещё не было':(d.link_age+' с'))+', блоков '+
-         (d.link_count||0)+(d.account?'':' — аккаунта нет'))
-      : ('звена нет — '+(d.warp?'':'слово звена не сказано, ')+'четвёрку держит исключение'+(d.link_error?(' ('+esc(String(d.link_error))+')'):''));
+    // #706: слово звена сказано, а звена нет — карточка обязана назвать, что видит
+    // тик и как давно он ходил, а не оставлять оператора с «звена нет».
+    const tw=d.tick_word||{}, tage=d.tick_age;
+    const sayWhy=String(d.link_error||'').trim();
+    let link;
+    if(d.mode==='link'){
+      link='звено '+esc(String(d.via||''))+', рукопожатие '+
+        (d.link_age==null?'ещё не было':(d.link_age+' с'))+', блоков '+
+        (d.link_count||0)+(d.account?'':' — аккаунта нет');
+    }else if(d.mode==='src'){
+      // #714: четвёрку везёт свой адрес — карточка называет его и страну Google.
+      link='своим адресом '+esc(String(d.via||'?'))+
+        (d.src_cc?', Google видит страну '+esc(String(d.src_cc)):'')+
+        ', адресов '+(d.pool||0);
+      const sn=String(d.src_note||'').trim();
+      if(sn) link+=' ('+esc(sn)+')';
+      if(tage!=null&&tage>180) link+='; смотритель молчит '+tage+' с — тик не ходит';
+    }else{
+      link='звена нет — '+(d.warp?'':'слово звена не сказано, ')+'четвёрку держит исключение';
+      if(sayWhy) link+=' ('+esc(sayWhy)+')';
+      else if(d.warp&&tw.warp===false) link+='; слово сказано, а тик его не видит — расхождение памяти и слова';
+      else if(d.warp) link+='; звено ещё не поднялось — причина пока не названа';
+      const sn=String(d.src_note||'').trim();
+      if(sn) link+='; своего адреса нет: '+esc(sn);
+      if(tage!=null&&tage>180) link+='; смотритель молчит '+tage+' с — тик не ходит';
+    }
     const kern='; '+link+'; исключений ядра '+(d.rules==null?'не меряно':d.rules)+
                ', накрытый адрес идёт таблицей '+(rt||'?');
+    // #714: успешная таблица зависит от способа: звено — своя 207, свой адрес — 208.
+    const srcTbl=String(d.src_tbl||'208').toUpperCase();
+    const goodRt=(rt==='MAIN')||(d.mode==='link'&&rt===tbl)||(d.mode==='src'&&rt===srcTbl);
     const vf=(d.kernel_clients?(' Подписчиков веерных входов ('+d.kernel_clients+') выводит из окна то же правило ядра — их поток прокси не проходит.'):'');
     if(!d.want){ el.textContent='Выключено — Gemini идёт тем же путём, что и YouTube.'; return; }
     if(d.why){ el.innerHTML='▶️ <b style="color:var(--warn)">Включено, но разводить нечем</b> — '+esc(d.why)+'.'; return; }
@@ -7190,7 +8366,7 @@ async function loadGemini(){
       '. '+(d.foreign?'Смотритель перезапустит службу сам, как только расхождение переживёт два тика.':'Перезапуск нужен руками: чьей рукой переписан файл — сказать не можем.')+
       (d.probe_error?('; '+esc(d.probe_error)):''); return; }
     if(d.stale){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — файл перезаписан позже службы, но разводная часть в нём та же, что служба и подняла'+kern+'.'; return; }
-    if(rt&&rt!=='MAIN'&&rt!==tbl){ el.innerHTML='▶️ <b style="color:var(--warn)">Прокси разводит, а ядро всё ещё несёт Gemini в окно</b>'+kern+' — веерным входам '+esc(String(d.kernel_clients==null?'?':d.kernel_clients))+' поэтому недоступно и то, что видит прокси.'; return; }
+    if(rt&&!goodRt){ el.innerHTML='▶️ <b style="color:var(--warn)">Прокси разводит, а ядро всё ещё несёт Gemini в окно</b>'+kern+' — веерным входам '+esc(String(d.kernel_clients==null?'?':d.kernel_clients))+' поэтому недоступно и то, что видит прокси.'; return; }
     if(gp==='ok'){ el.innerHTML='▶️ <b>Gemini в обход окна</b> — '+link+', накрыто '+(d.covered||0)+' из '+(d.pool||0)+' адресов, страница Gemini с выхода развода пускает'+kern+'.'+vf; return; }
     if(gp==='blocked'){ el.innerHTML='▶️ <b style="color:var(--warn)">Развод лежит в конфиге, а Gemini с выхода отвечает «недоступно в стране»</b>'+(d.probe_error?('; '+esc(d.probe_error)):'')+'.'; return; }
     el.innerHTML='▶️ <b>Gemini в обход окна</b> — '+link+', страница Gemini с выхода развода ещё не проверена'+kern+(d.probe_error?(' ('+esc(d.probe_error)+')'):'.')+' '+vf;
@@ -7208,10 +8384,10 @@ async function saveGemini(onv){
 }
 async function saveGeminiWarp(onv){
   const m=$('gdMsg');
-  if(m) m.textContent=onv?'поднимаю четвёртое звено…':'снимаю звено — четвёрку вернёт исключение ядра…';
+  if(m) m.textContent=onv?'поднимаю четвёртое звено…':'снимаю звено — выход выберет свой адрес…';
   try{
     await api('/api/gemini_direct',{method:'POST',body:JSON.stringify({warp:!!onv})});
-    if(m) m.textContent=onv?'слово сказано — звено поднимается в фоне':'звено снято — четвёрка идёт исключением';
+    if(m) m.textContent=onv?'слово сказано — звено поднимается в фоне':'звено снято — смотритель выберет свой адрес, который Google не читает Россией';
   }catch(e){ if(m) m.textContent='не получилось: '+String(e).slice(0,160); }
   setTimeout(loadGemini, 4000);
   loadGemini();
@@ -7222,7 +8398,9 @@ async function checkGemini(){
   if(b) b.disabled=true;
   try{
     const d=await api('/api/gemini_direct',{method:'POST',body:JSON.stringify({check:true})});
-    const via=d.mode==='link'?('через звено '+(d.via||'?')):('с привязкой к '+(d.dev||'?'));
+    const via=d.mode==='link'?('через звено '+(d.via||'?')):
+      (d.mode==='src'?('своим адресом '+(d.via||'?')+(d.src_cc?', Google видит страну '+d.src_cc:'')):
+       ('с привязкой к '+(d.dev||'?')));
     const gp=d.gemini_page;
     let msg;
     if(gp==='ok') msg='пускает — '+via;
@@ -7714,6 +8892,62 @@ async function loadWebmux(){
     h+='<div style="margin-top:8px;color:'+errc+'"><b>⚠ Важно:</b><ul style="margin:4px 0 0 18px;padding:0">'+d.warnings.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
   h+='<div class=mut style="margin-top:8px;font-size:12px">Диагностика ничего не меняет. Применить/откатить — блок ниже.</div>';
   box.innerHTML=h;
+}
+
+// #722: маскировка Reality своим сайтом (selfSNI)
+async function loadSelfSni(){
+  const box=$('selfSniBox'); if(!box) return;
+  box.innerHTML='<span class=mut>Загружаю…</span>';
+  let d;
+  try{ d=await api('/api/reality/selfsni'); }
+  catch(e){ box.innerHTML='<span style="color:var(--err)">Ошибка: '+esc(e.message)+'</span>'; return; }
+  const st=d.status||{}, pv=d.preview||{}, tg=st.targets||[], okc='var(--ok)', errc='var(--err)', wnc='var(--warn)';
+  const bd=(t,c)=>'<span style="color:'+c+';font-weight:600">'+esc(t)+'</span>';
+  let h='';
+  h+='<div>Сейчас: '+(st.applied?bd('включено','var(--ok)'):bd('выключено','var(--mut)'))+
+     (st.applied?(' — маска <b>'+esc(st.name||'?')+'</b> на 127.0.0.1:'+esc(String(st.port||'?'))+' (сайт «'+esc(st.site||'8BIT HAVEN')+'»)'):'')+'</div>';
+  if(tg.length){
+    h+='<div style="margin-top:2px">Reality-входы: '+tg.map(x=>esc(x.proto)+' :'+esc(String(x.port))).join(' · ')+'</div>';
+    h+='<div class=mut style="font-size:12px">Сейчас в ссылках: '+
+       tg.map(x=>esc(x.proto)+' → '+esc(x.sni||'?')+' / '+esc(x.dest||'?')).join(' · ')+'</div>';
+  }
+  if(st.on443&&st.on443.proto)
+    h+='<div class=mut style="font-size:12px;margin-top:2px">🔀 развилка :443 ведёт имя <b>'+esc(st.on443.name||st.name||'?')+'</b> на вход '+esc(st.on443.proto)+' (:'+esc(String(st.on443.port))+') — его ссылки идут без номера порта, а чужое рукопожатие вход передаёт сайту (#744)</div>';
+  if(!st.mux_applied)
+    h+='<div style="margin-top:4px;color:'+wnc+'">Развилка :443 не применена — сначала включите SNI-мюкс выше.</div>';
+  if(pv&&pv.name){
+    h+='<div style="margin-top:8px">Имя маски: <b>'+esc(pv.name)+'</b> — '+
+       (pv.name_status==='ours'?bd('уже ведёт на нас',okc):(pv.name_status==='foreign'?bd('занято чужим',errc):bd('записи пока нет — панель создаст',wnc)))+
+       ', сертификат: '+(pv.cert_ok?bd('покрывает',okc):bd('имя будет добавлено при включении',wnc))+'</div>';
+    if(pv.plan&&pv.plan.length)
+      h+='<div style="margin-top:6px"><b>Что сделает включение:</b><ul style="margin:4px 0 0 18px;padding:0">'+pv.plan.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+    if(pv.blockers&&pv.blockers.length)
+      h+='<div style="margin-top:6px;color:'+errc+'"><b>Мешает включить:</b><ul style="margin:4px 0 0 18px;padding:0">'+pv.blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+    if(pv.warn)
+      h+='<div style="margin-top:6px;color:'+wnc+'">⚠ '+esc(pv.warn)+'</div>';
+  }
+  box.innerHTML=h;
+}
+
+async function selfSniApply(){
+  if(!confirm('Включить маскировку Reality своим сайтом?\n\nПанель выпустит имя и сертификат, поднимет сайт, переключит развилку :443 и маску всех Reality-входов.\n\nСтарые Reality-ссылки перестанут работать, пока клиент не обновит подписку.')) return;
+  setMsg('selfSniMsg','Включаю: DNS → сертификат → сайт → развилка → xray. Это может занять до пары минут…','');
+  let r;
+  try{ r=await api('/api/reality/selfsni/apply',{method:'POST',body:JSON.stringify({confirm:true})}); }
+  catch(e){ setMsg('selfSniMsg',e.message,'err'); return; }
+  setMsg('selfSniMsg','✅ Включено: маска '+r.name+' на 127.0.0.1:'+r.port+'. Предупредите подписчиков обновить подписку.','ok');
+  loadSelfSni(); loadWebmux();
+}
+
+async function selfSniRevert(){
+  if(!confirm('Вернуть прежнюю маску Reality (чужой сайт)?\n\nСсылки снова начнут нести прежнее имя после обновления подписки.')) return;
+  setMsg('selfSniMsg','Возвращаю прежнюю маску…','');
+  let r;
+  try{ r=await api('/api/reality/selfsni/revert',{method:'POST',body:JSON.stringify({confirm:true})}); }
+  catch(e){ setMsg('selfSniMsg',e.message,'err'); return; }
+  if(r.ok===false){ setMsg('selfSniMsg',r.message||'Откат не завершён','err'); return; }
+  setMsg('selfSniMsg',r.already?(r.message||'Уже выключено'):'✅ Прежняя маска возвращена','ok');
+  loadSelfSni(); loadWebmux();
 }
 
 // ================= SSH-ТЕРМИНАЛ (встроенный ANSI-эмулятор, без внешних библиотек) =========
@@ -8380,6 +9614,9 @@ function _muxRenderPrev(d){
   if(e.applied){
     h+='<div style="margin-top:6px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:12px">';
     h+='<b>Что стоит сейчас</b>'+(e.applied_ts?' <span class=mut>(' +esc(String(e.applied_ts))+')</span>':'')+'<ul style="margin:4px 0 0 18px;padding:0">';
+    // #721: одна сводка до перечня — сколько TLS-входов реально за общим :443.
+    const _nm=(e.muxed_nodes||[]).length, _nd=(e.dedicated_tls||[]).length;
+    h+='<li><b>Сейчас:</b> через :443 — '+_nm+' из '+(_nm+_nd)+(_nd?('; на своих портах: '+_nd):' — все')+'.</li>';
     const nodes=(e.muxed_nodes&&e.muxed_nodes.length)?e.muxed_nodes
       :(e.muxed_node?[{name:e.muxed_node,domain:''}]:[]);
     if(nodes.length)
@@ -8457,7 +9694,7 @@ async function muxApply(){
       rep+='Снятые галочки вернулись на прежние публичные порты: '+r.released.map(x=>esc(x)).join(', ')+'. ';
     else rep+='Остальные TLS-узлы — каждый на своём порту.';
     setMsg('muxMsg',rep,'ok',false);
-    loadWebmux(); muxPreview();
+    loadWebmux(); muxPreview(); loadSelfSni();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
 }
 
@@ -8467,7 +9704,7 @@ async function muxRevert(){
   try{
     const r=await api('/api/webmux/revert',{method:'POST',body:JSON.stringify({confirm:true})});
     _muxProtoSel=null; _muxPrevData=null;   // мюкс снят — сетка заново, выбор по новой реальности
-    setMsg('muxMsg','✅ '+(r.message||'Откачено'),'ok'); loadWebmux();
+    setMsg('muxMsg','✅ '+(r.message||'Откачено'),'ok'); loadWebmux(); loadSelfSni();
   }catch(e){ setMsg('muxMsg','Ошибка: '+esc(e.message),'err'); }
 }
 
@@ -9387,28 +10624,42 @@ function animateCount(el,target,opts){
 }
 async function loadStats(){
   if($('panel').style.display==='none')return;
-  try{
-    const s=await api('/api/stats');
-    $('stXrayUp').textContent=s.uptime_xray||'не запущен';
-    animateCount($('stClients2'),s.clients_count||0,{suffix:' шт.'});
+  // #734 (слово хозяина: «во вкладке vpn не работает аптайм xray, нагрузка на цп,
+  // кол-во открытых портов»). В ряду сидели три ловушки, и все три били по
+  // соседям: статистика и метрики читались ОДНИМ `try` — отказ `/api/stats`
+  // обрывал функцию до `updateMetrics`, и плитки процессора с портами стояли на
+  // прочерке, хотя сами были исправны; внутри того же `try` жила и каждая плитка
+  // — один пропавший id гасил весь ряд; а `/api/metrics` звался сырым `fetch` без
+  // `X-Sid` — сессия с телефона («запомнить меня») ловила 401, и отказ молча
+  // глотался. Теперь ручки и плитки отвечают каждая сама за себя, обе идут через
+  // `api()`, а вместо прочерка плитка называет, что ответа нет.
+  const one=(f)=>{try{f();}catch(e){}};
+  const put=(id,v)=>{const el=$(id);if(el)el.textContent=v;};
+  let s=null;
+  try{ s=await api('/api/stats'); }catch(e){}
+  if(s){
+    one(()=>put('stXrayUp', s.uptime_xray||'не запущен'));
+    one(()=>animateCount($('stClients2'), s.clients_count||0, {suffix:' шт.'}));
     const disk=s.disk_usage;
-    if(disk){
+    if(disk) one(()=>{
       const pct=Math.min(100,disk.percent||0);
       const g=$('stDiskGauge');
       if(g)g.style.strokeDashoffset=100-pct;
       animateCount($('stDiskV'),pct,{suffix:'%'});
-      $('stDiskT').textContent=disk.used+' / '+disk.total;
-    }
+      put('stDiskT', disk.used+' / '+disk.total);
+    });
     const mem=s.memory_usage;
-    if(mem){
+    if(mem) one(()=>{
       const pct=Math.min(100,mem.percent||0);
       const g=$('stMemGauge');
       if(g)g.style.strokeDashoffset=100-pct;
       animateCount($('stMemV'),pct,{suffix:'%'});
-      $('stMemT').textContent=mem.used_mb+' из '+mem.total_mb+' МБ';
-    }
-    await updateMetrics();
-  }catch(e){}
+      put('stMemT', mem.used_mb+' из '+mem.total_mb+' МБ');
+    });
+  }else{
+    one(()=>{put('stXrayUp','нет ответа');put('stDiskT','—');put('stMemT','—');});
+  }
+  await updateMetrics();
 }
 setInterval(loadStats,30000);
 setInterval(refreshOnline,10000);
@@ -9430,13 +10681,14 @@ document.querySelectorAll('.tabs button').forEach(b=>{
        if(b.dataset.tab==='proxy'){loadTgVerInfo();loadTgDcs();}
        if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();loadSshPort();loadNodeOpt();}
        if(b.dataset.tab==='ai')loadAi();
-       if(b.dataset.tab==='site'){loadMyIps();loadWebmux();loadVeilCenter();loadCert();loadFront();loadSiteWizard();}
+       if(b.dataset.tab==='site'){loadMyIps();loadWebmux();loadSelfSni();loadVeilCenter();loadCert();loadFront();loadSiteWizard();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
        if(b.dataset.tab==='journal')loadJournal();
        if(b.dataset.tab==='logs'){if(!_logSvcLoaded)loadLogServices();fetchLogs();}
        if(b.dataset.tab!=='logs'&&_logTimer)toggleLogLive();
        if(b.dataset.tab==='pay')loadPay();
        if(b.dataset.tab==='hop')loadHop();
+       if(b.dataset.tab==='hosters')loadHosters();
        if(b.dataset.tab==='migrate')loadMv();
        if(b.dataset.tab==='diagnostics')loadDiagnostics();
        if(b.dataset.tab==='flux')loadFlux();
@@ -9614,12 +10866,14 @@ function fmtUptime(s){
 }
 async function loadDashboard(){
   try{
-    const [d,m,au,lh]=await Promise.all([
+    const [d,m,au,lh,hd]=await Promise.all([
       api('/api/dashboard').catch(()=>null),
       api('/api/metrics').catch(()=>null),
       api('/api/audit?limit=8').catch(()=>null),
-      api('/api/login/history?limit=8').catch(()=>null)
+      api('/api/login/history?limit=8').catch(()=>null),
+      api('/api/hosters').catch(()=>null)
     ]);
+    hsTileFromData(hd);
     if(d){
       dashActiveProto=d.active||'reality';
       const ds=$('dStatus'),x=$('dXray'),xs=$('dXraySub');
@@ -9832,8 +11086,8 @@ async function payCheck(id){
 }
 function payCopy(t){if(!t)return;try{navigator.clipboard.writeText(t);toast('Скопировано','ok');}catch(e){}}
 
-var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
-var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
+var PERM_DEFS=[["clients","Клиенты и подписки"],["nodes","Ноды"],["hop","Двойной прыжок"],["hosters","Хостеры"],["proxy","Telegram-прокси"],["rotation","Автозамена IP"],["site","Сайт и сертификаты"],["pay","Оплата"],["backups","Бэкапы"],["restore","Восстановление из бэкапа"],["settings","Настройки сервера"],["bot","Telegram-бот"],["security","Безопасность и журналы"],["logs","Логи служб"],["appearance","Оформление"]];
+var TAB_PERM={vpn:["clients","settings"],proxy:["proxy"],site:["site"],settings:["settings","rotation","backups","restore"],subscription:["clients"],nodes:["nodes"],hop:["hop"],hosters:["hosters"],migrate:[],security:["security"],pay:["pay"],appearance:["appearance"],telegrambot:["bot"],journal:["security"],logs:["security","logs"],diagnostics:["settings"],ai:["owner"]};
 var SETBLOCK_PERM={setPort:"settings",setNet:"settings",setRot:"rotation",setTikTok:"settings",setYouTube:"settings",setGame:"settings",setGemini:"settings",setFront443:"settings",setTorrent:"settings",setBk:"backups",setXray:"settings",setVer:"settings"};
 var ME={owner:false,perms:{}};
 function permBoxes(pre,perms){return PERM_DEFS.map(function(d){return '<label><input type=checkbox id='+pre+'_'+d[0]+((perms&&perms[d[0]])?' checked':'')+'> '+d[1]+'</label>'}).join('')}
@@ -10418,6 +11672,89 @@ function synfixTakeLive(){
   $('netMsg')&&($('netMsg').textContent='Подставлены живые порты прокси: '+_synfixAuto.join(', ')+
     '. Не забудьте «Сохранить»');
 }
+// ТЗ §2: карточка анти-скана. Печатает СНИМОК ручки /api/scan и ничего не мерит
+// сама: счётчики считает тик наблюдателя в панели, морда только показывает.
+const _SCAN_WORDS={QUIET:'покой',BUSY:'стучатся',STORM:'идёт обметание — волна',
+  BASE:'первый замер, природов ещё нет',NOTHING:'защищать нечего: живых входов нет',
+  UNKNOWN:'таблица SYN-защиты не прочитана',OFF:'наблюдатель выключен рукой'};
+async function scanRefresh(){
+  const box=$('scanBox'); if(!box) return;
+  let r; try{r=await api('/api/scan');}catch(e){box.textContent='не дошло: '+e.message;return;}
+  const v=_SCAN_WORDS[r.verdict]||r.verdict||'—';
+  let t='<b>Обметание: '+esc(v)+'</b> · '+(r.ports||[]).map(x=>':'+x).join(', ')||'—';
+  t+='<br>адресов в окне метра: '+(r.src||0)+' · отбито сверх лимита: '+(r.rej||0)+
+     ' (прирост '+(r.rej_rate||0)+'/мин) · пропущено: '+(r.accepted||0)+
+     (r.waves?' · волн замечено: '+r.waves:'');
+  if(r.note)t+='<br><span class=mut>'+esc(r.note)+'</span>';
+  const srcs=r.sources||[];
+  if(srcs.length)t+='<br><span class=mut>кто трогал порты в последнюю минуту:</span> '+
+    srcs.map(ip=>'<span style="white-space:nowrap">'+esc(ip)+
+      ' <a href="#" onclick="scanBanPrompt(\''+jsStr(ip)+'\');return false" style="font-size:11px">↓</a></span>').join(', ');
+  if((r.allow||[]).length)t+='<br><span class=mut>в списке «не банить»:</span> '+r.allow.map(esc).join(', ');
+  // #117: имена тех, кому ОТКАЗАЛА наша защита, чем они названы в чужих списках и
+  // что успел автомат. Морда ничего не мерит и не банит — только печатает снимок.
+  const sg=r.suggest||[], au=r.auto||{};
+  if((r.grey||0)||sg.length){
+    t+='<br><b>Отказ этой защиты:</b> '+(r.grey||0)+' адресов · названо списками: '+(r.listed||0)+
+       ' · '+(au.on?('автомат: закрыто за час '+(au.banned_hour||0)+' из '+au.max):
+             'автомат выключен словом хозяина — банит только рука');
+    if(sg.length){
+      t+='<br><span class=mut>предложение руке (шире одного адреса не ходит никто):</span>';
+      sg.forEach(x=>{
+        let w=x.banned?('закрыт автоматом на '+x.banned+' мин')
+          :(x.refuse?('отказ: '+x.refuse)
+          :((x.listed&&x.listed.length)?('назван: '+x.listed.join(',')):'в прочитанных списках не значится'));
+        t+='<div style="font-size:11.5px">· '+esc(x.ip)+' — <span class=mut>'+esc(w)+'</span>'+
+           ((x.nets&&x.nets.length)?' ('+esc(x.nets.join(' '))+')':'')+
+           ' <a href="#" onclick="scanBanPrompt(\''+jsStr(x.ip)+'\');return false" style="font-size:11px">↓</a></div>';});
+    }
+  }
+  const scr=r.scr||[];
+  if(scr.length){
+    t+='<br><span class=mut>списки сканеров — чужие исследования, НЕ реестр:</span> '+
+      scr.map(x=>esc(x.id)+'='+x.n+(x.age==null?'':(' · давность '+Math.round(x.age/60)+' мин'))+
+        (x.err?(' · '+esc(x.err)):'')).join('; ')+
+      ' <button class="tiny sec" onclick="scanScr()">🔄 Перечитать</button>';
+  }
+  if((r.banned||[]).length)t+='<br><span class=mut>заблокировано рукой:</span> '+r.banned.map(esc).join(', ');
+  const ev=r.events||[];
+  if(ev.length){
+    t+='<br><span class=mut>наблюдение:</span>';
+    ev.slice(-5).reverse().forEach(e=>{t+='<div class=mut style="font-size:11px">'+
+      fmtZ(e.ts,'m')+' · '+esc(e.text).slice(0,180)+'</div>';});
+  }
+  box.innerHTML=t;
+}
+function scanBanPrompt(ip){
+  const b=$('scanBanIp'); if(b){b.value=ip;b.focus();}
+  const m=$('scanMsg'); if(m)m.textContent='адрес подставлен в поле — нажмите «Заблокировать» или «В «не банить»»';
+  return false;
+}
+async function scanBlockOne(){
+  const ip=($('scanBanIp').value||'').trim(), m=$('scanMsg');
+  if(!ip){m.textContent='сначала впишите адрес';return;}
+  m.textContent='...';
+  const r=await api('/api/scan/block',{method:'POST',body:JSON.stringify({ip:ip})});
+  m.textContent=r.note||(r.error||'—'); m.className='mut';
+  scanRefresh();
+}
+async function scanAllowOne(){
+  const ip=($('scanBanIp').value||'').trim(), m=$('scanMsg');
+  if(!ip){m.textContent='сначала впишите адрес или сеть';return;}
+  m.textContent='...';
+  const r=await api('/api/scan/allow',{method:'POST',body:JSON.stringify({ip:ip,on:true})});
+  m.textContent=r.note||(r.error||'—'); m.className='mut';
+  scanRefresh();
+}
+// #117: перечитать чужие списки по кнопке. Панель отвечает сразу и качает сама —
+// ждать три чужих сайта в браузере хозяину незачем.
+async function scanScr(){
+  const m=$('scanMsg'); if(m)m.textContent='перечитываю списки сканеров…';
+  try{const r=await api('/api/scan/scr',{method:'POST',body:JSON.stringify({})});
+      if(m)m.textContent=r.note||'—';}
+  catch(e){if(m)m.textContent='не дошло: '+e.message;return;}
+  setTimeout(scanRefresh,6000);
+}
 // #366 (слово хозяина: «в графе не банить адреса, нет кнопки добавить»). Прежнее
 // поле судило список по курсору в пустой рамке: с телефона в него не войти, а
 // именно телефон и есть то, с чего хозяин попадает в бан. Здесь список собирается
@@ -10471,6 +11808,14 @@ function sshIgnoreAdd(){
   el.value='';
   sshIgnoreSave(have.concat(fresh),'добавил '+fresh.join(', ')+'. ');
 }
+// #735 (слово хозяина: «не банить эти адреса, нельзя удалить»). Плашка звала
+// `sshIgnoreDel`, но определения нигде не было — нажатие молчало, а удаление не случался.
+// Снятие идёт тем же сохранением, что и добавление: список судит поле, а не курсор.
+function sshIgnoreDel(i){
+  const have=_sshIgnoreTokens();
+  const x=have[i]; if(!x) return;
+  sshIgnoreSave(have.filter((_,j)=>j!==i),'убрал '+x+'. ');
+}
 function sshIgnoreMine(){
   const m=$('sshIgnoreMsg');
   if(!_sshMine){ if(m) m.textContent='панель ещё не назвала адрес твоей сессии — перезагрузи вкладку'; return; }
@@ -10522,6 +11867,20 @@ async function loadNetworkSettings(){
         (r.synfix_ports_want&&r.synfix_ports_want.join(',')!==live.join(',')?
           ' · панель пересоберёт на :'+r.synfix_ports_want.join(','):''))
         :(r.synfix_enabled===false?'· выключена':'· нет живых портов прокси');
+    }
+    if(r.scan_enabled!==undefined){
+      $('scanEnabled').checked=!!r.scan_enabled;
+      if($('scanNotify'))$('scanNotify').checked=!!r.scan_notify;
+      if($('scanAuto'))$('scanAuto').checked=!!r.scan_auto;
+      if($('scanAutoMax')){const ar=r.scan_auto_range||[1,200];
+        $('scanAutoMax').min=ar[0];$('scanAutoMax').max=ar[1];$('scanAutoMax').value=r.scan_auto_max;}
+      const rr=r.synfix_rate_range||[60,6000],br=r.synfix_burst_range||[3,200];
+      $('scanRate').min=rr[0];$('scanRate').max=rr[1];$('scanRate').value=r.synfix_rate;
+      $('scanBurst').min=br[0];$('scanBurst').max=br[1];$('scanBurst').value=r.synfix_burst;
+      $('scanRejMin').value=r.scan_rej_min;$('scanSrcMin').value=r.scan_src_min;
+      $('scanTuneNote').textContent=r.synfix_tune_note?('замечание к лимитам: '+r.synfix_tune_note):'';
+      $('scanState').textContent='· лимит '+r.synfix_rate+'/мин, всплеск '+r.synfix_burst+
+        ' · пороги волны: '+r.scan_rej_min+' отбитых или '+r.scan_src_min+' адресов';
     }
     if(r.metrics_token!==undefined)$('metricsToken').value=r.metrics_token;
     const rs=r.rulesets||{};
@@ -10628,12 +11987,23 @@ async function saveNetworkSettings(){
       f2b_window_min: parseInt($('f2bWindow').value,10)||10,
       f2b_ban_hours: parseInt($('f2bBanHrs').value,10)||24,
       synfix_enabled: $('synfixEnabled').checked,
+      synfix_rate: parseInt($('scanRate').value,10)||0,
+      synfix_burst: parseInt($('scanBurst').value,10)||0,
+      scan_enabled: $('scanEnabled').checked,
+      scan_notify: $('scanNotify') ? $('scanNotify').checked : false,
+      scan_rej_min: parseInt($('scanRejMin').value,10)||0,
+      scan_src_min: parseInt($('scanSrcMin').value,10)||0,
       metrics_token: $('metricsToken').value.trim(),
       geo_autoupdate: $('geoAuto') ? $('geoAuto').checked : true
     };
     // Не отправляй поле, если чекбокса на странице нет: false вместо «ничего»
     // молча выключало обход РФ и перезапускало Xray после любого «Сохранить».
     if(rb) body.ru_bypass = rb.checked;
+    // #117: то же правило для автомата — поле шлём только когда оно на странице.
+    // Молчаливый `false` выключал бы два свидетеля после любого «Сохранить»,
+    // а пустое число сжималось бы в потолок «1 адрес в час».
+    if($('scanAuto')) body.scan_auto = $('scanAuto').checked;
+    if($('scanAutoMax') && $('scanAutoMax').value!=='') body.scan_auto_max = parseInt($('scanAutoMax').value,10);
     // Пустая строка означает «ручных портов нет», поэтому поле отправляем всегда,
     // если оно есть на странице.
     const sfpEl = $('synfixPorts');

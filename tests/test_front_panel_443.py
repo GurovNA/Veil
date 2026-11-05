@@ -163,8 +163,10 @@ class Render(_CfgCase):
 
 class Name(_CfgCase):
     def test_plain_domain_is_accepted(self):
+        # имя раздачи — маска `web.<база>` (#723): голую базу фронт молча не ведёт,
+        # живой запрос на `база:443` обрывается до ответа
         panel.CFG_CACHE["panel_domain"] = "example.test"
-        self.assertEqual(panel._front_panel_name(), "example.test")
+        self.assertEqual(panel._front_panel_name(), "web.example.test")
 
     def test_ip_and_empty_are_refused_by_name(self):
         for bad in ("203.0.113.9", "", "127.0.0.1"):
@@ -180,7 +182,7 @@ class Name(_CfgCase):
         # маски это верно, для релея под управлением этой машины — ошибочно.
         panel.CFG_CACHE["panel_domain"] = "example.test"
         panel.CFG_CACHE["hop_public_host"] = "front.other.test"
-        self.assertEqual(panel._front_panel_name(), "example.test")
+        self.assertEqual(panel._front_panel_name(), "web.example.test")
 
     def test_double_hop_refuses_address_empty_or_unnamed_base(self):
         # Слово «имя» значит то же, что и без прыжка: адрес сертификат не проверяется,
@@ -418,6 +420,10 @@ class Set(_CfgCase):
             def sleep(self, s):
                 pass
 
+            def time(self):
+                # штамп пробы раздачи меряет часовой, а не счётчик попыток
+                return 1_000_000.0
+
         panel.time = _T()
         self._web = panel._WEB_CTX
         panel._WEB_CTX = object()
@@ -461,13 +467,13 @@ class Set(_CfgCase):
         panel._front_panel_probe = probe
         v = panel._front_panel_set(True)
         self.assertTrue(v["on"], "проба дождалась пересмены — раздача включена")
-        self.assertEqual(v["host"], "example.test")
+        self.assertEqual(v["host"], "web.example.test")
         self.assertGreaterEqual(len(seen), 3)
 
     def test_confirmed_name_survives_and_files_stay_served(self):
         panel._front_panel_probe = lambda host, want=True: (True, "ok")
         v = panel._front_panel_set(True)
-        self.assertEqual(v["host"], "example.test")
+        self.assertEqual(v["host"], "web.example.test")
         with open(self.path, encoding="utf-8") as f:
             self.assertEqual(panel._front_panel_mode(f.read()), "panel")
         panel._front_panel_probe = lambda host, want=True: (False, "нет связи")

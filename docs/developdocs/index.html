@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Обзор — документация разработчика Veil</title>
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<div class="wrap">
+
+<nav class="side">
+  <a class="brand" href="index.html">Veil <span>для разработчика</span></a>
+
+  <div class="grp">Начало работы</div>
+  <ul>
+    <li><a class="now" href="index.html">Обзор<small>что из чего состоит</small></a></li>
+    <li><a href="quickstart.html">Начало работы<small>установка и первый вход</small></a></li>
+    <li><a href="cli.html">Использование CLI<small>панель, установщик, батарея</small></a></li>
+  </ul>
+
+  <div class="grp">Документы репозитория</div>
+  <ul>
+    <li><a href="../ARCHITECTURE.md">Архитектура</a></li>
+    <li><a href="../NODE_API.md">API ноды (<code>/api/ext/*</code>)</a></li>
+    <li><a href="../../../CONTRIBUTING.md">Как вносить правку</a></li>
+    <li><a href="../../../SECURITY.md">Безопасность</a></li>
+    <li><a href="../../../CHANGELOG.md">Журнал выпусков</a></li>
+    <li><a href="../../../README.ru.md">README (русский)</a></li>
+  </ul>
+
+  <div class="grp">Числа этого дерева</div>
+  <ul>
+    <li><a href="cli.html">панель <code>2.17.48</code></a></li>
+    <li><a href="cli.html">приборов в пуле <code>209</code></a></li>
+    <li><a href="quickstart.html">порт панели <code>8443</code></a></li>
+  </ul>
+</nav>
+
+<main>
+<div class="body">
+
+<h1>Обзор</h1>
+<p class="lead">Veil — панель управления VPN-сервером, которая живёт на одной машине
+и умеет выдавать подписчики семнадцати протоколов, держать двойной прыжок «фронт → бэк»,
+саму себя обновлять и переезжать на новую коробку. Этот раздел объясняет, как в ней
+устроена работа: что править, чем проверять и какими командами.</p>
+
+<h2 id="form">Форма выпуска</h2>
+<p>Панель — это один файл <code>panel.py</code> (в этом выпуске <code>48 654</code> строки)
+на чистой стандартной библиотеке Python: <code>http.server</code> плюс
+<code>socketserver.ThreadingUnixStreamServer</code>. Никакого Flask, никакого <code>pip</code>
+на сервере: наружные модули (<code>cryptography</code>, <code>yaml</code>) берутся на месте
+внутри <code>try</code> и честно отказывают, если их на коробке нет. Интерфейс — один файл
+<code>index.html</code> с вкладками; он раздаётся той же панелью.</p>
+
+<p>Версия живёт константой рядом с именем репозитория:</p>
+<pre><code>panel.py:31   REPO = "GurovNA/Veil"
+panel.py:32   VERSION = "2.17.48"</code></pre>
+
+<h2 id="files">Что где лежит</h2>
+<table>
+  <tr><th>Файл в дереве</th><th>Что это</th></tr>
+  <tr><td><code>panel.py</code></td><td>сервер, API, сборки ссылок, прыжок, сертификаты — всё ядро</td></tr>
+  <tr><td><code>index.html</code></td><td>морда: вкладки, карточки, вызовы <code>/api/*</code></td></tr>
+  <tr><td><code>i18n.json</code></td><td>словарь <code>en</code>/<code>fa</code>/<code>zh</code>; русская строка — ключ</td></tr>
+  <tr><td><code>install.sh</code></td><td>установка, переустановка, удаление; шаги <code>0</code>–<code>6</code></td></tr>
+  <tr><td><code>agent.py</code></td><td>автономная нода: stdlib + <code>xray</code> + <code>openssl</code>, свои ручки <code>/agent/*</code></td></tr>
+  <tr><td><code>teleconf_witness.py</code></td><td>свидетель: ловит, кто переписывает конфиг <code>telemt</code></td></tr>
+  <tr><td><code>migrate_from_old_db.py</code></td><td>перенос с чужих панелей</td></tr>
+  <tr><td><code>veil_private.py</code></td><td>приватная часть, не уезжает наружу</td></tr>
+  <tr><td><code>docs/</code>, <code>docs/developdocs/</code></td><td>архитектура, API ноды и эти страницы</td></tr>
+  <tr><td><code>backups/audit-*/gp/</code></td><td>приборы (<code>*_test.py</code>) и <code>battery.sh</code> — QA-полигон</td></tr>
+</table>
+
+<h3>На сервере</h3>
+<table>
+  <tr><th>Путь</th><th>Содержимое</th></tr>
+  <tr><td><code>/opt/vpnpanel</code> (<code>BASE</code>)</td><td>рабочий каталог панели</td></tr>
+  <tr><td><code>config.json</code></td><td>настройки оператора: домен, порт, права, токены</td></tr>
+  <tr><td><code>state.json</code></td><td>входы и подписчики — то, что видит глаз панели</td></tr>
+  <tr><td><code>sessions.json</code>, <code>passkeys.json</code></td><td>живые сеансы и ключи входа</td></tr>
+  <tr><td><code>hops.json</code></td><td>записи фронтов: адрес, книги TCP/UDP-портов, туннель, стук</td></tr>
+  <tr><td><code>mux_state.json</code>, <code>selfsni_state.json</code></td><td>снимки SNI-мюкса и маски Reality</td></tr>
+  <tr><td><code>logs/</code></td><td>журнал панели, аудита, суточные счётчики трафика</td></tr>
+  <tr><td><code>certs/live/…</code></td><td>сертификаты: выпуск Let's Encrypt и панельная заглушка <code>CN=Veil</code></td></tr>
+  <tr><td><code>/usr/local/etc/xray/config.json</code></td><td>конфиг ядра, который пишет панель</td></tr>
+  <tr><td><code>/etc/nginx/veil-mux-stream.conf</code></td><td>SNI-мюкс: карта «имя → бэкенд на петле»</td></tr>
+  <tr><td><code>/etc/telemt/telemt.toml</code></td><td>конфиг MTProto-прокси</td></tr>
+</table>
+
+<div class="warn"><b>Приватное состояние не уезжает наружу.</b>
+<code>config.json</code>, <code>state.json</code> и снимки ключей исключены и из переноса
+(<code>_MV_PRIVATE</code> в панели), и из индекса git. Перед <code>git push</code> стоит
+замок <code>tools/git-hooks/pre-push</code>: он сверяет точные байты живых ключей и печатает
+только имена источников — никогда сами значения.</div>
+
+<h2 id="ports">Порты</h2>
+<p>Панель слушает <code>panel_port</code> (заводское число <code>8443</code>) и никогда
+не занимает <code>443</code>: на общий порт вход переводит явно включённый SNI-мюкс.
+Список зарезервированных чисел — <code>_RESERVED_PORTS = {80, 8080, 18080, 9091, 7443}</code>
+(<code>panel.py:453</code>): <code>80</code> — nginx и Let's Encrypt, <code>18080</code> — веб
+<code>telemt</code>, <code>9091</code> — его API, <code>7443</code> — слушатель MTProto.
+Заводские порты протоколов: Reality <code>20443</code>, ws-входы <code>11443</code>–<code>21443</code>,
+Hysteria2 <code>27443</code>, WireGuard <code>28443</code>, AmneziaWG <code>28444</code>.</p>
+
+<h2 id="surface">Через что говорят с панелью</h2>
+<table>
+  <tr><th>Путь</th><th>Кто этим пользуется</th></tr>
+  <tr><td><code>/</code>, <code>/index.html</code></td><td>морда; единственный случай, когда панель отдаёт SPA</td></tr>
+  <tr><td><code>/api/*</code></td><td>морда: все ручки проходят <code>_perm_gate</code> (матрица «роль → ручка»)</td></tr>
+  <tr><td><code>/api/ext/*</code></td><td>федерация нод: Bearer-токены с областями <code>read</code>/<code>write</code>, 30 запросов за 10 с</td></tr>
+  <tr><td><code>/sub/&lt;токен&gt;</code>, <code>/sb/&lt;токен&gt;</code></td><td>подписка для-clients и sing-box</td></tr>
+  <tr><td><code>/p/&lt;токен&gt;</code></td><td>карточка подписчика</td></tr>
+  <tr><td><code>/rulesets/</code></td><td>гео-базы и правила, которые клиент качает сам</td></tr>
+  <tr><td><code>/relay.sh</code></td><td>скрипт установки релея на фронте (одноразовый токен)</td></tr>
+</table>
+
+<p>Всё остальное — <code>404</code> с телом <code>{"error": "not found"}</code>: новый путь
+надо заводить отдельной веткой в <code>_do_GET</code>.</p>
+
+<h2 id="cycle">Как делается правка</h2>
+<ol class="bul">
+  <li>Находившаяся претензия получает номер меры (в этом цикле — <code>#726</code>), и она же
+      попадает в сообщение коммита.</li>
+  <li>Правка пишется в <code>panel.py</code> и, если надо, в <code>index.html</code>. Обе правки
+      обязаны выжить в пересъёме приборов.</li>
+  <li>Для меры заводится прибор <code>ccNN_…_test.py</code> в <code>backups/audit-*/gp/</code>
+      и обязательно проверяется на КРАСНОЙ БАЗЕ — байтах панели до правки
+      (<code>--panel backups/audit-2.16.1/gp/panel-head-&lt;sha&gt;.py</code>). Прибор, который
+      зелёный и до правки, ничего не мерит.</li>
+  <li>Гоняется батарея: полная или деликатная малая (<code>POOL=small</code>). Красный
+      переснимается СОЛО (#135) — так настоящую поломку отделяют от помехи соседей.</li>
+  <li>Публикация (коммит, тег, перенос на бой) — отдельный шаг, его делает владелец сервера.</li>
+</ol>
+
+<div class="note"><b>Правило читателя.</b>
+Панель говорит числами и словами: карточки обязаны назвать причину, а не молчать.
+Если правка убирает подсказку — её возвращают в том же выпуске.</div>
+
+<h2 id="next">Дальше</h2>
+<div class="cards">
+  <a class="card" href="quickstart.html"><b>Начало работы</b><span>поставить коробку, войти, выдать первую подписку</span></a>
+  <a class="card" href="cli.html"><b>Использование CLI</b><span>панель, <code>install.sh</code>, батарея приборов</span></a>
+  <a class="card" href="../ARCHITECTURE.md"><b>Архитектура</b><span>границы, файлы, путь одного изменения</span></a>
+</div>
+
+<footer class="doc">Страницы собраны из этого дерева и сверены с его байтами: версия панели
+<code>2.17.48</code>, <code>panel.py</code> — 48 654 строки, приборов в пуле — 209.
+Строки внутри <code>panel.py</code> в тексте названы справочно: в этом репозитории они
+разъезжаются каждый выпуск.</footer>
+
+<div class="pager">
+  <span></span>
+  <a class="next" href="quickstart.html"><small>Дальше</small>Начало работы →</a>
+</div>
+
+</div>
+</main>
+</div>
+</body>
+</html>
