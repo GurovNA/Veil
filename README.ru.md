@@ -101,12 +101,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 ## Документация
 
 - Как устроено внутри — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Слова настроек: прыжок, пауза фронта, автовозврат, адреса бэка — [docs/SETTINGS.md](docs/SETTINGS.md)
+- Аварийный порядок (что делать руками) — [docs/RUNBOOK.md](docs/RUNBOOK.md)
 - Внешние ручки узла, `/api/ext/*` — [docs/NODE_API.md](docs/NODE_API.md)
-- Планы развития — [docs/ROADMAP.md](docs/ROADMAP.md)
+- Что взято у других панелей и в каком порядке — [docs/ROADMAP.md](docs/ROADMAP.md)
+- SNI/`dest` против FakeTLS: почему REALITY — другой класс — [docs/SNI_vs_FakeTLS.md](docs/SNI_vs_FakeTLS.md)
+- Начало работы и CLI — [docs/developdocs/](docs/developdocs/index.html)
 - Полная история версий — [`CHANGELOG.md`](CHANGELOG.md)
-- Заметки: [SNI vs FakeTLS](docs/SNI_vs_FakeTLS.md)
 - Кто правит: [CONTRIBUTING.md](CONTRIBUTING.md), сигналы о дырах: [SECURITY.md](SECURITY.md)
-- Приборы наружного CI: `python3 -m unittest discover -s tests -t tests`
+- Проверка выпуска — публичный свод в `tests/` гоняется в CI, а приборы выпуска описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), раздел «Как это проверяется»
 - Форматы подписок и deep-link'ов клиентов: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## Лицензия
