@@ -54,7 +54,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - REALITY with SNI validation, configurable TLS fingerprints (Firefox/Chrome/Safari/iOS/Android)
 
 ### Subscriptions & clients
-- A single `/sub/<token>` URL: base64 list for v2rayNG/NekoBox/Hiddify, sing-box JSON, and **INCY** link format — detected by User-Agent or `?format=`
+- A single `/sub/<token>` URL: base64 list for v2rayNG/NekoBox/Hiddify by default; sing-box JSON with `?format=sing-box` (or a saved per-device preference); **INCY**/Happ link format by User-Agent. Clash YAML is **not** generated
 - Public subscription page `/p/<token>`: status, traffic, QR codes, app catalog with deep links, `WireGuard.conf` / `AmneziaWG.conf` downloads
 - `subscription-userinfo` headers (used/left/expiry) with per-client time units
 - Traffic quotas and expiry with automatic blocking; online count and per-client traffic via the Xray Stats API
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - Getting started and CLI — [docs/developdocs/](docs/developdocs/index.html)
 - Full version history — [`CHANGELOG.md`](CHANGELOG.md)
 - Who decides: [CONTRIBUTING.md](CONTRIBUTING.md), vulnerability reports: [SECURITY.md](SECURITY.md)
-- How a release is verified — the public suite under `tests/` runs in CI, and the per-release instruments are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), section «Как это проверяется»
+- How a release is verified — CI checks Python/installer syntax and that `VERSION` matches [`CHANGELOG.md`](CHANGELOG.md); the public suite under `tests/` runs on every push, and the byte-level release instruments are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), section «Как это проверяется»
 - Client subscription & deep-link formats: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## License

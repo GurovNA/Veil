@@ -54,7 +54,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - REALITY с SNI-валидацией, настраиваемые TLS-отпечатки (Firefox/Chrome/Safari/iOS/Android)
 
 ### Подписки и клиенты
-- Единый URL `/sub/<token>`: base64-список для v2rayNG/NekoBox/Hiddify, sing-box JSON, формат для **INCY** — по UA или `?format=`
+- Единый URL `/sub/<token>`: base64-список для v2rayNG/NekoBox/Hiddify по умолчанию; sing-box JSON по `?format=sing-box` (или сохранённому выбору устройства); формат **INCY**/Happ — по User-Agent. Clash YAML **не** формируется
 - Публичная страница подписки `/p/<token>`: статус, трафик, QR-коды, каталог приложений с deep-link'ами, скачивание `WireGuard.conf` / `AmneziaWG.conf`
 - Заголовки `subscription-userinfo` (трафик/остаток/срок) с корректными единицами для каждого клиента
 - Лимиты трафика и срок действия с автоблокировкой; онлайн и расход трафика через Xray Stats API
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GurovNA/Veil/main/install.sh
 - Начало работы и CLI — [docs/developdocs/](docs/developdocs/index.html)
 - Полная история версий — [`CHANGELOG.md`](CHANGELOG.md)
 - Кто правит: [CONTRIBUTING.md](CONTRIBUTING.md), сигналы о дырах: [SECURITY.md](SECURITY.md)
-- Проверка выпуска — публичный свод в `tests/` гоняется в CI, а приборы выпуска описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), раздел «Как это проверяется»
+- Проверка выпуска — CI проверяет синтаксис Python/установщика и совпадение `VERSION` с [`CHANGELOG.md`](CHANGELOG.md); публичный свод `tests/` гоняется на каждый пуш, а приборы байтов выпуска описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), раздел «Как это проверяется»
 - Форматы подписок и deep-link'ов клиентов: [INCY docs](https://incy.gitbook.io), [sing-box docs](https://sing-box.sagernet.org)
 
 ## Лицензия

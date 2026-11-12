@@ -12,7 +12,10 @@
 ступеней, а перепись устройств заводила на него строку «устройство» — то есть за
 весь пул подписчиков судил один человек. Адрес фронта стал доверенным источником:
 он «свой» (не лимитируется и обслуживается мимо туннеля), не банится ни одиночным
-адресом, ни префиксом, который его накрывает, и не заводит строк в переписи.
+адресом, ни префиксом, который его накрывает, и не заводит в переписи адреса
+устройства. Сам заход при этом не выброшен: с 2.17.115 (`#75`) он пишется словом
+«фронт» и считается, а живой адрес человека возвращается своей ногой, когда его
+видно, — иначе перепись молчала бы за весь пул подписчиков.
 
 Прибор судит НАСТОЯЩИЙ код панели. Боевые файлы прогон не трогает: каждый путь
 перенесён в песочницу, а в `tearDown` сверяется, что живые `hops.json`,
@@ -222,6 +225,8 @@ class FrontIsTrustedSource(Sandbox):
         self.keep("BANS", {})
         self.keep("_SUBS_SEEN", None)
         self.keep("_SUBDEV", {})
+        self.keep("_SUBDEV_BLIND", [0])
+        self.keep("_AUDIT_THROTTLE", {})
         self.keep("CFG_CACHE", dict(panel.CFG_CACHE))
         panel.CFG_CACHE["hop_public_host"] = ""
         panel.CFG_CACHE["panel_domain"] = ""
@@ -315,10 +320,35 @@ class FrontIsTrustedSource(Sandbox):
         self.assertEqual(self.nft[-1][4], "b6")
 
     def test_front_ne_zavodit_ustroystva(self):
+        # с 2.17.115 (#75) слепой заход не выброшен, а назван: адрес фронта в
+        # переписи не живёт, но сам заход считается строкой «через фронт».
+        # Договор тот же, что у закрытого прибора cc119, нога T3.
+        ua1 = "Happ 1.9.0 /android/1234567890123"
+        ua2 = "Happ 1.9.0 /android/9988776655441"
+        panel._subdev_note("tok", FRONT, ua1)
+        rows = panel._subdev_list("tok")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["via"], rows[0]["ip"], rows[0]["ips"]),
+                         ("фронт", "", []))
+        panel._subdev_note("tok", FRONT, ua1)
+        rows = panel._subdev_list("tok")
+        self.assertEqual((len(rows), rows[0]["n"]), (1, 2))
+        panel._subdev_note("tok", FRONT, ua2)
+        self.assertEqual(len(panel._subdev_list("tok")), 2)
         panel._subdev_note("tok", FRONT, UA)
-        self.assertEqual(panel._SUBDEV, {})
-        panel._subdev_note("tok", NEIGHBOR, UA)
-        self.assertEqual([d["ip"] for d in panel._SUBDEV["tok"]], [NEIGHBOR])
+        panel._subdev_note("tok", FRONT, UA)
+        self.assertEqual(len([d for d in panel._subdev_list("tok")
+                              if d["via"] == "фронт" and not d["fp"]]), 1)
+        self.assertGreaterEqual(panel._SUBDEV_BLIND[0], 5)
+        self.assertTrue([k for a, k in self.audit if a and a[0] == "subdev_blind"])
+        # живой адрес абонента идёт своей ногой: адрес вернулся, слово снято
+        panel._subdev_note("tok", NEIGHBOR, ua1)
+        row = next(d for d in panel._subdev_list("tok")
+                   if d["fp"] == panel._dev_fp(ua1))
+        self.assertEqual((row["ip"], row["via"]), (NEIGHBOR, ""))
+        # сетка, накрывающая фронт, адреса тоже не заводит
+        panel._subdev_note("tok", FRONT_GRID, ua2)
+        self.assertNotIn(FRONT, json.dumps(panel._SUBDEV, ensure_ascii=False))
 
     def test_front_svoj_dlya_sinimiti_i_marshruta(self):
         cidrs = panel._own_ip_cidrs()
