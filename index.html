@@ -7,16 +7,17 @@
 <meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
 <meta name=apple-mobile-web-app-title content="Veil Panel">
 <link rel=manifest href=/manifest.json>
-<link rel=apple-touch-icon sizes=180x180 href=/icon-veil.png>
-<link rel=apple-touch-icon sizes=167x167 href=/apple-touch-icon-167x167.png>
-<link rel=apple-touch-icon sizes=152x152 href=/apple-touch-icon-152x152.png>
-<link rel=apple-touch-icon sizes=120x120 href=/apple-touch-icon-120x120.png>
-<link rel=apple-touch-icon sizes=87x87 href=/apple-touch-icon-87x87.png>
-<link rel=apple-touch-icon sizes=80x80 href=/apple-touch-icon-80x80.png>
-<link rel=apple-touch-icon sizes=76x76 href=/apple-touch-icon-76x76.png>
-<link rel=apple-touch-icon sizes=58x58 href=/apple-touch-icon-58x58.png>
-<link rel=apple-touch-icon-precomposed href=/icon-veil.png>
-<link rel=icon type=image/png href=/icon-192.png>
+<link rel=apple-touch-icon href=/apple-touch-icon.png?v=2>
+<link rel=apple-touch-icon sizes=180x180 href=/icon-veil.png?v=2>
+<link rel=apple-touch-icon sizes=167x167 href=/apple-touch-icon-167x167.png?v=2>
+<link rel=apple-touch-icon sizes=152x152 href=/apple-touch-icon-152x152.png?v=2>
+<link rel=apple-touch-icon sizes=120x120 href=/apple-touch-icon-120x120.png?v=2>
+<link rel=apple-touch-icon sizes=87x87 href=/apple-touch-icon-87x87.png?v=2>
+<link rel=apple-touch-icon sizes=80x80 href=/apple-touch-icon-80x80.png?v=2>
+<link rel=apple-touch-icon sizes=76x76 href=/apple-touch-icon-76x76.png?v=2>
+<link rel=apple-touch-icon sizes=58x58 href=/apple-touch-icon-58x58.png?v=2>
+<link rel=apple-touch-icon-precomposed href=/icon-veil.png?v=2>
+<link rel=icon type=image/png href=/icon-192.png?v=2>
 <script>/* qrcodejs 1.0.0 (MIT) — встроен в панель: раньше страница синхронно ждала cdnjs, который в ряде сетей висит до таймаута и тормозит всю загрузку */
 var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this.parsedData=[];for(var d=0,e=this.data.length;e>d;d++){var b=[],f=this.data.charCodeAt(d);f>65536?(b[0]=240|(1835008&f)>>>18,b[1]=128|(258048&f)>>>12,b[2]=128|(4032&f)>>>6,b[3]=128|63&f):f>2048?(b[0]=224|(61440&f)>>>12,b[1]=128|(4032&f)>>>6,b[2]=128|63&f):f>128?(b[0]=192|(1984&f)>>>6,b[1]=128|63&f):b[0]=f,this.parsedData=this.parsedData.concat(b)}}function b(a,b){this.typeNumber=a,this.errorCorrectLevel=b,this.modules=null,this.moduleCount=0,this.dataCache=null,this.dataList=[]}function i(a,b){if(void 0==a.length)throw new Error(a.length+"/"+b);for(var c=0;c<a.length&&0==a[c];)c++;this.num=new Array(a.length-c+b);for(var d=0;d<a.length-c;d++)this.num[d]=a[d+c]}function j(a,b){this.totalCount=a,this.dataCount=b}function k(){this.buffer=[],this.length=0}function m(){return"undefined"!=typeof CanvasRenderingContext2D}function n(){var a=!1,b=navigator.userAgent;return/android/i.test(b)&&(a=!0,aMat=b.toString().match(/android ([0-9]\.[0-9])/i),aMat&&aMat[1]&&(a=parseFloat(aMat[1]))),a}function r(a,b){for(var c=1,e=s(a),f=0,g=l.length;g>=f;f++){var h=0;switch(b){case d.L:h=l[f][0];break;case d.M:h=l[f][1];break;case d.Q:h=l[f][2];break;case d.H:h=l[f][3]}if(h>=e)break;c++}if(c>l.length)throw new Error("Too long data");return c}function s(a){var b=encodeURI(a).toString().replace(/\%[0-9a-fA-F]{2}/g,"a");return b.length+(b.length!=a?3:0)}a.prototype={getLength:function(){return this.parsedData.length},write:function(a){for(var b=0,c=this.parsedData.length;c>b;b++)a.put(this.parsedData[b],8)}},b.prototype={addData:function(b){var c=new a(b);this.dataList.push(c),this.dataCache=null},isDark:function(a,b){if(0>a||this.moduleCount<=a||0>b||this.moduleCount<=b)throw new Error(a+","+b);return this.modules[a][b]},getModuleCount:function(){return this.moduleCount},make:function(){this.makeImpl(!1,this.getBestMaskPattern())},makeImpl:function(a,c){this.moduleCount=4*this.typeNumber+17,this.modules=new Array(this.moduleCount);for(var d=0;d<this.moduleCount;d++){this.modules[d]=new Array(this.moduleCount);for(var e=0;e<this.moduleCount;e++)this.modules[d][e]=null}this.setupPositionProbePattern(0,0),this.setupPositionProbePattern(this.moduleCount-7,0),this.setupPositionProbePattern(0,this.moduleCount-7),this.setupPositionAdjustPattern(),this.setupTimingPattern(),this.setupTypeInfo(a,c),this.typeNumber>=7&&this.setupTypeNumber(a),null==this.dataCache&&(this.dataCache=b.createData(this.typeNumber,this.errorCorrectLevel,this.dataList)),this.mapData(this.dataCache,c)},setupPositionProbePattern:function(a,b){for(var c=-1;7>=c;c++)if(!(-1>=a+c||this.moduleCount<=a+c))for(var d=-1;7>=d;d++)-1>=b+d||this.moduleCount<=b+d||(this.modules[a+c][b+d]=c>=0&&6>=c&&(0==d||6==d)||d>=0&&6>=d&&(0==c||6==c)||c>=2&&4>=c&&d>=2&&4>=d?!0:!1)},getBestMaskPattern:function(){for(var a=0,b=0,c=0;8>c;c++){this.makeImpl(!0,c);var d=f.getLostPoint(this);(0==c||a>d)&&(a=d,b=c)}return b},createMovieClip:function(a,b,c){var d=a.createEmptyMovieClip(b,c),e=1;this.make();for(var f=0;f<this.modules.length;f++)for(var g=f*e,h=0;h<this.modules[f].length;h++){var i=h*e,j=this.modules[f][h];j&&(d.beginFill(0,100),d.moveTo(i,g),d.lineTo(i+e,g),d.lineTo(i+e,g+e),d.lineTo(i,g+e),d.endFill())}return d},setupTimingPattern:function(){for(var a=8;a<this.moduleCount-8;a++)null==this.modules[a][6]&&(this.modules[a][6]=0==a%2);for(var b=8;b<this.moduleCount-8;b++)null==this.modules[6][b]&&(this.modules[6][b]=0==b%2)},setupPositionAdjustPattern:function(){for(var a=f.getPatternPosition(this.typeNumber),b=0;b<a.length;b++)for(var c=0;c<a.length;c++){var d=a[b],e=a[c];if(null==this.modules[d][e])for(var g=-2;2>=g;g++)for(var h=-2;2>=h;h++)this.modules[d+g][e+h]=-2==g||2==g||-2==h||2==h||0==g&&0==h?!0:!1}},setupTypeNumber:function(a){for(var b=f.getBCHTypeNumber(this.typeNumber),c=0;18>c;c++){var d=!a&&1==(1&b>>c);this.modules[Math.floor(c/3)][c%3+this.moduleCount-8-3]=d}for(var c=0;18>c;c++){var d=!a&&1==(1&b>>c);this.modules[c%3+this.moduleCount-8-3][Math.floor(c/3)]=d}},setupTypeInfo:function(a,b){for(var c=this.errorCorrectLevel<<3|b,d=f.getBCHTypeInfo(c),e=0;15>e;e++){var g=!a&&1==(1&d>>e);6>e?this.modules[e][8]=g:8>e?this.modules[e+1][8]=g:this.modules[this.moduleCount-15+e][8]=g}for(var e=0;15>e;e++){var g=!a&&1==(1&d>>e);8>e?this.modules[8][this.moduleCount-e-1]=g:9>e?this.modules[8][15-e-1+1]=g:this.modules[8][15-e-1]=g}this.modules[this.moduleCount-8][8]=!a},mapData:function(a,b){for(var c=-1,d=this.moduleCount-1,e=7,g=0,h=this.moduleCount-1;h>0;h-=2)for(6==h&&h--;;){for(var i=0;2>i;i++)if(null==this.modules[d][h-i]){var j=!1;g<a.length&&(j=1==(1&a[g]>>>e));var k=f.getMask(b,d,h-i);k&&(j=!j),this.modules[d][h-i]=j,e--,-1==e&&(g++,e=7)}if(d+=c,0>d||this.moduleCount<=d){d-=c,c=-c;break}}}},b.PAD0=236,b.PAD1=17,b.createData=function(a,c,d){for(var e=j.getRSBlocks(a,c),g=new k,h=0;h<d.length;h++){var i=d[h];g.put(i.mode,4),g.put(i.getLength(),f.getLengthInBits(i.mode,a)),i.write(g)}for(var l=0,h=0;h<e.length;h++)l+=e[h].dataCount;if(g.getLengthInBits()>8*l)throw new Error("code length overflow. ("+g.getLengthInBits()+">"+8*l+")");for(g.getLengthInBits()+4<=8*l&&g.put(0,4);0!=g.getLengthInBits()%8;)g.putBit(!1);for(;;){if(g.getLengthInBits()>=8*l)break;if(g.put(b.PAD0,8),g.getLengthInBits()>=8*l)break;g.put(b.PAD1,8)}return b.createBytes(g,e)},b.createBytes=function(a,b){for(var c=0,d=0,e=0,g=new Array(b.length),h=new Array(b.length),j=0;j<b.length;j++){var k=b[j].dataCount,l=b[j].totalCount-k;d=Math.max(d,k),e=Math.max(e,l),g[j]=new Array(k);for(var m=0;m<g[j].length;m++)g[j][m]=255&a.buffer[m+c];c+=k;var n=f.getErrorCorrectPolynomial(l),o=new i(g[j],n.getLength()-1),p=o.mod(n);h[j]=new Array(n.getLength()-1);for(var m=0;m<h[j].length;m++){var q=m+p.getLength()-h[j].length;h[j][m]=q>=0?p.get(q):0}}for(var r=0,m=0;m<b.length;m++)r+=b[m].totalCount;for(var s=new Array(r),t=0,m=0;d>m;m++)for(var j=0;j<b.length;j++)m<g[j].length&&(s[t++]=g[j][m]);for(var m=0;e>m;m++)for(var j=0;j<b.length;j++)m<h[j].length&&(s[t++]=h[j][m]);return s};for(var c={MODE_NUMBER:1,MODE_ALPHA_NUM:2,MODE_8BIT_BYTE:4,MODE_KANJI:8},d={L:1,M:0,Q:3,H:2},e={PATTERN000:0,PATTERN001:1,PATTERN010:2,PATTERN011:3,PATTERN100:4,PATTERN101:5,PATTERN110:6,PATTERN111:7},f={PATTERN_POSITION_TABLE:[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],G15:1335,G18:7973,G15_MASK:21522,getBCHTypeInfo:function(a){for(var b=a<<10;f.getBCHDigit(b)-f.getBCHDigit(f.G15)>=0;)b^=f.G15<<f.getBCHDigit(b)-f.getBCHDigit(f.G15);return(a<<10|b)^f.G15_MASK},getBCHTypeNumber:function(a){for(var b=a<<12;f.getBCHDigit(b)-f.getBCHDigit(f.G18)>=0;)b^=f.G18<<f.getBCHDigit(b)-f.getBCHDigit(f.G18);return a<<12|b},getBCHDigit:function(a){for(var b=0;0!=a;)b++,a>>>=1;return b},getPatternPosition:function(a){return f.PATTERN_POSITION_TABLE[a-1]},getMask:function(a,b,c){switch(a){case e.PATTERN000:return 0==(b+c)%2;case e.PATTERN001:return 0==b%2;case e.PATTERN010:return 0==c%3;case e.PATTERN011:return 0==(b+c)%3;case e.PATTERN100:return 0==(Math.floor(b/2)+Math.floor(c/3))%2;case e.PATTERN101:return 0==b*c%2+b*c%3;case e.PATTERN110:return 0==(b*c%2+b*c%3)%2;case e.PATTERN111:return 0==(b*c%3+(b+c)%2)%2;default:throw new Error("bad maskPattern:"+a)}},getErrorCorrectPolynomial:function(a){for(var b=new i([1],0),c=0;a>c;c++)b=b.multiply(new i([1,g.gexp(c)],0));return b},getLengthInBits:function(a,b){if(b>=1&&10>b)switch(a){case c.MODE_NUMBER:return 10;case c.MODE_ALPHA_NUM:return 9;case c.MODE_8BIT_BYTE:return 8;case c.MODE_KANJI:return 8;default:throw new Error("mode:"+a)}else if(27>b)switch(a){case c.MODE_NUMBER:return 12;case c.MODE_ALPHA_NUM:return 11;case c.MODE_8BIT_BYTE:return 16;case c.MODE_KANJI:return 10;default:throw new Error("mode:"+a)}else{if(!(41>b))throw new Error("type:"+b);switch(a){case c.MODE_NUMBER:return 14;case c.MODE_ALPHA_NUM:return 13;case c.MODE_8BIT_BYTE:return 16;case c.MODE_KANJI:return 12;default:throw new Error("mode:"+a)}}},getLostPoint:function(a){for(var b=a.getModuleCount(),c=0,d=0;b>d;d++)for(var e=0;b>e;e++){for(var f=0,g=a.isDark(d,e),h=-1;1>=h;h++)if(!(0>d+h||d+h>=b))for(var i=-1;1>=i;i++)0>e+i||e+i>=b||(0!=h||0!=i)&&g==a.isDark(d+h,e+i)&&f++;f>5&&(c+=3+f-5)}for(var d=0;b-1>d;d++)for(var e=0;b-1>e;e++){var j=0;a.isDark(d,e)&&j++,a.isDark(d+1,e)&&j++,a.isDark(d,e+1)&&j++,a.isDark(d+1,e+1)&&j++,(0==j||4==j)&&(c+=3)}for(var d=0;b>d;d++)for(var e=0;b-6>e;e++)a.isDark(d,e)&&!a.isDark(d,e+1)&&a.isDark(d,e+2)&&a.isDark(d,e+3)&&a.isDark(d,e+4)&&!a.isDark(d,e+5)&&a.isDark(d,e+6)&&(c+=40);for(var e=0;b>e;e++)for(var d=0;b-6>d;d++)a.isDark(d,e)&&!a.isDark(d+1,e)&&a.isDark(d+2,e)&&a.isDark(d+3,e)&&a.isDark(d+4,e)&&!a.isDark(d+5,e)&&a.isDark(d+6,e)&&(c+=40);for(var k=0,e=0;b>e;e++)for(var d=0;b>d;d++)a.isDark(d,e)&&k++;var l=Math.abs(100*k/b/b-50)/5;return c+=10*l}},g={glog:function(a){if(1>a)throw new Error("glog("+a+")");return g.LOG_TABLE[a]},gexp:function(a){for(;0>a;)a+=255;for(;a>=256;)a-=255;return g.EXP_TABLE[a]},EXP_TABLE:new Array(256),LOG_TABLE:new Array(256)},h=0;8>h;h++)g.EXP_TABLE[h]=1<<h;for(var h=8;256>h;h++)g.EXP_TABLE[h]=g.EXP_TABLE[h-4]^g.EXP_TABLE[h-5]^g.EXP_TABLE[h-6]^g.EXP_TABLE[h-8];for(var h=0;255>h;h++)g.LOG_TABLE[g.EXP_TABLE[h]]=h;i.prototype={get:function(a){return this.num[a]},getLength:function(){return this.num.length},multiply:function(a){for(var b=new Array(this.getLength()+a.getLength()-1),c=0;c<this.getLength();c++)for(var d=0;d<a.getLength();d++)b[c+d]^=g.gexp(g.glog(this.get(c))+g.glog(a.get(d)));return new i(b,0)},mod:function(a){if(this.getLength()-a.getLength()<0)return this;for(var b=g.glog(this.get(0))-g.glog(a.get(0)),c=new Array(this.getLength()),d=0;d<this.getLength();d++)c[d]=this.get(d);for(var d=0;d<a.getLength();d++)c[d]^=g.gexp(g.glog(a.get(d))+b);return new i(c,0).mod(a)}},j.RS_BLOCK_TABLE=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12,7,37,13],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],j.getRSBlocks=function(a,b){var c=j.getRsBlockTable(a,b);if(void 0==c)throw new Error("bad rs block @ typeNumber:"+a+"/errorCorrectLevel:"+b);for(var d=c.length/3,e=[],f=0;d>f;f++)for(var g=c[3*f+0],h=c[3*f+1],i=c[3*f+2],k=0;g>k;k++)e.push(new j(h,i));return e},j.getRsBlockTable=function(a,b){switch(b){case d.L:return j.RS_BLOCK_TABLE[4*(a-1)+0];case d.M:return j.RS_BLOCK_TABLE[4*(a-1)+1];case d.Q:return j.RS_BLOCK_TABLE[4*(a-1)+2];case d.H:return j.RS_BLOCK_TABLE[4*(a-1)+3];default:return void 0}},k.prototype={get:function(a){var b=Math.floor(a/8);return 1==(1&this.buffer[b]>>>7-a%8)},put:function(a,b){for(var c=0;b>c;c++)this.putBit(1==(1&a>>>b-c-1))},getLengthInBits:function(){return this.length},putBit:function(a){var b=Math.floor(this.length/8);this.buffer.length<=b&&this.buffer.push(0),a&&(this.buffer[b]|=128>>>this.length%8),this.length++}};var l=[[17,14,11,7],[32,26,20,14],[53,42,32,24],[78,62,46,34],[106,84,60,44],[134,106,74,58],[154,122,86,64],[192,152,108,84],[230,180,130,98],[271,213,151,119],[321,251,177,137],[367,287,203,155],[425,331,241,177],[458,362,258,194],[520,412,292,220],[586,450,322,250],[644,504,364,280],[718,560,394,310],[792,624,442,338],[858,666,482,382],[929,711,509,403],[1003,779,565,439],[1091,857,611,461],[1171,911,661,511],[1273,997,715,535],[1367,1059,751,593],[1465,1125,805,625],[1528,1190,868,658],[1628,1264,908,698],[1732,1370,982,742],[1840,1452,1030,790],[1952,1538,1112,842],[2068,1628,1168,898],[2188,1722,1228,958],[2303,1809,1283,983],[2431,1911,1351,1051],[2563,1989,1423,1093],[2699,2099,1499,1139],[2809,2213,1579,1219],[2953,2331,1663,1273]],o=function(){var a=function(a,b){this._el=a,this._htOption=b};return a.prototype.draw=function(a){function g(a,b){var c=document.createElementNS("http://www.w3.org/2000/svg",a);for(var d in b)b.hasOwnProperty(d)&&c.setAttribute(d,b[d]);return c}var b=this._htOption,c=this._el,d=a.getModuleCount();Math.floor(b.width/d),Math.floor(b.height/d),this.clear();var h=g("svg",{viewBox:"0 0 "+String(d)+" "+String(d),width:"100%",height:"100%",fill:b.colorLight});h.setAttributeNS("http://www.w3.org/2000/xmlns/","xmlns:xlink","http://www.w3.org/1999/xlink"),c.appendChild(h),h.appendChild(g("rect",{fill:b.colorDark,width:"1",height:"1",id:"template"}));for(var i=0;d>i;i++)for(var j=0;d>j;j++)if(a.isDark(i,j)){var k=g("use",{x:String(i),y:String(j)});k.setAttributeNS("http://www.w3.org/1999/xlink","href","#template"),h.appendChild(k)}},a.prototype.clear=function(){for(;this._el.hasChildNodes();)this._el.removeChild(this._el.lastChild)},a}(),p="svg"===document.documentElement.tagName.toLowerCase(),q=p?o:m()?function(){function a(){this._elImage.src=this._elCanvas.toDataURL("image/png"),this._elImage.style.display="block",this._elCanvas.style.display="none"}function d(a,b){var c=this;if(c._fFail=b,c._fSuccess=a,null===c._bSupportDataURI){var d=document.createElement("img"),e=function(){c._bSupportDataURI=!1,c._fFail&&_fFail.call(c)},f=function(){c._bSupportDataURI=!0,c._fSuccess&&c._fSuccess.call(c)};return d.onabort=e,d.onerror=e,d.onload=f,d.src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==",void 0}c._bSupportDataURI===!0&&c._fSuccess?c._fSuccess.call(c):c._bSupportDataURI===!1&&c._fFail&&c._fFail.call(c)}if(this._android&&this._android<=2.1){var b=1/window.devicePixelRatio,c=CanvasRenderingContext2D.prototype.drawImage;CanvasRenderingContext2D.prototype.drawImage=function(a,d,e,f,g,h,i,j){if("nodeName"in a&&/img/i.test(a.nodeName))for(var l=arguments.length-1;l>=1;l--)arguments[l]=arguments[l]*b;else"undefined"==typeof j&&(arguments[1]*=b,arguments[2]*=b,arguments[3]*=b,arguments[4]*=b);c.apply(this,arguments)}}var e=function(a,b){this._bIsPainted=!1,this._android=n(),this._htOption=b,this._elCanvas=document.createElement("canvas"),this._elCanvas.width=b.width,this._elCanvas.height=b.height,a.appendChild(this._elCanvas),this._el=a,this._oContext=this._elCanvas.getContext("2d"),this._bIsPainted=!1,this._elImage=document.createElement("img"),this._elImage.style.display="none",this._el.appendChild(this._elImage),this._bSupportDataURI=null};return e.prototype.draw=function(a){var b=this._elImage,c=this._oContext,d=this._htOption,e=a.getModuleCount(),f=d.width/e,g=d.height/e,h=Math.round(f),i=Math.round(g);b.style.display="none",this.clear();for(var j=0;e>j;j++)for(var k=0;e>k;k++){var l=a.isDark(j,k),m=k*f,n=j*g;c.strokeStyle=l?d.colorDark:d.colorLight,c.lineWidth=1,c.fillStyle=l?d.colorDark:d.colorLight,c.fillRect(m,n,f,g),c.strokeRect(Math.floor(m)+.5,Math.floor(n)+.5,h,i),c.strokeRect(Math.ceil(m)-.5,Math.ceil(n)-.5,h,i)}this._bIsPainted=!0},e.prototype.makeImage=function(){this._bIsPainted&&d.call(this,a)},e.prototype.isPainted=function(){return this._bIsPainted},e.prototype.clear=function(){this._oContext.clearRect(0,0,this._elCanvas.width,this._elCanvas.height),this._bIsPainted=!1},e.prototype.round=function(a){return a?Math.floor(1e3*a)/1e3:a},e}():function(){var a=function(a,b){this._el=a,this._htOption=b};return a.prototype.draw=function(a){for(var b=this._htOption,c=this._el,d=a.getModuleCount(),e=Math.floor(b.width/d),f=Math.floor(b.height/d),g=['<table style="border:0;border-collapse:collapse;">'],h=0;d>h;h++){g.push("<tr>");for(var i=0;d>i;i++)g.push('<td style="border:0;border-collapse:collapse;padding:0;margin:0;width:'+e+"px;height:"+f+"px;background-color:"+(a.isDark(h,i)?b.colorDark:b.colorLight)+';"></td>');g.push("</tr>")}g.push("</table>"),c.innerHTML=g.join("");var j=c.childNodes[0],k=(b.width-j.offsetWidth)/2,l=(b.height-j.offsetHeight)/2;k>0&&l>0&&(j.style.margin=l+"px "+k+"px")},a.prototype.clear=function(){this._el.innerHTML=""},a}();QRCode=function(a,b){if(this._htOption={width:256,height:256,typeNumber:4,colorDark:"#000000",colorLight:"#ffffff",correctLevel:d.H},"string"==typeof b&&(b={text:b}),b)for(var c in b)this._htOption[c]=b[c];"string"==typeof a&&(a=document.getElementById(a)),this._android=n(),this._el=a,this._oQRCode=null,this._oDrawing=new q(this._el,this._htOption),this._htOption.text&&this.makeCode(this._htOption.text)},QRCode.prototype.makeCode=function(a){this._oQRCode=new b(r(a,this._htOption.correctLevel),this._htOption.correctLevel),this._oQRCode.addData(a),this._oQRCode.make(),this._el.title=a,this._oDrawing.draw(this._oQRCode),this.makeImage()},QRCode.prototype.makeImage=function(){"function"==typeof this._oDrawing.makeImage&&(!this._android||this._android>=3)&&this._oDrawing.makeImage()},QRCode.prototype.clear=function(){this._oDrawing.clear()},QRCode.CorrectLevel=d}();
 </script>
@@ -455,6 +456,10 @@ body.ui-new .qact:hover{border-color:color-mix(in srgb,var(--acc) 55%,transparen
 body.ui-new .qact span{font-size:15px;flex:none}
 @media(max-width:1060px){body.ui-new .dash-mid,body.ui-new .dash-bot{grid-template-columns:1fr}}
 .dash-chart-info{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--fg);opacity:.75;margin-top:4px}
+.dwin{display:inline-flex;gap:4px;margin-left:8px;vertical-align:middle}
+.dwin button{appearance:none;border:1px solid var(--br);background:transparent;color:var(--fg);opacity:.7;border-radius:8px;padding:2px 9px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;text-transform:none;letter-spacing:0}
+.dwin button:hover{opacity:1}
+.dwin button.on{background:var(--acc2);border-color:var(--acc2);color:#fff;opacity:1}
 /* — полировка новых вкладок на широком экране — */
 body.ui-new #loginCard{max-width:430px;margin:8vh auto 0}
 body.ui-new input:not([type=checkbox]):not([type=color]),body.ui-new select{max-width:560px}
@@ -1634,6 +1639,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class=kpi-val><b id=dOnline>—</b><span class=kpi-tot id=dOnlineTot></span></div>
         <div class=kpi-sub>из общего числа подписок · нажми, чтобы увидеть кто</div>
       </div>
+      <div class="card dash-kpi" id=dProxyCard style="cursor:pointer" title="Нажми — панель откроет вкладку «Прокси». Людей по службам: MTProto и веб-прокси. Общий вход :443 смешан с VPN, поэтому число службы названо диапазоном." onclick=quickTab('proxy')">
+        <div class=kpi-cap>👥 Онлайн прокси</div>
+        <div class=kpi-val><b id=dProxyMp>—</b><span class=kpi-tot>MTProto</span></div>
+        <div class=kpi-sub id=dProxyWeb>веб-прокси: —</div>
+      </div>
       <div class="card dash-kpi">
         <div class=kpi-cap>📈 Трафик за сутки</div>
         <div class=kpi-val><b id=dToday>—</b><span class=kpi-delta id=dTodayDelta></span></div>
@@ -1660,8 +1670,19 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class=mut id=dLoadLine style="margin-top:12px;font-size:12.5px">Load avg: —</div>
       </div>
     </div>
+    <div class=card id=lnkBox>
+      <h2>🔗 Ноги связи фронт ↔ бэк</h2>
+      <div class=mut>Пинг каждой ноги и автоматический перебой при потере связи (например, блокировка ip). Живые ноги мерятся двумя свидетелями: AmneziaWG — эхо через туннель с бэка и с фронта, VLESS — tcp до портала и состояние моста (число соединений — справка: при нуле клиентов оно ноль, и это не смерть ноги). «Не мерено» не переключает ногу. Ноги ipv6 названы невозможными, пока у фронта нет глобального адреса ipv6 — нужен адрес от хостера.</div>
+      <div id=lnkLegs style="margin-top:10px"><span class=mut>загрузка…</span></div>
+      <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class=btn type=button onclick="lnkMeasure()">Проверить ноги</button>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type=checkbox id=lnkAuto onchange="lnkAutoSet(this.checked)"> автопереключение</label>
+        <span class=mut id=lnkState></span>
+      </div>
+      <div class=mut id=lnkMsg style="margin-top:8px"></div>
+    </div>
     <div class=card>
-      <h2>Сетевой трафик<span class=mut style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px;margin-left:6px">за 30 дней</span></h2>
+      <h2>Сетевой трафик<span class=dwin id=dChartWin role=group aria-label="Период графика трафика"><button type=button data-w=1 onclick="dashRange(1)" title="Последние сутки">день</button><button type=button data-w=7 onclick="dashRange(7)" title="Последние 7 суток">неделя</button><button type=button data-w=30 class=on onclick="dashRange(30)" title="Последние 30 суток">30 дней</button></span></h2>
       <div class=dash-chart-box>
         <div class=dash-yaxis id=dChartY><span>—</span><span></span><span></span><span>0</span></div>
         <svg id=dashChart class=dash-chart viewBox="0 0 640 190" preserveAspectRatio=none role=img aria-label="График трафика за 30 дней"></svg>
@@ -1689,8 +1710,8 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     </div>
     <details class=expl style="margin:0 2px"><summary>Объяснить простым языком</summary><div>
       <p><b>Зачем эта страница.</b> Это витрина здоровья сервера: один взгляд — и понятно, всё ли живое. Лечить и настраивать — не здесь, а в соответствующих вкладках; сюда заходишь смотреть.</p>
-      <p><b>На что смотреть в первую очередь.</b> «Статус протоколов» — слово тут читается с порта самого входа, а не с запущенной службы: зелёный — порт слушает наружу и клиент до него дойдёт, серый «Снят» — вход убран владельцем, жёлтый «Только петля» — ядро подняло вход лишь на внутреннем адресе и снаружи до него не дойти, красный «Не слушает» — служба жива, а этого порта нет. «Клиенты онлайн» — сколько людей подключены прямо сейчас. «Трафик за сутки» — сколько сервер прогнал сегодня. Три кольца (Процессор / Память / Диск) — нагрузка машины: жёлтый — присмотреть, <b>красный диск — срочно разбираться</b> (кончится место — упадёт всё).</p>
-      <p><b>График трафика</b> — сколько сервер прогнал за 30 дней: резкий всплеск = кто-то качает много (карточки людей — во вкладке «🔗 Подписка»). <b>«Последние события»</b> — журнал того, что делала панель и админы.</p>
+      <p><b>На что смотреть в первую очередь.</b> «Статус протоколов» — слово тут читается с порта самого входа, а не с запущенной службы: зелёный — порт слушает наружу и клиент до него дойдёт, серый «Снят» — вход убран владельцем, жёлтый «Только петля» — ядро подняло вход лишь на внутреннем адресе и снаружи до него не дойти, красный «Не слушает» — служба жива, а этого порта нет. «Клиенты онлайн» — сколько людей подключены прямо сейчас. «Онлайн прокси» — сколько людей сидит в Telegram-прокси: отдельно MTProto и отдельно веб-прокси. Число точное, когда фронт назвал службу каждому живому адресу (он читает SNI, а мост пишет имя службы в журнал вместе с настоящим адресом клиента). Диапазон остаётся только по безымянным адресам: нижняя граница — люди, которых служба назвала, верхняя — плюс безымянные, и каждый из них может оказаться любой из двух служб. Поэтому граница узкая (например «47–48»), а не «свой вход .. весь общий порт». Имя, прочитанное из журнала, больше не стирается, пока соединение живо. «Трафик за сутки» — сколько сервер прогнал сегодня. Три кольца (Процессор / Память / Диск) — нагрузка машины: жёлтый — присмотреть, <b>красный диск — срочно разбираться</b> (кончится место — упадёт всё).</p>
+      <p><b>График трафика</b> — сколько сервер прогнал за выбранный период: кнопки «день / неделя / 30 дней» над графиком. «День» — последние сутки (часовых данных панель не держит, поэтому выдуманного часа в переключателе нет), «неделя» — последние 7 суток, «30 дней» — вся живая тридцатидневка. Резкий всплеск = кто-то качает много (карточки людей — во вкладке «🔗 Подписка»). <b>«Последние события»</b> — журнал того, что делала панель и админы.</p>
       <p><b>Быстрые действия</b> — кнопки «на каждый день»: добавить клиента, перезапустить Xray (чинит зависший VPN без перезагрузки сервера), открыть диагностику или журналы. Что-то сломалось? Жми «🩺 Диагностика сервера» — она сама прощупает порты, службы и доступность.</p>
     </div></details>
   </div>
@@ -1973,8 +1994,24 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
   <div id=tab-proxy class="tab-pane"><div class="card set-block">
     <div class=row><h2>Telegram прокси</h2><span class=mut id=tgStatus></span>
-      <button class="tiny sec" id=tgRestartBtn onclick=restartTelemt()>⟳ Перезагрузить telemt</button></div>
+      <button class="tiny sec" id=tgRestartBtn onclick=restartTelemt()>⟳ Перезагрузить telemt</button>
+      <button class="tiny sec" id=tgPowerBtn onclick=tgPowerToggle()>⏸ Отключить MTProto</button><span class=mut id=tgPowerStatus style="font-size:12px"></span></div>
     <p class=mut>Отдельный MTProto-прокси (FakeTLS). Не влияет на VPN-клиентов.</p>
+    <div class="row" id=tgOnlineRow style="gap:10px;flex-wrap:wrap;margin:10px 0 4px">
+      <div class=card style="flex:1;min-width:158px;padding:10px 12px">
+        <div class=mut style="font-size:12px;font-weight:600">👥 Людей в сети</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-top:6px"><b id=tgOnPeople style="font-size:24px;font-weight:800">—</b></div>
+        <div class=mut id=tgOnPeopleWhy style="font-size:11.5px;margin-top:4px"></div>
+      </div>
+      <div class=card style="flex:1;min-width:158px;padding:10px 12px">
+        <div class=mut style="font-size:12px;font-weight:600">🟣 MTProto</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-top:6px"><b id=tgOnMp style="font-size:24px;font-weight:800">—</b><span class=mut style="font-size:12px">соединений</span></div>
+      </div>
+      <div class=card style="flex:1;min-width:158px;padding:10px 12px">
+        <div class=mut style="font-size:12px;font-weight:600">🌐 Веб-прокси</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-top:6px"><b id=tgOnWeb style="font-size:24px;font-weight:800">—</b><span class=mut style="font-size:12px">соединений</span></div>
+      </div>
+    </div>
     <details class=expl><summary>Объяснить простым языком</summary><div>
       <p><b>Что это?</b> Это прокси именно для Telegram — чтобы сам мессенджер работал, когда его режут. Не путай с VPN-ссылками: VPN для браузера и приложений здесь ни при чём, это отдельная «дорожка» только для Telegram.</p>
       <p><b>Как пользоваться?</b> Нажми «Добавить» — панель создаст прокси и ссылку вида <code>tg://proxy?...</code>. Эту ссылку открывают в Telegram: Настройки → Данные и память → Прокси. Человек видит «подключено» — и мессенджер снова работает.</p>
@@ -3546,11 +3583,19 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
             <option value=awg>AmneziaWG — tcp и udp</option>
             <option value=vless>vless-reverse — только tcp</option>
           </select>
+          <label class=fldlbl for=hopSshUser style="margin-top:8px">SSH-доступ к фронту: если заполнить, панель сама создаст фронт и сразу установит релей</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <input id=hopSshUser value=root placeholder="SSH-логин" style="width:120px" autocomplete=off>
+            <input id=hopSshPort type=number min=1 max=65535 value=22 title="SSH-порт" style="width:90px">
+            <input id=hopSshPass type=password placeholder="SSH-пароль фронта (однократно)" style="flex:1;min-width:220px" autocomplete=new-password>
+          </div>
+          <div class=mut style="font-size:12px;margin-top:6px">Пароль нужен только для установки ключа панели: он не сохраняется и стирается из формы сразу после запуска. Оставь пустым — получишь готовую команду curl для ручной установки.</div>
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=hopPreview()>Предпросмотр</button>
             <button class=sec onclick=hopAdd()>Создать фронт</button>
           </div>
           <div id=hopPrevBox style="margin-top:10px"></div>
+          <div id=hopAddBoot style="margin-top:8px;font-size:13px"></div>
           <div class=msg id=hopAddMsg></div>
         </div>
       </details>
@@ -3669,7 +3714,23 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <div class=msg id=mvMsg></div>
     </div>
   </div>
-<div id=tab-security class="tab-pane"><div class="card set-block">
+<div id=tab-security class="tab-pane"><div class="card set-block" id=rknBox>
+    <h2>🛡️ Защита от сканеров (rkn-guard)</h2>
+    <p class=mut>Панель меряет ОБЕ коробки — бэк и фронт — и предлагает поставить защиту туда, где её нет. Отчёт снимается кнопкой и сам раз в час.</p>
+    <details class=expl><summary>Объяснить простым языком</summary><div>
+      <p><b>Что это?</b> На входе сервера стоит цепочка правил, которая отбрасывает пакеты с адресов из списков сканеров и государственных сетей. Списки обновляются по расписанию (ежедневно в 06:00 МСК). Защита не трогает клиентов: уже установленные соединения пропускаются первыми.</p>
+      <p><b>Зачем на фронте?</b> Фронт — это дверь, которую видят все. Если защита стоит только на бэке, сканеры всё равно стучатся в дверь. Панель проверяет фронт из книги «Двойного прыжка» тем же ключом, которым ставит релей, и предлагает укладку, если защиты там нет.</p>
+      <p><b>Что панель НЕ делает.</b> Она не зовёт пункт 8 меню установщика (`rkn-guard full`): тот включает ufw с политикой DROP и оборвал бы клиентов. Укладка идёт своим путём — снимок правил до, бинарник с проверкой sha256, только списки, цепочка по образцу, служба загрузки и таймер. ufw и nftables панели не трогаются, а после укладки сверяются.</p>
+      <p><b>Откат.</b> На каждой коробке остаётся снимок правил и скрипт отката в <code>/root/rkn-guard-pre/rollback.sh</code>.</p>
+    </div></details>
+    <div id=rknOffer></div>
+    <div id=rkn_back style="margin-top:10px"></div>
+    <div id=rkn_front style="margin-top:10px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <button class="sec" onclick="rknBoth()">📊 Снять отчёт с обеих коробок</button>
+    </div>
+    <div class="msg" id=rknMsg></div>
+</div><div class="card set-block">
     <h2>Безопасность</h2>
     <p class=mut>Смена логина и пароля. После сохранения — войти заново.</p>
     <details class=expl><summary>Объяснить простым языком</summary><div>
@@ -4644,6 +4705,155 @@ function renderBoot(d){
     (s.detail?'<span class=mut style="font-size:11.5px">'+esc(s.detail)+'</span>':'')+'</div>').join('');
 }
 
+// ---- Защита от сканеров rkn-guard (#172): отчёты бэка И фронта, укладка словом ----
+// Ход — задача: укладка живёт минуты, браузер обрывает транспорт на ~130 с,
+// поэтому морда опрашивает шаги, а не ждёт один HTTP-ответ (живой урок 07.11).
+var rknTimers={};
+function rknAgo(ts){
+  const t=parseInt(ts||0,10); if(!t) return 'не читается';
+  const s=Math.max(0,Math.floor(Date.now()/1000-t));
+  if(s<90) return s+' с назад';
+  if(s<5400) return Math.floor(s/60)+' мин назад';
+  if(s<172800) return Math.floor(s/3600)+' ч назад';
+  return Math.floor(s/86400)+' дн назад';
+}
+function rknCls(v){ return v==='защищён'?'ok':(v==='не мерено'?'':'err'); }
+function rknBtns(t,r){
+  const v=(r&&r.verdict)||'';
+  let b='<button class="sec tiny" onclick="rknRun(\''+t+'\',\'report\')">📊 Снять отчёт</button>';
+  if(v==='не стоит') b+='<button class="tiny" onclick="rknRun(\''+t+'\',\'install\')">🛡️ Поставить</button>';
+  else if(v==='стоит, но цепочка снята') b+='<button class="tiny" onclick="rknRun(\''+t+'\',\'chain\')">↩️ Вернуть цепочку</button>';
+  else if(r&&r.bin==='ЕСТЬ') b+='<button class="sec tiny" onclick="rknRun(\''+t+'\',\'update\')">🔄 Обновить списки</button>';
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+b+'</div>';
+}
+function rknCard(t,r,hasFront){
+  const box=document.getElementById('rkn_'+t); if(!box) return;
+  const name=t==='front'?'Фронт (дверь клиентов)':'Бэк (эта коробка)';
+  if(t==='front'&&!hasFront){ box.innerHTML='<b>'+name+'</b><div class="mut">Фронта в книге нет — ставить некуда. Добавь фронт во вкладке «🔀 Двойной прыжок».</div>'; return; }
+  let h='<b>'+name+'</b>';
+  if(!r){ box.innerHTML=h+'<div class="mut">Отчёт ещё не снят.</div>'+rknBtns(t,null); return; }
+  const v=r.verdict||'не мерено';
+  h+='<div class="'+rknCls(v)+'" style="margin:4px 0">'+esc(v)+' · замер '+rknAgo(r.at)+'</div>';
+  if(r.error) h+='<div class="err">'+esc(r.error)+'</div>';
+  const rows=[['Бинарник',r.bin||'нет'],['Версия',r.ver||'—'],
+    ['Набор v4 / v6',(r.set_v4||'0')+' / '+(r.set_v6||'0')],
+    ['Цепочка',(r.chain||'0')+' правил, прыжок '+(r.jump||'0')],
+    ['Отброшено',(r.drop||'0')+' пакетов ('+fmtBytes(parseInt(r.drop_bytes||0,10))+')'],
+    ['Журнал',(r.loglines||'0')+' строк, последняя '+rknAgo(r.log_at)],
+    ['Списки обновлены',rknAgo(r.lists_at)],['Служба загрузки',r.boot||'?'],
+    ['Таймер обновления',(r.timer||'?')+' ('+(r.timer_en||'?')+')'],
+    ['ufw',r.ufw||'не читается'],['Соединений',r.est||'0'],
+    ['Откат',r.rollback==='ЕСТЬ'?'на месте':'нет']];
+  h+='<table style="width:100%;font-size:13px;border-collapse:collapse">'+rows.map(function(x){
+    return '<tr><td class="mut" style="padding:2px 8px 2px 0;white-space:nowrap">'+esc(x[0])+'</td><td>'+esc(x[1])+'</td></tr>';}).join('')+'</table>';
+  box.innerHTML=h+rknBtns(t,r);
+}
+async function loadRkn(){
+  let d; try{ d=await api('/api/rkn/status'); }catch(e){ return; }
+  if(!d) return;
+  rknCard('back',d.back,true); rknCard('front',d.front,d.has_front);
+  const o=document.getElementById('rknOffer');
+  if(o){ const off=d.offer||[];
+    o.innerHTML=off.length?('<div class="err">Защиты нет: '+off.map(function(x){return x==='front'?'фронт':'бэк';}).join(', ')+'. Панель предлагает поставить — кнопка «Поставить» ниже.</div>'):''; }
+}
+function rknPoll(jid,t){
+  const ic={done:'✅',failed:'❌',running:'⏳',pending:'▫️','пропущено':'⏭️'};
+  if(rknTimers[t])clearTimeout(rknTimers[t]);
+  async function tick(){
+    let j={};
+    try{ j=await api('/api/rkn/job?id='+encodeURIComponent(jid)); }
+    catch(e){ setMsg('rknMsg','ход защиты идёт; статус пока не читается: '+(e&&e.message||''),'');
+      rknTimers[t]=setTimeout(tick,5000); return; }
+    if(j.error&&!j.steps){ setMsg('rknMsg',j.error,'err',true); return; }
+    const line=(j.steps||[]).map(function(s){return (ic[s.state]||'▫️')+' '+s.name;}).join(' · ');
+    const who=t==='front'?'фронт: ':'бэк: ';
+    if(!j.done){ setMsg('rknMsg',who+line,''); rknTimers[t]=setTimeout(tick,2500); return; }
+    rknTimers[t]=null;
+    await loadRkn();
+    const c=j.card||{};
+    setMsg('rknMsg',who+(c.msg||j.error||'ход завершён')
+      +((c.alarm&&c.alarm.length)?(' · ⛔ '+c.alarm.join('; ')):''), c.ok?'ok':'err', true);
+  }
+  tick();
+}
+async function rknRun(t,action){
+  const box=t==='front'?'ФРОНТ':'БЭК';
+  const ask={install:'Поставить защиту от сканеров на '+box+'?\n\nПорядок: снимок правил до, бинарник с проверкой sha256, только списки, цепочка (установленные соединения пропускаются первыми), служба загрузки и таймер. ufw и nftables панели не трогаются, после укладки сверяются.\n\nПункт 8 меню (rkn-guard full) НЕ зовётся: он включил бы ufw с политикой DROP и оборвал клиентов.\n\nОткат останется в /root/rkn-guard-pre/rollback.sh.',
+    update:'Обновить списки сканеров на '+box+'? Правила и ufw не трогаются.',
+    chain:'Вернуть цепочку SCANNERS-BLOCK на '+box+'? Наборы и цепочка собираются заново, ufw не трогается.',
+    report:''}[action];
+  if(ask&&!confirm(ask))return;
+  setMsg('rknMsg',(t==='front'?'фронт: ':'бэк: ')+'ход начат…','');
+  let d; try{ d=await api('/api/rkn/run',{method:'POST',body:JSON.stringify({target:t,action:action})}); }
+  catch(e){ setMsg('rknMsg',(e&&e.message)||'ошибка','err',true); return; }
+  if(d&&d.job){ rknPoll(d.job,t); return; }
+  await loadRkn();
+  setMsg('rknMsg',(d&&d.msg)||'отказ',(d&&d.ok)?'ok':'err',true);
+}
+async function rknBoth(){ await rknRun('back','report'); await rknRun('front','report'); }
+// ---- #173: ноги связи фронт↔бэк — пинг каждой и автоперебой ----
+const LNK_NAMES={awg4:'AmneziaWG udp · ipv4',vless4:'VLESS tcp · ipv4',awg6:'AmneziaWG udp · ipv6',vless6:'VLESS tcp · ipv6'};
+function lnkMs(v){return (v==null||v==='')?'—':(v+' мс');}
+function lnkCard(d){
+  const box=$('lnkLegs'); if(!box)return;
+  const legs=(d&&d.legs)||[];
+  if(!legs.length){box.innerHTML='<span class=mut>замера ещё не было — нажми «Проверить ноги»</span>';}
+  else box.innerHTML=legs.map(l=>{
+    const nm=LNK_NAMES[l.leg]||l.leg;
+    const act=l.active?' <span class=mut>· активна</span>':'';
+    let st;
+    if(l.measured==null)st='<span style="color:#ef6c00">не мерено</span>';
+    else if(l.avail)st='<span style="color:#2e7d32">жива</span>';
+    else st='<span style="color:#c62828">мертва</span>';
+    const peer=(l.mode==='awg'&&l.peer_ms!=null)?(' · фронт→бэк '+lnkMs(l.peer_ms)):'';
+    const br=(l.mode==='vless')?(' · мост '+(l.bridge===true?'поднят':(l.bridge===false?'не поднят':'не опрошен'))):'';
+    const est=(l.mode==='vless'&&l.est!=null)?(' · соединений '+l.est):'';
+    const why=l.why?('<div class=mut style="font-size:12px">'+escapeHtml(String(l.why))+'</div>'):'';
+    const btn=(!l.active)?('<button class=btn type=button style="padding:2px 8px" onclick="lnkSwitch(\''+l.leg+'\')">Переключить</button>'):'';
+    return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid rgba(127,127,127,.15)">'
+      +'<div style="min-width:190px"><b>'+escapeHtml(nm)+'</b>'+act+'<div class=mut style="font-size:12px">'+escapeHtml(String(l.dir||''))+'</div></div>'
+      +'<div style="min-width:92px">'+st+'</div>'
+      +'<div style="min-width:150px"><b>'+lnkMs(l.ms)+'</b>'+peer+br+est+'</div>'
+      +'<div style="flex:1;min-width:170px">'+why+'</div><div>'+btn+'</div></div>';
+  }).join('');
+  const s=$('lnkState');
+  if(s){
+    const bits=[];
+    bits.push('активная: '+(d&&d.active==='awg'?'AmneziaWG udp':(d&&d.active==='vless'?'VLESS tcp':'—'))+' ipv'+((d&&d.fam)||4));
+    if(d&&d.dead)bits.push('мертва замеров '+d.dead+'/'+d.dead_need);
+    if(d&&d.cand)bits.push('соседняя жива '+d.cand+' ('+(d.cand_leg||'')+')');
+    if(d&&d.cool_left)bits.push('анти-качели '+d.cool_left+' с');
+    if(d&&d.front_ok===false)bits.push('фронт не опрошен');
+    if(d&&d.watch===false)bits.push('смотритель выключен');
+    s.textContent=bits.join(' · ');
+  }
+  const a=$('lnkAuto'); if(a)a.checked=!!(d&&d.auto);
+}
+async function loadLnk(){
+  try{ lnkCard(await api('/api/link/status')); }
+  catch(e){ const b=$('lnkLegs'); if(b)b.innerHTML='<span class=mut>ноги связи не прочитались: '+escapeHtml(String((e&&e.message)||e))+'</span>'; }
+}
+async function lnkMeasure(){
+  setMsg('lnkMsg','мерю ноги…','');
+  let d; try{ d=await api('/api/link/measure',{method:'POST',body:JSON.stringify({})}); }
+  catch(e){ setMsg('lnkMsg',(e&&e.message)||'ошибка','err',true); return; }
+  if(d&&d.view)lnkCard(d.view);
+  setMsg('lnkMsg',(d&&d.ok)?('замер снят: '+(d.why||'')):((d&&d.msg)||'замер не вышел'),(d&&d.ok)?'ok':'err',true);
+}
+async function lnkAutoSet(on){
+  let d; try{ d=await api('/api/link/auto',{method:'POST',body:JSON.stringify({on:!!on})}); }
+  catch(e){ setMsg('lnkMsg',(e&&e.message)||'ошибка','err',true); await loadLnk(); return; }
+  setMsg('lnkMsg',(d&&d.ok)?('автопереключение '+(d.auto?'включено':'выключено')):((d&&d.error)||'отказ'),(d&&d.ok)?'ok':'err',true);
+}
+async function lnkSwitch(leg){
+  const nm=LNK_NAMES[leg]||leg;
+  if(!confirm('Переключить связь фронт↔бэк на '+nm+'?\n\nХод идёт задачей: портал на фронте, мост на бэке, переключатель, книга и проба. Подписчики не должны заметить разрыв, но исход будет назван в журнале и аудите.\n\nОтказ ворот вернёт прежнюю ногу.'))return;
+  setMsg('lnkMsg','ход ноги начат…','');
+  let d; try{ d=await api('/api/link/switch',{method:'POST',body:JSON.stringify({leg:leg})}); }
+  catch(e){ setMsg('lnkMsg',(e&&e.message)||'ошибка','err',true); return; }
+  setMsg('lnkMsg',(d&&d.msg)||'отказ',(d&&d.ok)?'ok':'err',true);
+  setTimeout(loadLnk,4000); setTimeout(loadLnk,20000);
+}
 // ---- Двойной прыжок (RU-фронт → зарубежный бэк) ----
 let hopData=null, hopBootTimer=null, HOP_PF={};
 var mvData=null, mvTimer=null, mvJob=null;
@@ -5093,6 +5303,36 @@ async function hopInbToggle(proto,on){
   setMsg('hopInbMsg',(d.note||((on?'фронт включён':'фронт выключен')+' для '+proto))
     +(d.report?(' · '+d.report):''), d.ok===false?'err':'ok', true);
 }
+function hopDnsChoiceBox(){
+  const dns=(hopData&&hopData.dns)||{};
+  const names=dns.names||[];
+  if(!names.length) return '';
+  const hold=new Set((hopData.dns_held||[]).concat(hopData.dns_manual||[],hopData.dns_hold||[]).map(function(x){return String(x).toLowerCase().replace(/\.$/,'');}));
+  const manual=new Set((hopData.dns_manual||[]).map(function(x){return String(x).toLowerCase().replace(/\.$/,'');}));
+  return '<div style="margin-top:10px"><div style="font-weight:600;font-size:12.5px">🎯 Какие имена вести через фронт</div>'
+    +'<div class=mut style="font-size:12px;margin-bottom:6px">Снятая галочка — имя остаётся на бэке (tg.myproxyru.vip так не уедет на адрес фронта). Изменение применяет DNS-шаг сразу.</div>'
+    +names.map(function(n){
+        const nm=String(n.name||'').toLowerCase().replace(/\.$/,'');
+        return '<label style="display:inline-flex;gap:5px;align-items:center;font-size:12.5px;margin:3px 12px 3px 0">'
+          +'<input type=checkbox data-hop-dns="'+esc(nm)+'" '+(manual.has(nm)?'data-hop-manual="1" ':'')+(hold.has(nm)?'':'checked')+'> '
+          +esc(n.name||nm)+' <span class=mut>'+esc(n.content||'—')+'</span></label>';
+      }).join('')
+    +'<div style="margin-top:7px"><button class="sec tiny" onclick="hopDnsChoiceApply()">Применить выбор имён</button></div></div>';
+}
+async function hopDnsChoiceApply(){
+  const hold=[], manual=[];
+  document.querySelectorAll('[data-hop-dns]').forEach(function(el){
+    if(el.checked) return;
+    const nm=el.getAttribute('data-hop-dns');
+    if(el.getAttribute('data-hop-manual')) manual.push(nm); else hold.push(nm);
+  });
+  setMsg('hopDnsChoiceMsg','применяю выбор имён…','');
+  let d;
+  try{ d=await api('/api/hop/dns/hold',{method:'POST',body:JSON.stringify({names:hold,manual})}); }
+  catch(e){ setMsg('hopDnsChoiceMsg',(e&&e.message)||'ошибка','err',true); return; }
+  await loadHop();
+  setMsg('hopDnsChoiceMsg',(d.note||'')+(d.report?(' · '+d.report):''), d.ok===false?'err':'ok', true);
+}
 function hopAddrPush(){
   // #688: карточка обещала, что «панель сама уведомила подписчиков», — и молчала о
   // том, чем кончилась прошлая рассылка. Теперь она показывает числа: сколько чатов
@@ -5427,9 +5667,12 @@ function hopEpBox(){
 function backAddrRows(b){
   // ТЗ §4: одна строка на адрес пула — чем мерили и что показали два свидетеля.
   // Слова о беде приходят от панели, карточка их только называет: «службы молчат»
-  // и «из России не дойти» — разные беды и разные действия хозяина. Кнопка переезда
-  // стоит у адреса, которого надзор наглядно насчитал живым (`_BACK_OK_N` удач
-  // подряд и состоявшаяся проба из РФ); у мёртвого и у нещупанного кнопки нет.
+  // и «из России не дойти» — разные беды и разные действия хозяина.
+  // #169: кнопка переезда стоит у ЛЮБОГО своего адреса пула, кроме нынешнего
+  // главного. Прежде она показывалась только тому, кого надзор насчитал живым
+  // (`_BACK_OK_N` удач подряд и состоявшаяся проба из РФ), и хозяин не мог
+  // переехать на живой адрес, который свидетель из РФ весь день объявлял
+  // «не дойти». Слово замера печатается рядом с кнопкой, а не прячет её.
   const rows = b.addrs||[];
   if(!rows.length) return '<div class=mut style="font-size:12px;margin-top:6px">🗂 адресов пула ещё не меряли — список встанет на первом прогоне надзора или по кнопке ниже.</div>';
   const w = {dead:'службы на входах не ответили', blocked:'из России до адреса не дойти',
@@ -5438,7 +5681,8 @@ function backAddrRows(b){
   const n = b.fail_n||3, k = b.ok_n||2;
   return '<div style="margin-top:6px">'+rows.map(function(r,i){
     const bad = (r.fails||0) >= n;
-    const cand = !r.primary && r.verdict==='good' && (r.oks||0) >= k;
+    const cand = !r.primary;
+    const sure = r.verdict==='good' && (r.oks||0) >= k;
     let s = (r.primary?'🎯 ':'· ')+'<b>'+esc(r.ip)+'</b>'
       +(b.home===r.ip?' <span class=mut>(домашний — за ним имена вернутся)</span>':'')
       +(r.live?' 🟢':(bad?' 🔴':' ⚪'))
@@ -5451,7 +5695,10 @@ function backAddrRows(b){
     if(word) s += '<br><span style="margin-left:18px">'+esc(word)
       +(r.why?(' · '+esc(r.why)):'')+(r.ru_why?(' · проба: '+esc(r.ru_why)):'')+'</span>';
     return '<div class="'+(bad?'err':'mut')+'" style="font-size:12px;margin-top:3px">'+s
-      +(cand?(' <button class="sec tiny" onclick="backAddrMove('+i+')">🛫 переехать сюда</button>'):'')
+      +(cand?(' <button class="sec tiny" onclick="backAddrMove('+i+')">🛫 переехать сюда</button>'
+        +(sure?'':' <span class=mut>свидетель: '
+          +esc(r.verdict==='good'?('жив, удач подряд '+(r.oks||0)+' из '+k):(word||'замера не было'))
+          +'</span>')):'')
       +'</div>';
   }).join('')+'</div>';
 }
@@ -5574,7 +5821,8 @@ function renderHop(){
       +'" style="font-size:12.5px;margin-top:8px">'
       +esc(hopData.dns.note||'DNS: состояние имён не прочитано')+'</div>'):'')
     +(hopHolderLine(hopData.dns))
-    +(hopData.dns?('<div style="margin-top:6px"><button class="sec tiny" onclick="hopDnsRepeat()">🔁 Переложить имена</button> <span class=mut style="font-size:12px">повтор DNS-шага по текущему слову: со словом — на фронт, без слова — на бэк; входы и релей не трогает</span></div>'):'');
+    +(hopData.dns?('<div style="margin-top:6px"><button class="sec tiny" onclick="hopDnsRepeat()">🔁 Переложить имена</button> <span class=mut style="font-size:12px">повтор DNS-шага по текущему слову: со словом — на фронт, без слова — на бэк; входы и релей не трогает</span></div>'):'')
+    +hopDnsChoiceBox();
   pub.innerHTML='<div style="margin-top:12px;border:1px solid var(--br);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--card2) 30%,transparent)">'
     +(hopVerdictRow())
     +(((hopData.hops||[]).length)
@@ -5587,7 +5835,7 @@ function renderHop(){
          named('hopStatBox',hopStatusBar())+named('hopCareBox',hopCareBox())+named('hopGuardBox',hopGuardBox()))
     +grp('inb','Входы, порты и транспорты','кто едет через фронт, а кто звонится прямо на бэк',hopInbBox()+hopTransportBox()+hopEpBox()+hopMuxBox())
     +grp('back','Адреса бэка','жив ли основной сервер по каждому адресу и кто следующий',backHealthBox())
-    +'<div class="hopstrip"><div class=msg id=hopMaintMsg></div><div class=msg id=hopInbMsg></div><div class=msg id=backHealthMsg></div></div>'
+    +'<div class="hopstrip"><div class=msg id=hopMaintMsg></div><div class=msg id=hopInbMsg></div><div class=msg id=hopDnsChoiceMsg></div><div class=msg id=backHealthMsg></div></div>'
     +'<div class=msg id=hopPubMsg></div></div>';
   const hops = hopData.hops||[];
   const tn = hopData.tun||{};
@@ -5740,7 +5988,7 @@ function renderHop(){
   lb.innerHTML=h;
 }
 // ---------- Хостеры: карточки, окно добавления, смена IP ----------
-let HS_DATA=null, HS_EDIT=null, HS_PROBE=null, HS_PICKED=null, HS_IPS={};
+let HS_DATA=null, HS_EDIT=null, HS_PROBE=null, HS_PICKED=null, HS_IPS={}, HS_CB=null, HS_CB_MSG='';
 function hsFind(id){return ((HS_DATA&&HS_DATA.hosters)||[]).filter(function(h){return h.id===id;})[0]||null;}
 function hsStateWord(st){
   const s=String((st&&st.state)||'').toLowerCase();
@@ -5797,7 +6045,7 @@ function renderHosters(){
   box.innerHTML=hs.map(hsCard).join('');
 }
 async function loadHosters(){
-  try{HS_DATA=await api('/api/hosters');}
+  try{HS_DATA=await api('/api/hosters');HS_CB=!!(HS_DATA&&HS_DATA.cb_token);}
   catch(e){HS_DATA=null;setMsg('hsMsg','список не прочитан: '+e.message,'err');}
   renderHosters();
   hsTileFromData(HS_DATA);
@@ -5829,8 +6077,22 @@ async function hsIpShow(id){
     HS_IPS[id]=d;
     box.dataset.on='1';
     box.innerHTML=hsIpHtml(id,d);
-    hsIpProbe(id);
   }catch(e){box.dataset.on='';box.innerHTML='<div class=err style="font-size:12.5px;margin-top:8px">'+esc(e.message)+'</div>';}
+}
+// #192 (слово хозяина 18.11 «проверка доступности не вышла: Load failed», «🛂 Load
+// failed»): долгий ход — задача на сервере, морда опрашивает шаги. Коробочный nginx
+// на пути к панели обрывает молчащий ответ на 60 с, а проба пула идёт минуты;
+// обрыв ожидания не теряет уже снятое — тот же урок, что у хода ног (#13 R43).
+async function hsJobFollow(startBody,statusAction,alive){
+  let r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify(startBody)});
+  let n=0;
+  while(r&&r.state==='running'&&r.job&&n<150){
+    await new Promise(function(res){setTimeout(res,4000);});
+    n++;
+    if(alive&&!alive())return r;
+    r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:startBody.id,action:statusAction,job:r.job})});
+  }
+  return r;
 }
 // #738: панель сама щупает адреса, которые выдал провайдер, — раньше хозяин
 // проверял каждый руками в чужом сервисе, прежде чем выбрать.
@@ -5843,12 +6105,17 @@ async function hsIpProbe(id,force){
   d.probing=true; d.probeErr='';
   if(box)box.innerHTML=hsIpHtml(id,d);
   try{
-    const r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'ip_probe',rkn_force:!!force})});
-    d.probe=r.res||{}; d.probePorts=r.ports||[]; d.probeMain=r.main_ip||'';
-    d.probeObserver=r.observer||'';
-    d.rkn=r.rkn||{}; d.rknSrc=r.rkn_src||[]; d.rknAt=r.rkn_at||0;
-    d.rknCount=r.rkn_count||0; d.rknErr=r.rkn_err||'';
-    d.ru=r.ru||null;
+    const r=await hsJobFollow({id:id,action:'ip_probe',rkn_force:!!force},'ip_probe_status',
+                              function(){return HS_IPS[id]===d;});
+    if(HS_IPS[id]!==d)return;
+    if(r&&r.res){
+      d.probe=r.res; d.probePorts=r.ports||[]; d.probeMain=r.main_ip||''; d.probeTotal=Number(r.cand_total||0);
+      d.probeObserver=r.observer||'';
+      d.rkn=r.rkn||{}; d.rknSrc=r.rkn_src||[]; d.rknAt=r.rkn_at||0;
+      d.rknCount=r.rkn_count||0; d.rknErr=r.rkn_err||'';
+      d.ru=r.ru||null;
+    }else if(r&&r.err){d.probeErr=r.err;}
+    else d.probeErr='проба ещё идёт на сервере, я перестал ждать — обновите список через минуту';
   }catch(e){d.probeErr=(e&&e.message)||'проверка не вышла';}
   d.probing=false;
   if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
@@ -5866,17 +6133,17 @@ function hsIpRknRead(id){
   return ((HS_IPS[id]||{}).rknSrc||[]).filter(function(s){return (s.n||0)>0;});
 }
 function hsIpRknTxt(id,ip){
-  // Одно слово-вердикт на адрес: брать или нельзя (#742). Решает только список
-  // блокировок — живость свободного адреса ни о чём не говорит, и в вердикт не
-  // пускается: хозяин выбирал по ней и ошибался.
+  // Одно слово на адрес по чужим выгрузкам (#741, правка #189): список — НЕ судья
+  // доступности, живые замеры показали, что адрес «вне списка» тоже глотается ТСПУ,
+  // и наоборот. Ярлык списков («можно/нельзя») убран: решение судит кнопка 🛂 по путям.
   const d=HS_IPS[id]||{};
   if(d.probing)return '';
   const read=hsIpRknRead(id); if(!read.length)return '';
   const v=(d.rkn||{})[ip]; if(!v)return '';
   const hits=read.filter(function(s){return (v.in||[]).indexOf(s.id)>=0;});
-  if(!hits.length)return ' · ✅ брать можно — ни одно зеркало его не знает';
+  if(!hits.length)return ' · ✅ ни одно зеркало его не знает (суди путь 🛂)';
   const words=hits.map(function(s){return s.title+' '+(v.nets[s.id]||'');});
-  return ' · ⛔ брать нельзя — в списке: '+words.join(' · ')+
+  return ' · ⛔ в списке блокировок: '+words.join(' · ')+
          (hits.length<read.length?' (прочие зеркала его не знают)':'');
 }
 function hsIpMarkTxt(id,ip){
@@ -5911,9 +6178,14 @@ async function hsRuProbe(id){
   d.ruBusy=true; d.ruErr=''; d.ruLive=null;
   if(box)box.innerHTML=hsIpHtml(id,d);
   try{
-    const r=await api('/api/hosters/action',{method:'POST',body:JSON.stringify({id:id,action:'ru_probe'})});
-    d.ruLive={name:r.name||'',ok:Number(r.ok||0),total:Number(r.total||0),
-              at:Number(r.at||0),cities:r.cities||[]};
+    const r=await hsJobFollow({id:id,action:'ru_probe'},'ru_probe_status',
+                              function(){return HS_IPS[id]===d;});
+    if(HS_IPS[id]!==d)return;
+    if(r&&r.total!=null&&r.state==='done'){
+      d.ruLive={name:r.name||'',ok:Number(r.ok||0),total:Number(r.total||0),
+                at:Number(r.at||0),cities:r.cities||[]};
+    }else if(r&&r.err){d.ruErr=r.err;}
+    else d.ruErr='замер из России ещё идёт на сервере, я перестал ждать — нажми кнопку через минуту';
   }catch(e){d.ruErr=(e&&e.message)||'замер не вышел';}
   d.ruBusy=false;
   if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
@@ -5960,6 +6232,116 @@ function hsRuHtml(id){
   if(d.ruErr)h+='<div class=err style="margin-top:4px">'+esc(d.ruErr)+'</div>';
   return h+'</div>';
 }
+// #189/#193 (слово хозяина 18.11 «полная херня получилась… посмотри а у
+// cheburcheck.ru есть api?» + «делай»): судья ходит в официальный API cheburcheck.ru —
+// GET /check по цели (списки блокировок, без токена), затем GET /probe с API-токеном:
+// их сканеры из российских сетей выносят приговор пути пакетов (tspu_block/sni_block/
+// dns_spoofing/cdn_block/ok). Прежняя самодельная мера по глубине трассировки Globalping
+// хозяйскому слову не выдержала; факт «адрес есть в списках» и здесь назван отдельно:
+// списки ≠ ТСПУ (#741), судит именно путь пакетов.
+async function hsTspuProbe(id){
+  const d=HS_IPS[id]; if(!d)return;
+  const box=$('hsIps_'+id);
+  d.tspuBusy=true; d.tspuErr='';
+  if(box)box.innerHTML=hsIpHtml(id,d);
+  try{
+    const body={id:id,action:'tspu_probe'};
+    const sel=$('hsNewIp_'+id);
+    if(sel&&sel.value)body.ip_id=sel.value;
+    // #192: одиночный суд — та же фоновая задача, что у пачки (ход сканеров на
+    // адрес); sync-ответ резался коробочным nginx на 60 с
+    const r=await hsJobFollow(body,'tspu_all_status',
+                              function(){return HS_IPS[id]===d;});
+    if(HS_IPS[id]!==d)return;
+    if(r&&r.ip&&r.state==='done'){d.tspu=r;d.tspuErr='';}
+    else if(r&&r.err){d.tspuErr=r.err;d.tspu=null;}
+    else{d.tspuErr='судья ещё идёт на сервере, я перестал ждать — обнови список через минуту';d.tspu=null;}
+  }catch(e){d.tspuErr=(e&&e.message)||'замер не вышел';d.tspu=null;}
+  d.tspuBusy=false;
+  if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
+}
+function hsTspuHtml(id){
+  const d=HS_IPS[id]||{};
+  if(d.tspuBusy)return '<div class=mut style="margin-top:6px">🛂 сканеры cheburcheck.ru судят адрес из российских сетей — это около минуты…</div>';
+  if(d.tspuErr)return '<div class=err style="margin-top:6px">🛂 '+esc(d.tspuErr)+'</div>';
+  const r=d.tspu; if(!r)return '';
+  const words={blocked:'заблокирован',open:'не блокирован',mixed:'блокирован выборочно',unmeasured:'не судим'};
+  const cls=r.verdict==='blocked'?'err':(r.verdict==='open'?'ok':'mut');
+  let h='<div style="margin-top:6px">🛂 ТСПУ-блокировка адреса <b>'+esc(r.ip)+'</b>: <b class='+cls+'>'+esc(words[r.verdict]||r.verdict)+'</b></div>';
+  h+='<div class=mut style="font-size:12px">'+esc(r.note||'')+'</div>';
+  (r.rows||[]).forEach(function(x){
+    const w=x.verdict==='open'?'✅ доходит':(x.verdict==='blocked'?'⛔ гибнет':'❓ не судим');
+    h+='<div class=mut style="font-size:12px">'+esc(x.city+' / '+x.network)+' — '+w+
+       (x.detail?(' ('+esc(x.detail)+')'):'')+'</div>';
+  });
+  return h;
+}
+async function hsTspuAll(id){
+  // #191 (слово хозяина 18.11 «почему он все доступные ip на смену не проверяет?»):
+  // панель заводит задачу и судит весь пул; морда опрашивает шаги, поэтому обрыв
+  // браузера не теряет уже снятое — суд дойдёт на сервере и дождётся.
+  const d=HS_IPS[id]; if(!d)return;
+  const box=$('hsIps_'+id);
+  d.tspuAllBusy=true; d.tspuAllErr='';
+  if(box)box.innerHTML=hsIpHtml(id,d);
+  try{
+    let r=await api('/api/hosters/action',{method:'POST',
+      body:JSON.stringify({id:id,action:'tspu_probe_all'})});
+    d.tspuAll=r;
+    let tries=0;
+    while(r&&r.state==='running'&&tries<300){
+      await new Promise(function(s){setTimeout(s,6000);});
+      if(HS_IPS[id]!==d){d.tspuAllBusy=false;return;}
+      r=await api('/api/hosters/action',{method:'POST',
+        body:JSON.stringify({id:id,action:'tspu_all_status',job:r.job})});
+      tries++;
+      d.tspuAll=r;
+      if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
+    }
+    if(r&&r.state==='running')d.tspuAllErr='суд ещё идёт, но ждал слишком долго — карточка на сервере не потеряется, обновите список через минуту';
+  }catch(e){d.tspuAllErr=(e&&e.message)||'пачечный суд не вышел';}
+  d.tspuAllBusy=false;
+  if(box&&box.dataset.on==='1')box.innerHTML=hsIpHtml(id,d);
+}
+function hsTspuAllHtml(id){
+  const d=HS_IPS[id]||{};
+  if(d.tspuAllErr)return '<div class=err style="margin-top:6px">🛂 '+esc(d.tspuAllErr)+'</div>';
+  const r=d.tspuAll; if(!r)return '';
+  const words={blocked:'заблокирован',open:'не блокирован',mixed:'блокирован выборочно',unmeasured:'не судим'};
+  let h='<div style="margin-top:6px">🛂 Пачечный судья по пулу адресов (пачками по '+Number(r.chunk_size||10)+'): ';
+  h+=r.state==='running'?('судит '+Number(r.checked||0)+' из '+Number(r.total||0)+(r.chunks?(' · пачка '+Number(r.chunk||0)+' из '+Number(r.chunks)):'')+', без отсечки…'):
+      ('сужено адресов: '+Number(r.total||0)+' — весь пул'+(r.chunks?(' пачками по '+Number(r.chunk_size||10)):''));
+  h+='</div>';
+  h+='<div class=mut style="font-size:12px">'+esc(r.note||'')+'</div>';
+  (r.ips||[]).forEach(function(x){
+    const cls=x.verdict==='blocked'?'err':(x.verdict==='open'?'ok':'mut');
+    h+='<div class=mut style="font-size:12px"><b>'+esc(x.ip)+'</b> — <b class='+cls+'>'+esc(words[x.verdict]||x.verdict)+'</b>'+
+       (x.note?(' <span style="font-size:11.5px">'+esc(x.note)+'</span>'):'')+'</div>';
+  });
+  return h;
+}
+function hsTspuShortTxt(id,ip){
+  const d=HS_IPS[id]||{}; const r=d.tspuAll;
+  if(!r||!r.ips)return '';
+  const m={blocked:'⛔ блокирован',open:'✅ не блокирован',mixed:'⚠ выборочно',unmeasured:'❓ не судим'};
+  for(let i=0;i<r.ips.length;i++){if(r.ips[i].ip===ip)return ' · 🛂 '+(m[r.ips[i].verdict]||r.ips[i].verdict);}
+  return '';
+}
+async function hsCbTokSave(id){
+  // #193: слово токена живёт только в config.json панели; в ответ — флаг.
+  const inp=$('hsCbTok_'+id); if(!inp)return;
+  const v=(inp.value||'').trim();
+  if(!v){setMsg('hsMsg','сначала вставьте слово токена','err');return;}
+  try{
+    const r=await api('/api/hosters/action',{method:'POST',
+      body:JSON.stringify({id:id,action:'cheburcheck_token',token:v})});
+    inp.value='';
+    HS_CB=!!(r&&r.set);
+    if(HS_DATA)HS_DATA.cb_token=HS_CB;
+    HS_CB_MSG=HS_CB?'токен заведён — судья пойдёт сканерами':'токена нет — судья честно скажет «не судим»';
+    renderHosters();
+  }catch(e){setMsg('hsMsg','токен не записан: '+e.message,'err');}
+}
 function hsIpRknHtml(id,keys){
   const d=HS_IPS[id]||{};
   if(d.probing||!d.probe)return '';
@@ -5985,38 +6367,24 @@ function hsIpRknHtml(id,keys){
 }
 function hsIpVerdictHtml(id){
   const d=HS_IPS[id]||{};
-  if(!d.probing&&!d.probe&&!d.probeErr)return '';
   let h='<div style="margin-top:6px;border-top:1px dotted var(--br);padding-top:6px">';
-  if(d.probing){h+='<div class=mut>меряю доступность адресов…</div>';}
-  else if(d.probeErr){h+='<div class=err>проверка доступности не вышла: '+esc(d.probeErr)+'</div>';}
-  else{
-    const keys=Object.keys(d.probe||{});
-    const up=keys.filter(function(k){return (d.probe[k]||{}).up;});
-    const quiet=function(w){return keys.filter(function(k){const v=d.probe[k]||{};return !v.up&&v.why===w;}).length;};
-    h+='<div class=mut>Проверено адресов: '+keys.length+' · отвечает '+up.length+
-       ' · порты закрыты '+quiet('refused')+' · маршрута нет '+quiet('unreach')+
-       ' · молчит '+quiet('silent')+
-       (d.probePorts&&d.probePorts.length?' (входы '+esc(d.probePorts.join('/'))+')':'')+'</div>';
-    keys.forEach(function(k){
-      h+='<div>'+esc(k+hsIpMarkTxt(id,k))+(k===d.probeMain?' <span class=mut>— нынешний адрес машины</span>':'')+'</div>';
-    });
-    // Свободные адреса пула молчат все до одного: на них ещё некому слушать. Без этого
-    // слова «отвечает 0 из 24» читается как приговор каждому адресу (#738).
-    const rest=keys.filter(function(k){return k!==d.probeMain;});
-    if(rest.length&&!rest.some(function(k){return (d.probe[k]||{}).up;})){
-      h+='<div class=mut style="margin-top:4px">Ни один свободный адрес не отвечает, и это не приговор: '
-        +'на адресе, который ещё не назначен машине, слушать некому. Мера годится там, где сервис уже '
-        +'живёт, — смени адрес и нажми эту кнопку снова: новый адрес панель проверит уже по-настоящему.</div>';
-    }
+  h+=hsTspuHtml(id);
+  h+=hsTspuAllHtml(id);
+  const ch=d.ips||[];
+  if(ch.length){
+    const main=ch.filter(function(x){return x.main;})[0]||ch[0];
+    h+='<div class=mut style="font-size:12px">Нынешний адрес: '+esc(main.ip+hsTspuShortTxt(id,main.ip))+'</div>';
   }
-  h+=hsIpRknHtml(id,Object.keys(d.probe||{}));
-  h+=hsRuHtml(id);
-  h+='<div class=mut style="margin-top:4px"> Живость меряет эта машина'+(d.probeObserver?' (<b>'+esc(d.probeObserver)+'</b>)':'')+
-     ' — она за границей, и «отвечает» здесь значит «адрес живой», а не «его видно из России». '+
-     'Списки блокировок читаются отдельно и своим словом.</div>';
-  h+='<button class="tiny" style="margin-top:6px" onclick="hsIpProbe(\''+jsStr(id)+'\')">🔁 Проверить доступность ещё раз</button>';
-  h+=' <button class="tiny" style="margin-top:6px" onclick="hsIpProbe(\''+jsStr(id)+'\',true)">📕 Перечитать списки блокировок</button>';
-  h+=' <button class="tiny" style="margin-top:6px" onclick="hsRuProbe(\''+jsStr(id)+'\')">🇷🇺 Проверить из России</button>';
+  h+='<button class="tiny" style="margin-top:6px" onclick="hsTspuProbe(\''+jsStr(id)+'\')">🛂 Судить блокировку на ТСПУ</button>';
+  h+=' <button class="tiny" style="margin-top:6px" onclick="hsTspuAll(\''+jsStr(id)+'\')">'+(d.tspuAllBusy?'🛂 пачечный суд идёт…':'🛂 Судить все адреса пула')+'</button>';
+  // #193: токен cheburcheck — общий на панель, не на машину; наружу уходит только
+  // флаг «заведён», само слово панель больше не показывает.
+  h+='<div class=mut style="margin-top:6px;font-size:11.5px">🛂 Судье нужен API-токен cheburcheck.ru — заявка по форме из https://cheburcheck.ru/kb/api. Слово токена панель наружу не печатает.</div>';
+  h+='<input type="password" id="hsCbTok_'+esc(id)+'" autocomplete="off" placeholder="'+
+     ((HS_DATA&&HS_DATA.cb_token)||HS_CB?'токен заведён — вставьте новый, чтобы заменить':'вставьте API-токен cheburcheck.ru')+
+     '" style="max-width:340px;margin-top:4px">';
+  h+=' <button class="tiny" style="margin-top:4px" onclick="hsCbTokSave(\''+jsStr(id)+'\')">💾 Завести токен</button>';
+  if(HS_CB_MSG)h+='<div class=mut style="margin-top:4px;font-size:11.5px">'+esc(HS_CB_MSG)+'</div>';
   return h+'</div>';
 }
 function hsIpHtml(id,d){
@@ -6028,7 +6396,7 @@ function hsIpHtml(id,d){
   }else{
     const ch=d.ips||[];
     if(!ch.length){h+='<div class=err style="margin-top:6px">Провайдер не вернул ни одного варианта — смена сейчас недоступна.</div>';return h+hsIpVerdictHtml(id)+'</div>';}
-    h+='<label class=fldlbl for=hsNewIp_'+esc(id)+' style="margin-top:6px">Новый адрес</label><select id=hsNewIp_'+esc(id)+' style="max-width:340px">'+ch.map(function(x){return '<option value="'+esc(x.id)+'">'+esc(x.ip+hsIpMarkTxt(id,x.ip))+'</option>';}).join('')+'</select>';
+    h+='<label class=fldlbl for=hsNewIp_'+esc(id)+' style="margin-top:6px">Новый адрес</label><select id=hsNewIp_'+esc(id)+' style="max-width:340px">'+ch.map(function(x){return '<option value="'+esc(x.id)+'">'+esc(x.ip+hsTspuShortTxt(id,x.ip))+'</option>';}).join('')+'</select>';
     h+='<div style="margin-top:4px" '+(d.free_change?'':'class=mut')+'>'+(d.free_change?'✅ Доступна бесплатная смена — деньги не спишутся.':'Смена платная'+(d.price!=null?(': '+esc(String(d.price))+(d.currency?' '+esc(d.currency):'')):'')+'; провайдер выставит ссылку на оплату.')+'</div>';
     if(d.requires_recreate)h+='<div class=err style="margin-top:4px">⚠ Провайдер предупредил: машину придётся пересоздать — данные будут потеряны. Панель спросит отдельное подтверждение.</div>';
     h+='<button class="tiny danger" style="margin-top:6px" onclick="hsIpChange(\''+jsStr(id)+'\')">🌐 Сменить IP</button>';
@@ -6191,7 +6559,7 @@ async function hopPreview(){
   const ip=$('hopIp').value.trim(), ports=$('hopPorts').value, udp=($('hopUdpPorts').value||''), b=$('hopPrevBox');
   if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
   let d;
-  try{ d=await api('/api/hop/preview?ip='+encodeURIComponent(ip)+'&ports='+encodeURIComponent(ports)+'&udp_ports='+encodeURIComponent(udp)); }
+  try{ d=await api('/api/hop/preview?ip='+encodeURIComponent(ip)+'&ports='+encodeURIComponent(ports)+'&udp_ports='+encodeURIComponent(udp)+'&force=1'); }
   catch(e){ b.innerHTML=''; setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
   let h='<div style="border:1px solid var(--br);border-radius:10px;padding:10px;font-size:13px;line-height:1.6;margin-top:4px">';
   h+= d.can_apply
@@ -6206,13 +6574,26 @@ async function hopAdd(){
   const ports=($('hopPorts').value||'').split(/[,\s]+/).filter(Boolean);
   const udp=($('hopUdpPorts').value||'').split(/[,\s]+/).filter(Boolean);
   if(!ip){ setMsg('hopAddMsg','введи IPv4 фронта','err'); return; }
+  const pu=$('hopSshUser'), pp=$('hopSshPass'), sp=$('hopSshPort');
+  const user=(pu&&pu.value.trim())||'root';
+  const sport=parseInt((sp&&sp.value)||'22',10)||22;
+  const pass=pp&&pp.value?pp.value:'';
   setMsg('hopAddMsg','создаю…','');
   let d;
   const tmSel=(document.getElementById('hopTunMode')||{}).value||'awg';
-  try{ d=await api('/api/hop/add',{method:'POST',body:JSON.stringify({name,front_ip:ip,ports,udp_ports:udp,tun_mode:tmSel})}); }
+  try{ d=await api('/api/hop/add',{method:'POST',body:JSON.stringify({name,front_ip:ip,ports,udp_ports:udp,tun_mode:tmSel,force:true})}); }
   catch(e){ setMsg('hopAddMsg',(e&&e.message)||'ошибка','err'); return; }
   $('hopIp').value=''; $('hopName').value=''; $('hopPrevBox').innerHTML='';
   await loadHop();
+  if(pass){
+    if(pp) pp.value='';
+    setMsg('hopAddMsg','фронт создан ✓, устанавливаю релей по SSH…','');
+    let j;
+    try{ j=await api('/api/hop/ssh',{method:'POST',body:JSON.stringify({id:d.id,user,password:pass,ssh_port:sport})}); }
+    catch(e){ setMsg('hopAddMsg','фронт создан, но SSH-установка не запустилась: '+((e&&e.message)||'ошибка'),'err',true); return; }
+    pollHopBoot(j.id, d.id, 'hopAddMsg', 'hopAddBoot');
+    return;
+  }
   setMsg('hopAddMsg','фронт создан ✓, нога: '+hopTunSay(tmSel)+' — разверни его в списке ниже: SSH-форма или «Выдать команду установки».','ok',true);
 }
 async function hopRelink(id){
@@ -6235,13 +6616,15 @@ async function hopSsh(id){
   pp.value='';
   pollHopBoot(d.id,id);
 }
-function pollHopBoot(jid,hid){
+function pollHopBoot(jid,hid,msgId,bootId){
+  msgId=msgId||'hopMsg';
+  const elId=bootId||('hopBoot_'+hid);
   if(hopBootTimer) clearTimeout(hopBootTimer);
   async function tick(){
     let d;
     try{ d=await api('/api/hop/bootstatus?id='+encodeURIComponent(jid)); }
-    catch(e){ setMsg('hopMsg','потерян статус установки','err',true); hopBootTimer=null; return; }
-    const el=$('hopBoot_'+hid);
+    catch(e){ setMsg(msgId,'потерян статус установки','err',true); hopBootTimer=null; return; }
+    const el=$(elId);
     if(el){
       const ic={done:'✅',failed:'❌',running:'⏳'};
       el.innerHTML=(d.steps||[]).map(s=>'<div>'+(ic[s.state]||'▫️')+' '+esc(s.name)+' <span class=mut style="font-size:11.5px">'+esc(s.detail||'')+'</span></div>').join('');
@@ -6249,7 +6632,7 @@ function pollHopBoot(jid,hid){
     if(d.done){
       hopBootTimer=null;
       await loadHop();
-      setMsg('hopMsg', d.ok?'фронт установлен и активен ✓ — можно включать публичный адрес':('сбой: '+(d.error||'неизвестно')), d.ok?'ok':'err', true);
+      setMsg(msgId, d.ok?'фронт установлен и активен ✓ — можно включать публичный адрес':('сбой: '+(d.error||'неизвестно')), d.ok?'ok':'err', true);
     } else hopBootTimer=setTimeout(tick,2000);
   }
   tick();
@@ -9572,10 +9955,14 @@ async function loadTikTok(){
     const rt=String(d.region_tunnel||'').toUpperCase(), rd=String(d.region_direct||'').toUpperCase();
     if(!d.tiktok_want){ el.textContent='Выключено — TikTok видит сервер как есть.'; loadTikTokVariants(false); return; }
     loadTikTokVariants(true);
-    if(d.up&&d.ready&&rt&&rt!=='RU') el.innerHTML='🎵 <b>TikTok через WARP</b> — '+(d.count||0)+' адресных блоков в туннеле; TikTok видит <b>'+esc(rt)+'</b>'+(rd?(' вместо '+esc(rd)):'')+'.';
-    else if(d.up&&rt==='RU') el.innerHTML='🎵 <b style="color:var(--warn)">Туннель поднят, а TikTok всё ещё видит RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.';
-    else if(d.up) el.innerHTML='🎵 <b>TikTok через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.';
-    else if(d.error) el.innerHTML='🎵 <b style="color:var(--warn)">Включено, но не идёт</b> — '+esc(d.error)+'.';
+    // литера 2.17.173: имена TikTok судит ядро, поэтому «адресных блоков» в окне
+    // больше нет — есть кольцо по домену, а в таблице лежат хаб и хозяйский список
+    const ring=(d.ring_zones&&d.ring_zones.length)?('кольцо по имени: '+d.ring_zones.length+' зон TikTok судит ядро'):((d.count||0)+' адресных блоков в туннеле');
+    const rerr=d.ring_error?(' <b style="color:var(--warn)">'+esc(d.ring_error)+'</b>'):'';
+    if(d.up&&d.ready&&rt&&rt!=='RU') el.innerHTML='🎵 <b>TikTok через WARP</b> — '+ring+'; TikTok видит <b>'+esc(rt)+'</b>'+(rd?(' вместо '+esc(rd)):'')+'.'+rerr;
+    else if(d.up&&rt==='RU') el.innerHTML='🎵 <b style="color:var(--warn)">Туннель поднят, а TikTok всё ещё видит RU</b> — фикс не помог'+(d.probe_error?': '+esc(d.probe_error):'')+'.'+rerr;
+    else if(d.up) el.innerHTML='🎵 <b>TikTok через WARP</b> — звено поднято, регион ещё не проверен'+(d.error?(' ('+esc(d.error)+')'):'')+'.'+rerr;
+    else if(d.error||d.ring_error) el.innerHTML='🎵 <b style="color:var(--warn)">Включено, но не идёт</b> — '+esc(d.error||'')+rerr+'.';
     else el.textContent='Включено, жду первого тика — звено строится.';
   }catch(e){ el.innerHTML='<span class=mut>Нет данных ('+esc((e&&e.message)||'')+')</span>'; }
 }
@@ -9774,6 +10161,7 @@ let tvTimer=0;
 function tvWord(v,region){
   if(v==='green') return '<b style="color:var(--ok)">заграницей'+(region?(' ('+esc(region)+')'):'')+'</b>';
   if(v==='ru') return '<b style="color:var(--warn)">TikTok видит RU</b>';
+  if(v==='off') return '<span class=mut>не мерится</span>';
   if(v==='silent') return '<b style="color:#d9a441">молчит</b>';
   return '<span class=mut>не мерян</span>';
 }
@@ -9800,6 +10188,7 @@ async function loadTikTokVariants(show){
              (act?';font-weight:700':'')+'">'+esc(v.name||('Вариант '+n))+
              (act?' <span class=mut>— рабочий</span>':'')+
              '<span>'+tvWord(v.verdict,v.region)+'</span>'+
+             (v.why?('<span class=mut style="font-size:11px">'+esc(v.why)+'</span>'):'')+
              (v.checked_at?('<span class=mut style="font-size:11px">'+tvWhen(v.checked_at)+'</span>'):'')+
              '<span style="margin-left:auto">'+btns+'</span></div>';
     }).join('')+('<div class=mut style="font-size:11px;margin-top:4px">свободных мест: '+
@@ -9817,7 +10206,7 @@ async function tvPost(body,msg){
   loadTikTokVariants(true);
 }
 async function tvAdd(){ tvPost({add:true},'регистрирую новый вариант у облака…'); }
-async function tvProbe(n){ tvPost({probe:n},'замер варианта '+n+' идёт в песочнице — до минуты, дочитаю сама'); }
+async function tvProbe(n){ tvPost({probe:n},'замер варианта '+n+' идёт — до минуты, дочитаю сама'); }
 async function tvProbeAll(){ tvPost({probe_all:true},'замер всех вариантов идёт по очереди — до нескольких минут'); }
 async function tvUse(n){ tvPost({use:n},'переставляю звено на вариант '+n+' и щупаю TikTok…'); }
 async function tvDel(n){ if(confirm('Снять вариант '+n+' с хранения? Аккаунт будет потерян.')) tvPost({del:n},'снимаю…'); }
@@ -10108,10 +10497,29 @@ async function saveDcThreshold(){
   }catch(e){ m.textContent=(e&&e.message)||'ошибка'; m.className='msg err'; }
 }
 
+// #47: три свидетеля онлайна. «Неизвестно» и «не видно» — разные слова: первое
+// значит telemt не ответил, второе — адреса клиентов спрятаны мостом. Ноль
+// показываем только тогда, когда измерили и никого нет.
+function renderTgOnline(o){
+  o = o || {};
+  const p = $('tgOnPeople'), w = $('tgOnPeopleWhy');
+  if(p){
+    if(!o.known){ p.textContent='—'; if(w) w.textContent=o.why||'telemt не ответил'; }
+    else if(o.people===null||o.people===undefined){ p.textContent='не видно'; if(w) w.textContent=o.why||''; }
+    else { p.textContent=o.people;
+      if(w) w.textContent=(o.people_src==='front'||o.people_src==='local'||o.hidden)?(o.why||''):('ключей в сети: '+(o.keys_active||0)+' из '+(o.keys_total||0)); }
+  }
+  const mp=$('tgOnMp'), wp=$('tgOnWeb');
+  if(mp) mp.textContent=(o.mtproto===null||o.mtproto===undefined)?'—':o.mtproto;
+  if(wp) wp.textContent=(o.webproxy===null||o.webproxy===undefined)?'—':o.webproxy;
+}
+
 async function loadTg(){
   try{
     const d = await api('/api/tg/status');
     loadTgDcs();
+    window.tgPower = d.power || null;
+    renderTgPower(d.power);
     if (!d.installed){
       document.getElementById('tgList').innerHTML='';
       setMsgHtml('tgMsg','MTProto-прокси не установлен. Установи пакет <b>telemt</b> и перезапусти панель.','');
@@ -10120,8 +10528,12 @@ async function loadTg(){
     tgUsers = d.users || [];
     window.tgMp = d.mtproto || null;
     window.tgManual = d.manual || [];
+    window.tgPower = d.power || null;
+    renderTgPower(d.power);
+    window.tgOnline = d.online || null;
     document.getElementById('tgStatus').textContent = tgUsers.length + ' шт.';
     renderTgMp();
+    renderTgOnline(d.online);
     renderTg();
     renderTgManual();
     renderWeb(d.web);
@@ -10138,6 +10550,22 @@ async function loadTg(){
 // #310: ручная перезагрузка telemt. Ручка на сервере была и раньше, но входа в
 // неё со страницы не существовало — поднять службу можно было только через
 // switch/restore с подтверждением замены бинаря.
+function renderTgPower(p){
+  p = p || {};
+  const b=$('tgPowerBtn'), st=$('tgPowerStatus');
+  if(b) b.textContent = p.off ? '▶ Включить MTProto' : '⏸ Отключить MTProto';
+  if(st) st.textContent = p.off ? 'отключён' : (p.up ? 'включён' : 'выключен/не поднят');
+}
+async function tgPowerToggle(){
+  const off=!!(window.tgPower && window.tgPower.off);
+  if(!confirm((off?'Включить':'Отключить')+' MTProto Telegram?')) return;
+  const b=$('tgPowerBtn'); if(b) b.disabled=true;
+  try{
+    const r=await api('/api/tg/power',{method:'POST',body:JSON.stringify({off:!off,confirm:true})});
+    toast(r.note||'', r.ok?'ok':'err');
+  }catch(e){ toast('Ошибка: '+e.message,'err'); }
+  finally{ if(b) b.disabled=false; loadTg(); }
+}
 async function restartTelemt(){
   if(!confirm('Перезагрузить telemt? Соединения Telegram-прокси прервутся на несколько секунд.')) return;
   const b=$('tgRestartBtn'); if(b) b.disabled=true;
@@ -10939,11 +11367,11 @@ function _muxRenderPrev(d){
     h+='<div class=mut style="font-size:12px">Ссылки VPN '+esc(d.vpn_domain)+':443: '
       +(d.link_host_ready?'хост уже перевёрнут на vpn.<база>':'остаются на базе, пока vpn.<база> не зарезолвится')+'</div>';
   if(d.veil&&d.veil.plan&&d.veil.plan.length){
-    const SL={free:'свободно',ours:'наш IP',foreign:'занято чужим'};
+    const SL={free:'свободно',ours:'наш IP',foreign:'на другой коробке'};
     h+='<div class=mut style="margin-top:2px;font-size:12px">План имён · провайдер: '+esc(d.veil.provider||'—')+' · '
       +d.veil.plan.map(p=>esc(p.label)+' → '+esc(p.final)+' ('+(SL[p.status]||esc(p.status))+')').join(' · ')+'</div>';
-    if(d.veil.renumbered)
-      h+='<div style="color:'+wnc+';font-size:12px">Часть имён занята чужими — панель подставит цифру (tg2/vpn2); финальное имя можно поправить руками.</div>';
+    if(d.veil.plan.some(p=>p.status==='foreign'))
+      h+='<div style="color:'+wnc+';font-size:12px">Часть имён нарочно указывает на другую коробку — панель их НЕ перенумеровывает (tg остаётся tg) и DNS не трогает; финальное имя можно поправить руками.</div>';
   }
   if(d.can_provision)
     h+='<div style="margin-top:6px">Выпуск имён и сертификата — единым входом «🌐 Имена и сертификаты» во вкладке «Сайт». '
@@ -11659,10 +12087,14 @@ function renderTg(){
                                      : ' — она продолжает работать'));
       div.querySelector('.name').appendChild(s);
     }
-    const conns = u.connections || 0;
+    // #47: «онлайн» — число адресов устройств. Когда мост прячет адрес клиента,
+    // telemt называет всем один 127.0.0.1, и число устройств стало бы ложью —
+    // тогда показываем соединения своим словом.
+    const hid = !!(window.tgOnline && window.tgOnline.hidden);
+    const conns = hid ? (u.conns || 0) : (u.connections || 0);
     const maxIps = u.max_ips || 0;
     div.querySelector('.uuid').textContent =
-      (conns > 0 ? ('онлайн: ' + conns) : 'офлайн') +
+      (conns > 0 ? ((hid ? 'соединений: ' : 'онлайн: ') + conns) : 'офлайн') +
       (maxIps ? (' / лимит ' + maxIps) : '') +
       (hasWeb ? ' · веб-прокси' : '');
     const limSel = div.querySelector('[data-act=limit]');
@@ -12067,7 +12499,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
       if(b.dataset.tab==='nodes'){renderNodes();loadNodeTokens();}
        if(b.dataset.tab==='vpn')loadStats();
        if(b.dataset.tab==='proxy'){loadTgVerInfo();loadTgDcs();}
-       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();loadSshPort();loadNodeOpt();}
+       if(b.dataset.tab==='security'){load2faStatus();loadPasskeys();loadTermStatus();loadSshPort();loadNodeOpt();loadRkn();}
        if(b.dataset.tab==='ai')loadAi();
        if(b.dataset.tab==='site'){loadMyIps();loadWebmux();loadSelfSni();loadVeilCenter();loadCert();loadFront();loadSiteWizard();}
         if(b.dataset.tab==='telegrambot')loadBotConfig();
@@ -12149,6 +12581,21 @@ function dashEvText(x){
   const d=x.name||x.user||x.ip||x.detail||'';
   return d?t+' · '+d:t;
 }
+function dashProxyNums(o){
+  o=o||{};
+  const one=(v,mx)=>{
+    const has=(x)=>x!==null&&x!==undefined;
+    if(!has(v)) return has(mx)?('до '+mx):'—';
+    return has(mx)?(v+'–'+mx):String(v);
+  };
+  return {mp:one(o.people_mp,o.people_mp_max), web:one(o.people_web,o.people_web_max),
+          mix:(o.people_mp_max!=null||o.people_web_max!=null)};
+}
+function dashProxyPaint(o){
+  const t=dashProxyNums(o), a=$('dProxyMp'), b=$('dProxyWeb');
+  if(a)a.textContent=t.mp;
+  if(b)b.textContent='веб-прокси: '+t.web;
+}
 function renderDashEvents(a,l){
   const box=$('dEvents'); if(!box)return;
   let items=[];
@@ -12189,8 +12636,22 @@ function setDashRing(id,v){
   const g=$(id+'Gauge'); if(g)g.style.strokeDashoffset=100-v;
   const t=$(id+'V'); if(t)t.textContent=Math.round(v)+'%';
 }
-function drawDashChart(days){
+let dashWin=30, dashDays=[];
+const DASH_WIN_NAME={1:'день',7:'неделю',30:'30 дней'};
+function dashRange(n){
+  // Периоды — срезы живой тридцатидневки: часовых данных панель не держит,
+  // поэтому «день» здесь — последние сутки, а не выдуманный час.
+  dashWin=(n===1||n===7)?n:30;
+  const w=$('dChartWin');
+  if(w)w.querySelectorAll('button').forEach(b=>b.classList.toggle('on',+b.dataset.w===dashWin));
+  drawDashChart(dashDays);
+}
+function drawDashChart(all){
   const svg=$('dashChart'); if(!svg)return;
+  dashDays=Array.isArray(all)?all:[];
+  const days=dashDays.slice(Math.max(0,dashDays.length-dashWin));
+  const wn=DASH_WIN_NAME[dashWin]||'30 дней';
+  svg.setAttribute('aria-label','График трафика за '+wn);
   const W=640,H=190,P=10;
   let grid='';
   for(let g=0;g<=3;g++){const y=P+(H-2*P)*g/3;grid+='<line x1="'+P+'" y1="'+y.toFixed(1)+'" x2="'+(W-P)+'" y2="'+y.toFixed(1)+'" stroke="#ffffff12" stroke-width="1"/>';}
@@ -12200,7 +12661,7 @@ function drawDashChart(days){
   if(!n||!max){
     svg.innerHTML=grid;
     if(ya)ya.innerHTML='<span>0</span><span></span><span></span><span>0</span>';
-    if(rng)rng.textContent='данных за 30 дней пока нет';
+    if(rng)rng.textContent='данных за '+wn+' пока нет';
     if(mx)mx.textContent='';
     return;
   }
@@ -12208,14 +12669,18 @@ function drawDashChart(days){
   const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
   const area=line+' L '+pts[n-1][0].toFixed(1)+' '+(H-P)+' L '+pts[0][0].toFixed(1)+' '+(H-P)+' Z';
   const dots=pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.4" style="fill:var(--acc2)"/>').join('');
+  // одни сутки волной не нарисовать: одна точка — это столбик, а не линия
+  const body=n<2
+    ?'<rect x="'+(W/2-26).toFixed(1)+'" y="'+pts[0][1].toFixed(1)+'" width="52" height="'+(H-P-pts[0][1]).toFixed(1)+'" rx="3" style="fill:var(--acc2)" fill-opacity="0.55"/>'+dots
+    :'<path d="'+area+'" fill="url(#dgFill)"/>'+
+     '<path d="'+line+'" fill="none" style="stroke:var(--acc2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'+dots;
   svg.innerHTML='<defs><linearGradient id="dgFill" x1="0" y1="0" x2="0" y2="1">'+
     '<stop offset="0" style="stop-color:var(--acc2)" stop-opacity="0.32"/>'+
     '<stop offset="1" style="stop-color:var(--acc2)" stop-opacity="0"/></linearGradient></defs>'+
-    grid+'<path d="'+area+'" fill="url(#dgFill)"/>'+
-    '<path d="'+line+'" fill="none" style="stroke:var(--acc2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'+dots;
+    grid+body;
   if(ya)ya.innerHTML='<span>'+fmtBytes(max)+'</span><span>'+fmtBytes(max/2)+'</span><span>'+fmtBytes(max/4)+'</span><span>0</span>';
-  if(rng)rng.textContent=days[0][0]+' — '+days[n-1][0];
-  if(mx)mx.textContent='макс. сутки: '+fmtBytes(max);
+  if(rng)rng.textContent=n<2?days[0][0]:days[0][0]+' — '+days[n-1][0];
+  if(mx)mx.textContent=(n<2?'за сутки: ':'макс. сутки: ')+fmtBytes(max);
 }
 function dashDelta(el,today,yest,days){
   // Отношение печатается только на достоверной базе: тихий вчерашний день разгоняет
@@ -12262,6 +12727,7 @@ async function loadDashboard(){
       api('/api/hosters').catch(()=>null)
     ]);
     hsTileFromData(hd);
+    loadLnk();
     if(d){
       dashActiveProto=d.active||'reality';
       const ds=$('dStatus'),x=$('dXray'),xs=$('dXraySub');
@@ -12278,6 +12744,7 @@ async function loadDashboard(){
       $('dTodaySub').textContent='неделя: '+fmtBytes(d.week||0)+' · месяц с 1-го числа: '+fmtBytes(d.month||0)+(d.bans?' · банов: '+d.bans:'');
       $('dTodaySub').title='неделя — последние 7 суток, месяц — сутки текущего месяца с 1-го '
                            +'числа; на 1–7-е число оба окна накрывают одни и те же сутки';
+      dashProxyPaint(d.proxy);
       renderDashProtos(d.protos||[]);
       drawDashChart(d.days||[]);
     }
@@ -13442,6 +13909,8 @@ function nsBuild(){
   NS.kpi={};
   [['online','users','Клиенты онлайн','#4da3ff','показать, кто именно в сети',
     ()=>openOnlineModal(),'nsOnline'],
+   ['proxy','users','Онлайн прокси','#38bdf8','открыть вкладку прокси',
+    ()=>quickTab('proxy'),'nsProxy'],
    ['traffic','arrows','Трафик за сутки','#a78bfa','карточки тех, кто качает',
     ()=>quickTab('subscription'),'nsTraffic'],
    ['hosters','server','Хостеры','#2dd4bf','открыть вкладку хостеров',
@@ -13966,6 +14435,12 @@ function nsPaint(d,m,au,lh,hd){
     nsNum(ko.val,Number(d.online)||0,(v)=>String(Math.round(v)));
     ko.tot.textContent='/ '+String(d.clients||0);
     ko.sub.textContent='из общего числа подписок';
+    const kx=NS.kpi.proxy;
+    if(kx){const t=dashProxyNums(d.proxy);
+      kx.val.textContent=t.mp; kx.tot.textContent='MTProto';
+      kx.sub.textContent='веб-прокси: '+t.web;
+      kx.tile.title=t.mix?'Людей по службам. Общий вход :443 смешан с VPN — число службы названо диапазоном: нижняя граница от её отдельного входа, верхняя от общего, срезанная соединениями.'
+                         :'Людей по службам: MTProto и веб-прокси. Нажми — вкладка «Прокси».';}
     const kt=NS.kpi.traffic;
     nsNum(kt.val,Number(d.today)||0,(v)=>fmtBytes(v));
     nsDeltaChip(d);
@@ -14014,6 +14489,7 @@ function nsFresh(){
   NS.fresh.textContent=s<5?'цифры обновлены только что':'обновлено '+s+' с назад';
 }
 function nsOldPaint(d,m,au,lh,hd){
+  if(d)dashProxyPaint(d.proxy);
   // прежние узлы скрыты третьим видом, но обязаны остаться правдой: их читают
   // другие экраны, и пустая болванка под новой витриной — это будущая дыра
   hsTileFromData(hd);
